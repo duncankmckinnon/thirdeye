@@ -9,7 +9,7 @@ from pathlib import Path
 
 from thirdeye.paths import tags_path
 
-_TAG_RE = re.compile(r"^[a-z0-9_-]{1,64}$")
+_TAG_RE = re.compile(r"^[a-z0-9_\-.#]{1,64}$")
 
 _HASHTAG_RE = re.compile(r"(?<!\w)#([a-zA-Z][\w-]{0,63})")
 
