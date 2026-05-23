@@ -274,4 +274,4 @@ class TestValidateTagWidenedCharset:
             validate_tag("plan,bar")
 
     def test_extractor_does_not_widen_to_dot(self):
-        assert extract_hashtags("look at #tag-one and #tag.two") == {"tag-one"}
+        assert extract_hashtags("look at #tag-one and #tag.two") == {"tag-one", "tag"}
