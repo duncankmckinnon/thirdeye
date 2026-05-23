@@ -5,7 +5,10 @@ import os
 import sys
 
 from thirdeye.config import Config
+from thirdeye.env_capture import capture_env, env_to_tag
+from thirdeye.paths import session_dir
 from thirdeye.store import Store
+from thirdeye.tags import TagStore
 
 _PLATFORM = "codex"
 
@@ -47,19 +50,37 @@ def _strip_payload(payload: dict) -> dict:
     return {k: v for k, v in payload.items() if k not in _STRIP_KEYS}
 
 
-def _emit(t: str, payload: dict) -> bool:
+def _emit(t: str, payload: dict) -> int | None:
     sid = _flex_get(payload, "thread-id", "thread_id", "threadId")
     if not sid:
-        return False
+        return None
     cwd = _flex_get(payload, "cwd", "working-directory", "working_directory") or os.getcwd()
-    Store(Config.load()).append_event(
+    return Store(Config.load()).append_event(
         session_id=sid,
         platform=_PLATFORM,
         cwd=cwd,
         t=t,
         data=_strip_payload(payload),
     )
-    return True
+
+
+def session_start() -> None:
+    payload = _read_argv()
+    sid = _flex_get(payload, "thread-id", "thread_id", "threadId")
+    seq = _emit("session_start", payload)
+    if seq is None:
+        return
+    config = Config.load()
+    captured = capture_env(config.capture_env_patterns)
+    if not captured:
+        return
+    sd = session_dir(config.root, _PLATFORM, sid)
+    tagstore = TagStore(sd)
+    for name, value in captured.items():
+        tag = env_to_tag(name, value)
+        if tag is None:
+            continue
+        tagstore.add(seq, tag, source="auto")
 
 
 def notify() -> None:

@@ -43,17 +43,9 @@ class TestValidateTag:
         with pytest.raises(ValueError):
             validate_tag("Foo")
 
-    def test_hash_char_raises(self):
-        with pytest.raises(ValueError):
-            validate_tag("#foo")
-
     def test_space_raises(self):
         with pytest.raises(ValueError):
             validate_tag("foo bar")
-
-    def test_dot_raises(self):
-        with pytest.raises(ValueError):
-            validate_tag("foo.bar")
 
 
 class TestExtractHashtags:
@@ -257,3 +249,29 @@ class TestTagStoreFileMissing:
     def test_tagged_seq_count_zero_when_no_file(self, tmp_path: Path):
         store = TagStore(tmp_path)
         assert store.tagged_seq_count() == 0
+
+
+class TestValidateTagWidenedCharset:
+    def test_allows_hash_in_value(self):
+        assert validate_tag("step-test#1") == "step-test#1"
+
+    def test_allows_dot(self):
+        assert validate_tag("wb.plan") == "wb.plan"
+
+    def test_alphanum_dash_still_valid(self):
+        assert validate_tag("agent-tester") == "agent-tester"
+
+    def test_length_cap_still_64(self):
+        with pytest.raises(ValueError):
+            validate_tag("a" * 65)
+
+    def test_equals_still_rejected(self):
+        with pytest.raises(ValueError):
+            validate_tag("plan=foo")
+
+    def test_comma_still_rejected(self):
+        with pytest.raises(ValueError):
+            validate_tag("plan,bar")
+
+    def test_extractor_does_not_widen_to_dot(self):
+        assert extract_hashtags("look at #tag-one and #tag.two") == {"tag-one", "tag"}

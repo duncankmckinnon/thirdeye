@@ -110,7 +110,7 @@ class TestEmit:
         from thirdeye.platforms.codex import hooks
 
         result = hooks._emit("agent_turn", {"thread-id": "abc-123", "cwd": "/p"})
-        assert result is True
+        assert result is not None
         metas = list(Store(Config.load()).list_sessions())
         assert len(metas) == 1
         assert metas[0].session_id == "abc-123"
@@ -119,7 +119,7 @@ class TestEmit:
         from thirdeye.platforms.codex import hooks
 
         result = hooks._emit("agent_turn", {"thread_id": "snake-123", "cwd": "/p"})
-        assert result is True
+        assert result is not None
         metas = list(Store(Config.load()).list_sessions())
         assert len(metas) == 1
         assert metas[0].session_id == "snake-123"
@@ -128,7 +128,7 @@ class TestEmit:
         from thirdeye.platforms.codex import hooks
 
         result = hooks._emit("agent_turn", {"threadId": "camel-123", "cwd": "/p"})
-        assert result is True
+        assert result is not None
         metas = list(Store(Config.load()).list_sessions())
         assert len(metas) == 1
         assert metas[0].session_id == "camel-123"
@@ -155,11 +155,11 @@ class TestEmit:
         m = next(Store(Config.load()).list_sessions())
         assert m.cwd == str(env)
 
-    def test_returns_false_when_no_thread_id(self, monkeypatch, env: Path):
+    def test_returns_none_when_no_thread_id(self, monkeypatch, env: Path):
         from thirdeye.platforms.codex import hooks
 
         result = hooks._emit("agent_turn", {"cwd": "/p"})
-        assert result is False
+        assert result is None
         assert list(Store(Config.load()).list_sessions()) == []
 
     def test_stores_platform_as_codex(self, monkeypatch, env: Path):
@@ -348,3 +348,71 @@ class TestFlexGet:
 
         d = {"thread-id": None, "threadId": "found"}
         assert hooks._flex_get(d, "thread-id", "threadId") == "found"
+
+
+# -- session_start env capture -> auto tags -----------------------------------
+
+
+class TestSessionStartEnvTags:
+    def _tags_lines(self, env: Path, sid: str) -> list[dict]:
+        from thirdeye.paths import session_dir, tags_path
+
+        path = tags_path(session_dir(env, "codex", sid))
+        if not path.exists():
+            return []
+        return [json.loads(line) for line in path.read_text().splitlines() if line.strip()]
+
+    def test_no_patterns_set_writes_no_tags(self, monkeypatch, env: Path):
+        from thirdeye.paths import session_dir, tags_path
+        from thirdeye.platforms.codex import hooks
+
+        monkeypatch.delenv("THIRDEYE_CAPTURE_ENV", raising=False)
+        monkeypatch.setenv("WB_PLAN", "p")
+        monkeypatch.setenv("WB_STEP", "test#1")
+        _argv(monkeypatch, {"thread-id": "s1", "cwd": "/p"})
+        hooks.session_start()
+        assert not tags_path(session_dir(env, "codex", "s1")).exists()
+
+    def test_matching_env_vars_become_auto_tags(self, monkeypatch, env: Path):
+        from thirdeye.platforms.codex import hooks
+
+        monkeypatch.setenv("THIRDEYE_CAPTURE_ENV", "WB_*")
+        monkeypatch.setenv("WB_PLAN", "p")
+        monkeypatch.setenv("WB_STEP", "test#1")
+        _argv(monkeypatch, {"thread-id": "s1", "cwd": "/p"})
+        hooks.session_start()
+
+        events = list(Store(Config.load()).reader("s1").iter_events())
+        start_seq = events[0]["seq"]
+
+        lines = self._tags_lines(env, "s1")
+        tags = {line["tag"] for line in lines}
+        assert "plan-p" in tags
+        assert "step-test#1" in tags
+        for line in lines:
+            assert line["op"] == "add"
+            assert line["source"] == "auto"
+            assert line["seq"] == start_seq
+
+    def test_invalid_tag_value_is_skipped(self, monkeypatch, env: Path):
+        from thirdeye.platforms.codex import hooks
+
+        monkeypatch.setenv("THIRDEYE_CAPTURE_ENV", "WB_*")
+        monkeypatch.setenv("WB_PLAN", "p")
+        monkeypatch.setenv("WB_X", "===")
+        _argv(monkeypatch, {"thread-id": "s1", "cwd": "/p"})
+        hooks.session_start()
+
+        lines = self._tags_lines(env, "s1")
+        tags = {line["tag"] for line in lines}
+        assert "plan-p" in tags
+        assert not any(t.startswith("x-") for t in tags)
+
+    def test_missing_session_id_writes_no_tags(self, monkeypatch, env: Path):
+        from thirdeye.platforms.codex import hooks
+
+        monkeypatch.setenv("THIRDEYE_CAPTURE_ENV", "WB_*")
+        monkeypatch.setenv("WB_PLAN", "p")
+        _argv(monkeypatch, {"cwd": "/p"})
+        hooks.session_start()
+        assert list(Store(Config.load()).list_sessions()) == []

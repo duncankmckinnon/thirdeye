@@ -94,19 +94,21 @@ class TestStripPayload:
 
 
 class TestEmit:
-    def test_returns_true_on_success(self, monkeypatch, env: Path):
+    def test_returns_seq_on_success(self, monkeypatch, env: Path):
         _stdin(monkeypatch, {"session_id": "abc", "cwd": "/p"})
         payload = hooks._read_stdin()
-        assert hooks._emit("test_event", payload) is True
+        seq = hooks._emit("test_event", payload)
+        assert isinstance(seq, int)
+        assert seq >= 0
 
-    def test_returns_false_without_session_id(self, monkeypatch, env: Path):
-        assert hooks._emit("test_event", {"cwd": "/p"}) is False
+    def test_returns_none_without_session_id(self, monkeypatch, env: Path):
+        assert hooks._emit("test_event", {"cwd": "/p"}) is None
 
-    def test_returns_false_with_empty_session_id(self, monkeypatch, env: Path):
-        assert hooks._emit("test_event", {"session_id": "", "cwd": "/p"}) is False
+    def test_returns_none_with_empty_session_id(self, monkeypatch, env: Path):
+        assert hooks._emit("test_event", {"session_id": "", "cwd": "/p"}) is None
 
-    def test_returns_false_with_none_session_id(self, monkeypatch, env: Path):
-        assert hooks._emit("test_event", {"session_id": None, "cwd": "/p"}) is False
+    def test_returns_none_with_none_session_id(self, monkeypatch, env: Path):
+        assert hooks._emit("test_event", {"session_id": None, "cwd": "/p"}) is None
 
     def test_stores_event_with_correct_type(self, monkeypatch, env: Path):
         hooks._emit("my_type", {"session_id": "s1", "cwd": "/p", "key": "val"})
@@ -179,6 +181,63 @@ class TestSessionStart:
         hooks.session_start()
         events = list(Store(Config.load()).reader("s1").iter_events())
         assert events[0]["data"]["source"] == "cli"
+
+
+# -- session_start env capture -> auto tags -----------------------------------
+
+
+class TestSessionStartEnvTags:
+    def _tags_lines(self, env: Path, sid: str) -> list[dict]:
+        path = tags_path(session_dir(env, "claude", sid))
+        if not path.exists():
+            return []
+        return [json.loads(line) for line in path.read_text().splitlines() if line.strip()]
+
+    def test_no_patterns_set_writes_no_tags(self, monkeypatch, env: Path):
+        monkeypatch.delenv("THIRDEYE_CAPTURE_ENV", raising=False)
+        monkeypatch.setenv("WB_PLAN", "p")
+        monkeypatch.setenv("WB_STEP", "test#1")
+        _stdin(monkeypatch, {"session_id": "s1", "cwd": "/p"})
+        hooks.session_start()
+        assert not tags_path(session_dir(env, "claude", "s1")).exists()
+
+    def test_matching_env_vars_become_auto_tags(self, monkeypatch, env: Path):
+        monkeypatch.setenv("THIRDEYE_CAPTURE_ENV", "WB_*")
+        monkeypatch.setenv("WB_PLAN", "p")
+        monkeypatch.setenv("WB_STEP", "test#1")
+        _stdin(monkeypatch, {"session_id": "s1", "cwd": "/p"})
+        hooks.session_start()
+
+        events = list(Store(Config.load()).reader("s1").iter_events())
+        start_seq = events[0]["seq"]
+
+        lines = self._tags_lines(env, "s1")
+        tags = {line["tag"] for line in lines}
+        assert "plan-p" in tags
+        assert "step-test#1" in tags
+        for line in lines:
+            assert line["op"] == "add"
+            assert line["source"] == "auto"
+            assert line["seq"] == start_seq
+
+    def test_invalid_tag_value_is_skipped(self, monkeypatch, env: Path):
+        monkeypatch.setenv("THIRDEYE_CAPTURE_ENV", "WB_*")
+        monkeypatch.setenv("WB_PLAN", "p")
+        monkeypatch.setenv("WB_X", "===")
+        _stdin(monkeypatch, {"session_id": "s1", "cwd": "/p"})
+        hooks.session_start()
+
+        lines = self._tags_lines(env, "s1")
+        tags = {line["tag"] for line in lines}
+        assert "plan-p" in tags
+        assert not any(t.startswith("x-") for t in tags)
+
+    def test_missing_session_id_writes_no_tags(self, monkeypatch, env: Path):
+        monkeypatch.setenv("THIRDEYE_CAPTURE_ENV", "WB_*")
+        monkeypatch.setenv("WB_PLAN", "p")
+        _stdin(monkeypatch, {"cwd": "/p"})
+        hooks.session_start()
+        assert list(Store(Config.load()).list_sessions()) == []
 
 
 # -- user_prompt_submit --------------------------------------------------------

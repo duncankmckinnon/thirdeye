@@ -5,6 +5,7 @@ import os
 import sys
 
 from thirdeye.config import Config
+from thirdeye.env_capture import capture_env, env_to_tag
 from thirdeye.meta import read_meta, write_meta
 from thirdeye.paths import meta_path, session_dir
 from thirdeye.store import Store
@@ -57,24 +58,38 @@ def _print_response() -> None:
     print(json.dumps({}))
 
 
-def _emit(t: str, payload: dict) -> bool:
+def _emit(t: str, payload: dict) -> int | None:
     sid = _flex_get(payload, "session_id", "sessionId")
     if not sid:
-        return False
+        return None
     cwd = _flex_get(payload, "cwd", "workingDir", "working_dir") or os.getcwd()
-    Store(Config.load()).append_event(
+    return Store(Config.load()).append_event(
         session_id=sid,
         platform=_PLATFORM,
         cwd=cwd,
         t=t,
         data=_strip_payload(payload),
     )
-    return True
 
 
 def session_start() -> None:
     try:
-        _emit("session_start", _read_stdin())
+        payload = _read_stdin()
+        sid = _flex_get(payload, "session_id", "sessionId")
+        seq = _emit("session_start", payload)
+        if seq is None:
+            return
+        config = Config.load()
+        captured = capture_env(config.capture_env_patterns)
+        if not captured:
+            return
+        sd = session_dir(config.root, _PLATFORM, sid)
+        tagstore = TagStore(sd)
+        for name, value in captured.items():
+            tag = env_to_tag(name, value)
+            if tag is None:
+                continue
+            tagstore.add(seq, tag, source="auto")
     except Exception:
         pass
     finally:
@@ -84,7 +99,7 @@ def session_start() -> None:
 def session_end() -> None:
     try:
         payload = _read_stdin()
-        if _emit("session_end", payload):
+        if _emit("session_end", payload) is not None:
             sid = _flex_get(payload, "session_id", "sessionId")
             Store(Config.load()).close_session(sid, platform=_PLATFORM)
     except Exception:
