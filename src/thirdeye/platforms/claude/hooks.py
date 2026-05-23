@@ -5,6 +5,7 @@ import os
 import sys
 
 from thirdeye.config import Config
+from thirdeye.env_capture import capture_env, env_to_tag
 from thirdeye.meta import read_meta, write_meta
 from thirdeye.paths import meta_path, session_dir
 from thirdeye.store import Store
@@ -37,23 +38,37 @@ def _strip_payload(payload: dict) -> dict:
     return {k: v for k, v in payload.items() if k not in _STRIP_KEYS}
 
 
-def _emit(t: str, payload: dict) -> bool:
+def _emit(t: str, payload: dict) -> int | None:
     sid = payload.get("session_id")
     if not sid:
-        return False
+        return None
     cwd = payload.get("cwd") or os.getcwd()
-    Store(Config.load()).append_event(
+    return Store(Config.load()).append_event(
         session_id=sid,
         platform=_PLATFORM,
         cwd=cwd,
         t=t,
         data=_strip_payload(payload),
     )
-    return True
 
 
 def session_start() -> None:
-    _emit("session_start", _read_stdin())
+    payload = _read_stdin()
+    sid = payload.get("session_id")
+    seq = _emit("session_start", payload)
+    if seq is None:
+        return
+    config = Config.load()
+    captured = capture_env(config.capture_env_patterns)
+    if not captured:
+        return
+    sd = session_dir(config.root, _PLATFORM, sid)
+    tagstore = TagStore(sd)
+    for name, value in captured.items():
+        tag = env_to_tag(name, value)
+        if tag is None:
+            continue
+        tagstore.add(seq, tag, source="auto")
 
 
 def user_prompt_submit() -> None:
@@ -138,5 +153,5 @@ def permission_request() -> None:
 
 def session_end() -> None:
     payload = _read_stdin()
-    if _emit("session_end", payload):
+    if _emit("session_end", payload) is not None:
         Store(Config.load()).close_session(payload["session_id"], platform=_PLATFORM)
