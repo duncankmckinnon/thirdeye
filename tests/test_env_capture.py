@@ -4,9 +4,7 @@ from thirdeye.env_capture import capture_env, env_to_tag
 
 
 def test_capture_env_exact_match():
-    assert capture_env(
-        ["WB_PLAN"], environ={"WB_PLAN": "p", "OTHER": "x"}
-    ) == {"WB_PLAN": "p"}
+    assert capture_env(["WB_PLAN"], environ={"WB_PLAN": "p", "OTHER": "x"}) == {"WB_PLAN": "p"}
 
 
 def test_capture_env_prefix_glob():

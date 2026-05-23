@@ -4,7 +4,6 @@ import os
 import re
 from collections.abc import Iterable, Mapping
 
-
 _TAG_BODY_RE = re.compile(r"[^a-z0-9_\-.#]+")
 _TAG_FULL_RE = re.compile(r"^[a-z0-9_\-.#]{1,64}$")
 
