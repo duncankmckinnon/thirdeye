@@ -12,13 +12,21 @@ def default_root() -> Path:
     return Path.home() / ".thirdeye"
 
 
+def _parse_patterns(raw: str) -> tuple[str, ...]:
+    return tuple(p.strip() for p in raw.split(",") if p.strip())
+
+
 @dataclass(frozen=True)
 class Config:
     root: Path
+    capture_env_patterns: tuple[str, ...] = ()
 
     @classmethod
     def load(cls) -> Config:
-        return cls(root=default_root())
+        return cls(
+            root=default_root(),
+            capture_env_patterns=_parse_patterns(os.environ.get("THIRDEYE_CAPTURE_ENV", "")),
+        )
 
     @property
     def traces_dir(self) -> Path:
