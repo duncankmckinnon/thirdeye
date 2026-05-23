@@ -64,6 +64,10 @@ def env_to_tag(name: str, value: str) -> str | None:
         key = key[3:]
     if not key:
         return None
+    # Reject structured attribute lists (e.g. OTEL "k1=v1,k2=v2"): the
+    # derived tag would conflate field/value boundaries and isn't useful.
+    if "=" in value or "," in value:
+        return None
     sanitized = _TAG_BODY_RE.sub("-", value.lower())
     sanitized = re.sub(r"-+", "-", sanitized).strip("-")
     if not sanitized:
