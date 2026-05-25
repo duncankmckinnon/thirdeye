@@ -17,7 +17,7 @@ async def _event_detail(request: Request) -> HTMLResponse:
         raise HTTPException(status_code=404, detail=str(e))
     try:
         event = store.reader(sid).get_event(seq)
-    except KeyError:
+    except (KeyError, IndexError):
         raise HTTPException(status_code=404, detail=f"seq {seq} not found")
     templates = request.app.state.templates
     return templates.TemplateResponse(
