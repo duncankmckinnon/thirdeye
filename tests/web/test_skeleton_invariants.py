@@ -27,8 +27,6 @@ import pytest
 
 pytest.importorskip("starlette")
 
-from starlette.applications import Starlette  # noqa: E402
-
 from thirdeye.config import Config  # noqa: E402
 from thirdeye.store import Store  # noqa: E402
 
@@ -61,27 +59,6 @@ def populated_web(tmp_path: Path):
 # --------------------------------------------------------------------------- #
 # App / route wiring
 # --------------------------------------------------------------------------- #
-
-
-def test_only_root_and_static_routes_registered(app):
-    """Wave-1 invariant: stub modules MUST be no-ops. Only `/` + `/static` exist."""
-    paths = sorted({getattr(r, "path", None) for r in app.routes if hasattr(r, "path")})
-    paths = [p for p in paths if p]
-    assert paths == ["/", "/static"], (
-        f"Stub modules must not register routes in Wave 1. Found extra: {paths}"
-    )
-
-
-def test_stub_modules_register_function_is_noop():
-    """Every stub module exposes a register(app) that returns None and adds nothing."""
-    from thirdeye.web.routes import evals, events, search, sessions, stream, tags, usage
-
-    app = Starlette()
-    before = len(app.routes)
-    for module in (sessions, events, search, usage, evals, tags, stream):
-        result = module.register(app)
-        assert result is None, f"{module.__name__}.register must return None"
-    assert len(app.routes) == before, "stub register() must not append routes"
 
 
 def test_app_state_exposes_config_store_templates(app):
@@ -117,21 +94,6 @@ def test_all_css_placeholders_served(client):
     for name in ("app.css", "sessions.css", "events.css", "search.css", "usage.css", "evals.css"):
         r = client.get(f"/static/{name}")
         assert r.status_code == 200, f"missing /static/{name}"
-
-
-def test_tree_js_served_as_placeholder(client):
-    r = client.get("/static/tree.js")
-    assert r.status_code == 200
-    # Wave 1: tree.js must remain empty; Wave 2 fills it in.
-    assert r.content == b"", "tree.js should be empty in Wave 1"
-
-
-def test_per_feature_css_files_empty_in_wave_1():
-    """`Don't pre-populate per-feature CSS files` — they MUST stay empty in Wave 1."""
-    root = Path(__file__).resolve().parents[2] / "src" / "thirdeye" / "web" / "static"
-    for name in ("sessions.css", "events.css", "search.css", "usage.css", "evals.css"):
-        size = (root / name).stat().st_size
-        assert size == 0, f"{name} should be empty in Wave 1 (was {size} bytes)"
 
 
 def test_missing_static_returns_404(client):
