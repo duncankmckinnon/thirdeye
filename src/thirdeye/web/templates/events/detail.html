@@ -1,0 +1,30 @@
+<article class="event-detail">
+  <header class="event-header evt-{{ event.t }}">
+    <span class="seq">#{{ event.seq }}</span>
+    <span class="type">{{ event.t }}</span>
+    <time>{{ event.ts }}</time>
+  </header>
+  {% if event.t == "tool_call" or event.t == "tool_result" %}
+    <dl class="event-summary">
+      {% if event.data and event.data.tool_name %}
+        <dt>tool</dt><dd>{{ event.data.tool_name }}</dd>
+      {% endif %}
+      {% if event.data and event.data.tool_use_id %}
+        <dt>tool_use_id</dt><dd>{{ event.data.tool_use_id }}</dd>
+      {% endif %}
+      {% if event.data and event.data.content is defined %}
+        <dt>content</dt>
+        <dd><pre class="event-content">{{ event.data.content | tojson(indent=2) }}</pre></dd>
+      {% endif %}
+    </dl>
+  {% endif %}
+  <details open>
+    <summary>payload</summary>
+    <pre class="event-payload">{{ event.data | tojson(indent=2) }}</pre>
+  </details>
+  <button class="copy-btn"
+          type="button"
+          onclick="navigator.clipboard.writeText(this.previousElementSibling.querySelector('pre').textContent)">
+    copy
+  </button>
+</article>
