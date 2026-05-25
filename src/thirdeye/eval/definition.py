@@ -98,3 +98,23 @@ def list_definitions(thirdeye_home: Path) -> list[str]:
         for f in d.glob("*.yaml"):
             names.add(f.stem)
     return sorted(names)
+
+
+def validate_directive_yaml(text: str) -> tuple[bool, str]:
+    """Validate the YAML body of an eval definition without writing.
+
+    Returns (True, "") on success. On failure, returns (False, <message>).
+    """
+    try:
+        loaded = yaml.safe_load(text)
+    except yaml.YAMLError as e:
+        return False, f"YAML parse error: {e}"
+    if not isinstance(loaded, dict):
+        return False, "definition must be a YAML mapping"
+    required = ("name", "directive")
+    missing = [k for k in required if k not in loaded]
+    if missing:
+        return False, f"missing required keys: {', '.join(missing)}"
+    if not isinstance(loaded.get("directive"), str) or not loaded["directive"].strip():
+        return False, "'directive' must be a non-empty string"
+    return True, ""
