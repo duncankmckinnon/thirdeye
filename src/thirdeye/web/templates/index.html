@@ -1,0 +1,42 @@
+{% extends "base.html" %}
+{% block title %}thirdeye — sessions{% endblock %}
+{% block content %}
+<section class="sessions">
+  <form class="filters" method="get" action="/">
+    <input type="text" name="platform" placeholder="platform"
+           value="{{ filters.platform or '' }}">
+    <input type="text" name="cwd" placeholder="cwd"
+           value="{{ filters.cwd or '' }}">
+    <input type="text" name="since" placeholder="since (e.g. 7d, 2026-01-01)"
+           value="{{ filters.since or '' }}">
+    <input type="text" name="until" placeholder="until"
+           value="{{ filters.until or '' }}">
+    {% for t in filters.tag %}
+      <input type="hidden" name="tag" value="{{ t }}">
+    {% endfor %}
+    <button type="submit">Filter</button>
+  </form>
+
+  {% if sessions %}
+  <table class="session-table">
+    <thead>
+      <tr>
+        <th>session</th>
+        <th>platform</th>
+        <th>cwd</th>
+        <th>started</th>
+        <th>events</th>
+        <th>status</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for s in sessions %}
+        {% include "_session_row.html" %}
+      {% endfor %}
+    </tbody>
+  </table>
+  {% else %}
+  <p class="empty">No sessions yet.</p>
+  {% endif %}
+</section>
+{% endblock %}

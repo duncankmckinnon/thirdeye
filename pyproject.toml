@@ -73,6 +73,8 @@ thirdeye = [
     "skills/use-thirdeye-evals/SKILL.md",
     "skills/use-thirdeye-evals/references/*.md",
     "eval/defs/*.yaml",
+    "web/templates/*.html",
+    "web/static/*",
 ]
 
 [tool.setuptools_scm]
@@ -86,6 +88,11 @@ dev = [
   "pre-commit>=3.7",
   "ruff>=0.7",
   "build>=1.2",
+]
+ui = [
+  "starlette>=0.36",
+  "uvicorn>=0.27",
+  "jinja2>=3.1",
 ]
 
 [tool.ruff]

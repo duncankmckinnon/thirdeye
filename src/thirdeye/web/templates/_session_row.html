@@ -1,0 +1,8 @@
+<tr class="session-row">
+  <td><a href="/sessions/{{ s.session_id }}">{{ s.session_id[:8] }}</a></td>
+  <td>{{ s.platform }}</td>
+  <td title="{{ s.cwd }}">{{ s.cwd.rsplit('/', 1)[-1] if s.cwd else '' }}</td>
+  <td>{{ s.started_at }}</td>
+  <td>{{ s.event_count }}</td>
+  <td class="status status-{{ s.status }}">{{ s.status }}</td>
+</tr>
