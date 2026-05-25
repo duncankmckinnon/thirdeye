@@ -24,8 +24,8 @@ async def _index(request: Request) -> HTMLResponse:
             platform=platform,
             cwd=cwd,
             tags=tags,
-            since=parse_when(since_str),
-            until=parse_when(until_str),
+            since=parse_when(since_str) if since_str else None,
+            until=parse_when(until_str) if until_str else None,
         )
     )
     return templates.TemplateResponse(
