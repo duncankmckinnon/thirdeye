@@ -1,0 +1,36 @@
+/* thirdeye usage views */
+.usage .page-header { margin-bottom: 1rem; }
+.usage .page-header h1 { margin: 0 0 0.25rem; font-size: 1.25rem; }
+
+.aggregate-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+  gap: 0.75rem;
+  margin: 0.5rem 0 1.5rem;
+}
+
+.aggregate-card {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 0.75rem 1rem;
+}
+
+.aggregate-label {
+  color: var(--muted);
+  font-size: 0.85rem;
+  margin-bottom: 0.25rem;
+}
+
+.aggregate-value {
+  color: var(--text);
+  font-size: 1.4rem;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+}
+
+.usage-table th.num,
+.usage-table td.num {
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
