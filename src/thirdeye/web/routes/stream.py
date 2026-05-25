@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import json
 
 from starlette.applications import Starlette
@@ -8,7 +9,7 @@ from starlette.requests import Request
 from starlette.responses import StreamingResponse
 from starlette.routing import Route
 
-from thirdeye.web.watcher import tail_events
+POLL_INTERVAL = 0.5
 
 
 async def _stream(request: Request):
@@ -24,15 +25,28 @@ async def _stream(request: Request):
 
     async def gen():
         try:
-            async for ev in tail_events(reader, start_seq=last_seq):
+            last_yielded = last_seq
+            while True:
                 if await request.is_disconnected():
                     break
-                payload = json.dumps(ev)
-                yield f"data: {payload}\n\n"
+                try:
+                    events = list(reader.iter_events())
+                except FileNotFoundError:
+                    events = []
+                for ev in events:
+                    seq = ev.get("seq", -1)
+                    if seq > last_yielded:
+                        yield f"data: {json.dumps(ev)}\n\n"
+                        last_yielded = seq
+                # Re-check status AFTER draining so an already-closed
+                # session emits all buffered events before the close
+                # sentinel — and so a mid-stream close still terminates
+                # even when no further events arrive.
                 meta = store.get_meta(sid)
                 if getattr(meta, "status", None) == "closed":
                     yield "event: closed\ndata: {}\n\n"
                     break
+                await asyncio.sleep(POLL_INTERVAL)
         except Exception as e:  # degraded fallback notification
             yield f"event: degraded\ndata: {json.dumps({'error': str(e)})}\n\n"
 

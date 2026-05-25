@@ -21,7 +21,7 @@
       id="tree"
       data-sid="{{ sid }}"
       data-status="{{ meta.status }}"
-      data-last-seq="{{ meta.last_seq }}"
+      data-last-seq="{{ meta.last_seq if meta.last_seq is not none else -1 }}"
       hx-get="/sessions/{{ sid }}/tree"
       hx-trigger="load"
       hx-swap="innerHTML">

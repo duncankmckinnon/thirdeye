@@ -12,13 +12,32 @@
     if (isNaN(lastSeq)) lastSeq = -1;
     if (!sid) return;
 
+    // The tree contents are rendered via htmx on `load`. Wait for the
+    // swap to complete before opening the SSE connection, otherwise
+    // events that arrive before the <ul> exists are dropped AND any
+    // <li> we appended early gets wiped out by htmx's innerHTML swap.
+    if (!tree.querySelector("ul")) {
+      tree.addEventListener("htmx:afterSwap", function onSwap() {
+        tree.removeEventListener("htmx:afterSwap", onSwap);
+        startStream(tree, sid, lastSeq);
+      });
+      return;
+    }
+    startStream(tree, sid, lastSeq);
+  }
+
+  function startStream(tree, sid, lastSeq) {
     var url = "/sessions/" + encodeURIComponent(sid) + "/stream?last_seq=" + lastSeq;
     var es = new EventSource(url);
 
     es.onmessage = function (msg) {
       try {
         var ev = JSON.parse(msg.data);
-        appendEvent(tree, ev);
+        if (!appendEvent(tree, ev)) {
+          // Tree not ready — don't advance lastSeq so we don't lose
+          // events; browser will reconnect with the unchanged offset.
+          return;
+        }
         if (typeof ev.seq === "number" && ev.seq > lastSeq) {
           lastSeq = ev.seq;
           tree.dataset.lastSeq = String(lastSeq);
@@ -45,7 +64,7 @@
 
   function appendEvent(tree, ev) {
     var list = tree.querySelector("ul.event-tree") || tree.querySelector("ul");
-    if (!list) return;
+    if (!list) return false;
     var li = document.createElement("li");
     li.className = "event event-" + (ev.t || "unknown");
     li.dataset.seq = String(ev.seq);
@@ -70,6 +89,7 @@
     li.appendChild(tsSpan);
 
     list.appendChild(li);
+    return true;
   }
 
   if (document.readyState === "loading") {
