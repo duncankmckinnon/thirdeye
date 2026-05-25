@@ -9,10 +9,12 @@
            value="{{ filters.platform or '' }}">
     <input type="text" name="cwd" placeholder="cwd"
            value="{{ filters.cwd or '' }}">
-    <input type="text" name="since" placeholder="since (e.g. 7d, 2026-01-01)"
-           value="{{ filters.since or '' }}">
-    <input type="text" name="until" placeholder="until"
-           value="{{ filters.until or '' }}">
+    <label class="date-field">since
+      <input type="date" name="since" value="{{ filters.since or '' }}">
+    </label>
+    <label class="date-field">until
+      <input type="date" name="until" value="{{ filters.until or '' }}">
+    </label>
     {% for t in filters.tag %}
       <input type="text" name="tag" value="{{ t }}" placeholder="tag">
     {% endfor %}

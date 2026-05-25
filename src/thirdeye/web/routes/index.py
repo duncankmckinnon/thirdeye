@@ -14,19 +14,23 @@ async def _index(request: Request) -> HTMLResponse:
     params = request.query_params
     platform = params.get("platform") or None
     cwd = params.get("cwd") or None
+    status = params.get("status") or None
     since_str = params.get("since") or None
     until_str = params.get("until") or None
-    tag_list = params.getlist("tag") or []
+    tag_list = [t for t in params.getlist("tag") if t]
     tags = set(tag_list) if tag_list else None
 
-    sessions = list(
+    sessions = sorted(
         store.list_sessions(
             platform=platform,
             cwd=cwd,
+            status=status,
             tags=tags,
             since=parse_when(since_str),
             until=parse_when(until_str),
-        )
+        ),
+        key=lambda s: s.started_at or "",
+        reverse=True,
     )
     return templates.TemplateResponse(
         request,
@@ -36,6 +40,7 @@ async def _index(request: Request) -> HTMLResponse:
             "filters": {
                 "platform": platform,
                 "cwd": cwd,
+                "status": status,
                 "since": since_str,
                 "until": until_str,
                 "tag": tag_list,

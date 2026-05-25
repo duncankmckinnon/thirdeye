@@ -42,6 +42,16 @@ a:hover { text-decoration: underline; }
 .topbar nav { display: flex; gap: 1rem; }
 .topbar nav a { color: var(--muted); }
 
+.topbar-search {
+  flex: 1;
+  max-width: 480px;
+  margin: 0;
+}
+.topbar-search input[type="search"] {
+  width: 100%;
+  background: var(--bg);
+}
+
 main {
   max-width: 1100px;
   margin: 0 auto;
@@ -103,4 +113,21 @@ button:hover { filter: brightness(1.1); }
   gap: 0.5rem;
   flex-wrap: wrap;
   margin-bottom: 1rem;
+}
+
+.date-field {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+  color: var(--muted);
+  font-size: 0.85rem;
+}
+.date-field input[type="date"] {
+  background: var(--surface);
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 0.35rem 0.5rem;
+  font: inherit;
+  color-scheme: dark;
 }

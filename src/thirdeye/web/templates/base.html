@@ -14,7 +14,12 @@
 <body>
   <header class="topbar">
     <a class="brand" href="/">thirdeye</a>
+    <form class="topbar-search" method="get" action="/search" role="search">
+      <input type="search" name="q" placeholder="search events" aria-label="Search events"
+             value="{{ topbar_query or '' }}">
+    </form>
     <nav>
+      <a href="/search">search</a>
       <a href="/evals/defs">evals</a>
       <a href="/usage">usage</a>
     </nav>
