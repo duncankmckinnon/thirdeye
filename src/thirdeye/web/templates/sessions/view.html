@@ -1,0 +1,35 @@
+{% extends "base.html" %}
+{% block title %}thirdeye — {{ sid }}{% endblock %}
+{% block content %}
+<section class="session-view">
+  <header class="session-header">
+    <h1>
+      <span class="sid">{{ sid }}</span>
+      <span class="muted">({{ platform }})</span>
+    </h1>
+    <dl class="meta">
+      <dt>cwd</dt><dd>{{ meta.cwd }}</dd>
+      <dt>started</dt><dd>{{ meta.started_at }}</dd>
+      <dt>ended</dt><dd>{{ meta.ended_at or "—" }}</dd>
+      <dt>status</dt><dd class="status status-{{ meta.status }}">{{ meta.status }}</dd>
+      <dt>events</dt><dd>{{ meta.event_count }}</dd>
+    </dl>
+  </header>
+
+  <div class="session-body">
+    <section
+      id="tree"
+      hx-get="/sessions/{{ sid }}/tree"
+      hx-trigger="load"
+      hx-swap="innerHTML">
+      <p class="muted">Loading events…</p>
+    </section>
+    <aside id="detail-pane">
+      <p class="muted">Select an event to view its payload.</p>
+    </aside>
+  </div>
+</section>
+{% endblock %}
+{% block scripts %}
+<script src="/static/tree.js"></script>
+{% endblock %}

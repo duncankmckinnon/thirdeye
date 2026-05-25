@@ -1,0 +1,157 @@
+/* sessions.css v1 — vendored 2026-05-25 */
+
+.session-view {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.session-header h1 {
+  margin: 0 0 6px 0;
+  font-size: 1.1rem;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+}
+
+.session-header .sid {
+  user-select: all;
+}
+
+.session-header .muted {
+  color: #6b7280;
+  font-weight: normal;
+  margin-left: 6px;
+}
+
+.session-header dl.meta {
+  display: grid;
+  grid-template-columns: max-content 1fr;
+  gap: 2px 12px;
+  margin: 0;
+  font-size: 0.85rem;
+}
+
+.session-header dl.meta dt {
+  color: #6b7280;
+  text-transform: lowercase;
+}
+
+.session-header dl.meta dd {
+  margin: 0;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+}
+
+.status {
+  display: inline-block;
+  padding: 0 6px;
+  border-radius: 3px;
+  font-size: 0.75rem;
+  background: #e5e7eb;
+}
+
+.status-open { background: #bbf7d0; }
+.status-closed { background: #e5e7eb; }
+.status-stale { background: #fde68a; }
+
+.session-body {
+  display: flex;
+  gap: 16px;
+  align-items: flex-start;
+}
+
+#tree {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+#detail-pane {
+  flex: 0 0 40%;
+  position: sticky;
+  top: 12px;
+  max-height: calc(100vh - 24px);
+  overflow: auto;
+  padding: 10px;
+  border: 1px solid #e5e7eb;
+  border-radius: 4px;
+  background: #fafafa;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 0.8rem;
+  white-space: pre-wrap;
+}
+
+.tree-controls {
+  display: flex;
+  gap: 6px;
+  margin-bottom: 6px;
+}
+
+.tree-controls button {
+  font-size: 0.75rem;
+  padding: 2px 8px;
+  cursor: pointer;
+}
+
+ol.tree, ol.children {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+ol.children {
+  margin-left: 16px;
+  margin-top: 2px;
+}
+
+.evt {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 0.8rem;
+  margin: 1px 0;
+  padding-left: 6px;
+  border-left: 3px solid #5a8585;
+}
+
+.evt summary,
+.evt .child-row {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  padding: 2px 0;
+  cursor: pointer;
+  outline: none;
+  text-decoration: none;
+  color: inherit;
+}
+
+.evt summary:focus,
+.evt summary:hover,
+.evt .child-row:hover,
+.evt .child-row:focus {
+  background: #f3f4f6;
+}
+
+.evt .seq {
+  color: #9ca3af;
+  min-width: 4ch;
+  text-align: right;
+}
+
+.evt .type {
+  font-weight: 600;
+  min-width: 18ch;
+}
+
+.evt .hint {
+  color: #4b5563;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.evt-user_message { border-left-color: #c084fc; }
+.evt-tool_call { border-left-color: #14b8b8; }
+.evt-tool_result { border-left-color: #22d3ee; }
+.evt-assistant_message { border-left-color: #f59e0b; }
+.evt-session_start,
+.evt-session_end,
+.evt-other { border-left-color: #5a8585; }
