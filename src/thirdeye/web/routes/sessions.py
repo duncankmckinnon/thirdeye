@@ -24,9 +24,7 @@ def _resolve_or_404(request: Request, prefix: str) -> tuple[str, str]:
         try:
             for s in store.list_sessions():
                 if s.session_id.startswith(prefix):
-                    suggestions.append(
-                        {"session_id": s.session_id, "platform": s.platform}
-                    )
+                    suggestions.append({"session_id": s.session_id, "platform": s.platform})
                     if len(suggestions) >= 10:
                         break
         except Exception:

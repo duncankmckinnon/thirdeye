@@ -17,11 +17,11 @@ async def _event_detail(request: Request) -> HTMLResponse:
     try:
         platform, sid = store.resolve_session_id(prefix)
     except (KeyError, ValueError) as e:
-        raise HTTPException(status_code=404, detail=str(e))
+        raise HTTPException(status_code=404, detail=str(e)) from e
     try:
         event = store.reader(sid).get_event(seq)
     except (KeyError, IndexError):
-        raise HTTPException(status_code=404, detail=f"seq {seq} not found")
+        raise HTTPException(status_code=404, detail=f"seq {seq} not found") from None
     sdir = session_dir(request.app.state.config.root, platform, sid)
     tags = sorted(TagStore(sdir).tags_for(seq))
     templates = request.app.state.templates

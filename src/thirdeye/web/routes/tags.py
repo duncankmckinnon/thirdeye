@@ -17,7 +17,7 @@ def _resolve(request: Request) -> tuple[str, str, int]:
     try:
         platform, sid = store.resolve_session_id(prefix)
     except (KeyError, ValueError) as e:
-        raise HTTPException(status_code=404, detail=str(e))
+        raise HTTPException(status_code=404, detail=str(e)) from e
     return platform, sid, seq
 
 
@@ -42,7 +42,7 @@ async def _add(request: Request) -> HTMLResponse:
     try:
         tag = validate_tag(raw)
     except Exception as e:
-        raise HTTPException(status_code=400, detail=str(e))
+        raise HTTPException(status_code=400, detail=str(e)) from e
     config = request.app.state.config
     sdir = session_dir(config.root, platform, sid)
     TagStore(sdir).add(seq, tag, source="ui")

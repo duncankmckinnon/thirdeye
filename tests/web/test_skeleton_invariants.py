@@ -81,9 +81,9 @@ def test_htmx_vendored_with_version_comment(client):
     body = r.content
     # The plan requires the first line to be a vendor comment naming v2.0.4.
     first_line = body.splitlines()[0]
-    assert b"htmx" in first_line and b"v2.0.4" in first_line, (
-        f"missing vendor comment header, got: {first_line!r}"
-    )
+    assert (
+        b"htmx" in first_line and b"v2.0.4" in first_line
+    ), f"missing vendor comment header, got: {first_line!r}"
     # File must be more than just a stub: still has to define the htmx global
     # / canonical attribute string referenced by future templates.
     assert b"htmx" in body
@@ -234,10 +234,7 @@ def test_no_starlette_import_outside_web_layer():
 
     offenders: list[tuple[Path, str]] = []
     for py in src.rglob("*.py"):
-        if any(
-            str(py).startswith(str(allowed)) or py == allowed
-            for allowed in allowed_prefixes
-        ):
+        if any(str(py).startswith(str(allowed)) or py == allowed for allowed in allowed_prefixes):
             continue
         text = py.read_text(encoding="utf-8", errors="ignore")
         for mod in forbidden:
@@ -269,12 +266,7 @@ def test_index_template_extends_base_and_links_to_session_view(populated_web):
 def test_404_template_exists():
     """_404.html is shipped with the package even though no route hits it yet."""
     tmpl = (
-        Path(__file__).resolve().parents[2]
-        / "src"
-        / "thirdeye"
-        / "web"
-        / "templates"
-        / "_404.html"
+        Path(__file__).resolve().parents[2] / "src" / "thirdeye" / "web" / "templates" / "_404.html"
     )
     assert tmpl.exists()
     body = tmpl.read_text()

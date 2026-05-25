@@ -30,8 +30,7 @@ def ui(host: str, port: int, no_browser: bool) -> None:
         msg = str(e)
         if "starlette" in msg or "uvicorn" in msg or "jinja2" in msg:
             raise click.ClickException(
-                "The UI requires the 'ui' extra. Install with:\n"
-                "    pip install 'thrdi[ui]'"
+                "The UI requires the 'ui' extra. Install with:\n" "    pip install 'thrdi[ui]'"
             ) from e
         raise
 

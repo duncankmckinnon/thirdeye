@@ -18,7 +18,7 @@ async def _stream(request: Request):
     try:
         platform, sid = store.resolve_session_id(prefix)
     except (KeyError, ValueError) as e:
-        raise HTTPException(status_code=404, detail=str(e))
+        raise HTTPException(status_code=404, detail=str(e)) from e
 
     last_seq = int(request.query_params.get("last_seq") or "-1")
     reader = store.reader(sid)

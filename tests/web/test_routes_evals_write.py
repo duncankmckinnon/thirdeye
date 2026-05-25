@@ -24,13 +24,7 @@ def test_def_create_invalid_yaml_returns_400(client):
 
 
 def test_def_create_duplicate_name_returns_409(client, web_config):
-    yaml_body = (
-        "name: dup\n"
-        "description: x\n"
-        "default_agent: claude\n"
-        "directive: |\n"
-        "  d\n"
-    )
+    yaml_body = "name: dup\n" "description: x\n" "default_agent: claude\n" "directive: |\n" "  d\n"
     client.post("/evals/defs", data={"yaml": yaml_body})
     r = client.post("/evals/defs", data={"yaml": yaml_body})
     assert r.status_code == 409

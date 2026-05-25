@@ -52,7 +52,7 @@ async def _def_show(request: Request) -> HTMLResponse:
     try:
         defn = load_definition(config.root, name)
     except FileNotFoundError as e:
-        raise HTTPException(status_code=404, detail=str(e))
+        raise HTTPException(status_code=404, detail=str(e)) from e
     templates = request.app.state.templates
     return templates.TemplateResponse(
         request,
@@ -67,7 +67,7 @@ async def _def_edit(request: Request) -> HTMLResponse:
     try:
         defn = load_definition(config.root, name)
     except FileNotFoundError:
-        raise HTTPException(status_code=404, detail=f"no eval def named '{name}'")
+        raise HTTPException(status_code=404, detail=f"no eval def named '{name}'") from None
     templates = request.app.state.templates
     return templates.TemplateResponse(
         request,
@@ -83,9 +83,7 @@ async def _def_validate(request: Request) -> HTMLResponse:
     templates = request.app.state.templates
     if ok:
         return HTMLResponse("<div class='ok'>YAML is valid.</div>")
-    return templates.TemplateResponse(
-        request, "_error.html", {"message": err}, status_code=400
-    )
+    return templates.TemplateResponse(request, "_error.html", {"message": err}, status_code=400)
 
 
 async def _def_create(request: Request) -> HTMLResponse:
@@ -95,9 +93,7 @@ async def _def_create(request: Request) -> HTMLResponse:
     ok, err = validate_directive_yaml(yaml_text)
     templates = request.app.state.templates
     if not ok:
-        return templates.TemplateResponse(
-            request, "_error.html", {"message": err}, status_code=400
-        )
+        return templates.TemplateResponse(request, "_error.html", {"message": err}, status_code=400)
     data = yaml.safe_load(yaml_text)
     defn = EvalDefinition.from_dict(data)
     try:
@@ -122,9 +118,7 @@ async def _def_update(request: Request) -> HTMLResponse:
     ok, err = validate_directive_yaml(yaml_text)
     templates = request.app.state.templates
     if not ok:
-        return templates.TemplateResponse(
-            request, "_error.html", {"message": err}, status_code=400
-        )
+        return templates.TemplateResponse(request, "_error.html", {"message": err}, status_code=400)
     data = yaml.safe_load(yaml_text)
     data["name"] = name  # preserve URL name
     defn = EvalDefinition.from_dict(data)
@@ -148,7 +142,7 @@ async def _session_evals(request: Request) -> HTMLResponse:
     try:
         platform, sid = store.resolve_session_id(prefix)
     except (KeyError, ValueError) as e:
-        raise HTTPException(status_code=404, detail=str(e))
+        raise HTTPException(status_code=404, detail=str(e)) from e
     sdir = session_dir(config.root, platform, sid)
     results = sorted(
         EvalStore(sdir).iter_results(),
@@ -173,7 +167,7 @@ async def _run_dispatch(request: Request) -> HTMLResponse:
     try:
         platform, sid = store.resolve_session_id(sid_prefix)
     except (KeyError, ValueError) as e:
-        raise HTTPException(status_code=400, detail=str(e))
+        raise HTTPException(status_code=400, detail=str(e)) from e
     job_id = run_eval_background(
         thirdeye_home=config.root,
         platform=platform,
@@ -203,7 +197,7 @@ async def _run_status(request: Request) -> HTMLResponse:
     try:
         platform, sid = store.resolve_session_id(sid_prefix)
     except (KeyError, ValueError) as e:
-        raise HTTPException(status_code=404, detail=str(e))
+        raise HTTPException(status_code=404, detail=str(e)) from e
     sdir = session_dir(config.root, platform, sid)
     es = EvalStore(sdir)
     job = es.read_job(job_id)

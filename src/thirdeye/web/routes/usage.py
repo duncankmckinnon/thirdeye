@@ -17,7 +17,7 @@ async def _session_usage(request: Request) -> HTMLResponse:
     try:
         platform, sid = store.resolve_session_id(prefix)
     except (KeyError, ValueError) as e:
-        raise HTTPException(status_code=404, detail=str(e))
+        raise HTTPException(status_code=404, detail=str(e)) from e
     sdir = session_dir(config.root, platform, sid)
     rows = list(UsageStore(sdir).iter_rows())
     aggregate = store.stats(session_id=sid)

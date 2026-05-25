@@ -42,7 +42,7 @@ def test_tail_survives_missing_file_window(tmp_path):
         gen = tail_events(reader, start_seq=-1, poll_interval=0.01)
         try:
             await asyncio.wait_for(gen.__anext__(), timeout=0.05)
-        except asyncio.TimeoutError:
+        except TimeoutError:
             pass  # expected — no events, no errors
         await gen.aclose()
 

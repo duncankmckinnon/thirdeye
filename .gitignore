@@ -231,3 +231,4 @@ __marimo__/
 .agents/
 .workbench/
 *docs/superpowers/*
+.superpowers/

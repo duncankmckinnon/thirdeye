@@ -4,10 +4,10 @@ from pathlib import Path
 
 import pytest
 
-pytest.importorskip("starlette")
-
 from thirdeye.config import Config
 from thirdeye.store import Store
+
+pytest.importorskip("starlette")
 
 
 @pytest.fixture()

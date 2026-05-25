@@ -6,6 +6,7 @@ zero new dependencies and avoids platform-specific code paths. Watchers
 are per-SSE-connection, so the cost is bounded by the number of open
 browser tabs — negligible for a local single-user tool.
 """
+
 from __future__ import annotations
 
 import asyncio

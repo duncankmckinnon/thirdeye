@@ -110,9 +110,7 @@ def test_atomic_save_no_tmp_leftover(tmp_path: Path):
 
 
 def test_validate_directive_yaml_ok():
-    ok, err = validate_directive_yaml(
-        "name: foo\ndirective: |\n  do the thing\n"
-    )
+    ok, err = validate_directive_yaml("name: foo\ndirective: |\n  do the thing\n")
     assert ok is True
     assert err == ""
 
