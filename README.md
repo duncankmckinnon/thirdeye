@@ -69,6 +69,21 @@ thirdeye usage errors                   # tail the capture audit log
 Filters: `--platform` / `--harness`, `--model SUBSTR`, `--since` / `--until`,
 `--top N`, `--sort total|input|output|ts`.
 
+## Browse in a browser
+
+For a richer experience than the CLI, install the UI extra and launch:
+
+```bash
+pip install 'thrdi[ui]'
+thirdeye ui
+```
+
+This opens a local browser UI for browsing sessions, visualizing traces
+as a collapsible tree, tagging events, editing and running evals, and
+live-tailing in-progress sessions. The server binds loopback only.
+
+See [docs/ui.md](docs/ui.md) for full reference.
+
 ## Evaluations
 
 Grade a recorded session by dispatching one of your installed CLI agents
