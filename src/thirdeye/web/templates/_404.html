@@ -1,0 +1,19 @@
+{% extends "base.html" %}
+{% block title %}thirdeye — not found{% endblock %}
+{% block content %}
+<section class="not-found">
+  <h1>404</h1>
+  <p>{{ message }}</p>
+  {% if suggestions %}
+  <h2>Did you mean…</h2>
+  <ul class="suggestions">
+    {% for sug in suggestions %}
+    <li>
+      <a href="/sessions/{{ sug.session_id }}">{{ sug.session_id }}</a>
+      <span class="muted">({{ sug.platform }})</span>
+    </li>
+    {% endfor %}
+  </ul>
+  {% endif %}
+</section>
+{% endblock %}

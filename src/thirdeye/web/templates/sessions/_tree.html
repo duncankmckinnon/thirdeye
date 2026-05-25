@@ -1,0 +1,13 @@
+{% if events %}
+<div class="tree-controls">
+  <button type="button" class="tree-expand-all">Expand all</button>
+  <button type="button" class="tree-collapse-all">Collapse all</button>
+</div>
+<ol class="tree">
+  {% for ev in events %}
+    {% include "sessions/_event_row.html" %}
+  {% endfor %}
+</ol>
+{% else %}
+<p class="empty">No events in this session.</p>
+{% endif %}

@@ -11,6 +11,7 @@ from thirdeye.eval.definition import (
     list_definitions,
     load_definition,
     save_definition,
+    validate_directive_yaml,
 )
 from thirdeye.paths import eval_def_path
 
@@ -106,3 +107,41 @@ def test_atomic_save_no_tmp_leftover(tmp_path: Path):
     save_definition(tmp_path, EvalDefinition(name="x", description="", directive="d"))
     path = eval_def_path(tmp_path, "x")
     assert not path.with_suffix(".yaml.tmp").exists()
+
+
+def test_validate_directive_yaml_ok():
+    ok, err = validate_directive_yaml("name: foo\ndirective: |\n  do the thing\n")
+    assert ok is True
+    assert err == ""
+
+
+def test_validate_directive_yaml_parse_error():
+    ok, err = validate_directive_yaml("name: ::: bad")
+    assert ok is False
+    assert "YAML parse error" in err
+
+
+def test_validate_directive_yaml_not_mapping():
+    ok, err = validate_directive_yaml("- just\n- a\n- list\n")
+    assert ok is False
+    assert "mapping" in err
+
+
+def test_validate_directive_yaml_missing_required():
+    ok, err = validate_directive_yaml("description: only\n")
+    assert ok is False
+    assert "missing required keys" in err
+    assert "name" in err
+    assert "directive" in err
+
+
+def test_validate_directive_yaml_empty_directive():
+    ok, err = validate_directive_yaml("name: foo\ndirective: ''\n")
+    assert ok is False
+    assert "directive" in err
+
+
+def test_validate_directive_yaml_non_string_directive():
+    ok, err = validate_directive_yaml("name: foo\ndirective: 42\n")
+    assert ok is False
+    assert "directive" in err

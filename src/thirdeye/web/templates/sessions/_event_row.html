@@ -1,0 +1,28 @@
+<li class="evt evt-{{ ev.t }}" data-seq="{{ ev.seq }}">
+  <details {% if not ev.child %}open{% endif %}>
+    <summary
+      tabindex="0"
+      hx-get="/sessions/{{ sid }}/events/{{ ev.seq }}"
+      hx-target="#detail-pane"
+      hx-swap="innerHTML">
+      <span class="seq">{{ ev.seq }}</span>
+      <span class="type">{{ ev.t }}</span>
+      <span class="hint">{{ ev.data | tojson | truncate(80) }}</span>
+    </summary>
+    {% if ev.child %}
+      <ol class="children">
+        <li class="evt evt-{{ ev.child.t }}" data-seq="{{ ev.child.seq }}">
+          <a class="child-row"
+             href="#"
+             hx-get="/sessions/{{ sid }}/events/{{ ev.child.seq }}"
+             hx-target="#detail-pane"
+             hx-swap="innerHTML">
+            <span class="seq">{{ ev.child.seq }}</span>
+            <span class="type">{{ ev.child.t }}</span>
+            <span class="hint">{{ ev.child.data | tojson | truncate(80) }}</span>
+          </a>
+        </li>
+      </ol>
+    {% endif %}
+  </details>
+</li>

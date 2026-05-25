@@ -1,0 +1,66 @@
+{% extends "base.html" %}
+{% block title %}thirdeye — {{ "edit" if mode == "edit" else "new" }} eval def{% endblock %}
+{% block content %}
+<section class="eval-def-editor">
+  <div class="eval-def-header">
+    <h1>{{ "Edit " + defn.name if mode == "edit" else "New eval definition" }}</h1>
+  </div>
+
+  <form id="def-form"
+        {% if mode == "edit" %}
+        hx-put="/evals/defs/{{ defn.name }}"
+        {% else %}
+        hx-post="/evals/defs"
+        {% endif %}
+        hx-target="#editor-result"
+        hx-swap="innerHTML">
+    <label class="field">
+      <span>YAML</span>
+      <textarea name="yaml"
+                class="yaml-editor"
+                rows="30"
+                spellcheck="false"
+                autocomplete="off">{{ defn.to_yaml() if defn else '' }}</textarea>
+    </label>
+
+    <div class="editor-actions">
+      <button type="button"
+              hx-post="/evals/defs/_validate"
+              hx-include="#def-form"
+              hx-target="#editor-result"
+              hx-swap="innerHTML">
+        Validate
+      </button>
+      <button type="submit">{{ "Save" if mode == "edit" else "Create" }}</button>
+      {% if mode == "edit" %}
+      <button type="button"
+              class="danger"
+              hx-delete="/evals/defs/{{ defn.name }}"
+              hx-confirm="Delete eval definition '{{ defn.name }}'?"
+              hx-target="#editor-result"
+              hx-swap="innerHTML">
+        Delete
+      </button>
+      {% endif %}
+    </div>
+  </form>
+
+  <div id="editor-result" class="editor-result"></div>
+
+  <p class="editor-footnote">Concurrent edits use last-write-wins.</p>
+</section>
+
+<script>
+  // Tab key inserts two spaces instead of changing focus.
+  document.querySelectorAll('textarea.yaml-editor').forEach(ta => {
+    ta.addEventListener('keydown', (e) => {
+      if (e.key === 'Tab') {
+        e.preventDefault();
+        const s = ta.selectionStart, e2 = ta.selectionEnd;
+        ta.value = ta.value.slice(0, s) + '  ' + ta.value.slice(e2);
+        ta.selectionStart = ta.selectionEnd = s + 2;
+      }
+    });
+  });
+</script>
+{% endblock %}

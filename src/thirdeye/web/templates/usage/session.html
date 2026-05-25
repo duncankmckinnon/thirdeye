@@ -1,0 +1,53 @@
+{% extends "base.html" %}
+{% block title %}thirdeye — usage {{ sid }}{% endblock %}
+{% block content %}
+<section class="usage">
+  <header class="page-header">
+    <h1>session usage</h1>
+    <p class="muted">
+      <a href="/sessions/{{ sid }}">{{ sid }}</a>
+      · {{ platform }}
+    </p>
+  </header>
+
+  <div class="aggregate-grid">
+    <div class="aggregate-card">
+      <div class="aggregate-label">events</div>
+      <div class="aggregate-value">{{ aggregate.event_count }}</div>
+    </div>
+    <div class="aggregate-card">
+      <div class="aggregate-label">bytes</div>
+      <div class="aggregate-value">{{ aggregate.bytes_compressed }}</div>
+    </div>
+  </div>
+
+  {% if rows %}
+  <table class="usage-table">
+    <thead>
+      <tr>
+        <th>seq</th>
+        <th>model</th>
+        <th class="num">input</th>
+        <th class="num">output</th>
+        <th class="num">total</th>
+        <th>ts</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for row in rows %}
+      <tr>
+        <td>{{ row.seq }}</td>
+        <td>{{ row.model }}</td>
+        <td class="num">{{ row.input_tokens }}</td>
+        <td class="num">{{ row.output_tokens }}</td>
+        <td class="num">{{ row.total_tokens }}</td>
+        <td>{{ row.ts }}</td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  {% else %}
+  <p class="empty">no usage recorded yet.</p>
+  {% endif %}
+</section>
+{% endblock %}

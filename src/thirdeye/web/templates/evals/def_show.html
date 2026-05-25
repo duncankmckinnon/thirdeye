@@ -1,0 +1,19 @@
+{% extends "base.html" %}
+{% block title %}thirdeye — eval def {{ defn.name }}{% endblock %}
+{% block content %}
+<section class="eval-def-show">
+  <div class="eval-def-header">
+    <h1>{{ defn.name }}</h1>
+    <a class="button-link" href="/evals/defs/{{ defn.name }}/edit">Edit</a>
+  </div>
+
+  <dl class="eval-def-meta">
+    <dt>description</dt><dd>{{ defn.description or "—" }}</dd>
+    <dt>default agent</dt><dd>{{ defn.default_agent }}</dd>
+    <dt>output schema</dt><dd>{{ defn.output_schema }}</dd>
+  </dl>
+
+  <h2>directive</h2>
+  <pre class="eval-directive"><code>{{ defn.directive }}</code></pre>
+</section>
+{% endblock %}

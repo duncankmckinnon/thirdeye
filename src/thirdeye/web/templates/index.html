@@ -1,0 +1,51 @@
+{% extends "base.html" %}
+{% block title %}thirdeye — sessions{% endblock %}
+{% block content %}
+<section class="sessions">
+  <form class="filters" method="get" action="/">
+    <input type="text" name="platform" placeholder="platform"
+           value="{{ filters.platform or '' }}">
+    <input type="text" name="cwd" placeholder="cwd"
+           value="{{ filters.cwd or '' }}">
+    <select name="status" aria-label="status">
+      <option value="" {% if not filters.status %}selected{% endif %}>any status</option>
+      <option value="open" {% if filters.status == 'open' %}selected{% endif %}>open</option>
+      <option value="closed" {% if filters.status == 'closed' %}selected{% endif %}>closed</option>
+      <option value="stale" {% if filters.status == 'stale' %}selected{% endif %}>stale</option>
+    </select>
+    <label class="date-field">since
+      <input type="date" name="since" value="{{ filters.since or '' }}">
+    </label>
+    <label class="date-field">until
+      <input type="date" name="until" value="{{ filters.until or '' }}">
+    </label>
+    {% for t in filters.tag %}
+      <input type="text" name="tag" value="{{ t }}" placeholder="tag">
+    {% endfor %}
+    <input type="text" name="tag" value="" placeholder="tag">
+    <button type="submit">Filter</button>
+  </form>
+
+  {% if sessions %}
+  <table class="session-table">
+    <thead>
+      <tr>
+        <th>session</th>
+        <th>platform</th>
+        <th>cwd</th>
+        <th>started</th>
+        <th>events</th>
+        <th>status</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for s in sessions %}
+        {% include "_session_row.html" %}
+      {% endfor %}
+    </tbody>
+  </table>
+  {% else %}
+  <p class="empty">No sessions yet.</p>
+  {% endif %}
+</section>
+{% endblock %}
