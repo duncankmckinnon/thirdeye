@@ -1,0 +1,65 @@
+{% extends "base.html" %}
+{% block title %}thirdeye — search{% endblock %}
+{% block content %}
+<section class="search">
+  <form class="filters search-filters" method="get" action="/search">
+    <input type="search" name="q" placeholder="search events"
+           value="{{ query or '' }}" autofocus>
+    <input type="text" name="platform" placeholder="platform"
+           value="{{ filters.platform or '' }}">
+    <input type="text" name="cwd" placeholder="cwd"
+           value="{{ filters.cwd or '' }}">
+    <input type="text" name="since" placeholder="since (e.g. 7d, 2026-01-01)"
+           value="{{ filters.since or '' }}">
+    <input type="text" name="until" placeholder="until"
+           value="{{ filters.until or '' }}">
+    {% for t in filters.tag %}
+      <input type="text" name="tag" value="{{ t }}" placeholder="tag">
+    {% endfor %}
+    <input type="text" name="tag" value="" placeholder="tag">
+    <button type="submit">Search</button>
+  </form>
+
+  {% if query %}
+    {% if hits %}
+      <p class="muted search-summary">{{ hits | length }} hit(s) for
+        "<strong>{{ query }}</strong>"</p>
+      {% set groups = {} %}
+      {% for h in hits %}
+        {% if h.session_id not in groups %}
+          {% set _ = groups.update({h.session_id: []}) %}
+        {% endif %}
+        {% set _ = groups[h.session_id].append(h) %}
+      {% endfor %}
+      <ul class="search-results">
+        {% for sid, group in groups.items() %}
+          <li class="search-session">
+            <div class="search-session-head">
+              <a href="/sessions/{{ sid }}">{{ sid[:8] }}</a>
+              <span class="muted">{{ group[0].platform }}</span>
+              <span class="muted">{{ group | length }} hit(s)</span>
+            </div>
+            <ul class="search-hits">
+              {% for h in group %}
+                <li class="search-hit">
+                  <a href="/sessions/{{ sid }}#seq-{{ h.seq }}"
+                     class="search-hit-link">
+                    <span class="search-hit-meta">
+                      #{{ h.seq }} <span class="muted">{{ h.t }}</span>
+                    </span>
+                    <span class="search-snippet">{{ h.snippet }}</span>
+                  </a>
+                </li>
+              {% endfor %}
+            </ul>
+          </li>
+        {% endfor %}
+      </ul>
+    {% else %}
+      <p class="empty">No matches for "{{ query }}".</p>
+    {% endif %}
+  {% else %}
+    <p class="empty">Enter a query to search across all sessions.</p>
+  {% endif %}
+</section>
+{% endblock %}
