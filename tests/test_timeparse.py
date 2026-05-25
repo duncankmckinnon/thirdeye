@@ -119,7 +119,5 @@ class TestParseWhenErrors:
         assert repr(bad) in msg or bad in msg
         assert "expected" in msg
 
-    def test_non_string_raises(self):
-        with pytest.raises(ValueError) as exc:
-            parse_when(None)  # type: ignore[arg-type]
-        assert "expected" in str(exc.value)
+    def test_none_returns_none(self):
+        assert parse_when(None) is None

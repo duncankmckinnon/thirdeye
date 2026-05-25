@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 from pathlib import Path
 
 from starlette.applications import Starlette
@@ -26,6 +27,7 @@ def create_app(config: Config | None = None) -> Starlette:
     config = config or Config.load()
     store = Store(config)
     templates = Jinja2Templates(directory=_PACKAGE_ROOT / "templates")
+    templates.env.filters["basename"] = lambda p: os.path.basename(p) if p else ""
 
     app = Starlette(debug=False)
     app.state.config = config
