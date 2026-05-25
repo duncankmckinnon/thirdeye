@@ -1,0 +1,24 @@
+{% extends "base.html" %}
+{% block title %}thirdeye — usage{% endblock %}
+{% block content %}
+<section class="usage">
+  <header class="page-header">
+    <h1>usage</h1>
+  </header>
+
+  <div class="aggregate-grid">
+    <div class="aggregate-card">
+      <div class="aggregate-label">sessions</div>
+      <div class="aggregate-value">{{ aggregate.session_count }}</div>
+    </div>
+    <div class="aggregate-card">
+      <div class="aggregate-label">events</div>
+      <div class="aggregate-value">{{ aggregate.event_count }}</div>
+    </div>
+    <div class="aggregate-card">
+      <div class="aggregate-label">bytes</div>
+      <div class="aggregate-value">{{ aggregate.bytes_compressed }}</div>
+    </div>
+  </div>
+</section>
+{% endblock %}
