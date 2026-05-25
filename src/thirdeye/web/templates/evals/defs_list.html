@@ -1,0 +1,33 @@
+{% extends "base.html" %}
+{% block title %}thirdeye — eval definitions{% endblock %}
+{% block content %}
+<section class="evals-defs">
+  <div class="evals-defs-header">
+    <h1>Eval definitions</h1>
+    <a class="button-link" href="/evals/defs/_new">+ New</a>
+  </div>
+
+  {% if defs %}
+  <table class="evals-defs-table">
+    <thead>
+      <tr>
+        <th>name</th>
+        <th>description</th>
+        <th>default agent</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for d in defs %}
+      <tr class="eval-def-row">
+        <td><a href="/evals/defs/{{ d.name }}">{{ d.name }}</a></td>
+        <td>{{ d.description }}</td>
+        <td>{{ d.default_agent }}</td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  {% else %}
+  <p class="empty">No eval definitions yet.</p>
+  {% endif %}
+</section>
+{% endblock %}
