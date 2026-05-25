@@ -30,8 +30,6 @@ def test_thirdeye_ui_smoke(tmp_path):
     # so it's safe to run in CI / restricted environments.
     env = os.environ.copy()
     env["THIRDEYE_HOME"] = str(tmp_path)
-    # Make sure no real ~/.thirdeye config bleeds in.
-    env.pop("THIRDEYE_CONFIG", None)
     (tmp_path / "traces").mkdir()
     proc = subprocess.Popen(
         [sys.executable, "-m", "thirdeye", "ui", "--port", "0", "--no-browser"],
