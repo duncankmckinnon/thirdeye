@@ -19,6 +19,9 @@
   <div class="session-body">
     <section
       id="tree"
+      data-sid="{{ sid }}"
+      data-status="{{ meta.status }}"
+      data-last-seq="{{ meta.last_seq }}"
       hx-get="/sessions/{{ sid }}/tree"
       hx-trigger="load"
       hx-swap="innerHTML">
@@ -32,4 +35,5 @@
 {% endblock %}
 {% block scripts %}
 <script src="/static/tree.js"></script>
+<script src="/static/sse.js"></script>
 {% endblock %}
