@@ -6,6 +6,9 @@ from starlette.requests import Request
 from starlette.responses import HTMLResponse
 from starlette.routing import Route
 
+from thirdeye.paths import session_dir
+from thirdeye.tags import TagStore
+
 
 async def _event_detail(request: Request) -> HTMLResponse:
     prefix = request.path_params["sid"]
@@ -19,11 +22,19 @@ async def _event_detail(request: Request) -> HTMLResponse:
         event = store.reader(sid).get_event(seq)
     except (KeyError, IndexError):
         raise HTTPException(status_code=404, detail=f"seq {seq} not found")
+    sdir = session_dir(request.app.state.config.root, platform, sid)
+    tags = sorted(TagStore(sdir).tags_for(seq))
     templates = request.app.state.templates
     return templates.TemplateResponse(
         request,
         "events/detail.html",
-        {"event": event, "sid": sid, "platform": platform},
+        {
+            "event": event,
+            "sid": sid,
+            "platform": platform,
+            "tags": tags,
+            "seq": seq,
+        },
     )
 
 

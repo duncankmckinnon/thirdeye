@@ -1,0 +1,17 @@
+<div id="tag-chips-{{ seq }}" class="tag-chips">
+  {% for t in tags %}
+    <span class="chip">{{ t }}
+      <button class="chip-x"
+              hx-delete="/sessions/{{ sid }}/events/{{ seq }}/tags/{{ t }}"
+              hx-target="#tag-chips-{{ seq }}"
+              hx-swap="outerHTML">×</button>
+    </span>
+  {% endfor %}
+  <form hx-post="/sessions/{{ sid }}/events/{{ seq }}/tags"
+        hx-target="#tag-chips-{{ seq }}"
+        hx-swap="outerHTML"
+        class="chip-form">
+    <input name="tag" placeholder="add tag" required>
+    <button type="submit">+</button>
+  </form>
+</div>

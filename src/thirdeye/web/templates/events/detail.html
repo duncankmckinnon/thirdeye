@@ -4,6 +4,7 @@
     <span class="type">{{ event.t }}</span>
     <time>{{ event.ts }}</time>
   </header>
+  {% include "_tag_chips.html" %}
   {% if event.t == "tool_call" or event.t == "tool_result" %}
     <dl class="event-summary">
       {% if event.data and event.data.tool_name %}
