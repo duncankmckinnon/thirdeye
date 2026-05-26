@@ -8,6 +8,7 @@ from thirdeye.config import Config
 from thirdeye.store import Store
 
 pytest.importorskip("starlette")
+pytest.importorskip("httpx")  # required by starlette.testclient
 
 
 @pytest.fixture()

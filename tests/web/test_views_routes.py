@@ -5,6 +5,7 @@ from pathlib import Path
 import pytest
 
 pytest.importorskip("starlette")
+pytest.importorskip("httpx")
 
 from starlette.applications import Starlette  # noqa: E402
 from starlette.templating import Jinja2Templates  # noqa: E402

@@ -7,6 +7,7 @@ import pytest
 from click.testing import CliRunner
 
 pytest.importorskip("starlette")
+pytest.importorskip("httpx")
 
 from starlette.testclient import TestClient  # noqa: E402
 

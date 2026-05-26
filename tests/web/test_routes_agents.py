@@ -3,6 +3,7 @@ from __future__ import annotations
 import pytest
 
 pytest.importorskip("starlette")
+pytest.importorskip("httpx")
 
 from starlette.applications import Starlette  # noqa: E402
 from starlette.testclient import TestClient  # noqa: E402
