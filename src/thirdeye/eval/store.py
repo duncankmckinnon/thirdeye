@@ -4,14 +4,19 @@ import json
 import os
 from collections.abc import Iterator
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from thirdeye.eval.result import EvalResult
 from thirdeye.paths import (
     eval_job_path,
     evals_jobs_dir,
     evals_jsonl_path,
+    session_dir as _session_dir,
 )
+
+if TYPE_CHECKING:
+    from thirdeye.config import Config
+    from thirdeye.meta import SessionMeta
 
 
 class EvalStore:
@@ -104,3 +109,22 @@ class EvalStore:
                 yield json.loads(f.read_text(encoding="utf-8"))
             except (OSError, json.JSONDecodeError):
                 continue
+
+
+def iter_results_by_definition(
+    config: Config, definition_name: str
+) -> Iterator[tuple[SessionMeta, EvalResult]]:
+    """Walk every session, yield (meta, result) pairs whose
+    result.definition == definition_name. Ordered by started_at DESC."""
+    from thirdeye.store import Store
+
+    rows: list[tuple[SessionMeta, EvalResult]] = []
+    store = Store(config)
+    for meta in store.list_sessions():
+        sd = _session_dir(config.root, meta.platform, meta.session_id)
+        es = EvalStore(sd)
+        for result in es.iter_results():
+            if result.definition == definition_name:
+                rows.append((meta, result))
+    rows.sort(key=lambda pair: pair[1].started_at, reverse=True)
+    yield from rows
