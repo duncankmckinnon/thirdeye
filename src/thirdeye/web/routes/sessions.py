@@ -1,11 +1,15 @@
 from __future__ import annotations
 
+import json
 from typing import Any
 
 from starlette.applications import Starlette
+from starlette.concurrency import run_in_threadpool
 from starlette.requests import Request
 from starlette.responses import HTMLResponse
 from starlette.routing import Route
+
+from thirdeye.web.agentic import propose_filters
 
 
 class _NotFound(Exception):
@@ -114,6 +118,38 @@ async def _tree(request: Request) -> HTMLResponse:
     )
 
 
+async def _sessions_agentic(request: Request) -> HTMLResponse:
+    form = await request.form()
+    nl = (form.get("nl") or "").strip()
+    agent = (form.get("agent") or "").strip()
+    templates = request.app.state.templates
+    if not agent:
+        return templates.TemplateResponse(
+            request,
+            "_error.html",
+            {"message": "Pick an agent."},
+            status_code=400,
+        )
+    config = request.app.state.config
+    try:
+        proposed = await run_in_threadpool(
+            propose_filters, config, nl=nl, agent_name=agent, surface="sessions"
+        )
+    except (FileNotFoundError, RuntimeError, json.JSONDecodeError, ValueError) as e:
+        return templates.TemplateResponse(
+            request,
+            "_error.html",
+            {"message": str(e)},
+            status_code=400,
+        )
+    return templates.TemplateResponse(
+        request,
+        "sessions/_proposed_filters.html",
+        {"proposed": proposed, "nl": nl},
+    )
+
+
 def register(app: Starlette) -> None:
+    app.routes.append(Route("/sessions/agentic", _sessions_agentic, methods=["POST"]))
     app.routes.append(Route("/sessions/{sid}", _view, methods=["GET"]))
     app.routes.append(Route("/sessions/{sid}/tree", _tree, methods=["GET"]))
