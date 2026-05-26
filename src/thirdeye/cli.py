@@ -11,6 +11,7 @@ from thirdeye.commands.skill import skill
 from thirdeye.commands.tags import tag, tags
 from thirdeye.commands.ui import ui
 from thirdeye.commands.usage import usage
+from thirdeye.commands.views import views_group
 
 
 @click.group(name="thirdeye", help="Trace agentic CLIs to a unified local store.")
@@ -35,3 +36,4 @@ main.add_command(stats)
 main.add_command(usage)
 main.add_command(eval_group)
 main.add_command(ui)
+main.add_command(views_group)
