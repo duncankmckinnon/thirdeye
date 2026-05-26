@@ -58,9 +58,19 @@ def installed_agent_names(config: Config) -> list[str]:
     return installed
 
 
+_FRONTMATTER_RE = re.compile(r"\A---\r?\n.*?\r?\n---\r?\n", re.DOTALL)
+
+
 def _read_skill_body() -> str:
+    """Return SKILL.md body with YAML frontmatter stripped.
+
+    Frontmatter is for the skill loader (name/description/type).
+    Passing it to the agent CLI causes Claude/Codex to parse the
+    leading `---` as a flag and reject the prompt.
+    """
     res = resources.files("thirdeye").joinpath("skills", "ui-filter-builder", "SKILL.md")
-    return res.read_text(encoding="utf-8")
+    text = res.read_text(encoding="utf-8")
+    return _FRONTMATTER_RE.sub("", text, count=1).lstrip()
 
 
 def _build_prompt(config: Config, surface: Surface, nl: str) -> str:
