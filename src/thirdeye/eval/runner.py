@@ -3,15 +3,14 @@ from __future__ import annotations
 import shutil
 import subprocess
 import sys
-import time
-from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
 from thirdeye.config import Config
 from thirdeye.eval._ulid import ulid_now
-from thirdeye.eval.agents import AgentAdapter, get_adapter
+from thirdeye.eval.agents import get_adapter
+from thirdeye.eval.agents.exec import AgentInvocation, invoke_agent as _invoke_agent
 from thirdeye.eval.definition import EvalDefinition, load_definition
 from thirdeye.eval.prompt import build_prompt
 from thirdeye.eval.result import VALID_VERDICTS, EvalResult, Finding, parse_envelope
@@ -20,15 +19,7 @@ from thirdeye.paths import session_dir
 from thirdeye.reader import SessionReader
 from thirdeye.store import Store
 
-
-@dataclass
-class AgentInvocation:
-    """Captures the raw subprocess outcome for one agent run."""
-
-    stdout: str
-    stderr: str
-    returncode: int
-    duration_ms: int
+__all__ = ["AgentInvocation", "run_eval", "run_eval_background"]
 
 
 def _now_iso() -> str:
@@ -85,29 +76,6 @@ def _list_session_ids_on_platform(thirdeye_home: Path, platform: str) -> set[str
         return {s.session_id for s in Store(config).list_sessions(platform=platform)}
     except Exception:
         return set()
-
-
-def _invoke_agent(adapter: AgentAdapter, prompt: str, cwd: Path) -> AgentInvocation:
-    """Run the agent subprocess and capture stdout/stderr/returncode."""
-    if shutil.which(adapter.config.command) is None:
-        raise FileNotFoundError(f"`{adapter.config.command}` not found on PATH — install it first")
-    cmd = adapter.build_command(prompt, cwd)
-    t0 = time.monotonic()
-    proc = subprocess.run(
-        cmd,
-        cwd=cwd,
-        stdin=subprocess.DEVNULL,
-        capture_output=True,
-        text=True,
-        check=False,
-    )
-    elapsed = int((time.monotonic() - t0) * 1000)
-    return AgentInvocation(
-        stdout=proc.stdout or "",
-        stderr=proc.stderr or "",
-        returncode=proc.returncode,
-        duration_ms=elapsed,
-    )
 
 
 def _build_eval_result(
@@ -178,6 +146,7 @@ def run_eval(
     agent_name: str,
     cwd: Path | None = None,
     save: bool = True,
+    run_id: str | None = None,
 ) -> EvalResult:
     """Run one eval synchronously, returning the persisted EvalResult.
 
@@ -217,7 +186,7 @@ def run_eval(
     envelope, narrative = parse_envelope(agent_text)
 
     result = _build_eval_result(
-        eval_id=ulid_now(),
+        eval_id=run_id or ulid_now(),
         session_id=session_id,
         definition=definition,
         agent_name=adapter.name,
@@ -246,15 +215,16 @@ def run_eval_background(
     cwd: Path | None = None,
     thirdeye_bin: str | None = None,
 ) -> str:
-    """Start a detached worker. Return the new job_id.
+    """Start a detached worker. Return the new run_id.
 
-    The worker is launched as ``thirdeye eval _run-worker <job_id> ...``
-    (an undocumented subcommand on the same binary).
+    The worker is launched as ``thirdeye eval _run-worker <run_id> ...``
+    (an undocumented subcommand on the same binary). The same ULID is
+    used for both the on-disk job stub and the eventual EvalResult.id.
     """
     sd = session_dir(thirdeye_home, platform, session_id)
     store = EvalStore(sd)
-    job_id = ulid_now()
-    log_path = sd / "evals.jobs" / f"{job_id}.log"
+    run_id = ulid_now()
+    log_path = sd / "evals.jobs" / f"{run_id}.log"
     log_path.parent.mkdir(parents=True, exist_ok=True)
 
     binary = thirdeye_bin or shutil.which("thirdeye") or sys.executable
@@ -262,7 +232,7 @@ def run_eval_background(
         binary,
         "eval",
         "_run-worker",
-        job_id,
+        run_id,
         platform,
         session_id,
         definition_name,
@@ -282,9 +252,9 @@ def run_eval_background(
         log_file.close()
 
     store.write_job(
-        job_id,
+        run_id,
         {
-            "job_id": job_id,
+            "job_id": run_id,
             "session_id": session_id,
             "using": definition_name,
             "agent": agent_name,
@@ -295,4 +265,4 @@ def run_eval_background(
             "log_path": str(log_path),
         },
     )
-    return job_id
+    return run_id

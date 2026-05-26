@@ -91,12 +91,12 @@ def run_cmd(session_prefix, using, agent, background, as_json, save):
 
 
 @eval_group.command(name="_run-worker", hidden=True)
-@click.argument("job_id")
+@click.argument("run_id")
 @click.argument("platform")
 @click.argument("session_id")
 @click.argument("definition_name")
 @click.argument("agent_name")
-def _run_worker(job_id, platform, session_id, definition_name, agent_name):
+def _run_worker(run_id, platform, session_id, definition_name, agent_name):
     """Internal: detached worker that finishes a background eval."""
     config = Config.load()
     sd = session_dir(config.root, platform, session_id)
@@ -109,13 +109,14 @@ def _run_worker(job_id, platform, session_id, definition_name, agent_name):
             definition_name=definition_name,
             agent_name=agent_name,
             save=True,
+            run_id=run_id,
         )
-        store.remove_job(job_id)
+        store.remove_job(run_id)
     except Exception as e:
-        existing = store.read_job(job_id) or {}
+        existing = store.read_job(run_id) or {}
         existing["status"] = "failed"
         existing["error"] = f"{type(e).__name__}: {e}"
-        store.write_job(job_id, existing)
+        store.write_job(run_id, existing)
         raise
 
 
