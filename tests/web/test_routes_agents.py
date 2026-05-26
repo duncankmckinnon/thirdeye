@@ -22,7 +22,7 @@ def test_agents_list_returns_only_installed_binaries(web_config, monkeypatch):
         return "/usr/bin/claude" if cmd == "claude" else None
 
     monkeypatch.setattr(
-        "thirdeye.web.routes.agents.shutil.which", fake_which
+        "thirdeye.web.agentic.shutil.which", fake_which
     )
     app = _make_app(web_config)
     with TestClient(app) as client:
@@ -34,7 +34,7 @@ def test_agents_list_returns_only_installed_binaries(web_config, monkeypatch):
 
 def test_agents_list_empty_when_none_installed(web_config, monkeypatch):
     monkeypatch.setattr(
-        "thirdeye.web.routes.agents.shutil.which", lambda cmd: None
+        "thirdeye.web.agentic.shutil.which", lambda cmd: None
     )
     app = _make_app(web_config)
     with TestClient(app) as client:
@@ -45,7 +45,7 @@ def test_agents_list_empty_when_none_installed(web_config, monkeypatch):
 
 def test_agents_list_all_when_all_installed(web_config, monkeypatch):
     monkeypatch.setattr(
-        "thirdeye.web.routes.agents.shutil.which", lambda cmd: f"/usr/bin/{cmd}"
+        "thirdeye.web.agentic.shutil.which", lambda cmd: f"/usr/bin/{cmd}"
     )
     app = _make_app(web_config)
     with TestClient(app) as client:

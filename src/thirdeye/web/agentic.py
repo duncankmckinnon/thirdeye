@@ -1,12 +1,14 @@
 from __future__ import annotations
 
 import json
+import re
+import shutil
 from dataclasses import dataclass
 from importlib import resources
 from urllib.parse import urlencode
 
 from thirdeye.config import Config
-from thirdeye.eval.agents import get_adapter
+from thirdeye.eval.agents import BUILTIN_ADAPTERS, get_adapter, list_agent_names
 from thirdeye.eval.agents.exec import invoke_agent
 from thirdeye.web.vocabulary import Surface, build_vocabulary_block
 
@@ -42,6 +44,20 @@ class ProposedFilters:
         return "?" + urlencode(pairs) if pairs else ""
 
 
+_FENCE_RE = re.compile(r"^```(?:json)?\s*|\s*```$", re.IGNORECASE)
+
+
+def installed_agent_names(config: Config) -> list[str]:
+    names = list_agent_names(config.root)
+    installed: list[str] = []
+    for name in names:
+        adapter_cls = BUILTIN_ADAPTERS.get(name)
+        cmd = adapter_cls().config.command if adapter_cls else name
+        if shutil.which(cmd) is not None:
+            installed.append(name)
+    return installed
+
+
 def _read_skill_body() -> str:
     res = resources.files("thirdeye").joinpath("skills", "ui-filter-builder", "SKILL.md")
     return res.read_text(encoding="utf-8")
@@ -56,9 +72,7 @@ def _build_prompt(config: Config, surface: Surface, nl: str) -> str:
 def _parse_envelope(text: str) -> dict:
     s = text.strip()
     if s.startswith("```"):
-        s = s.strip("`")
-        if s.lower().startswith("json"):
-            s = s[4:].strip()
+        s = _FENCE_RE.sub("", s).strip()
     return json.loads(s)
 
 

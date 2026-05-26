@@ -8,10 +8,9 @@ from starlette.requests import Request
 from starlette.responses import HTMLResponse
 from starlette.routing import Route
 
-from thirdeye.eval.agents import list_agent_names
 from thirdeye.search import search
 from thirdeye.timeparse import parse_when
-from thirdeye.web.agentic import propose_filters
+from thirdeye.web.agentic import installed_agent_names, propose_filters
 
 
 async def _search(request: Request) -> HTMLResponse:
@@ -51,7 +50,7 @@ async def _search(request: Request) -> HTMLResponse:
             "query": q,
             "filters": filters,
             "hits": hits,
-            "agents": list_agent_names(config.root),
+            "agents": installed_agent_names(config),
         },
     )
 

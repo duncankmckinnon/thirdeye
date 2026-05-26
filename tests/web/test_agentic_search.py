@@ -53,6 +53,7 @@ def test_search_agentic_success_renders_preview(client, monkeypatch):
     assert "since=7d" in body
     assert "/search?" in body
     assert "q=needle" in body
+    assert 'q="needle"' not in body
 
 
 def test_search_agentic_agent_failure_returns_400(client, monkeypatch):
@@ -101,3 +102,45 @@ def test_agentic_module_parse_envelope_strips_fences():
     raw = "```json\n{\"q\": \"x\"}\n```"
     env = agentic_module._parse_envelope(raw)
     assert env == {"q": "x"}
+
+
+def test_agentic_module_parse_envelope_preserves_inner_backticks():
+    raw = "```\n{\"q\": \"`raw`\"}\n```"
+    env = agentic_module._parse_envelope(raw)
+    assert env == {"q": "`raw`"}
+
+
+def test_installed_agent_names_filters_by_path(web_config, monkeypatch):
+    monkeypatch.setattr(
+        "thirdeye.web.agentic.shutil.which",
+        lambda cmd: "/usr/bin/claude" if cmd == "claude" else None,
+    )
+    assert agentic_module.installed_agent_names(web_config) == ["claude"]
+
+
+def test_installed_agent_names_empty_when_none(web_config, monkeypatch):
+    monkeypatch.setattr(
+        "thirdeye.web.agentic.shutil.which", lambda cmd: None
+    )
+    assert agentic_module.installed_agent_names(web_config) == []
+
+
+def test_search_page_passes_only_installed_agents(client, monkeypatch):
+    monkeypatch.setattr(
+        "thirdeye.web.agentic.shutil.which",
+        lambda cmd: "/usr/bin/claude" if cmd == "claude" else None,
+    )
+    called: dict = {}
+    real = agentic_module.installed_agent_names
+
+    def spy(config):
+        result = real(config)
+        called["agents"] = result
+        return result
+
+    monkeypatch.setattr(
+        "thirdeye.web.routes.search.installed_agent_names", spy
+    )
+    r = client.get("/search")
+    assert r.status_code == 200
+    assert called["agents"] == ["claude"]
