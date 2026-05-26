@@ -608,3 +608,141 @@ def test_status_json_output(home: Path):
     assert len(lines) == 1
     # pid-not-alive upgrades status to orphaned
     assert lines[0]["status"] == "orphaned"
+
+
+# --- batch ---
+
+
+def _make_session(home: Path, sid: str) -> None:
+    sd = session_dir(home, "claude", sid)
+    sd.mkdir(parents=True, exist_ok=True)
+    (sd / "meta.yaml").write_text(
+        "schema_version: 2\n"
+        f"session_id: {sid}\n"
+        "platform: claude\n"
+        "cwd: /x\nstarted_at: 2026-05-16T00:00:00Z\nended_at: null\n"
+        "status: open\nevent_count: 1\nlast_seq: -1\nlast_ts: null\n"
+    )
+
+
+def test_batch_dispatches_valid_and_skips_invalid(home: Path, monkeypatch):
+    _make_session(home, "sess0001")
+    _make_session(home, "sess0002")
+
+    calls: list[dict] = []
+
+    def fake_run_eval_background(**kw):
+        calls.append(kw)
+        return "01J7" + kw["session_id"][:4].upper()
+
+    monkeypatch.setattr(
+        "thirdeye.commands.eval.run_eval_background", fake_run_eval_background
+    )
+    result = CliRunner().invoke(
+        eval_group,
+        ["batch", "test", "sess0001", "missing", "sess0002", "--agent", "claude"],
+        catch_exceptions=False,
+    )
+    assert result.exit_code == 0, result.output
+    # Two dispatches happened (one per resolvable prefix)
+    assert len(calls) == 2
+    dispatched_lines = [
+        line for line in result.output.splitlines() if "dispatched" in line
+    ]
+    assert len(dispatched_lines) == 2
+    assert "sess0001\t01J7SESS\tdispatched" in result.output
+    assert "sess0002\t01J7SESS\tdispatched" in result.output
+    # Invalid prefix surfaces a skip message on stderr (mixed into output here)
+    assert "skip missing" in result.output
+
+
+def test_batch_caps_at_25_sessions(home: Path, monkeypatch):
+    monkeypatch.setattr(
+        "thirdeye.commands.eval.run_eval_background", lambda **kw: "RUN"
+    )
+    prefixes = [f"s{i:04d}" for i in range(26)]
+    result = CliRunner().invoke(
+        eval_group,
+        ["batch", "test", *prefixes, "--agent", "claude"],
+    )
+    assert result.exit_code != 0
+    assert "capped at 25" in result.output
+
+
+# --- results ---
+
+
+def test_results_table_lists_runs_desc(home: Path):
+    _make_session(home, "sess0001")
+    _make_session(home, "sess0002")
+    _seed_result(
+        home,
+        "sess0001",
+        id="01JOLDXXX",
+        definition="test",
+        agent="claude",
+        verdict="pass",
+        started_at="2026-05-15T01:00:00Z",
+    )
+    _seed_result(
+        home,
+        "sess0002",
+        id="01JNEWXXX",
+        definition="test",
+        agent="claude",
+        verdict="warn",
+        started_at="2026-05-20T01:00:00Z",
+    )
+    # A result on a different definition that must not appear
+    _seed_result(
+        home,
+        "sess0001",
+        id="01JOTHER",
+        definition="other",
+        agent="claude",
+        verdict="fail",
+        started_at="2026-05-25T01:00:00Z",
+    )
+    result = CliRunner().invoke(
+        eval_group, ["results", "--def", "test"], catch_exceptions=False
+    )
+    assert result.exit_code == 0, result.output
+    lines = [ln for ln in result.output.splitlines() if ln.strip()]
+    assert len(lines) == 2
+    # DESC by started_at — sess0002 (newer) first
+    assert lines[0].startswith("sess0002\t")
+    assert lines[1].startswith("sess0001\t")
+    # Tab-separated, run_id truncated to 8 chars
+    parts = lines[0].split("\t")
+    assert parts == ["sess0002", "01JNEWXX", "claude", "warn", "2026-05-20T01:00:00Z"]
+
+
+def test_results_as_json(home: Path):
+    _make_session(home, "sess0001")
+    _seed_result(
+        home,
+        "sess0001",
+        id="01JNEWXXX",
+        definition="test",
+        agent="claude",
+        verdict="pass",
+        started_at="2026-05-20T01:00:00Z",
+        duration_ms=4242,
+    )
+    result = CliRunner().invoke(
+        eval_group,
+        ["results", "--def", "test", "--as-json"],
+        catch_exceptions=False,
+    )
+    assert result.exit_code == 0, result.output
+    lines = [json.loads(ln) for ln in result.output.splitlines() if ln.strip()]
+    assert len(lines) == 1
+    assert lines[0] == {
+        "session_id": "sess0001",
+        "platform": "claude",
+        "run_id": "01JNEWXXX",
+        "agent": "claude",
+        "verdict": "pass",
+        "started_at": "2026-05-20T01:00:00Z",
+        "duration_ms": 4242,
+    }
