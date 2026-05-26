@@ -1,8 +1,42 @@
 from __future__ import annotations
 
+from datetime import UTC, datetime, timedelta
+
 import pytest
 
+from thirdeye.meta import read_meta, write_meta
+from thirdeye.paths import meta_path, session_dir
+
 pytest.importorskip("starlette")
+
+
+def _set_window(store, platform, sid, started, last):
+    mp = meta_path(session_dir(store.config.root, platform, sid))
+    m = read_meta(mp)
+    assert m is not None
+    m.started_at = started
+    m.last_ts = last
+    write_meta(mp, m)
+
+
+def _populate(store):
+    now = datetime.now(UTC)
+    recent = (now - timedelta(days=1)).strftime("%Y-%m-%dT%H:%M:%S.000Z")
+    old = (now - timedelta(days=30)).strftime("%Y-%m-%dT%H:%M:%S.000Z")
+
+    sid_recent = "01RECENT0001"
+    with store.open_session(sid_recent, platform="claude", cwd="/proj/a") as w:
+        w.append("user_message", "hi")
+    store.close_session(sid_recent, platform="claude")
+    _set_window(store, "claude", sid_recent, recent, recent)
+
+    sid_old = "01OLDOLD0001"
+    with store.open_session(sid_old, platform="claude", cwd="/proj/b") as w:
+        w.append("user_message", "hi")
+    store.close_session(sid_old, platform="claude")
+    _set_window(store, "claude", sid_old, old, old)
+
+    return sid_recent, sid_old
 
 
 def test_index_empty_returns_200(client):
@@ -14,3 +48,40 @@ def test_index_empty_returns_200(client):
 def test_index_filter_params_accepted(client):
     r = client.get("/?platform=claude&since=2026-01-01")
     assert r.status_code == 200
+
+
+def test_index_has_ask_panel(client):
+    r = client.get("/")
+    assert r.status_code == 200
+    assert b'name="nl"' in r.content
+
+
+def test_index_has_saved_views_sidebar_with_empty_state(client):
+    r = client.get("/")
+    assert r.status_code == 200
+    assert b'class="saved-views"' in r.content
+    assert b"No saved views yet." in r.content
+
+
+def test_index_default_since_7d_filters_old_sessions(client, web_store):
+    sid_recent, sid_old = _populate(web_store)
+    r = client.get("/")
+    assert r.status_code == 200
+    assert sid_recent.encode() in r.content
+    assert sid_old.encode() not in r.content
+    checkboxes = r.content.count(b'name="session_id"')
+    assert checkboxes == 1
+
+
+def test_index_explicit_since_wins_over_default(client, web_store):
+    sid_recent, sid_old = _populate(web_store)
+    r = client.get("/?since=2020-01-01")
+    assert r.status_code == 200
+    assert sid_recent.encode() in r.content
+    assert sid_old.encode() in r.content
+
+
+def test_index_default_since_in_form(client):
+    r = client.get("/")
+    assert r.status_code == 200
+    assert b'value="7d"' in r.content

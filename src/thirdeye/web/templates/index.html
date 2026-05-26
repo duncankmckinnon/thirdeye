@@ -1,51 +1,99 @@
 {% extends "base.html" %}
 {% block title %}thirdeye — sessions{% endblock %}
 {% block content %}
-<section class="sessions">
-  <form class="filters" method="get" action="/">
-    <input type="text" name="platform" placeholder="platform"
-           value="{{ filters.platform or '' }}">
-    <input type="text" name="cwd" placeholder="cwd"
-           value="{{ filters.cwd or '' }}">
-    <select name="status" aria-label="status">
-      <option value="" {% if not filters.status %}selected{% endif %}>any status</option>
-      <option value="open" {% if filters.status == 'open' %}selected{% endif %}>open</option>
-      <option value="closed" {% if filters.status == 'closed' %}selected{% endif %}>closed</option>
-      <option value="stale" {% if filters.status == 'stale' %}selected{% endif %}>stale</option>
-    </select>
-    <label class="date-field">since
-      <input type="date" name="since" value="{{ filters.since or '' }}">
-    </label>
-    <label class="date-field">until
-      <input type="date" name="until" value="{{ filters.until or '' }}">
-    </label>
-    {% for t in filters.tag %}
-      <input type="text" name="tag" value="{{ t }}" placeholder="tag">
-    {% endfor %}
-    <input type="text" name="tag" value="" placeholder="tag">
-    <button type="submit">Filter</button>
-  </form>
+<section class="sessions-page">
+  <div class="sessions-layout">
+    <div class="sessions-sidebar"
+         hx-get="/views/sessions"
+         hx-trigger="load"
+         hx-target="this"
+         hx-swap="outerHTML">
+      {% with page="sessions", saved=saved_views %}
+        {% include "_saved_views.html" %}
+      {% endwith %}
+    </div>
 
-  {% if sessions %}
-  <table class="session-table">
-    <thead>
-      <tr>
-        <th>session</th>
-        <th>platform</th>
-        <th>cwd</th>
-        <th>started</th>
-        <th>events</th>
-        <th>status</th>
-      </tr>
-    </thead>
-    <tbody>
-      {% for s in sessions %}
-        {% include "_session_row.html" %}
-      {% endfor %}
-    </tbody>
-  </table>
-  {% else %}
-  <p class="empty">No sessions yet.</p>
-  {% endif %}
+    <div class="sessions-main">
+      <form class="filters" method="get" action="/">
+        <input type="text" name="platform" placeholder="platform"
+               value="{{ filters.platform or '' }}">
+        <input type="text" name="cwd" placeholder="cwd"
+               value="{{ filters.cwd or '' }}">
+        <select name="status" aria-label="status">
+          <option value="" {% if not filters.status %}selected{% endif %}>any status</option>
+          <option value="open" {% if filters.status == 'open' %}selected{% endif %}>open</option>
+          <option value="closed" {% if filters.status == 'closed' %}selected{% endif %}>closed</option>
+          <option value="stale" {% if filters.status == 'stale' %}selected{% endif %}>stale</option>
+        </select>
+        <input type="text" name="since" placeholder="since (e.g. 7d)"
+               value="{{ filters.since or '' }}">
+        <input type="text" name="until" placeholder="until"
+               value="{{ filters.until or '' }}">
+        <select name="order" aria-label="order">
+          <option value="newest" {% if filters.order != 'oldest' %}selected{% endif %}>newest first</option>
+          <option value="oldest" {% if filters.order == 'oldest' %}selected{% endif %}>oldest first</option>
+        </select>
+        {% for t in filters.tag %}
+          <input type="text" name="tag" value="{{ t }}" placeholder="tag">
+        {% endfor %}
+        <input type="text" name="tag" value="" placeholder="tag">
+        <button type="submit">Filter</button>
+      </form>
+
+      {% with surface="sessions", post_url="/sessions/agentic", target_id="ask-sessions-target" %}
+        {% include "_ask_panel.html" %}
+      {% endwith %}
+
+      <form class="eval-batch"
+            action="/evals/runs/batch"
+            method="post"
+            hx-post="/evals/runs/batch"
+            hx-target="#batch-status">
+        <div class="eval-batch-bar">
+          <select name="def" aria-label="eval definition">
+            <option value="">Pick eval…</option>
+            {% for d in eval_defs %}
+              <option value="{{ d }}">{{ d }}</option>
+            {% endfor %}
+          </select>
+          <select name="agent" aria-label="agent">
+            <option value="">Pick agent…</option>
+            {% for a in agents %}
+              <option value="{{ a }}">{{ a }}</option>
+            {% endfor %}
+          </select>
+          <button type="submit">Dispatch</button>
+        </div>
+
+        {% if sessions %}
+        <table class="session-table">
+          <thead>
+            <tr>
+              <th></th>
+              <th>session</th>
+              <th>platform</th>
+              <th>cwd</th>
+              <th>started</th>
+              <th>events</th>
+              <th>status</th>
+            </tr>
+          </thead>
+          <tbody>
+            {% for s in sessions %}
+              {% include "_session_row.html" %}
+            {% endfor %}
+          </tbody>
+        </table>
+        {% else %}
+        <p class="empty">No sessions match the current filter.</p>
+        {% endif %}
+      </form>
+
+      <div id="batch-status"></div>
+    </div>
+  </div>
 </section>
+{% endblock %}
+{% block scripts %}
+<script src="/static/saved_views.js"></script>
 {% endblock %}

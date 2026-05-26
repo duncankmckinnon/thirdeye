@@ -33,3 +33,10 @@
 
   window.thirdeyeViews = { restoreIfBareAndStored, wireSaveForm, clearStored };
 })();
+
+document.addEventListener("DOMContentLoaded", function () {
+  if (window.location.pathname === "/") {
+    window.thirdeyeViews.restoreIfBareAndStored("sessions", "?since=7d&order=newest");
+    window.thirdeyeViews.wireSaveForm();
+  }
+});

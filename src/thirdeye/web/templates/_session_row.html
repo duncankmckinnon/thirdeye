@@ -1,4 +1,5 @@
 <tr class="session-row">
+  <td><input type="checkbox" name="session_id" value="{{ s.session_id }}"></td>
   <td><a href="/sessions/{{ s.session_id }}">{{ s.session_id[:8] }}</a></td>
   <td>{{ s.platform }}</td>
   <td title="{{ s.cwd }}">{{ s.cwd | basename }}</td>
