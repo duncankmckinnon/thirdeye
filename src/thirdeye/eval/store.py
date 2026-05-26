@@ -11,8 +11,6 @@ from thirdeye.paths import (
     eval_job_path,
     evals_jobs_dir,
     evals_jsonl_path,
-)
-from thirdeye.paths import (
     session_dir as _session_dir,
 )
 
