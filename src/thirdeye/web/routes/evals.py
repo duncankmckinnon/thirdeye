@@ -236,7 +236,7 @@ async def _runs_batch(request: Request) -> HTMLResponse:
             status_code=400,
             detail=f"batch capped at {BATCH_LIMIT} sessions",
         )
-    using = form.get("using") or "default"
+    using = form.get("def") or form.get("using") or "default"
     agent = (form.get("agent") or "").strip()
     if not agent:
         raise HTTPException(status_code=400, detail="agent required")

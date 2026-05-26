@@ -90,6 +90,41 @@ def test_batch_dispatches_per_session(monkeypatch, client, web_store):
         assert f"/sessions/{sid}/evals/runs/{run_id}/status" in body
 
 
+def test_batch_uses_def_field_from_sessions_page(monkeypatch, client, web_store):
+    sid = "01J9BATCHDEF1"
+    with web_store.open_session(sid, platform="claude", cwd="/p") as w:
+        w.append("user_message", {"prompt": "x"})
+    web_store.close_session(sid, platform="claude")
+
+    captured: list[dict] = []
+
+    def fake_run_eval_background(
+        *,
+        thirdeye_home,
+        platform,
+        session_id,
+        definition_name="default",
+        agent_name,
+        cwd=None,
+        thirdeye_bin=None,
+    ):
+        captured.append({"definition_name": definition_name})
+        return "01RUNDEF0001"
+
+    monkeypatch.setattr(
+        "thirdeye.web.routes.evals.run_eval_background",
+        fake_run_eval_background,
+    )
+
+    r = client.post(
+        "/evals/runs/batch",
+        data={"session_id": [sid], "agent": "claude", "def": "myeval"},
+    )
+    assert r.status_code == 200
+    assert len(captured) == 1
+    assert captured[0]["definition_name"] == "myeval"
+
+
 def test_batch_poll_returns_status_fragment(client, web_store, web_config):
     from thirdeye.paths import session_dir
 

@@ -23,7 +23,6 @@
           <option value="" {% if not filters.status %}selected{% endif %}>any status</option>
           <option value="open" {% if filters.status == 'open' %}selected{% endif %}>open</option>
           <option value="closed" {% if filters.status == 'closed' %}selected{% endif %}>closed</option>
-          <option value="stale" {% if filters.status == 'stale' %}selected{% endif %}>stale</option>
         </select>
         <input type="text" name="since" placeholder="since (e.g. 7d)"
                value="{{ filters.since or '' }}">
