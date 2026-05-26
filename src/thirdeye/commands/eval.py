@@ -287,9 +287,7 @@ def status_cmd(session_prefix, as_json):
 @click.argument("definition_name")
 @click.argument("session_prefixes", nargs=-1, required=True)
 @click.option("--agent", required=True, help="Agent CLI to dispatch.")
-def batch_cmd(
-    definition_name: str, session_prefixes: tuple[str, ...], agent: str
-) -> None:
+def batch_cmd(definition_name: str, session_prefixes: tuple[str, ...], agent: str) -> None:
     config = Config.load()
     store = Store(config)
     if len(session_prefixes) > 25:
@@ -343,9 +341,7 @@ def results_cmd(definition_name: str, as_json: bool) -> None:
             )
         return
     for meta, r in rows:
-        click.echo(
-            f"{meta.session_id}\t{r.id[:8]}\t{r.agent}\t{r.verdict}\t{r.started_at}"
-        )
+        click.echo(f"{meta.session_id}\t{r.id[:8]}\t{r.agent}\t{r.verdict}\t{r.started_at}")
 
 
 def _pid_alive(pid: int) -> bool:

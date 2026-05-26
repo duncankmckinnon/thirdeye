@@ -172,11 +172,15 @@ def test_iter_results_by_definition_across_sessions(tmp_path: Path):
     sd_a = _make_session(config, "claude", "01J9G7XK4P")
     sd_b = _make_session(config, "cursor", "02ABCDEF12")
 
-    EvalStore(sd_a).append(_result(id="a1", definition="default", started_at="2026-05-16T01:00:00Z"))
+    EvalStore(sd_a).append(
+        _result(id="a1", definition="default", started_at="2026-05-16T01:00:00Z")
+    )
     EvalStore(sd_a).append(
         _result(id="a2", definition="token-efficiency", started_at="2026-05-16T02:00:00Z")
     )
-    EvalStore(sd_b).append(_result(id="b1", definition="default", started_at="2026-05-16T03:00:00Z"))
+    EvalStore(sd_b).append(
+        _result(id="b1", definition="default", started_at="2026-05-16T03:00:00Z")
+    )
 
     pairs = list(iter_results_by_definition(config, "default"))
     assert [r.id for _, r in pairs] == ["b1", "a1"]

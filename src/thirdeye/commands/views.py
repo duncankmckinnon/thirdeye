@@ -39,9 +39,7 @@ def list_cmd(page: str) -> None:
 def save_cmd(page: str, name: str, path: str) -> None:
     config = Config.load()
     try:
-        ViewStore(config.root, page).save(
-            SavedView(name=name, path=path, created_at=now_iso())
-        )
+        ViewStore(config.root, page).save(SavedView(name=name, path=path, created_at=now_iso()))
     except ValueError as e:
         raise click.ClickException(str(e)) from e
     click.echo(f"saved {name}")

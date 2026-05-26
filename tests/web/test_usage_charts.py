@@ -31,8 +31,9 @@ def _make_session(root: Path, *, sid: str, platform: str, started_at: str) -> Pa
     return sd
 
 
-def _row(*, sid: str, platform: str, ts: str, input_tokens: int = 100,
-         output_tokens: int = 10) -> UsageRow:
+def _row(
+    *, sid: str, platform: str, ts: str, input_tokens: int = 100, output_tokens: int = 10
+) -> UsageRow:
     return UsageRow(
         session_id=sid,
         seq=0,
@@ -73,20 +74,38 @@ def test_global_usage_empty_store(client) -> None:
 
 def test_global_usage_platform_and_date_filter(client, web_config) -> None:
     sd_claude = _make_session(
-        web_config.root, sid="claude1", platform="claude",
+        web_config.root,
+        sid="claude1",
+        platform="claude",
         started_at="2026-05-05T10:00:00.000Z",
     )
     UsageStore(sd_claude).append(
-        [_row(sid="claude1", platform="claude", ts="2026-05-05T10:00:00.000Z",
-              input_tokens=100, output_tokens=10)]
+        [
+            _row(
+                sid="claude1",
+                platform="claude",
+                ts="2026-05-05T10:00:00.000Z",
+                input_tokens=100,
+                output_tokens=10,
+            )
+        ]
     )
     sd_codex = _make_session(
-        web_config.root, sid="codex1", platform="codex",
+        web_config.root,
+        sid="codex1",
+        platform="codex",
         started_at="2026-05-06T10:00:00.000Z",
     )
     UsageStore(sd_codex).append(
-        [_row(sid="codex1", platform="codex", ts="2026-05-06T10:00:00.000Z",
-              input_tokens=999, output_tokens=99)]
+        [
+            _row(
+                sid="codex1",
+                platform="codex",
+                ts="2026-05-06T10:00:00.000Z",
+                input_tokens=999,
+                output_tokens=99,
+            )
+        ]
     )
 
     r = client.get("/usage?platform=claude&since=2026-05-01&until=2026-05-10")
@@ -142,20 +161,38 @@ def test_global_usage_totals_include_all_platforms(client, web_config) -> None:
 
 def test_global_usage_platform_codex_filter(client, web_config) -> None:
     sd_claude = _make_session(
-        web_config.root, sid="cl1", platform="claude",
+        web_config.root,
+        sid="cl1",
+        platform="claude",
         started_at="2026-05-05T10:00:00.000Z",
     )
     UsageStore(sd_claude).append(
-        [_row(sid="cl1", platform="claude", ts="2026-05-05T10:00:00.000Z",
-              input_tokens=100, output_tokens=10)]
+        [
+            _row(
+                sid="cl1",
+                platform="claude",
+                ts="2026-05-05T10:00:00.000Z",
+                input_tokens=100,
+                output_tokens=10,
+            )
+        ]
     )
     sd_codex = _make_session(
-        web_config.root, sid="cx1", platform="codex",
+        web_config.root,
+        sid="cx1",
+        platform="codex",
         started_at="2026-05-05T10:00:00.000Z",
     )
     UsageStore(sd_codex).append(
-        [_row(sid="cx1", platform="codex", ts="2026-05-05T10:00:00.000Z",
-              input_tokens=42, output_tokens=4)]
+        [
+            _row(
+                sid="cx1",
+                platform="codex",
+                ts="2026-05-05T10:00:00.000Z",
+                input_tokens=42,
+                output_tokens=4,
+            )
+        ]
     )
 
     r = client.get("/usage?platform=codex&since=2026-05-01&until=2026-05-10")
@@ -174,8 +211,11 @@ def test_global_usage_filters_echoed_in_form(client) -> None:
     assert 'value="7d"' in body
     assert 'name="until"' in body
     assert 'value="today"' in body
-    assert '<option value="gemini"\n            selected>gemini</option>' in body \
-        or 'value="gemini"' in body and "selected" in body
+    assert (
+        '<option value="gemini"\n            selected>gemini</option>' in body
+        or 'value="gemini"' in body
+        and "selected" in body
+    )
 
 
 def test_global_usage_includes_chart_script_and_canvases(client) -> None:
@@ -190,26 +230,31 @@ def test_global_usage_includes_chart_script_and_canvases(client) -> None:
 
 def test_global_usage_rolling_since(client, web_config) -> None:
     from datetime import UTC, datetime, timedelta
-    one_day = (datetime.now(UTC) - timedelta(days=1)).strftime(
-        "%Y-%m-%dT%H:%M:%S.000Z"
-    )
-    three_day = (datetime.now(UTC) - timedelta(days=3)).strftime(
-        "%Y-%m-%dT%H:%M:%S.000Z"
-    )
+
+    one_day = (datetime.now(UTC) - timedelta(days=1)).strftime("%Y-%m-%dT%H:%M:%S.000Z")
+    three_day = (datetime.now(UTC) - timedelta(days=3)).strftime("%Y-%m-%dT%H:%M:%S.000Z")
     sd = _make_session(
-        web_config.root, sid="r1", platform="claude", started_at=one_day,
+        web_config.root,
+        sid="r1",
+        platform="claude",
+        started_at=one_day,
     )
-    UsageStore(sd).append([
-        _row(sid="r1", platform="claude", ts=one_day,
-             input_tokens=7, output_tokens=1),
-    ])
+    UsageStore(sd).append(
+        [
+            _row(sid="r1", platform="claude", ts=one_day, input_tokens=7, output_tokens=1),
+        ]
+    )
     sd2 = _make_session(
-        web_config.root, sid="r3", platform="claude", started_at=three_day,
+        web_config.root,
+        sid="r3",
+        platform="claude",
+        started_at=three_day,
     )
-    UsageStore(sd2).append([
-        _row(sid="r3", platform="claude", ts=three_day,
-             input_tokens=3, output_tokens=2),
-    ])
+    UsageStore(sd2).append(
+        [
+            _row(sid="r3", platform="claude", ts=three_day, input_tokens=3, output_tokens=2),
+        ]
+    )
     r = client.get("/usage?since=7d&until=1h")
     assert r.status_code == 200
     data = _extract_chart_json(r.content)
@@ -221,15 +266,29 @@ def test_global_usage_rolling_since(client, web_config) -> None:
 
 def test_global_usage_chart_data_arrays_aligned(client, web_config) -> None:
     sd = _make_session(
-        web_config.root, sid="s1", platform="claude",
+        web_config.root,
+        sid="s1",
+        platform="claude",
         started_at="2026-05-05T10:00:00.000Z",
     )
-    UsageStore(sd).append([
-        _row(sid="s1", platform="claude", ts="2026-05-05T10:00:00.000Z",
-             input_tokens=10, output_tokens=1),
-        _row(sid="s1", platform="claude", ts="2026-05-07T10:00:00.000Z",
-             input_tokens=20, output_tokens=2),
-    ])
+    UsageStore(sd).append(
+        [
+            _row(
+                sid="s1",
+                platform="claude",
+                ts="2026-05-05T10:00:00.000Z",
+                input_tokens=10,
+                output_tokens=1,
+            ),
+            _row(
+                sid="s1",
+                platform="claude",
+                ts="2026-05-07T10:00:00.000Z",
+                input_tokens=20,
+                output_tokens=2,
+            ),
+        ]
+    )
 
     r = client.get("/usage?since=2026-05-01&until=2026-05-10")
     assert r.status_code == 200

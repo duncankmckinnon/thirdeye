@@ -635,9 +635,7 @@ def test_batch_dispatches_valid_and_skips_invalid(home: Path, monkeypatch):
         calls.append(kw)
         return "01J7" + kw["session_id"][:4].upper()
 
-    monkeypatch.setattr(
-        "thirdeye.commands.eval.run_eval_background", fake_run_eval_background
-    )
+    monkeypatch.setattr("thirdeye.commands.eval.run_eval_background", fake_run_eval_background)
     result = CliRunner().invoke(
         eval_group,
         ["batch", "test", "sess0001", "missing", "sess0002", "--agent", "claude"],
@@ -646,9 +644,7 @@ def test_batch_dispatches_valid_and_skips_invalid(home: Path, monkeypatch):
     assert result.exit_code == 0, result.output
     # Two dispatches happened (one per resolvable prefix)
     assert len(calls) == 2
-    dispatched_lines = [
-        line for line in result.output.splitlines() if "dispatched" in line
-    ]
+    dispatched_lines = [line for line in result.output.splitlines() if "dispatched" in line]
     assert len(dispatched_lines) == 2
     assert "sess0001\t01J7SESS\tdispatched" in result.output
     assert "sess0002\t01J7SESS\tdispatched" in result.output
@@ -657,9 +653,7 @@ def test_batch_dispatches_valid_and_skips_invalid(home: Path, monkeypatch):
 
 
 def test_batch_caps_at_25_sessions(home: Path, monkeypatch):
-    monkeypatch.setattr(
-        "thirdeye.commands.eval.run_eval_background", lambda **kw: "RUN"
-    )
+    monkeypatch.setattr("thirdeye.commands.eval.run_eval_background", lambda **kw: "RUN")
     prefixes = [f"s{i:04d}" for i in range(26)]
     result = CliRunner().invoke(
         eval_group,
@@ -703,9 +697,7 @@ def test_results_table_lists_runs_desc(home: Path):
         verdict="fail",
         started_at="2026-05-25T01:00:00Z",
     )
-    result = CliRunner().invoke(
-        eval_group, ["results", "--def", "test"], catch_exceptions=False
-    )
+    result = CliRunner().invoke(eval_group, ["results", "--def", "test"], catch_exceptions=False)
     assert result.exit_code == 0, result.output
     lines = [ln for ln in result.output.splitlines() if ln.strip()]
     assert len(lines) == 2

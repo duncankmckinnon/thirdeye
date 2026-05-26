@@ -32,9 +32,7 @@ def test_sessions_agentic_success_renders_preview(client, monkeypatch):
         assert surface == "sessions"
         return _stub_proposed_sessions()
 
-    monkeypatch.setattr(
-        "thirdeye.web.routes.sessions.propose_filters", fake_propose
-    )
+    monkeypatch.setattr("thirdeye.web.routes.sessions.propose_filters", fake_propose)
     r = client.post(
         "/sessions/agentic",
         data={"nl": "open refactor work longest", "agent": "claude"},
@@ -52,9 +50,7 @@ def test_sessions_agentic_runtime_error_returns_400(client, monkeypatch):
     def fake_propose(config, *, nl, agent_name, surface):
         raise RuntimeError("agent exited 2: broken")
 
-    monkeypatch.setattr(
-        "thirdeye.web.routes.sessions.propose_filters", fake_propose
-    )
+    monkeypatch.setattr("thirdeye.web.routes.sessions.propose_filters", fake_propose)
     r = client.post("/sessions/agentic", data={"nl": "x", "agent": "claude"})
     assert r.status_code == 400
     assert b"agent exited 2" in r.content

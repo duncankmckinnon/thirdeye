@@ -67,9 +67,7 @@ def test_cwds_ordered_most_recent_first_and_deduped(tmp_path: Path) -> None:
 
     block = build_vocabulary_block(config, "search")
 
-    cwd_line = next(
-        line for line in block.splitlines() if line.startswith("cwds (top 20")
-    )
+    cwd_line = next(line for line in block.splitlines() if line.startswith("cwds (top 20"))
     assert cwd_line.count("/dup") == 1
     new_idx = cwd_line.index("/new")
     dup_idx = cwd_line.index("/dup")
@@ -89,9 +87,7 @@ def test_tags_sorted_by_frequency(tmp_path: Path) -> None:
 
     block = build_vocabulary_block(config, "search")
 
-    tag_line = next(
-        line for line in block.splitlines() if line.startswith("tags (top 50")
-    )
+    tag_line = next(line for line in block.splitlines() if line.startswith("tags (top 50"))
     assert tag_line.index("frequent") < tag_line.index("rare")
 
 

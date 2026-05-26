@@ -40,12 +40,8 @@ def test_search_agentic_success_renders_preview(client, monkeypatch):
         assert agent_name == "claude"
         return _stub_proposed_search()
 
-    monkeypatch.setattr(
-        "thirdeye.web.routes.search.propose_filters", fake_propose
-    )
-    r = client.post(
-        "/search/agentic", data={"nl": "claude bug from last week", "agent": "claude"}
-    )
+    monkeypatch.setattr("thirdeye.web.routes.search.propose_filters", fake_propose)
+    r = client.post("/search/agentic", data={"nl": "claude bug from last week", "agent": "claude"})
     assert r.status_code == 200
     body = r.content.decode()
     assert "platform=claude" in body
@@ -60,9 +56,7 @@ def test_search_agentic_agent_failure_returns_400(client, monkeypatch):
     def fake_propose(config, *, nl, agent_name, surface):
         raise FileNotFoundError("`claude` not found on PATH")
 
-    monkeypatch.setattr(
-        "thirdeye.web.routes.search.propose_filters", fake_propose
-    )
+    monkeypatch.setattr("thirdeye.web.routes.search.propose_filters", fake_propose)
     r = client.post("/search/agentic", data={"nl": "x", "agent": "claude"})
     assert r.status_code == 400
     assert b"not found on PATH" in r.content
@@ -72,9 +66,7 @@ def test_search_agentic_value_error_returns_400(client, monkeypatch):
     def fake_propose(config, *, nl, agent_name, surface):
         raise ValueError("unknown agent: 'nope'")
 
-    monkeypatch.setattr(
-        "thirdeye.web.routes.search.propose_filters", fake_propose
-    )
+    monkeypatch.setattr("thirdeye.web.routes.search.propose_filters", fake_propose)
     r = client.post("/search/agentic", data={"nl": "x", "agent": "nope"})
     assert r.status_code == 400
     assert b"unknown agent" in r.content
@@ -92,20 +84,27 @@ def test_proposed_filters_query_string_search_surface():
 
 def test_proposed_filters_empty_query_string():
     p = ProposedFilters(
-        q=None, platform=None, cwd=None, tags=[], since=None, until=None,
-        status=None, order=None, rationale=None,
+        q=None,
+        platform=None,
+        cwd=None,
+        tags=[],
+        since=None,
+        until=None,
+        status=None,
+        order=None,
+        rationale=None,
     )
     assert p.query_string() == ""
 
 
 def test_agentic_module_parse_envelope_strips_fences():
-    raw = "```json\n{\"q\": \"x\"}\n```"
+    raw = '```json\n{"q": "x"}\n```'
     env = agentic_module._parse_envelope(raw)
     assert env == {"q": "x"}
 
 
 def test_agentic_module_parse_envelope_preserves_inner_backticks():
-    raw = "```\n{\"q\": \"`raw`\"}\n```"
+    raw = '```\n{"q": "`raw`"}\n```'
     env = agentic_module._parse_envelope(raw)
     assert env == {"q": "`raw`"}
 
@@ -119,9 +118,7 @@ def test_installed_agent_names_filters_by_path(web_config, monkeypatch):
 
 
 def test_installed_agent_names_empty_when_none(web_config, monkeypatch):
-    monkeypatch.setattr(
-        "thirdeye.web.agentic.shutil.which", lambda cmd: None
-    )
+    monkeypatch.setattr("thirdeye.web.agentic.shutil.which", lambda cmd: None)
     assert agentic_module.installed_agent_names(web_config) == []
 
 
@@ -138,9 +135,7 @@ def test_search_page_passes_only_installed_agents(client, monkeypatch):
         called["agents"] = result
         return result
 
-    monkeypatch.setattr(
-        "thirdeye.web.routes.search.installed_agent_names", spy
-    )
+    monkeypatch.setattr("thirdeye.web.routes.search.installed_agent_names", spy)
     r = client.get("/search")
     assert r.status_code == 200
     assert called["agents"] == ["claude"]

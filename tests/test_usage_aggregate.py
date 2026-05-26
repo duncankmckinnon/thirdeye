@@ -241,9 +241,7 @@ def test_bounds_extend_range_when_wider_than_data(config: Config) -> None:
     sd = _make_session(
         config.root, sid="s1", platform="claude", started_at="2026-05-20T10:00:00.000Z"
     )
-    UsageStore(sd).append(
-        [_row(sid="s1", platform="claude", seq=0, ts="2026-05-20T10:00:00.000Z")]
-    )
+    UsageStore(sd).append([_row(sid="s1", platform="claude", seq=0, ts="2026-05-20T10:00:00.000Z")])
 
     since = datetime(2026, 5, 18, tzinfo=UTC)
     until = datetime(2026, 5, 22, tzinfo=UTC)

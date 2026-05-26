@@ -10,7 +10,8 @@ from typing import Any
 from thirdeye.config import Config
 from thirdeye.eval._ulid import ulid_now
 from thirdeye.eval.agents import get_adapter
-from thirdeye.eval.agents.exec import AgentInvocation, invoke_agent as _invoke_agent
+from thirdeye.eval.agents.exec import AgentInvocation
+from thirdeye.eval.agents.exec import invoke_agent as _invoke_agent
 from thirdeye.eval.definition import EvalDefinition, load_definition
 from thirdeye.eval.prompt import build_prompt
 from thirdeye.eval.result import VALID_VERDICTS, EvalResult, Finding, parse_envelope
