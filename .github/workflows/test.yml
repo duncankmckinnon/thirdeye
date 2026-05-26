@@ -40,7 +40,7 @@ jobs:
           allow-prereleases: true
 
       - name: Install dependencies
-        run: pip install -e ".[dev]"
+        run: pip install -e ".[dev,ui]"
 
       - name: Run tests with coverage
         run: pytest tests/ -v --cov-report=xml
