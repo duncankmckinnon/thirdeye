@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+import json as _json
+from datetime import UTC, datetime, timedelta
+
 from starlette.applications import Starlette
 from starlette.exceptions import HTTPException
 from starlette.requests import Request
@@ -7,6 +10,8 @@ from starlette.responses import HTMLResponse
 from starlette.routing import Route
 
 from thirdeye.paths import session_dir
+from thirdeye.timeparse import parse_when
+from thirdeye.usage.aggregate import aggregate_by_day
 from thirdeye.usage.store import UsageStore
 
 
@@ -30,13 +35,42 @@ async def _session_usage(request: Request) -> HTMLResponse:
 
 
 async def _global_usage(request: Request) -> HTMLResponse:
-    store = request.app.state.store
-    aggregate = store.stats()
+    config = request.app.state.config
+    params = request.query_params
+    platform = params.get("platform") or None
+    since_str = params.get("since") or None
+    until_str = params.get("until") or None
+    try:
+        since = parse_when(since_str)
+    except ValueError:
+        since = None
+    try:
+        until = parse_when(until_str)
+    except ValueError:
+        until = None
+    if since is None and until is None:
+        until = datetime.now(UTC)
+        since = until - timedelta(days=30)
+    report = aggregate_by_day(config, platform=platform, since=since, until=until)
+    chart_data = {
+        "days": [b.day for b in report.buckets],
+        "input": [b.input_tokens for b in report.buckets],
+        "output": [b.output_tokens for b in report.buckets],
+        "sessions": [b.sessions for b in report.buckets],
+    }
     templates = request.app.state.templates
     return templates.TemplateResponse(
         request,
         "usage/global.html",
-        {"aggregate": aggregate},
+        {
+            "report": report,
+            "filters": {
+                "platform": platform,
+                "since": since_str,
+                "until": until_str,
+            },
+            "chart_data_json": _json.dumps(chart_data),
+        },
     )
 
 
