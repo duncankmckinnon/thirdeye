@@ -1,0 +1,12 @@
+{% extends "base.html" %}
+{% block title %}evals: {{ defn_name }}{% endblock %}
+{% block content %}
+<section class="eval-defn-results">
+  <h1>Runs for <code>{{ defn_name }}</code></h1>
+  {% if rows %}
+    {% include "evals/_results_table.html" %}
+  {% else %}
+    <p class="empty">No runs for this definition yet.</p>
+  {% endif %}
+</section>
+{% endblock %}

@@ -16,8 +16,10 @@ from thirdeye.eval.definition import (
     validate_directive_yaml,
 )
 from thirdeye.eval.runner import run_eval_background
-from thirdeye.eval.store import EvalStore
+from thirdeye.eval.store import EvalStore, iter_results_by_definition
 from thirdeye.paths import session_dir
+
+BATCH_LIMIT = 25
 
 
 async def _defs_list(request: Request) -> HTMLResponse:
@@ -222,6 +224,93 @@ async def _run_status(request: Request) -> HTMLResponse:
     )
 
 
+async def _runs_batch(request: Request) -> HTMLResponse:
+    config = request.app.state.config
+    store = request.app.state.store
+    form = await request.form()
+    sids = [s for s in form.getlist("session_id") if s]
+    if not sids:
+        raise HTTPException(status_code=400, detail="no sessions selected")
+    if len(sids) > BATCH_LIMIT:
+        raise HTTPException(
+            status_code=400,
+            detail=f"batch capped at {BATCH_LIMIT} sessions",
+        )
+    using = form.get("using") or "default"
+    agent = (form.get("agent") or "").strip()
+    if not agent:
+        raise HTTPException(status_code=400, detail="agent required")
+    jobs = []
+    for prefix in sids:
+        try:
+            platform, sid = store.resolve_session_id(prefix)
+        except (KeyError, ValueError):
+            continue
+        run_id = run_eval_background(
+            thirdeye_home=config.root,
+            platform=platform,
+            session_id=sid,
+            definition_name=using,
+            agent_name=agent,
+        )
+        jobs.append(
+            {"sid": sid, "platform": platform, "run_id": run_id, "status": "running"}
+        )
+    templates = request.app.state.templates
+    return templates.TemplateResponse(
+        request,
+        "evals/_batch_runs.html",
+        {"jobs": jobs, "definition": using, "agent": agent},
+    )
+
+
+async def _defn_results(request: Request) -> HTMLResponse:
+    config = request.app.state.config
+    name = request.path_params["name"]
+    rows = list(iter_results_by_definition(config, name))
+    templates = request.app.state.templates
+    return templates.TemplateResponse(
+        request,
+        "evals/defn_results.html",
+        {"defn_name": name, "rows": rows, "scope": "definition"},
+    )
+
+
+async def _run_show(request: Request) -> HTMLResponse:
+    config = request.app.state.config
+    store = request.app.state.store
+    sid_prefix = request.path_params["sid"]
+    run_id = request.path_params["run_id"]
+    try:
+        platform, sid = store.resolve_session_id(sid_prefix)
+    except (KeyError, ValueError) as e:
+        raise HTTPException(status_code=404, detail=str(e)) from e
+    sd = session_dir(config.root, platform, sid)
+    es = EvalStore(sd)
+    result = es.find_by_id(run_id)
+    templates = request.app.state.templates
+    if result is not None:
+        return templates.TemplateResponse(
+            request,
+            "evals/run_show.html",
+            {"result": result, "sid": sid, "platform": platform},
+        )
+    job = es.read_job(run_id)
+    if job is not None:
+        return templates.TemplateResponse(
+            request,
+            "evals/_run_status.html",
+            {
+                "sid": sid,
+                "platform": platform,
+                "job_id": run_id,
+                "status": job.get("status", "unknown"),
+                "verdict": None,
+            },
+        )
+    raise HTTPException(status_code=404, detail=f"no run {run_id}")
+
+
 def register(app: Starlette) -> None:
     # reads
     app.routes.append(Route("/evals/defs", _defs_list, methods=["GET"]))
@@ -236,6 +325,17 @@ def register(app: Starlette) -> None:
     app.routes.append(Route("/evals/defs/{name}", _def_delete, methods=["DELETE"]))
     # runs
     app.routes.append(Route("/evals/runs", _run_dispatch, methods=["POST"]))
+    app.routes.append(Route("/evals/runs/batch", _runs_batch, methods=["POST"]))
+    app.routes.append(
+        Route("/evals/defs/{name}/results", _defn_results, methods=["GET"])
+    )
+    app.routes.append(
+        Route(
+            "/sessions/{sid}/evals/runs/{run_id}",
+            _run_show,
+            methods=["GET"],
+        )
+    )
     app.routes.append(
         Route(
             "/sessions/{sid}/evals/runs/{job_id}",

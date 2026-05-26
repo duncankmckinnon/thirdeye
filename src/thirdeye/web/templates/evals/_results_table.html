@@ -1,0 +1,49 @@
+<table class="eval-results-table">
+  <thead>
+    <tr>
+      {% if scope == "definition" %}<th>session</th><th>platform</th>{% else %}<th>definition</th>{% endif %}
+      <th>run id</th>
+      <th>agent</th>
+      <th>verdict</th>
+      <th>started</th>
+      <th>duration</th>
+      <th></th>
+    </tr>
+  </thead>
+  <tbody>
+    {% for row in rows %}
+      {% if scope == "definition" %}
+        {% set meta = row[0] %}{% set r = row[1] %}
+      {% else %}
+        {% set meta = None %}{% set r = row %}
+      {% endif %}
+      <tr>
+        {% if scope == "definition" %}
+          <td><a href="/sessions/{{ meta.session_id }}">{{ meta.session_id[:8] }}</a></td>
+          <td>{{ meta.platform }}</td>
+        {% else %}
+          <td>{{ r.definition }}</td>
+        {% endif %}
+        <td><a href="/sessions/{{ r.session_id }}/evals/runs/{{ r.id }}">{{ r.id[:8] }}</a></td>
+        <td>{{ r.agent }}</td>
+        <td class="verdict verdict-{{ r.verdict }}">{{ r.verdict }}</td>
+        <td>{{ r.started_at }}</td>
+        <td>{{ r.duration_ms }}ms</td>
+        <td>
+          <details>
+            <summary>findings ({{ r.findings | length }})</summary>
+            {% if r.findings %}
+              <ul class="findings">
+                {% for f in r.findings %}
+                  <li><strong>{{ f.severity }}</strong>: {{ f.note }}</li>
+                {% endfor %}
+              </ul>
+            {% else %}
+              <p class="muted">No findings.</p>
+            {% endif %}
+          </details>
+        </td>
+      </tr>
+    {% endfor %}
+  </tbody>
+</table>
