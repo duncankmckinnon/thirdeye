@@ -11,6 +11,14 @@
   <link rel="stylesheet" href="/static/usage.css">
   <link rel="stylesheet" href="/static/evals.css">
   <script src="/static/htmx.min.js"></script>
+  <script>
+    // Swap on 4xx/5xx so server-rendered error fragments are visible.
+    htmx.config.responseHandling = [
+      { code: "204", swap: false },
+      { code: "[23]..", swap: true },
+      { code: "[45]..", swap: true, error: true },
+    ];
+  </script>
   {% block extra_head %}{% endblock %}
 </head>
 <body>
