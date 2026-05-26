@@ -1,0 +1,67 @@
+{% extends "base.html" %}
+{% block title %}thirdeye — run {{ result.id[:8] }}{% endblock %}
+{% block content %}
+<section class="eval-run-show">
+  <h1>
+    Run <code>{{ result.id[:12] }}</code>
+    <span class="verdict verdict-{{ result.verdict }}">{{ result.verdict }}</span>
+  </h1>
+  <dl class="run-meta">
+    <dt>session</dt>
+    <dd><a href="/sessions/{{ sid }}">{{ sid[:8] }}</a> <span class="muted">({{ platform }})</span></dd>
+    <dt>definition</dt>
+    <dd>{{ result.definition }}</dd>
+    <dt>agent</dt>
+    <dd>{{ result.agent }}{% if result.agent_model %} <span class="muted">({{ result.agent_model }})</span>{% endif %}</dd>
+    <dt>started</dt>
+    <dd>{{ result.started_at }}</dd>
+    <dt>ended</dt>
+    <dd>{{ result.ended_at }}</dd>
+    <dt>duration</dt>
+    <dd>{{ result.duration_ms }}ms</dd>
+  </dl>
+
+  {% if result.summary %}
+  <section class="run-summary">
+    <h2>Summary</h2>
+    <p>{{ result.summary }}</p>
+  </section>
+  {% endif %}
+
+  {% if result.scores %}
+  <section class="run-scores">
+    <h2>Scores</h2>
+    <ul>
+      {% for k, v in result.scores.items() %}
+        <li><strong>{{ k }}</strong>: {{ v }}</li>
+      {% endfor %}
+    </ul>
+  </section>
+  {% endif %}
+
+  <section class="run-findings">
+    <h2>Findings ({{ result.findings | length }})</h2>
+    {% if result.findings %}
+    <ul class="findings">
+      {% for f in result.findings %}
+        <li>
+          <strong class="severity-{{ f.severity }}">{{ f.severity }}</strong>
+          {% if f.category %}<em>{{ f.category }}</em>{% endif %}
+          — {{ f.note }}
+          {% if f.seq is not none %}<span class="muted">@seq {{ f.seq }}</span>{% endif %}
+        </li>
+      {% endfor %}
+    </ul>
+    {% else %}
+    <p class="muted">No findings.</p>
+    {% endif %}
+  </section>
+
+  {% if result.markdown %}
+  <section class="run-markdown">
+    <h2>Notes</h2>
+    <pre>{{ result.markdown }}</pre>
+  </section>
+  {% endif %}
+</section>
+{% endblock %}

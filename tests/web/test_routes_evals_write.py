@@ -7,11 +7,7 @@ pytest.importorskip("starlette")
 
 def test_def_create_valid_yaml_writes_file(client, web_config):
     yaml_body = (
-        "name: foo\n"
-        "description: test def\n"
-        "default_agent: claude\n"
-        "directive: |\n"
-        "  do the thing\n"
+        "name: foo\ndescription: test def\ndefault_agent: claude\ndirective: |\n  do the thing\n"
     )
     r = client.post("/evals/defs", data={"yaml": yaml_body})
     assert r.status_code == 200
@@ -24,7 +20,7 @@ def test_def_create_invalid_yaml_returns_400(client):
 
 
 def test_def_create_duplicate_name_returns_409(client, web_config):
-    yaml_body = "name: dup\n" "description: x\n" "default_agent: claude\n" "directive: |\n" "  d\n"
+    yaml_body = "name: dup\ndescription: x\ndefault_agent: claude\ndirective: |\n  d\n"
     client.post("/evals/defs", data={"yaml": yaml_body})
     r = client.post("/evals/defs", data={"yaml": yaml_body})
     assert r.status_code == 409
@@ -93,6 +89,6 @@ def test_run_status_reads_job_payload(client, web_store, web_config):
     jobs_dir.mkdir(parents=True, exist_ok=True)
     (jobs_dir / "01JOBID02.json").write_text('{"status": "running"}')
 
-    r = client.get(f"/sessions/{sid}/evals/runs/01JOBID02")
+    r = client.get(f"/sessions/{sid}/evals/runs/01JOBID02/status")
     assert r.status_code == 200
     assert b"running" in r.content
