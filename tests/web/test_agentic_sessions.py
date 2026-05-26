@@ -4,7 +4,7 @@ import pytest
 
 pytest.importorskip("starlette")
 
-from thirdeye.web.agentic import ProposedFilters
+from thirdeye.web.agentic import ProposedFilters  # noqa: E402
 
 
 def _stub_proposed_sessions() -> ProposedFilters:

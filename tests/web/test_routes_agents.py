@@ -4,10 +4,10 @@ import pytest
 
 pytest.importorskip("starlette")
 
-from starlette.applications import Starlette
-from starlette.testclient import TestClient
+from starlette.applications import Starlette  # noqa: E402
+from starlette.testclient import TestClient  # noqa: E402
 
-from thirdeye.web.routes import agents as agents_module
+from thirdeye.web.routes import agents as agents_module  # noqa: E402
 
 
 def _make_app(config):

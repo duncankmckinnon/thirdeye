@@ -4,8 +4,8 @@ import pytest
 
 pytest.importorskip("starlette")
 
-from thirdeye.web import agentic as agentic_module
-from thirdeye.web.agentic import ProposedFilters
+from thirdeye.web import agentic as agentic_module  # noqa: E402
+from thirdeye.web.agentic import ProposedFilters  # noqa: E402
 
 
 def _stub_proposed_search() -> ProposedFilters:
