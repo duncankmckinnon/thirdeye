@@ -170,7 +170,7 @@ async def _run_dispatch(request: Request) -> HTMLResponse:
         platform, sid = store.resolve_session_id(sid_prefix)
     except (KeyError, ValueError) as e:
         raise HTTPException(status_code=400, detail=str(e)) from e
-    job_id = run_eval_background(
+    run_id = run_eval_background(
         thirdeye_home=config.root,
         platform=platform,
         session_id=sid,
@@ -184,7 +184,7 @@ async def _run_dispatch(request: Request) -> HTMLResponse:
         {
             "sid": sid,
             "platform": platform,
-            "job_id": job_id,
+            "run_id": run_id,
             "status": "running",
             "verdict": None,
         },
@@ -195,19 +195,19 @@ async def _run_status(request: Request) -> HTMLResponse:
     config = request.app.state.config
     store = request.app.state.store
     sid_prefix = request.path_params["sid"]
-    job_id = request.path_params["job_id"]
+    run_id = request.path_params["run_id"]
     try:
         platform, sid = store.resolve_session_id(sid_prefix)
     except (KeyError, ValueError) as e:
         raise HTTPException(status_code=404, detail=str(e)) from e
     sdir = session_dir(config.root, platform, sid)
     es = EvalStore(sdir)
-    job = es.read_job(job_id)
+    job = es.read_job(run_id)
     status = (job or {}).get("status", "unknown")
     verdict = None
     if status not in ("running", "queued"):
         for r in es.iter_results():
-            if getattr(r, "job_id", None) == job_id:
+            if getattr(r, "job_id", None) == run_id or r.id == run_id:
                 verdict = getattr(r, "verdict", None)
                 break
     templates = request.app.state.templates
@@ -217,7 +217,7 @@ async def _run_status(request: Request) -> HTMLResponse:
         {
             "sid": sid,
             "platform": platform,
-            "job_id": job_id,
+            "run_id": run_id,
             "status": status,
             "verdict": verdict,
         },
@@ -253,9 +253,7 @@ async def _runs_batch(request: Request) -> HTMLResponse:
             definition_name=using,
             agent_name=agent,
         )
-        jobs.append(
-            {"sid": sid, "platform": platform, "run_id": run_id, "status": "running"}
-        )
+        jobs.append({"sid": sid, "platform": platform, "run_id": run_id, "status": "running"})
     templates = request.app.state.templates
     return templates.TemplateResponse(
         request,
@@ -286,29 +284,15 @@ async def _run_show(request: Request) -> HTMLResponse:
     except (KeyError, ValueError) as e:
         raise HTTPException(status_code=404, detail=str(e)) from e
     sd = session_dir(config.root, platform, sid)
-    es = EvalStore(sd)
-    result = es.find_by_id(run_id)
+    result = EvalStore(sd).find_by_id(run_id)
+    if result is None:
+        raise HTTPException(status_code=404, detail=f"no run {run_id}")
     templates = request.app.state.templates
-    if result is not None:
-        return templates.TemplateResponse(
-            request,
-            "evals/run_show.html",
-            {"result": result, "sid": sid, "platform": platform},
-        )
-    job = es.read_job(run_id)
-    if job is not None:
-        return templates.TemplateResponse(
-            request,
-            "evals/_run_status.html",
-            {
-                "sid": sid,
-                "platform": platform,
-                "job_id": run_id,
-                "status": job.get("status", "unknown"),
-                "verdict": None,
-            },
-        )
-    raise HTTPException(status_code=404, detail=f"no run {run_id}")
+    return templates.TemplateResponse(
+        request,
+        "evals/run_show.html",
+        {"result": result, "sid": sid, "platform": platform},
+    )
 
 
 def register(app: Starlette) -> None:
@@ -326,20 +310,18 @@ def register(app: Starlette) -> None:
     # runs
     app.routes.append(Route("/evals/runs", _run_dispatch, methods=["POST"]))
     app.routes.append(Route("/evals/runs/batch", _runs_batch, methods=["POST"]))
-    app.routes.append(
-        Route("/evals/defs/{name}/results", _defn_results, methods=["GET"])
-    )
+    app.routes.append(Route("/evals/defs/{name}/results", _defn_results, methods=["GET"]))
     app.routes.append(
         Route(
-            "/sessions/{sid}/evals/runs/{run_id}",
-            _run_show,
+            "/sessions/{sid}/evals/runs/{run_id}/status",
+            _run_status,
             methods=["GET"],
         )
     )
     app.routes.append(
         Route(
-            "/sessions/{sid}/evals/runs/{job_id}",
-            _run_status,
+            "/sessions/{sid}/evals/runs/{run_id}",
+            _run_show,
             methods=["GET"],
         )
     )

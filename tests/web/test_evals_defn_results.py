@@ -64,12 +64,11 @@ def test_defn_results_lists_runs_across_sessions(client, web_store, web_config):
     assert r.status_code == 200
     body = r.content.decode("utf-8")
     for run_id in ("01RUN001A", "01RUN002A", "01RUN001B"):
-        assert run_id[:8] in body
-    pos_latest = body.find("01RUN001"[:8])  # nb: only checks ids appear; ordering asserted below
-    assert pos_latest >= 0
-    pos_a1 = body.find("01RUN001A"[:8])
-    pos_a2 = body.find("01RUN002A"[:8])
-    pos_b1 = body.find("01RUN001B"[:8])
+        assert run_id in body
+    pos_a1 = body.find("01RUN001A")
+    pos_a2 = body.find("01RUN002A")
+    pos_b1 = body.find("01RUN001B")
+    assert pos_a1 >= 0 and pos_a2 >= 0 and pos_b1 >= 0
     assert pos_b1 < pos_a2 < pos_a1
 
 
@@ -100,3 +99,68 @@ def test_run_show_unknown_returns_404(client, web_store):
 
     r = client.get(f"/sessions/{sid}/evals/runs/01NONEXISTENT")
     assert r.status_code == 404
+
+
+def test_run_show_does_not_serve_status_fragment(client, web_store, web_config):
+    from thirdeye.paths import session_dir
+
+    sid = "01J9RUNSHOW3"
+    with web_store.open_session(sid, platform="claude", cwd="/p") as w:
+        w.append("user_message", {"prompt": "x"})
+    web_store.close_session(sid, platform="claude")
+
+    sdir = session_dir(web_config.root, "claude", sid)
+    jobs_dir = sdir / "evals.jobs"
+    jobs_dir.mkdir(parents=True, exist_ok=True)
+    (jobs_dir / "01JOBONLY.json").write_text('{"status": "running"}')
+
+    r = client.get(f"/sessions/{sid}/evals/runs/01JOBONLY")
+    assert r.status_code == 404
+
+
+def test_run_status_poll_returns_fragment_while_running(client, web_store, web_config):
+    from thirdeye.paths import session_dir
+
+    sid = "01J9RUNSTAT1"
+    with web_store.open_session(sid, platform="claude", cwd="/p") as w:
+        w.append("user_message", {"prompt": "x"})
+    web_store.close_session(sid, platform="claude")
+
+    sdir = session_dir(web_config.root, "claude", sid)
+    jobs_dir = sdir / "evals.jobs"
+    jobs_dir.mkdir(parents=True, exist_ok=True)
+    (jobs_dir / "01RUNSTATX.json").write_text('{"status": "running"}')
+
+    r = client.get(f"/sessions/{sid}/evals/runs/01RUNSTATX/status")
+    assert r.status_code == 200
+    body = r.content.decode("utf-8")
+    assert "<!DOCTYPE" not in body
+    assert "<html" not in body
+    assert "run-status" in body
+    assert "running" in body
+    assert f"/sessions/{sid}/evals/runs/01RUNSTATX/status" in body
+
+
+def test_run_status_poll_shows_verdict_when_complete(client, web_store, web_config):
+    from thirdeye.eval.store import EvalStore
+    from thirdeye.paths import session_dir
+
+    sid = "01J9RUNSTAT2"
+    with web_store.open_session(sid, platform="claude", cwd="/p") as w:
+        w.append("user_message", {"prompt": "x"})
+    web_store.close_session(sid, platform="claude")
+
+    sdir = session_dir(web_config.root, "claude", sid)
+    jobs_dir = sdir / "evals.jobs"
+    jobs_dir.mkdir(parents=True, exist_ok=True)
+    (jobs_dir / "01RUNDONEXX.json").write_text('{"status": "done"}')
+    EvalStore(sdir).append(
+        _make_result(eval_id="01RUNDONEXX", sid=sid, started_at="2026-05-25T05:00:00Z")
+    )
+
+    r = client.get(f"/sessions/{sid}/evals/runs/01RUNDONEXX/status")
+    assert r.status_code == 200
+    body = r.content.decode("utf-8")
+    assert "<!DOCTYPE" not in body
+    assert "run-status" in body
+    assert "verdict-pass" in body

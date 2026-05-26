@@ -1,12 +1,14 @@
 <div class="batch-runs">
   <p>Dispatched <strong>{{ definition }}</strong> via <strong>{{ agent }}</strong> on {{ jobs | length }} session(s).</p>
-  <ul>
+  <div class="batch-runs-list">
     {% for j in jobs %}
-      <li hx-get="/sessions/{{ j.sid }}/evals/runs/{{ j.run_id }}"
-          hx-trigger="every 2s"
-          hx-swap="outerHTML">
-        {{ j.sid[:8] }} ({{ j.platform }}) — run {{ j.run_id[:8] }} — {{ j.status }}
-      </li>
+      <div class="batch-run-item"
+           hx-get="/sessions/{{ j.sid }}/evals/runs/{{ j.run_id }}/status"
+           hx-trigger="every 2s"
+           hx-swap="outerHTML">
+        <a href="/sessions/{{ j.sid }}/evals/runs/{{ j.run_id }}">{{ j.sid[:8] }}</a>
+        ({{ j.platform }}) — run {{ j.run_id[:8] }} — {{ j.status }}
+      </div>
     {% endfor %}
-  </ul>
+  </div>
 </div>

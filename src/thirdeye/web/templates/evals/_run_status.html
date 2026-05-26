@@ -1,10 +1,10 @@
 <div class="run-status status-{{ status }}"
      {% if status == "running" %}
-     hx-get="/sessions/{{ sid }}/evals/runs/{{ job_id }}"
+     hx-get="/sessions/{{ sid }}/evals/runs/{{ run_id }}/status"
      hx-trigger="every 5s"
      hx-swap="outerHTML"
      {% endif %}>
-  <span class="job-id">{{ job_id }}</span>
+  <span class="job-id">{{ run_id }}</span>
   <span class="status-badge">{{ status }}</span>
   {% if verdict %}<span class="verdict verdict-{{ verdict }}">{{ verdict }}</span>{% endif %}
 </div>
