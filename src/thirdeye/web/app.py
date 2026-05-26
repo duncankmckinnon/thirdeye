@@ -10,6 +10,7 @@ from starlette.templating import Jinja2Templates
 from thirdeye.config import Config
 from thirdeye.store import Store
 from thirdeye.web.routes import (
+    agents,
     evals,
     events,
     index,
@@ -18,6 +19,7 @@ from thirdeye.web.routes import (
     stream,
     tags,
     usage,
+    views,
 )
 
 _PACKAGE_ROOT = Path(__file__).parent
@@ -49,6 +51,8 @@ def create_app(config: Config | None = None) -> Starlette:
         evals,
         tags,
         stream,
+        agents,
+        views,
     ):
         module.register(app)
 

@@ -2,6 +2,11 @@
 {% block title %}thirdeye — search{% endblock %}
 {% block content %}
 <section class="search">
+  {% set surface = "search" %}
+  {% set post_url = "/search/agentic" %}
+  {% set target_id = "ask-search-target" %}
+  {% include "_ask_panel.html" %}
+
   <form class="filters search-filters" method="get" action="/search">
     <input type="search" name="q" placeholder="search events"
            value="{{ query or '' }}" autofocus>

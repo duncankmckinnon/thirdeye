@@ -18,7 +18,7 @@ from thirdeye.eval.definition import (
 )
 from thirdeye.eval.result import EvalResult
 from thirdeye.eval.runner import run_eval, run_eval_background
-from thirdeye.eval.store import EvalStore
+from thirdeye.eval.store import EvalStore, iter_results_by_definition
 from thirdeye.paths import session_dir
 from thirdeye.store import Store
 
@@ -91,12 +91,12 @@ def run_cmd(session_prefix, using, agent, background, as_json, save):
 
 
 @eval_group.command(name="_run-worker", hidden=True)
-@click.argument("job_id")
+@click.argument("run_id")
 @click.argument("platform")
 @click.argument("session_id")
 @click.argument("definition_name")
 @click.argument("agent_name")
-def _run_worker(job_id, platform, session_id, definition_name, agent_name):
+def _run_worker(run_id, platform, session_id, definition_name, agent_name):
     """Internal: detached worker that finishes a background eval."""
     config = Config.load()
     sd = session_dir(config.root, platform, session_id)
@@ -109,13 +109,14 @@ def _run_worker(job_id, platform, session_id, definition_name, agent_name):
             definition_name=definition_name,
             agent_name=agent_name,
             save=True,
+            run_id=run_id,
         )
-        store.remove_job(job_id)
+        store.remove_job(run_id)
     except Exception as e:
-        existing = store.read_job(job_id) or {}
+        existing = store.read_job(run_id) or {}
         existing["status"] = "failed"
         existing["error"] = f"{type(e).__name__}: {e}"
-        store.write_job(job_id, existing)
+        store.write_job(run_id, existing)
         raise
 
 
@@ -277,6 +278,70 @@ def status_cmd(session_prefix, as_json):
             f"{j.get('status', ''):<10} "
             f"{j.get('started_at', ''):<26}"
         )
+
+
+# --- batch ---
+
+
+@eval_group.command(name="batch", help="Dispatch an eval on multiple sessions.")
+@click.argument("definition_name")
+@click.argument("session_prefixes", nargs=-1, required=True)
+@click.option("--agent", required=True, help="Agent CLI to dispatch.")
+def batch_cmd(definition_name: str, session_prefixes: tuple[str, ...], agent: str) -> None:
+    config = Config.load()
+    store = Store(config)
+    if len(session_prefixes) > 25:
+        raise click.UsageError("batch capped at 25 sessions")
+    for prefix in session_prefixes:
+        try:
+            platform, sid = store.resolve_session_id(prefix)
+        except (KeyError, ValueError) as e:
+            click.echo(f"skip {prefix}: {e}", err=True)
+            continue
+        try:
+            run_id = run_eval_background(
+                thirdeye_home=config.root,
+                platform=platform,
+                session_id=sid,
+                definition_name=definition_name,
+                agent_name=agent,
+            )
+        except (FileNotFoundError, ValueError) as e:
+            click.echo(f"skip {prefix}: {e}", err=True)
+            continue
+        click.echo(f"{sid}\t{run_id}\tdispatched")
+
+
+# --- results ---
+
+
+@eval_group.command(name="results", help="List runs for an eval definition across sessions.")
+@click.option("--def", "definition_name", required=True, help="Eval definition name.")
+@click.option("--as-json", "as_json", is_flag=True)
+def results_cmd(definition_name: str, as_json: bool) -> None:
+    import json
+
+    config = Config.load()
+    rows = list(iter_results_by_definition(config, definition_name))
+    if as_json:
+        for meta, r in rows:
+            click.echo(
+                json.dumps(
+                    {
+                        "session_id": meta.session_id,
+                        "platform": meta.platform,
+                        "run_id": r.id,
+                        "agent": r.agent,
+                        "verdict": r.verdict,
+                        "started_at": r.started_at,
+                        "duration_ms": r.duration_ms,
+                    },
+                    separators=(",", ":"),
+                )
+            )
+        return
+    for meta, r in rows:
+        click.echo(f"{meta.session_id}\t{r.id[:8]}\t{r.agent}\t{r.verdict}\t{r.started_at}")
 
 
 def _pid_alive(pid: int) -> bool:

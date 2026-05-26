@@ -4,8 +4,11 @@ from pathlib import Path
 
 import pytest
 
+from thirdeye.config import Config
 from thirdeye.eval.result import EvalResult, Finding
-from thirdeye.eval.store import EvalStore
+from thirdeye.eval.store import EvalStore, iter_results_by_definition
+from thirdeye.paths import session_dir
+from thirdeye.store import Store
 
 
 def _result(**overrides) -> EvalResult:
@@ -152,3 +155,62 @@ def test_iter_jobs_skips_malformed(session: Path):
     (store.jobs_dir / "bad.json").write_text("{not json")
     jobs = list(store.iter_jobs())
     assert len(jobs) == 1 and jobs[0]["job_id"] == "J1"
+
+
+# --- iter_results_by_definition ---
+
+
+def _make_session(config: Config, platform: str, sid: str) -> Path:
+    store = Store(config)
+    with store.open_session(sid, platform=platform, cwd=f"/proj/{sid}") as w:
+        w.append("user_message", "hi")
+    return session_dir(config.root, platform, sid)
+
+
+def test_iter_results_by_definition_across_sessions(tmp_path: Path):
+    config = Config(root=tmp_path)
+    sd_a = _make_session(config, "claude", "01J9G7XK4P")
+    sd_b = _make_session(config, "cursor", "02ABCDEF12")
+
+    EvalStore(sd_a).append(
+        _result(id="a1", definition="default", started_at="2026-05-16T01:00:00Z")
+    )
+    EvalStore(sd_a).append(
+        _result(id="a2", definition="token-efficiency", started_at="2026-05-16T02:00:00Z")
+    )
+    EvalStore(sd_b).append(
+        _result(id="b1", definition="default", started_at="2026-05-16T03:00:00Z")
+    )
+
+    pairs = list(iter_results_by_definition(config, "default"))
+    assert [r.id for _, r in pairs] == ["b1", "a1"]
+    assert {m.session_id for m, _ in pairs} == {"01J9G7XK4P", "02ABCDEF12"}
+
+
+def test_iter_results_by_definition_empty_when_no_match(tmp_path: Path):
+    config = Config(root=tmp_path)
+    sd = _make_session(config, "claude", "01J9G7XK4P")
+    EvalStore(sd).append(_result(id="a", definition="default"))
+
+    assert list(iter_results_by_definition(config, "nonexistent")) == []
+
+
+def test_iter_results_by_definition_is_case_sensitive(tmp_path: Path):
+    config = Config(root=tmp_path)
+    sd = _make_session(config, "claude", "01J9G7XK4P")
+    EvalStore(sd).append(_result(id="a", definition="Default"))
+    EvalStore(sd).append(_result(id="b", definition="default"))
+
+    pairs = list(iter_results_by_definition(config, "default"))
+    assert [r.id for _, r in pairs] == ["b"]
+
+
+def test_iter_results_by_definition_ordered_desc(tmp_path: Path):
+    config = Config(root=tmp_path)
+    sd = _make_session(config, "claude", "01J9G7XK4P")
+    EvalStore(sd).append(_result(id="old", definition="default", started_at="2026-05-01T00:00:00Z"))
+    EvalStore(sd).append(_result(id="new", definition="default", started_at="2026-05-20T00:00:00Z"))
+    EvalStore(sd).append(_result(id="mid", definition="default", started_at="2026-05-10T00:00:00Z"))
+
+    pairs = list(iter_results_by_definition(config, "default"))
+    assert [r.id for _, r in pairs] == ["new", "mid", "old"]

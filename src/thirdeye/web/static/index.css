@@ -1,0 +1,82 @@
+/* index page — sessions list layout */
+
+.sessions-layout {
+  display: grid;
+  grid-template-columns: 220px 1fr;
+  gap: 1.5rem;
+  align-items: start;
+}
+
+.sessions-sidebar .saved-views {
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 0.75rem;
+  background: var(--surface);
+}
+
+.sessions-sidebar .saved-views h3 {
+  margin: 0 0 0.5rem 0;
+  font-size: 0.85rem;
+  color: var(--muted);
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+
+.sessions-sidebar .saved-views ul {
+  list-style: none;
+  margin: 0 0 0.75rem 0;
+  padding: 0;
+}
+
+.sessions-sidebar .saved-views li {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem;
+  padding: 0.2rem 0;
+}
+
+.sessions-sidebar .saved-views .x {
+  background: transparent;
+  color: var(--muted);
+  padding: 0 0.4rem;
+  font-size: 0.9rem;
+  border: 1px solid var(--border);
+}
+
+.sessions-sidebar .save-view-form {
+  display: flex;
+  flex-direction: column;
+  gap: 0.4rem;
+}
+
+.eval-batch-bar {
+  display: none;
+  gap: 0.5rem;
+  margin: 0.5rem 0 0.75rem 0;
+  padding: 0.5rem;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+}
+
+.eval-batch:has(input[type="checkbox"][name="session_id"]:checked) .eval-batch-bar {
+  display: flex;
+}
+
+.ask-panel {
+  display: flex;
+  gap: 0.5rem;
+  flex-wrap: wrap;
+  align-items: flex-start;
+  margin-bottom: 1rem;
+  padding: 0.5rem;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+}
+
+.ask-panel textarea {
+  flex: 1 1 320px;
+  min-height: 2.4rem;
+}

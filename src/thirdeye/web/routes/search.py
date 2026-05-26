@@ -1,12 +1,16 @@
 from __future__ import annotations
 
+import json
+
 from starlette.applications import Starlette
+from starlette.concurrency import run_in_threadpool
 from starlette.requests import Request
 from starlette.responses import HTMLResponse
 from starlette.routing import Route
 
 from thirdeye.search import search
 from thirdeye.timeparse import parse_when
+from thirdeye.web.agentic import installed_agent_names, propose_filters
 
 
 async def _search(request: Request) -> HTMLResponse:
@@ -38,12 +42,50 @@ async def _search(request: Request) -> HTMLResponse:
             )
         )
     templates = request.app.state.templates
+    config = request.app.state.config
     return templates.TemplateResponse(
         request,
         "search.html",
-        {"query": q, "filters": filters, "hits": hits},
+        {
+            "query": q,
+            "filters": filters,
+            "hits": hits,
+            "agents": installed_agent_names(config),
+        },
+    )
+
+
+async def _search_agentic(request: Request) -> HTMLResponse:
+    form = await request.form()
+    nl = (form.get("nl") or "").strip()
+    agent = (form.get("agent") or "").strip()
+    templates = request.app.state.templates
+    if not agent:
+        return templates.TemplateResponse(
+            request,
+            "_error.html",
+            {"message": "Pick an agent."},
+            status_code=400,
+        )
+    config = request.app.state.config
+    try:
+        proposed = await run_in_threadpool(
+            propose_filters, config, nl=nl, agent_name=agent, surface="search"
+        )
+    except (FileNotFoundError, RuntimeError, json.JSONDecodeError, ValueError) as e:
+        return templates.TemplateResponse(
+            request,
+            "_error.html",
+            {"message": str(e)},
+            status_code=400,
+        )
+    return templates.TemplateResponse(
+        request,
+        "search/_proposed_filters.html",
+        {"proposed": proposed, "nl": nl},
     )
 
 
 def register(app: Starlette) -> None:
     app.routes.append(Route("/search", _search, methods=["GET"]))
+    app.routes.append(Route("/search/agentic", _search_agentic, methods=["POST"]))

@@ -2,31 +2,13 @@
 {% block title %}thirdeye — evals for {{ sid[:8] }}{% endblock %}
 {% block content %}
 <section class="eval-results">
-  <h1>
-    Evals for
-    <a href="/sessions/{{ sid }}">{{ sid[:8] }}</a>
-    <span class="muted">({{ platform }})</span>
-  </h1>
-
+  <h1>Evals for <a href="/sessions/{{ sid }}">{{ sid[:8] }}</a>
+      <span class="muted">({{ platform }})</span></h1>
   {% if results %}
-  <table class="eval-results-table">
-    <thead>
-      <tr>
-        <th>definition</th>
-        <th>agent</th>
-        <th>verdict</th>
-        <th>started</th>
-        <th>eval id</th>
-      </tr>
-    </thead>
-    <tbody>
-      {% for r in results %}
-        {% include "evals/_result_row.html" %}
-      {% endfor %}
-    </tbody>
-  </table>
+    {% set rows = results %}{% set scope = "session" %}
+    {% include "evals/_results_table.html" %}
   {% else %}
-  <p class="empty">No eval results for this session.</p>
+    <p class="empty">No eval results for this session.</p>
   {% endif %}
 </section>
 {% endblock %}

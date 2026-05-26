@@ -1,0 +1,17 @@
+<form class="ask-panel"
+      hx-post="{{ post_url }}"
+      hx-target="#{{ target_id }}"
+      hx-indicator="#{{ target_id }}-spinner">
+  <label class="ask-label" for="ask-{{ surface }}">Ask</label>
+  <textarea id="ask-{{ surface }}" name="nl" rows="2"
+            placeholder="describe what you want…"></textarea>
+  <select name="agent" required>
+    <option value="">Pick an agent…</option>
+    {% for a in agents %}
+      <option value="{{ a }}">{{ a }}</option>
+    {% endfor %}
+  </select>
+  <button type="submit">Ask</button>
+  <span id="{{ target_id }}-spinner" class="htmx-indicator">…</span>
+</form>
+<div id="{{ target_id }}"></div>

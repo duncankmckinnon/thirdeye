@@ -249,6 +249,78 @@ def test_run_eval_agent_session_id_null_when_ambiguous(
     assert result.agent_session_id is None
 
 
+def test_run_eval_uses_provided_run_id(home: Path, monkeypatch: pytest.MonkeyPatch):
+    canned = _make_canned_output(
+        {"verdict": "pass", "summary": "ok", "scores": {}, "findings": []},
+    )
+    monkeypatch.setattr(
+        "thirdeye.eval.runner._invoke_agent",
+        lambda a, p, c: AgentInvocation(canned, "", 0, 10),
+    )
+    monkeypatch.setattr("thirdeye.eval.runner._read_timeline", lambda *a, **k: [])
+    monkeypatch.setattr("thirdeye.eval.runner._list_session_ids_on_platform", lambda h, p: set())
+
+    result = run_eval(
+        thirdeye_home=home,
+        platform="claude",
+        session_id="abc",
+        definition_name="test",
+        agent_name="claude",
+        run_id="01XYZTESTRUNID0000000000AB",
+    )
+    assert result.id == "01XYZTESTRUNID0000000000AB"
+    sd = session_dir(home, "claude", "abc")
+    persisted = list(EvalStore(sd).iter_results())
+    assert persisted[0].id == "01XYZTESTRUNID0000000000AB"
+
+
+def test_run_eval_background_run_id_matches_worker_result_id(
+    home: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """The ULID returned by run_eval_background is the one the worker uses for the result."""
+    recorded: dict = {}
+
+    class FakeProc:
+        pid = 12345
+
+    def fake_popen(cmd, **kwargs):
+        recorded["cmd"] = cmd
+        return FakeProc()
+
+    monkeypatch.setattr(subprocess, "Popen", fake_popen)
+
+    run_id = run_eval_background(
+        thirdeye_home=home,
+        platform="claude",
+        session_id="abc",
+        definition_name="test",
+        agent_name="claude",
+        thirdeye_bin="/usr/bin/thirdeye",
+    )
+    assert recorded["cmd"][3] == run_id
+
+    canned = _make_canned_output(
+        {"verdict": "pass", "summary": "ok", "scores": {}, "findings": []},
+    )
+    monkeypatch.setattr(
+        "thirdeye.eval.runner._invoke_agent",
+        lambda a, p, c: AgentInvocation(canned, "", 0, 10),
+    )
+    monkeypatch.setattr("thirdeye.eval.runner._read_timeline", lambda *a, **k: [])
+    monkeypatch.setattr("thirdeye.eval.runner._list_session_ids_on_platform", lambda h, p: set())
+
+    result = run_eval(
+        thirdeye_home=home,
+        platform="claude",
+        session_id="abc",
+        definition_name="test",
+        agent_name="claude",
+        run_id=run_id,
+    )
+    assert result.id == run_id
+
+
 def test_run_eval_background_writes_stub_and_returns_job_id(
     home: Path,
     monkeypatch: pytest.MonkeyPatch,

@@ -1,24 +1,73 @@
 {% extends "base.html" %}
 {% block title %}thirdeye — usage{% endblock %}
+{% block extra_head %}
+<script src="/static/chart.min.js"></script>
+{% endblock %}
 {% block content %}
 <section class="usage">
-  <header class="page-header">
-    <h1>usage</h1>
-  </header>
+  <header class="page-header"><h1>usage</h1></header>
+
+  <form class="filters usage-filters" method="get" action="/usage">
+    <label>platform
+      <select name="platform">
+        <option value="">All</option>
+        {% for p in ["claude", "codex", "gemini"] %}
+          <option value="{{ p }}"
+            {% if filters.platform == p %}selected{% endif %}>{{ p }}</option>
+        {% endfor %}
+      </select>
+    </label>
+    <label>since <input type="text" name="since"
+                        value="{{ filters.since or '' }}"
+                        placeholder="7d or 2026-05-01"></label>
+    <label>until <input type="text" name="until"
+                        value="{{ filters.until or '' }}"
+                        placeholder="ISO date or relative"></label>
+    <button type="submit">Apply</button>
+  </form>
 
   <div class="aggregate-grid">
-    <div class="aggregate-card">
-      <div class="aggregate-label">sessions</div>
-      <div class="aggregate-value">{{ aggregate.session_count }}</div>
-    </div>
-    <div class="aggregate-card">
-      <div class="aggregate-label">events</div>
-      <div class="aggregate-value">{{ aggregate.event_count }}</div>
-    </div>
-    <div class="aggregate-card">
-      <div class="aggregate-label">bytes</div>
-      <div class="aggregate-value">{{ aggregate.bytes_compressed }}</div>
-    </div>
+    <div class="aggregate-card"><div class="aggregate-label">sessions</div>
+      <div class="aggregate-value">{{ report.totals.sessions }}</div></div>
+    <div class="aggregate-card"><div class="aggregate-label">events</div>
+      <div class="aggregate-value">{{ report.totals.events }}</div></div>
+    <div class="aggregate-card"><div class="aggregate-label">input tokens</div>
+      <div class="aggregate-value">{{ report.totals.input_tokens }}</div></div>
+    <div class="aggregate-card"><div class="aggregate-label">output tokens</div>
+      <div class="aggregate-value">{{ report.totals.output_tokens }}</div></div>
   </div>
+
+  <script type="application/json" id="chart-data">{{ chart_data_json | safe }}</script>
+
+  <div class="chart-block">
+    <h2>Tokens over time (UTC, daily)</h2>
+    <canvas id="tokens-chart" height="120"></canvas>
+  </div>
+  <div class="chart-block">
+    <h2>Sessions per day (UTC)</h2>
+    <canvas id="sessions-chart" height="120"></canvas>
+  </div>
+
+  <script>
+    (function () {
+      var data = JSON.parse(document.getElementById("chart-data").textContent);
+      new Chart(document.getElementById("tokens-chart"), {
+        type: "bar",
+        data: {
+          labels: data.days,
+          datasets: [
+            { label: "input", data: data.input, stack: "t" },
+            { label: "output", data: data.output, stack: "t" }
+          ]
+        },
+        options: { scales: { x: { stacked: true }, y: { stacked: true } } }
+      });
+      new Chart(document.getElementById("sessions-chart"), {
+        type: "bar",
+        data: { labels: data.days,
+                datasets: [{ label: "sessions", data: data.sessions }] }
+      });
+    })();
+  </script>
 </section>
 {% endblock %}

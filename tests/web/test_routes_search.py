@@ -10,6 +10,17 @@ def test_search_empty_query(client):
     assert r.status_code == 200
 
 
+def test_search_includes_ask_panel(client, monkeypatch):
+    monkeypatch.setattr("shutil.which", lambda _cmd: "/usr/bin/dummy")
+    r = client.get("/search")
+    assert r.status_code == 200
+    body = r.text
+    assert 'name="nl"' in body
+    assert 'name="agent"' in body
+    for agent in ("claude", "codex", "gemini"):
+        assert f'value="{agent}"' in body
+
+
 def test_search_finds_hello(client, web_store):
     sid = "01J9SRCH01"
     with web_store.open_session(sid, platform="claude", cwd="/p") as w:
