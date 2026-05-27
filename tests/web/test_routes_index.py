@@ -85,3 +85,75 @@ def test_index_default_since_in_form(client):
     r = client.get("/")
     assert r.status_code == 200
     assert b'value="7d"' in r.content
+
+
+def test_index_has_sessions_filter_form(client):
+    r = client.get("/")
+    assert r.status_code == 200
+    assert b'id="sessions-filter-form"' in r.content
+    assert b'<select name="tag" multiple' in r.content
+
+
+def test_index_tag_multiselect_lists_inventory(client, monkeypatch):
+    monkeypatch.setattr(
+        "thirdeye.web.routes.index.inventory_tags",
+        lambda cfg: ["alpha", "beta"],
+    )
+    r = client.get("/")
+    body = r.content.decode()
+    assert '<option value="alpha"' in body
+    assert '<option value="beta"' in body
+
+
+def test_index_tag_round_trip_selects_options(client, monkeypatch):
+    monkeypatch.setattr(
+        "thirdeye.web.routes.index.inventory_tags",
+        lambda cfg: ["foo", "bar"],
+    )
+    r = client.get("/?tag=foo&tag=bar")
+    body = r.content.decode()
+    assert '<option value="foo"' in body and "selected" in body
+    assert '<option value="bar"' in body
+
+
+def test_index_ask_panel_uses_outer_html_swap(client):
+    r = client.get("/")
+    body = r.content.decode()
+    assert 'hx-swap="outerHTML"' in body
+    assert 'hx-target="#sessions-filter-form"' in body
+
+
+def test_index_status_and_order_round_trip(client):
+    r = client.get("/?status=closed&order=oldest")
+    body = r.content.decode()
+    assert '<option value="closed" selected' in body
+    assert '<option value="oldest" selected' in body
+
+
+def test_index_no_legacy_ask_target_div(client):
+    r = client.get("/")
+    body = r.content.decode()
+    assert 'id="ask-sessions-target"' not in body
+
+
+def test_proposed_filters_templates_removed():
+    import tempfile
+    from pathlib import Path
+
+    from thirdeye.config import Config
+    from thirdeye.web.app import create_app
+
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        (root / "traces").mkdir()
+        (root / "evals" / "defs").mkdir(parents=True)
+        app = create_app(Config(root=root))
+        env = app.state.templates.env
+        from jinja2 import TemplateNotFound
+
+        for name in ("search/_proposed_filters.html", "sessions/_proposed_filters.html"):
+            try:
+                env.get_template(name)
+            except TemplateNotFound:
+                continue
+            raise AssertionError(f"{name} should be deleted")

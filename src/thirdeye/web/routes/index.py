@@ -11,6 +11,7 @@ from thirdeye.eval.agents import BUILTIN_ADAPTERS, list_agent_names
 from thirdeye.eval.definition import list_definitions
 from thirdeye.timeparse import parse_when
 from thirdeye.web.views_store import ViewStore
+from thirdeye.web.vocabulary import inventory_tags
 
 
 def _installed_agents(root) -> list[str]:
@@ -72,6 +73,7 @@ async def _index(request: Request) -> HTMLResponse:
             "agents": _installed_agents(config.root),
             "eval_defs": list(list_definitions(config.root)),
             "saved_views": ViewStore(config.root, "sessions").list(),
+            "all_tags": inventory_tags(config),
         },
     )
 

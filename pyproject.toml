@@ -72,7 +72,7 @@ thirdeye = [
     "skills/use-thirdeye/references/*.md",
     "skills/use-thirdeye-evals/SKILL.md",
     "skills/use-thirdeye-evals/references/*.md",
-    "skills/ui-filter-builder/SKILL.md",
+    "skills/thirdeye-filter/SKILL.md",
     "eval/defs/*.yaml",
     "web/templates/*.html",
     "web/templates/**/*.html",

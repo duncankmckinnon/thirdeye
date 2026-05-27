@@ -10,6 +10,7 @@ from starlette.responses import HTMLResponse
 from starlette.routing import Route
 
 from thirdeye.web.agentic import propose_filters
+from thirdeye.web.vocabulary import inventory_tags
 
 
 class _NotFound(Exception):
@@ -142,10 +143,19 @@ async def _sessions_agentic(request: Request) -> HTMLResponse:
             {"message": str(e)},
             status_code=400,
         )
+    filters = {
+        "platform": proposed.platform,
+        "cwd": proposed.cwd,
+        "status": proposed.status,
+        "since": proposed.since,
+        "until": proposed.until,
+        "order": proposed.order,
+        "tag": list(proposed.tags),
+    }
     return templates.TemplateResponse(
         request,
-        "sessions/_proposed_filters.html",
-        {"proposed": proposed, "nl": nl},
+        "sessions/_filter_form.html",
+        {"filters": filters, "all_tags": inventory_tags(config)},
     )
 
 

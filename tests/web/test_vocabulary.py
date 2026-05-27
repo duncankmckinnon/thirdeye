@@ -8,7 +8,7 @@ from thirdeye.config import Config
 from thirdeye.paths import session_dir as _session_dir
 from thirdeye.store import Store
 from thirdeye.tags import TagStore
-from thirdeye.web.vocabulary import build_vocabulary_block
+from thirdeye.web.vocabulary import build_vocabulary_block, inventory_tags
 
 pytest.importorskip("starlette")
 
@@ -102,3 +102,21 @@ def test_sessions_surface_adds_statuses_and_orders(tmp_path: Path) -> None:
     assert "orders:" not in search_block
     assert 'statuses: ["open", "closed"]' in sessions_block
     assert 'orders: ["newest", "oldest", "longest", "shortest"]' in sessions_block
+
+
+def test_inventory_tags_empty(tmp_path: Path) -> None:
+    config = Config(root=tmp_path)
+    (tmp_path / "traces").mkdir()
+    assert inventory_tags(config) == []
+
+
+def test_inventory_tags_dedupes_and_sorts_across_sessions(tmp_path: Path) -> None:
+    config = Config(root=tmp_path)
+    (tmp_path / "traces").mkdir()
+    store = Store(config)
+
+    _open_session(store, "01J9INV0001", platform="claude", cwd="/p", tags=["zeta", "alpha"])
+    _open_session(store, "01J9INV0002", platform="codex", cwd="/p", tags=["alpha", "mid"])
+    _open_session(store, "01J9INV0003", platform="claude", cwd="/p", tags=[])
+
+    assert inventory_tags(config) == ["alpha", "mid", "zeta"]

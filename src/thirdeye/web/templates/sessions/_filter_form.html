@@ -1,0 +1,30 @@
+<form id="sessions-filter-form" class="filters" method="get" action="/">
+  <input type="text" name="platform" placeholder="platform"
+         value="{{ filters.platform or '' }}">
+  <input type="text" name="cwd" placeholder="cwd"
+         value="{{ filters.cwd or '' }}">
+  <select name="status" aria-label="status">
+    <option value="" {% if not filters.status %}selected{% endif %}>any status</option>
+    <option value="open" {% if filters.status == 'open' %}selected{% endif %}>open</option>
+    <option value="closed" {% if filters.status == 'closed' %}selected{% endif %}>closed</option>
+  </select>
+  <input type="text" name="since" placeholder="since (e.g. 7d)"
+         value="{{ filters.since or '' }}">
+  <input type="text" name="until" placeholder="until"
+         value="{{ filters.until or '' }}">
+  <select name="order" aria-label="order">
+    <option value="newest" {% if filters.order in (None, '', 'newest') %}selected{% endif %}>newest first</option>
+    <option value="oldest" {% if filters.order == 'oldest' %}selected{% endif %}>oldest first</option>
+    <option value="longest" {% if filters.order == 'longest' %}selected{% endif %}>longest first</option>
+    <option value="shortest" {% if filters.order == 'shortest' %}selected{% endif %}>shortest first</option>
+  </select>
+  <label class="tags-field">tags
+    <select name="tag" multiple size="6" class="tags-multiselect">
+      {% for t in all_tags %}
+        <option value="{{ t }}"
+          {% if t in (filters.tag or []) %}selected{% endif %}>{{ t }}</option>
+      {% endfor %}
+    </select>
+  </label>
+  <button type="submit">Filter</button>
+</form>

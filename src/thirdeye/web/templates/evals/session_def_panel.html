@@ -1,0 +1,55 @@
+{% extends "base.html" %}
+{% block title %}thirdeye — {{ defn.name }} on {{ sid[:8] }}{% endblock %}
+{% block content %}
+<section class="eval-def-panel">
+  <h1>
+    <code>{{ defn.name }}</code> on
+    <a href="/sessions/{{ sid }}">{{ sid[:8] }}</a>
+    <span class="muted">({{ platform }})</span>
+  </h1>
+
+  <section class="def-directive">
+    <h2>Directive</h2>
+    <pre class="directive-text">{{ defn.directive }}</pre>
+    {% if defn.description %}
+      <p class="muted">{{ defn.description }}</p>
+    {% endif %}
+  </section>
+
+  <section class="def-runs">
+    <h2>Runs ({{ results | length }})</h2>
+    {% if results %}
+    <table class="eval-results-table">
+      <thead>
+        <tr>
+          <th>run id</th>
+          <th>verdict</th>
+          {% for k in score_keys %}<th>{{ k }}</th>{% endfor %}
+          <th>findings</th>
+          <th>duration</th>
+          <th>started</th>
+          <th>agent</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for r in results %}
+        <tr>
+          <td><a href="/sessions/{{ sid }}/evals/runs/{{ r.id }}">{{ r.id[:8] }}</a></td>
+          <td class="verdict verdict-{{ r.verdict }}">{{ r.verdict }}</td>
+          {% for k in score_keys %}
+            <td>{% if k in r.scores %}{{ "%.3f"|format(r.scores[k]) }}{% else %}<span class="muted">—</span>{% endif %}</td>
+          {% endfor %}
+          <td>{{ r.findings | length }}</td>
+          <td>{{ r.duration_ms }}ms</td>
+          <td>{{ r.started_at }}</td>
+          <td>{{ r.agent }}</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+    {% else %}
+    <p class="empty">No runs of this definition on this session yet.</p>
+    {% endif %}
+  </section>
+</section>
+{% endblock %}

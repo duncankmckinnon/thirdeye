@@ -1,0 +1,26 @@
+<form id="search-filter-form" class="filters search-filters"
+      method="get" action="/search">
+  <input type="search" name="q" placeholder="search events"
+         value="{{ filters.q or query or '' }}" autofocus>
+  <input type="text" name="platform" placeholder="platform"
+         value="{{ filters.platform or '' }}">
+  <input type="text" name="cwd" placeholder="cwd"
+         value="{{ filters.cwd or '' }}">
+  <label class="date-field">since
+    <input type="text" name="since" placeholder="7d or 2026-05-01"
+           value="{{ filters.since or '' }}">
+  </label>
+  <label class="date-field">until
+    <input type="text" name="until" placeholder="ISO or relative"
+           value="{{ filters.until or '' }}">
+  </label>
+  <label class="tags-field">tags
+    <select name="tag" multiple size="6" class="tags-multiselect">
+      {% for t in all_tags %}
+        <option value="{{ t }}"
+          {% if t in (filters.tag or []) %}selected{% endif %}>{{ t }}</option>
+      {% endfor %}
+    </select>
+  </label>
+  <button type="submit">Search</button>
+</form>

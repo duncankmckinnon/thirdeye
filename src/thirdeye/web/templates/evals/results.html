@@ -5,6 +5,20 @@
   <h1>Evals for <a href="/sessions/{{ sid }}">{{ sid[:8] }}</a>
       <span class="muted">({{ platform }})</span></h1>
   {% if results %}
+    {% set seen_defs = [] %}
+    {% for r in results %}
+      {% if r.definition not in seen_defs %}
+        {% set _ = seen_defs.append(r.definition) %}
+      {% endif %}
+    {% endfor %}
+    {% if seen_defs %}
+    <nav class="def-chips" aria-label="definitions on this session">
+      <span class="muted">definitions:</span>
+      {% for d in seen_defs %}
+        <a class="def-chip" href="/sessions/{{ sid }}/evals/{{ d }}"><code>{{ d }}</code></a>
+      {% endfor %}
+    </nav>
+    {% endif %}
     {% set rows = results %}{% set scope = "session" %}
     {% include "evals/_results_table.html" %}
   {% else %}

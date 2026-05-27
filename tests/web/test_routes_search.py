@@ -32,6 +32,48 @@ def test_search_finds_hello(client, web_store):
     assert sid.encode() in r.content
 
 
+def test_search_has_filter_form(client):
+    r = client.get("/search")
+    assert r.status_code == 200
+    assert b'id="search-filter-form"' in r.content
+    assert b'<select name="tag" multiple' in r.content
+
+
+def test_search_tag_multiselect_lists_inventory(client, monkeypatch):
+    monkeypatch.setattr(
+        "thirdeye.web.routes.search.inventory_tags",
+        lambda cfg: ["alpha", "beta"],
+    )
+    r = client.get("/search")
+    body = r.content.decode()
+    assert '<option value="alpha"' in body
+    assert '<option value="beta"' in body
+
+
+def test_search_tag_round_trip_selects_options(client, monkeypatch):
+    monkeypatch.setattr(
+        "thirdeye.web.routes.search.inventory_tags",
+        lambda cfg: ["foo", "bar"],
+    )
+    r = client.get("/search?tag=foo")
+    body = r.content.decode()
+    assert '<option value="foo"' in body and "selected" in body
+    assert '<option value="bar"' in body
+
+
+def test_search_ask_panel_uses_outer_html_swap(client):
+    r = client.get("/search")
+    body = r.content.decode()
+    assert 'hx-swap="outerHTML"' in body
+    assert 'hx-target="#search-filter-form"' in body
+
+
+def test_search_has_submit_button(client):
+    r = client.get("/search")
+    body = r.content.decode()
+    assert "<button" in body and ">Search<" in body
+
+
 def test_search_platform_filter_pass_through(client, web_store):
     sid_a = "01J9SRCH02"
     with web_store.open_session(sid_a, platform="claude", cwd="/p") as w:

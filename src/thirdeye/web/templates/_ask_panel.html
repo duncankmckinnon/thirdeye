@@ -1,7 +1,8 @@
 <form class="ask-panel"
       hx-post="{{ post_url }}"
       hx-target="#{{ target_id }}"
-      hx-indicator="#{{ target_id }}-spinner">
+      hx-indicator="#{{ target_id }}-spinner"
+      hx-swap="outerHTML">
   <label class="ask-label" for="ask-{{ surface }}">Ask</label>
   <textarea id="ask-{{ surface }}" name="nl" rows="2"
             placeholder="describe what you want…"></textarea>
@@ -14,4 +15,3 @@
   <button type="submit">Ask</button>
   <span id="{{ target_id }}-spinner" class="htmx-indicator">…</span>
 </form>
-<div id="{{ target_id }}"></div>

@@ -1,5 +1,5 @@
 ---
-name: ui-filter-builder
+name: thirdeye-filter
 description: Use when invoked by the thirdeye UI Ask panel to translate a natural-language query into a structured filter JSON envelope for the sessions or search views.
 metadata:
   type: directive
