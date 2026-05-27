@@ -55,6 +55,35 @@ def test_search_agentic_success_renders_preview(client, monkeypatch):
     assert "<button" in body and "Search" in body
 
 
+def test_search_agentic_no_legacy_chips(client, monkeypatch):
+    def fake_propose(config, *, nl, agent_name, surface):
+        return _stub_proposed_search()
+
+    monkeypatch.setattr("thirdeye.web.routes.search.propose_filters", fake_propose)
+    monkeypatch.setattr(
+        "thirdeye.web.routes.search.inventory_tags", lambda cfg: ["bug"]
+    )
+    r = client.post("/search/agentic", data={"nl": "x", "agent": "claude"})
+    body = r.content.decode()
+    assert 'class="proposed-filters"' not in body
+    assert 'class="filter-chips"' not in body
+    assert ">Run<" not in body
+
+
+def test_search_agentic_form_action_is_search(client, monkeypatch):
+    def fake_propose(config, *, nl, agent_name, surface):
+        return _stub_proposed_search()
+
+    monkeypatch.setattr("thirdeye.web.routes.search.propose_filters", fake_propose)
+    monkeypatch.setattr(
+        "thirdeye.web.routes.search.inventory_tags", lambda cfg: ["bug"]
+    )
+    r = client.post("/search/agentic", data={"nl": "x", "agent": "claude"})
+    body = r.content.decode()
+    assert 'action="/search"' in body
+    assert 'method="get"' in body
+
+
 def test_search_agentic_agent_failure_returns_400(client, monkeypatch):
     def fake_propose(config, *, nl, agent_name, surface):
         raise FileNotFoundError("`claude` not found on PATH")

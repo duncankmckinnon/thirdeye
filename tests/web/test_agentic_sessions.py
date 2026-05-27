@@ -51,6 +51,38 @@ def test_sessions_agentic_success_renders_preview(client, monkeypatch):
     assert "<button" in body and "Filter" in body
 
 
+def test_sessions_agentic_populates_cwd(client, monkeypatch):
+    def fake_propose(config, *, nl, agent_name, surface):
+        return _stub_proposed_sessions()
+
+    monkeypatch.setattr("thirdeye.web.routes.sessions.propose_filters", fake_propose)
+    monkeypatch.setattr(
+        "thirdeye.web.routes.sessions.inventory_tags",
+        lambda cfg: ["refactor"],
+    )
+    r = client.post(
+        "/sessions/agentic",
+        data={"nl": "x", "agent": "claude"},
+    )
+    body = r.content.decode()
+    assert 'value="/Users/me/api"' in body
+
+
+def test_sessions_agentic_no_legacy_chips(client, monkeypatch):
+    def fake_propose(config, *, nl, agent_name, surface):
+        return _stub_proposed_sessions()
+
+    monkeypatch.setattr("thirdeye.web.routes.sessions.propose_filters", fake_propose)
+    monkeypatch.setattr(
+        "thirdeye.web.routes.sessions.inventory_tags",
+        lambda cfg: ["refactor"],
+    )
+    r = client.post("/sessions/agentic", data={"nl": "x", "agent": "claude"})
+    body = r.content.decode()
+    assert 'class="proposed-filters"' not in body
+    assert 'class="filter-chips"' not in body
+
+
 def test_sessions_agentic_runtime_error_returns_400(client, monkeypatch):
     def fake_propose(config, *, nl, agent_name, surface):
         raise RuntimeError("agent exited 2: broken")
