@@ -1,6 +1,8 @@
 // thirdeye saved-views: read/write the active filter to localStorage
-// keyed by page (e.g. "sessions"), and inject the current query string
-// into the "Save current" form before submit.
+// keyed by page (e.g. "sessions"), so navigating to a bare URL
+// restores the user's last filter. The "Save current" form captures
+// window.location.search at submit time via hx-vals — no JS wiring
+// of the form is needed.
 (function () {
   const PAGE_KEY = (page) => `thirdeye.${page}.filter`;
 
@@ -21,22 +23,15 @@
     }
   }
 
-  function wireSaveForm() {
-    document.querySelectorAll("[data-current-query]").forEach((el) => {
-      el.value = currentQuery();
-    });
-  }
-
   function clearStored(page) {
     localStorage.removeItem(PAGE_KEY(page));
   }
 
-  window.thirdeyeViews = { restoreIfBareAndStored, wireSaveForm, clearStored };
+  window.thirdeyeViews = { restoreIfBareAndStored, clearStored };
 })();
 
 document.addEventListener("DOMContentLoaded", function () {
   if (window.location.pathname === "/") {
     window.thirdeyeViews.restoreIfBareAndStored("sessions", "?since=7d&order=newest");
-    window.thirdeyeViews.wireSaveForm();
   }
 });

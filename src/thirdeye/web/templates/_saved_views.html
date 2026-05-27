@@ -17,10 +17,10 @@
   {% endif %}
   <form class="save-view-form"
         hx-post="/views/{{ page }}"
-        hx-target="#saved-views-{{ page }}">
+        hx-target="#saved-views-{{ page }}"
+        hx-vals='js:{path: window.location.search || "?"}'>
     <input type="text" name="name" placeholder="view name"
            pattern="^[a-zA-Z0-9 _\-]{1,64}$" required>
-    <input type="hidden" name="path" data-current-query>
     <button type="submit">Save current</button>
   </form>
 </aside>
