@@ -40,28 +40,62 @@ The 'ui' extra is required. Install it with: pip install 'thrdi[ui]'
 
 ## What you can do
 
-- **Browse sessions.** The session list shows every recorded session across
-  every platform, with filters for platform, cwd, status (open / closed /
-  stale), tags, and date range.
+- **Browse sessions.** The list at `/` shows every recorded session
+  across every platform, with filters for platform, cwd, status (open /
+  closed / stale), date range, and a **tag multi-select** dropdown
+  populated from every tag in your history. Defaults to the last 7
+  days, newest first. The active filter persists in `localStorage` so
+  navigating away and back keeps your view.
+- **Ask panel (agentic filters).** Both `/` and `/search` carry an
+  "Ask" textarea. Type a natural-language description ("find sessions
+  about the workbench plan", "long-lasting claude runs this week"),
+  pick a CLI agent (claude / codex / gemini), and submit. The agent
+  receives a grounded vocabulary block (your platforms, cwds, tags)
+  plus the bundled `thirdeye-filter` skill and returns a structured
+  JSON envelope. The UI **auto-fills the existing filter form** with
+  the proposed values — review or tweak any field, then hit the
+  Search / Filter button to run. No auto-execute, no separate Run
+  button to learn.
+- **Saved filter views.** From `/`, name a filter combination and pin
+  it to the sidebar (`/views/sessions` under the hood). Saved views
+  persist on disk at `<thirdeye_home>/views/sessions.json` and are
+  manageable from the CLI too: `thirdeye views list / save / delete
+  --page sessions`.
 - **Open a session.** Each session view renders the event stream as a
-  collapsible tree, color-coded by event type (user, assistant, tool call,
-  tool result, etc.). Click any event to expand its full JSON payload in
-  the side pane.
-- **Tag events.** Add or remove tags from any event inline. Tags are stored
-  in the same per-session tag store the CLI uses, so `thirdeye search
-  --tag <name>` picks them up immediately.
-- **Search across sessions.** Substring search with the same filters as
-  `thirdeye search`. Each hit links straight to the event in its session.
-- **Inspect token usage.** Per-session and global usage views surface the
-  same data as `thirdeye usage`: model, input / output / total tokens, and
-  per-turn rollups.
+  collapsible tree, color-coded by event type (user, assistant, tool
+  call, tool result, etc.). Click any event to expand its full JSON
+  payload in the side pane.
+- **Tag events.** Add or remove tags from any event inline. Tags are
+  stored in the same per-session tag store the CLI uses, so
+  `thirdeye search --tag <name>` picks them up immediately.
+- **Search across sessions.** Substring search with the same filters
+  as `thirdeye search`. Each hit links straight to the event in its
+  session.
+- **Usage charts.** `/usage` renders daily tokens-over-time
+  (stacked input / output) and sessions-per-day charts via vendored
+  Chart.js, plus totals cards. Filter by platform / since / until.
+  Per-session usage at `/sessions/<id>/usage` keeps the existing
+  per-turn detail view.
 - **Author and run evals.** Browse, edit, and create eval definitions
-  (YAML rubrics) in the browser. Dispatch a run against any session and
-  watch its status poll until the job completes; results render inline
-  with the per-turn findings anchored to event `seq`.
-- **Live-tail open sessions.** Sessions that are still receiving events
-  stream new entries into the tree in real time via Server-Sent Events. No
-  refresh needed.
+  (YAML rubrics) in the browser. Dispatch a run against any single
+  session, or select multiple sessions on `/` and dispatch a **batch**
+  of runs in one click. Each run gets a unique `run_id`; the same
+  definition can be re-run on the same session.
+- **Eval-keyed cross-cut.** `/evals/defs/<name>/results` shows every
+  run of a given definition across every session it's been applied
+  to — sortable, with verdict / agent / started-at / duration and a
+  link to each run's findings.
+- **Per-(session, definition) panel.** From a session's eval list,
+  click a definition chip to open
+  `/sessions/<id>/evals/<def_name>`. The panel renders the
+  definition's full directive text plus a table of every run of that
+  definition on that session, with parsed columns: run id, verdict,
+  one column per score key seen across runs (with `—` for absent),
+  findings count, duration, started, agent. Useful for comparing
+  iterations of the same rubric on one session.
+- **Live-tail open sessions.** Sessions that are still receiving
+  events stream new entries into the tree in real time via
+  Server-Sent Events. No refresh needed.
 
 ## Keyboard shortcuts
 
