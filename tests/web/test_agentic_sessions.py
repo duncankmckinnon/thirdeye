@@ -83,6 +83,31 @@ def test_sessions_agentic_no_legacy_chips(client, monkeypatch):
     assert 'class="filter-chips"' not in body
 
 
+def test_sessions_agentic_multiple_tags_all_selected(client, monkeypatch):
+    def fake_propose(config, *, nl, agent_name, surface):
+        return ProposedFilters(
+            q=None, platform=None, cwd=None,
+            tags=["alpha", "gamma"],
+            since=None, until=None, status=None, order=None, rationale=None,
+        )
+
+    monkeypatch.setattr("thirdeye.web.routes.sessions.propose_filters", fake_propose)
+    monkeypatch.setattr(
+        "thirdeye.web.routes.sessions.inventory_tags",
+        lambda cfg: ["alpha", "beta", "gamma"],
+    )
+    r = client.post("/sessions/agentic", data={"nl": "x", "agent": "claude"})
+    body = r.content.decode()
+    assert '<option value="alpha"' in body
+    assert '<option value="beta"' in body
+    assert '<option value="gamma"' in body
+    assert body.count("selected") >= 2
+    import re
+    assert re.search(r'<option value="alpha"[^>]*selected', body)
+    assert re.search(r'<option value="gamma"[^>]*selected', body)
+    assert not re.search(r'<option value="beta"[^>]*selected', body)
+
+
 def test_sessions_agentic_runtime_error_returns_400(client, monkeypatch):
     def fake_propose(config, *, nl, agent_name, surface):
         raise RuntimeError("agent exited 2: broken")

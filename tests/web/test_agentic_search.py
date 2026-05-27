@@ -84,6 +84,38 @@ def test_search_agentic_form_action_is_search(client, monkeypatch):
     assert 'method="get"' in body
 
 
+def test_search_agentic_all_empty_renders_blank_form(client, monkeypatch):
+    def fake_propose(config, *, nl, agent_name, surface):
+        return ProposedFilters(
+            q=None, platform=None, cwd=None, tags=[],
+            since=None, until=None, status=None, order=None, rationale=None,
+        )
+
+    monkeypatch.setattr("thirdeye.web.routes.search.propose_filters", fake_propose)
+    monkeypatch.setattr(
+        "thirdeye.web.routes.search.inventory_tags", lambda cfg: ["one"]
+    )
+    r = client.post("/search/agentic", data={"nl": "", "agent": "claude"})
+    assert r.status_code == 200
+    body = r.content.decode()
+    assert 'id="search-filter-form"' in body
+    assert 'name="q"' in body
+    assert '<option value="one"' in body
+    assert "selected" not in body or body.count("selected") <= 1
+
+
+def test_search_inventory_tags_are_html_escaped(client, monkeypatch):
+    monkeypatch.setattr(
+        "thirdeye.web.routes.search.inventory_tags",
+        lambda cfg: ["<script>", "a&b"],
+    )
+    r = client.get("/search")
+    body = r.content.decode()
+    assert '<option value="<script>"' not in body
+    assert '<option value="&lt;script&gt;"' in body
+    assert '<option value="a&amp;b"' in body
+
+
 def test_search_agentic_agent_failure_returns_400(client, monkeypatch):
     def fake_propose(config, *, nl, agent_name, surface):
         raise FileNotFoundError("`claude` not found on PATH")
