@@ -78,9 +78,29 @@ pip install 'thrdi[ui]'
 thirdeye ui
 ```
 
-This opens a local browser UI for browsing sessions, visualizing traces
-as a collapsible tree, tagging events, editing and running evals, and
-live-tailing in-progress sessions. The server binds loopback only.
+The local browser UI covers:
+
+- **Sessions list** with platform / cwd / status / date filters and a
+  tag multi-select drawn from every tag in your history, defaulting to
+  the last 7 days, newest first.
+- **Ask panel** — type "find sessions about the workbench plan" or
+  "long-lasting claude runs this week" and a CLI agent of your choice
+  (claude / codex / gemini) auto-fills the filter form. Review the
+  populated fields and hit Search / Filter to run.
+- **Saved filter views** — name a filter combination and pin it to the
+  sidebar; restored across browser sessions via local storage.
+- **Session view** — collapsible event tree color-coded by event type,
+  inline tag editing, live-tail via Server-Sent Events for open sessions.
+- **Evals** — author and edit YAML rubrics; dispatch a run on one
+  session or a batch on a selection. Two complementary tables: per-
+  definition cross-cut (`/evals/defs/<name>/results`) for comparing a
+  rubric across sessions, and a per-(session, definition) panel showing
+  the directive text plus every run on that session with parsed verdict
+  and score columns.
+- **Usage charts** — daily tokens-over-time and sessions-per-day with a
+  platform filter and totals cards.
+
+The server binds loopback only.
 
 See [docs/ui.md](docs/ui.md) for full reference.
 
