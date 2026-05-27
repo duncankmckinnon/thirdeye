@@ -68,7 +68,7 @@ def _read_skill_body() -> str:
     Passing it to the agent CLI causes Claude/Codex to parse the
     leading `---` as a flag and reject the prompt.
     """
-    res = resources.files("thirdeye").joinpath("skills", "ui-filter-builder", "SKILL.md")
+    res = resources.files("thirdeye").joinpath("skills", "thirdeye-filter", "SKILL.md")
     text = res.read_text(encoding="utf-8")
     return _FRONTMATTER_RE.sub("", text, count=1).lstrip()
 
