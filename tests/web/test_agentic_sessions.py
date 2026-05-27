@@ -86,9 +86,15 @@ def test_sessions_agentic_no_legacy_chips(client, monkeypatch):
 def test_sessions_agentic_multiple_tags_all_selected(client, monkeypatch):
     def fake_propose(config, *, nl, agent_name, surface):
         return ProposedFilters(
-            q=None, platform=None, cwd=None,
+            q=None,
+            platform=None,
+            cwd=None,
             tags=["alpha", "gamma"],
-            since=None, until=None, status=None, order=None, rationale=None,
+            since=None,
+            until=None,
+            status=None,
+            order=None,
+            rationale=None,
         )
 
     monkeypatch.setattr("thirdeye.web.routes.sessions.propose_filters", fake_propose)
@@ -103,6 +109,7 @@ def test_sessions_agentic_multiple_tags_all_selected(client, monkeypatch):
     assert '<option value="gamma"' in body
     assert body.count("selected") >= 2
     import re
+
     assert re.search(r'<option value="alpha"[^>]*selected', body)
     assert re.search(r'<option value="gamma"[^>]*selected', body)
     assert not re.search(r'<option value="beta"[^>]*selected', body)

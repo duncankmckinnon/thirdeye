@@ -41,9 +41,7 @@ def test_search_agentic_success_renders_preview(client, monkeypatch):
         return _stub_proposed_search()
 
     monkeypatch.setattr("thirdeye.web.routes.search.propose_filters", fake_propose)
-    monkeypatch.setattr(
-        "thirdeye.web.routes.search.inventory_tags", lambda cfg: ["bug", "wip"]
-    )
+    monkeypatch.setattr("thirdeye.web.routes.search.inventory_tags", lambda cfg: ["bug", "wip"])
     r = client.post("/search/agentic", data={"nl": "claude bug from last week", "agent": "claude"})
     assert r.status_code == 200
     body = r.content.decode()
@@ -60,9 +58,7 @@ def test_search_agentic_no_legacy_chips(client, monkeypatch):
         return _stub_proposed_search()
 
     monkeypatch.setattr("thirdeye.web.routes.search.propose_filters", fake_propose)
-    monkeypatch.setattr(
-        "thirdeye.web.routes.search.inventory_tags", lambda cfg: ["bug"]
-    )
+    monkeypatch.setattr("thirdeye.web.routes.search.inventory_tags", lambda cfg: ["bug"])
     r = client.post("/search/agentic", data={"nl": "x", "agent": "claude"})
     body = r.content.decode()
     assert 'class="proposed-filters"' not in body
@@ -75,9 +71,7 @@ def test_search_agentic_form_action_is_search(client, monkeypatch):
         return _stub_proposed_search()
 
     monkeypatch.setattr("thirdeye.web.routes.search.propose_filters", fake_propose)
-    monkeypatch.setattr(
-        "thirdeye.web.routes.search.inventory_tags", lambda cfg: ["bug"]
-    )
+    monkeypatch.setattr("thirdeye.web.routes.search.inventory_tags", lambda cfg: ["bug"])
     r = client.post("/search/agentic", data={"nl": "x", "agent": "claude"})
     body = r.content.decode()
     assert 'action="/search"' in body
@@ -87,14 +81,19 @@ def test_search_agentic_form_action_is_search(client, monkeypatch):
 def test_search_agentic_all_empty_renders_blank_form(client, monkeypatch):
     def fake_propose(config, *, nl, agent_name, surface):
         return ProposedFilters(
-            q=None, platform=None, cwd=None, tags=[],
-            since=None, until=None, status=None, order=None, rationale=None,
+            q=None,
+            platform=None,
+            cwd=None,
+            tags=[],
+            since=None,
+            until=None,
+            status=None,
+            order=None,
+            rationale=None,
         )
 
     monkeypatch.setattr("thirdeye.web.routes.search.propose_filters", fake_propose)
-    monkeypatch.setattr(
-        "thirdeye.web.routes.search.inventory_tags", lambda cfg: ["one"]
-    )
+    monkeypatch.setattr("thirdeye.web.routes.search.inventory_tags", lambda cfg: ["one"])
     r = client.post("/search/agentic", data={"nl": "", "agent": "claude"})
     assert r.status_code == 200
     body = r.content.decode()
