@@ -159,6 +159,40 @@ async def _session_evals(request: Request) -> HTMLResponse:
     )
 
 
+async def _session_def_panel(request: Request) -> HTMLResponse:
+    config = request.app.state.config
+    store = request.app.state.store
+    sid_prefix = request.path_params["sid"]
+    def_name = request.path_params["def_name"]
+    try:
+        platform, sid = store.resolve_session_id(sid_prefix)
+    except (KeyError, ValueError) as e:
+        raise HTTPException(status_code=404, detail=str(e)) from e
+    try:
+        defn = load_definition(config.root, def_name)
+    except FileNotFoundError as e:
+        raise HTTPException(status_code=404, detail=str(e)) from e
+    sdir = session_dir(config.root, platform, sid)
+    results = sorted(
+        (r for r in EvalStore(sdir).iter_results() if r.definition == def_name),
+        key=lambda r: r.started_at,
+        reverse=True,
+    )
+    score_keys = sorted({k for r in results for k in r.scores.keys()})
+    templates = request.app.state.templates
+    return templates.TemplateResponse(
+        request,
+        "evals/session_def_panel.html",
+        {
+            "sid": sid,
+            "platform": platform,
+            "defn": defn,
+            "results": results,
+            "score_keys": score_keys,
+        },
+    )
+
+
 async def _run_dispatch(request: Request) -> HTMLResponse:
     config = request.app.state.config
     store = request.app.state.store
@@ -303,6 +337,9 @@ def register(app: Starlette) -> None:
     app.routes.append(Route("/evals/defs/{name}/edit", _def_edit, methods=["GET"]))
     app.routes.append(Route("/evals/defs/{name}", _def_show, methods=["GET"]))
     app.routes.append(Route("/sessions/{sid}/evals", _session_evals, methods=["GET"]))
+    app.routes.append(
+        Route("/sessions/{sid}/evals/{def_name}", _session_def_panel, methods=["GET"])
+    )
     # writes (definitions)
     app.routes.append(Route("/evals/defs", _def_create, methods=["POST"]))
     app.routes.append(Route("/evals/defs/{name}", _def_update, methods=["PUT"]))

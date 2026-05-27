@@ -207,3 +207,15 @@ a.button-link:hover { filter: brightness(1.1); text-decoration: none; }
   color: var(--muted);
   border: 1px solid rgba(148, 163, 184, 0.35);
 }
+
+.eval-def-panel .directive-text {
+  background: var(--code-bg, #f5f5f5);
+  padding: 0.75rem;
+  border-radius: 4px;
+  white-space: pre-wrap;
+  font-size: 0.9rem;
+  overflow-x: auto;
+}
+.def-chips { display: flex; gap: 0.5rem; align-items: center; margin: 0.75rem 0; flex-wrap: wrap; }
+.def-chip { padding: 0.15rem 0.5rem; border: 1px solid #ccc; border-radius: 999px; text-decoration: none; }
+.def-chip:hover { background: #eee; }
