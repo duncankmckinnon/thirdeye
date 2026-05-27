@@ -11,6 +11,7 @@ from starlette.routing import Route
 from thirdeye.search import search
 from thirdeye.timeparse import parse_when
 from thirdeye.web.agentic import installed_agent_names, propose_filters
+from thirdeye.web.vocabulary import inventory_tags
 
 
 async def _search(request: Request) -> HTMLResponse:
@@ -51,6 +52,7 @@ async def _search(request: Request) -> HTMLResponse:
             "filters": filters,
             "hits": hits,
             "agents": installed_agent_names(config),
+            "all_tags": inventory_tags(config),
         },
     )
 
@@ -79,10 +81,22 @@ async def _search_agentic(request: Request) -> HTMLResponse:
             {"message": str(e)},
             status_code=400,
         )
+    filters = {
+        "q": proposed.q,
+        "platform": proposed.platform,
+        "cwd": proposed.cwd,
+        "tag": list(proposed.tags),
+        "since": proposed.since,
+        "until": proposed.until,
+    }
     return templates.TemplateResponse(
         request,
-        "search/_proposed_filters.html",
-        {"proposed": proposed, "nl": nl},
+        "search/_filter_form.html",
+        {
+            "filters": filters,
+            "query": proposed.q or "",
+            "all_tags": inventory_tags(config),
+        },
     )
 
 

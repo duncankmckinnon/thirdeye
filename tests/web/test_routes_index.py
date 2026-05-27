@@ -85,3 +85,32 @@ def test_index_default_since_in_form(client):
     r = client.get("/")
     assert r.status_code == 200
     assert b'value="7d"' in r.content
+
+
+def test_index_has_sessions_filter_form(client):
+    r = client.get("/")
+    assert r.status_code == 200
+    assert b'id="sessions-filter-form"' in r.content
+    assert b'<select name="tag" multiple' in r.content
+
+
+def test_index_tag_multiselect_lists_inventory(client, monkeypatch):
+    monkeypatch.setattr(
+        "thirdeye.web.routes.index.inventory_tags",
+        lambda cfg: ["alpha", "beta"],
+    )
+    r = client.get("/")
+    body = r.content.decode()
+    assert '<option value="alpha"' in body
+    assert '<option value="beta"' in body
+
+
+def test_index_tag_round_trip_selects_options(client, monkeypatch):
+    monkeypatch.setattr(
+        "thirdeye.web.routes.index.inventory_tags",
+        lambda cfg: ["foo", "bar"],
+    )
+    r = client.get("/?tag=foo&tag=bar")
+    body = r.content.decode()
+    assert '<option value="foo"' in body and "selected" in body
+    assert '<option value="bar"' in body

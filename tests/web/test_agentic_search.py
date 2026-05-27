@@ -41,15 +41,18 @@ def test_search_agentic_success_renders_preview(client, monkeypatch):
         return _stub_proposed_search()
 
     monkeypatch.setattr("thirdeye.web.routes.search.propose_filters", fake_propose)
+    monkeypatch.setattr(
+        "thirdeye.web.routes.search.inventory_tags", lambda cfg: ["bug", "wip"]
+    )
     r = client.post("/search/agentic", data={"nl": "claude bug from last week", "agent": "claude"})
     assert r.status_code == 200
     body = r.content.decode()
-    assert "platform=claude" in body
-    assert "tag=bug" in body
-    assert "since=7d" in body
-    assert "/search?" in body
-    assert "q=needle" in body
-    assert 'q="needle"' not in body
+    assert 'id="search-filter-form"' in body
+    assert 'value="needle"' in body
+    assert 'value="claude"' in body
+    assert 'value="7d"' in body
+    assert '<option value="bug"' in body and "selected" in body
+    assert "<button" in body and "Search" in body
 
 
 def test_search_agentic_agent_failure_returns_400(client, monkeypatch):

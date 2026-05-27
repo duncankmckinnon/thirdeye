@@ -69,3 +69,6 @@
   white-space: pre-wrap;
   word-break: break-word;
 }
+
+.tags-field { display: flex; flex-direction: column; gap: 0.25rem; }
+.tags-multiselect { min-width: 12rem; max-width: 18rem; }

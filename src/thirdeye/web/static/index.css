@@ -80,3 +80,6 @@
   flex: 1 1 320px;
   min-height: 2.4rem;
 }
+
+.tags-field { display: flex; flex-direction: column; gap: 0.25rem; }
+.tags-multiselect { min-width: 12rem; max-width: 18rem; }

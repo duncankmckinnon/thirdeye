@@ -33,17 +33,22 @@ def test_sessions_agentic_success_renders_preview(client, monkeypatch):
         return _stub_proposed_sessions()
 
     monkeypatch.setattr("thirdeye.web.routes.sessions.propose_filters", fake_propose)
+    monkeypatch.setattr(
+        "thirdeye.web.routes.sessions.inventory_tags",
+        lambda cfg: ["refactor", "wip"],
+    )
     r = client.post(
         "/sessions/agentic",
         data={"nl": "open refactor work longest", "agent": "claude"},
     )
     assert r.status_code == 200
     body = r.content.decode()
-    assert "status=open" in body
-    assert "order=longest" in body
-    assert "tag=refactor" in body
-    assert "platform=claude" in body
-    assert "/?" in body
+    assert 'id="sessions-filter-form"' in body
+    assert 'value="claude"' in body
+    assert '<option value="open" selected' in body
+    assert '<option value="longest" selected' in body
+    assert '<option value="refactor"' in body and "selected" in body
+    assert "<button" in body and "Filter" in body
 
 
 def test_sessions_agentic_runtime_error_returns_400(client, monkeypatch):

@@ -50,3 +50,13 @@ def build_vocabulary_block(config: Config, surface: Surface) -> str:
         lines.append('statuses: ["open", "closed"]')
         lines.append('orders: ["newest", "oldest", "longest", "shortest"]')
     return "\n".join(lines)
+
+
+def inventory_tags(config: Config) -> list[str]:
+    """Return sorted distinct tags currently effective across all sessions."""
+    store = Store(config)
+    tags: set[str] = set()
+    for meta in store.list_sessions():
+        sd = _session_dir(config.root, meta.platform, meta.session_id)
+        tags |= TagStore(sd).unique_tags()
+    return sorted(tags)
