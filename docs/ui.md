@@ -41,8 +41,9 @@ The 'ui' extra is required. Install it with: pip install 'thrdi[ui]'
 ## What you can do
 
 - **Browse sessions.** The list at `/` shows every recorded session
-  across every platform, with filters for platform, cwd, status (open /
-  closed / stale), date range, and a **tag multi-select** dropdown
+  across every platform (claude, codex, gemini, cursor), with filters
+  for platform, cwd, status (open / closed / stale), date range, and a
+  **tag multi-select** dropdown
   populated from every tag in your history. Defaults to the last 7
   days, newest first. The active filter persists in `localStorage` so
   navigating away and back keeps your view.

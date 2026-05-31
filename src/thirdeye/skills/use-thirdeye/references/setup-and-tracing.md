@@ -26,6 +26,11 @@ thirdeye add --copilot      # GitHub Copilot CLI
 `thirdeye add` is idempotent — running it twice for the same platform leaves
 the existing hook entries in place rather than duplicating them.
 
+Hook entries are written into each platform's own config file: Claude Code
+uses `~/.claude/settings.json`, Codex uses `~/.codex/config.toml`, Gemini
+uses `~/.gemini/settings.json`, and Cursor uses `~/.cursor/hooks.json`
+(covering both the IDE chat and the `cursor-agent` CLI).
+
 ## Detach
 
 ```bash
