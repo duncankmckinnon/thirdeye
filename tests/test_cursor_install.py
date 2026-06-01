@@ -143,9 +143,7 @@ class TestInstallPreservesExistingHooks:
 
     def test_preserves_unknown_top_level_keys(self, tmp_path: Path):
         hooks_file = tmp_path / "hooks.json"
-        hooks_file.write_text(
-            json.dumps({"version": 1, "hooks": {}, "custom": "x"})
-        )
+        hooks_file.write_text(json.dumps({"version": 1, "hooks": {}, "custom": "x"}))
         CursorPlatform(hooks_file=hooks_file).install()
         data = json.loads(hooks_file.read_text())
         assert data["custom"] == "x"

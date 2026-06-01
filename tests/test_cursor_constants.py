@@ -23,13 +23,20 @@ class TestHooksFile:
 class TestTracedEvents:
     def test_contains_all_documented_events(self):
         expected = {
-            "sessionStart", "sessionEnd",
-            "beforeSubmitPrompt", "afterAgentResponse",
-            "beforeShellExecution", "afterShellExecution",
-            "beforeMCPExecution", "afterMCPExecution",
-            "beforeReadFile", "afterFileEdit",
-            "beforeTabFileRead", "afterTabFileEdit",
-            "postToolUse", "stop",
+            "sessionStart",
+            "sessionEnd",
+            "beforeSubmitPrompt",
+            "afterAgentResponse",
+            "beforeShellExecution",
+            "afterShellExecution",
+            "beforeMCPExecution",
+            "afterMCPExecution",
+            "beforeReadFile",
+            "afterFileEdit",
+            "beforeTabFileRead",
+            "afterTabFileEdit",
+            "postToolUse",
+            "stop",
         }
         assert set(constants.TRACED_EVENTS) == expected
 

@@ -14,7 +14,6 @@ from thirdeye.platforms.cursor.usage import (
 )
 from thirdeye.usage.store import UsageStore
 
-
 SESSION_ID = "test-conv-123"
 
 
@@ -76,14 +75,19 @@ class TestGetInt:
         assert _get_int({"input_tokens": "", "inputTokens": 7}, "input_tokens", "inputTokens") == 7
 
     def test_dash_dash_falls_through(self) -> None:
-        assert _get_int({"input_tokens": "--", "inputTokens": 9}, "input_tokens", "inputTokens") == 9
+        assert (
+            _get_int({"input_tokens": "--", "inputTokens": 9}, "input_tokens", "inputTokens") == 9
+        )
 
     def test_returns_none_when_all_missing(self) -> None:
         assert _get_int({}, "input_tokens", "inputTokens") is None
 
     def test_unparseable_falls_through_then_returns_none(self) -> None:
         assert _get_int({"input_tokens": "abc"}, "input_tokens") is None
-        assert _get_int({"input_tokens": "abc", "inputTokens": "xyz"}, "input_tokens", "inputTokens") is None
+        assert (
+            _get_int({"input_tokens": "abc", "inputTokens": "xyz"}, "input_tokens", "inputTokens")
+            is None
+        )
 
 
 class TestCaptureFromCompletePayload:

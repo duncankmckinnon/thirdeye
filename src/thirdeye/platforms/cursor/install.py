@@ -57,9 +57,7 @@ class CursorPlatform(Platform):
         for event in TRACED_EVENTS:
             entries = hooks.setdefault(event, [])
             if not any(_is_our_entry(e) for e in entries):
-                entries.append(
-                    {"type": "command", "command": cmd, "timeout": HOOK_TIMEOUT_S}
-                )
+                entries.append({"type": "command", "command": cmd, "timeout": HOOK_TIMEOUT_S})
         _save(self._hooks_file, data)
 
     def uninstall(self) -> None:
