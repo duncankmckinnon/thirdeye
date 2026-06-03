@@ -52,6 +52,7 @@ thirdeye-gemini-before-model = "thirdeye.platforms.gemini.hooks:before_model"
 thirdeye-gemini-after-model = "thirdeye.platforms.gemini.hooks:after_model"
 thirdeye-gemini-before-tool = "thirdeye.platforms.gemini.hooks:before_tool"
 thirdeye-gemini-after-tool = "thirdeye.platforms.gemini.hooks:after_tool"
+thirdeye-cursor-hook = "thirdeye.platforms.cursor.hook:main"
 
 [build-system]
 requires = ["setuptools>=64", "setuptools-scm>=8", "wheel"]

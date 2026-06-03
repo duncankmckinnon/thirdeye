@@ -1,6 +1,6 @@
 ---
 name: use-thirdeye
-description: Use when an agent needs to inspect, search, or evaluate past agent sessions captured by the thirdeye CLI — including debugging tool calls, analyzing token usage, retrieving session events, and running evaluations across recorded traces.
+description: Use when an agent needs to inspect, search, or evaluate past agent sessions captured by the thirdeye CLI — including debugging tool calls, analyzing token usage, reviewing session efficiency to suggest skill improvements, retrieving session events, and running evaluations across recorded traces.
 ---
 
 ## Overview
@@ -72,6 +72,19 @@ reading usage fields from events, aggregating across a session, and comparing se
 ```bash
 thirdeye stats <id>
 thirdeye stats <id> --json
+```
+
+## Reviewing session efficiency
+
+When asked to improve agent performance, reduce token usage, or suggest new skills based on
+recorded behavior, use the workflow in
+[session-efficiency-review.md](references/session-efficiency-review.md). It covers population
+selection, tool-mix analysis, red-flag thresholds, and how to turn findings into skill or
+plan updates.
+
+```bash
+thirdeye list --json --cwd "$PWD" --since 2026-05-01 | jq 'select(.event_count > 80)'
+thirdeye events <id> --json | jq -r 'select(.t == "tool_call") | .data.tool_name' | sort | uniq -c
 ```
 
 ## Running evaluations

@@ -9,6 +9,7 @@ from thirdeye.cli import main
 from thirdeye.commands.add import PLATFORMS
 from thirdeye.platforms.claude.install import ClaudePlatform
 from thirdeye.platforms.codex.install import CodexPlatform
+from thirdeye.platforms.cursor.install import CursorPlatform
 from thirdeye.platforms.gemini.install import GeminiPlatform
 
 # -- command registration ------------------------------------------------------
@@ -455,6 +456,54 @@ def test_remove_codex_removes_notify(tmp_path: Path, monkeypatch):
 
 
 # -- claude regression ---------------------------------------------------------
+
+
+# -- cursor: help, dispatch, PLATFORMS dict ------------------------------------
+
+
+def test_add_help_mentions_cursor():
+    r = CliRunner().invoke(main, ["add", "--help"])
+    assert r.exit_code == 0
+    assert "--cursor" in r.output
+
+
+def test_remove_help_mentions_cursor():
+    r = CliRunner().invoke(main, ["remove", "--help"])
+    assert r.exit_code == 0
+    assert "--cursor" in r.output
+
+
+def test_platforms_dict_has_cursor():
+    assert "cursor" in PLATFORMS
+    assert PLATFORMS["cursor"] is CursorPlatform
+
+
+def test_add_cursor_dispatches_to_cursor_platform(monkeypatch):
+    from unittest.mock import MagicMock
+
+    mock_platform = MagicMock()
+    mock_platform.display_name = "Cursor"
+    mock_cls = MagicMock(return_value=mock_platform)
+
+    monkeypatch.setitem(PLATFORMS, "cursor", mock_cls)
+    r = CliRunner().invoke(main, ["add", "--cursor"])
+    assert r.exit_code == 0, r.output
+    mock_cls.assert_called_once()
+    mock_platform.install.assert_called_once()
+
+
+def test_remove_cursor_dispatches_to_cursor_platform(monkeypatch):
+    from unittest.mock import MagicMock
+
+    mock_platform = MagicMock()
+    mock_platform.display_name = "Cursor"
+    mock_cls = MagicMock(return_value=mock_platform)
+
+    monkeypatch.setitem(PLATFORMS, "cursor", mock_cls)
+    r = CliRunner().invoke(main, ["remove", "--cursor"])
+    assert r.exit_code == 0, r.output
+    mock_cls.assert_called_once()
+    mock_platform.uninstall.assert_called_once()
 
 
 def test_add_claude_still_works(tmp_path: Path, monkeypatch):
