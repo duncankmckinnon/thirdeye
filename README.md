@@ -134,18 +134,25 @@ deps — thirdeye shells out to the agent binaries you already have installed.
 
 ## Agent skills
 
-Two bundled Claude-Code-format skills:
+Four bundled Claude-Code-format skills:
 
 - **`use-thirdeye`** — basic CLI fluency: enable tracing, search sessions,
   debug tool calls, analyze token usage.
-- **`use-thirdeye-evals`** — eval workflow: create rubrics, dispatch
+- **`thirdeye-evals`** — eval workflow: create rubrics, dispatch
   evaluators, view per-turn findings.
+- **`thirdeye-review`** — audit other agents' traces to find
+  inefficiencies and propose invocation, skill, or convention changes
+  (cohort scoping, tool-mix patterns, token spikes, recommendation
+  templates).
+- **`thirdeye-filter`** — directive used by the browser UI's Ask panel
+  to translate natural-language queries into filter JSON. Installed
+  alongside the others; not invoked directly by agents.
 
 ```bash
 thirdeye skill list                                  # show bundled skill names
 thirdeye skill install                               # all skills → .agents/skills/
 thirdeye skill install .claude/skills                # custom parent dir
-thirdeye skill install --only use-thirdeye-evals     # just one
+thirdeye skill install --only thirdeye-review        # just one
 thirdeye skill install --force                       # replace existing entries
 ```
 
