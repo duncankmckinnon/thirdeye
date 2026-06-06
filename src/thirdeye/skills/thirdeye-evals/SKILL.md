@@ -1,5 +1,5 @@
 ---
-name: use-thirdeye-evals
+name: thirdeye-evals
 description: Use when an agent needs to create, run, view, or manage evaluations against thirdeye-recorded sessions — defining named rubrics, dispatching agent-based evaluators (claude/codex/gemini), interpreting per-turn findings, or comparing eval results across sessions.
 ---
 
