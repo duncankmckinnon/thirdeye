@@ -71,8 +71,8 @@ def test_empty_skills_list_produces_context_and_task_only():
     result = build_agent_prompt("my task", skills=[])
     assert "TASK:\nmy task" in result
     assert "Context:" in result
-    # No skill content — the prompt is just context + task
-    assert "---" not in result  # no separator without skills
+    # No skill content — only one separator between context and task
+    assert result.count("---") == 1
 
 
 def test_separator_appears_between_sections():
