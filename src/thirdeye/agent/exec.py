@@ -17,6 +17,7 @@ def _list_sessions(thirdeye_home: Path, platform: str) -> set[str]:
     try:
         from thirdeye.config import Config
         from thirdeye.store import Store
+
         config = Config(root=thirdeye_home)
         return {s.session_id for s in Store(config).list_sessions(platform=platform)}
     except Exception:
@@ -30,6 +31,7 @@ def _tag_sessions(thirdeye_home: Path, platform: str, session_ids: set[str]) -> 
     try:
         from thirdeye.paths import session_dir
         from thirdeye.tags import TagStore
+
         for sid in session_ids:
             sd = session_dir(thirdeye_home, platform, sid)
             if sd.exists():
@@ -65,11 +67,10 @@ def run_agent_streaming(
         FileNotFoundError: if the agent binary is not on PATH.
     """
     if shutil.which(harness.command) is None:
-        raise FileNotFoundError(
-            f"`{harness.command}` not found on PATH — install it first"
-        )
+        raise FileNotFoundError(f"`{harness.command}` not found on PATH — install it first")
 
     if output is None:
+
         def output(line: str) -> None:
             click.echo(line, nl=False)
 

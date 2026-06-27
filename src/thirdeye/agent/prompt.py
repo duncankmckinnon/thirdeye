@@ -51,9 +51,7 @@ def build_agent_prompt(
 
     unknown = [s for s in skills if s not in VALID_SKILLS]
     if unknown:
-        raise ValueError(
-            f"unknown skill(s): {unknown!r}. Valid: {sorted(VALID_SKILLS)}"
-        )
+        raise ValueError(f"unknown skill(s): {unknown!r}. Valid: {sorted(VALID_SKILLS)}")
 
     parts: list[str] = []
     for name in skills:

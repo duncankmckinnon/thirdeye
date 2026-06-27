@@ -7,7 +7,7 @@ import click
 
 from thirdeye.agent.exec import run_agent_streaming
 from thirdeye.agent.harness import AgentHarness
-from thirdeye.agent.prompt import DEFAULT_SKILLS, VALID_SKILLS, build_agent_prompt
+from thirdeye.agent.prompt import VALID_SKILLS, build_agent_prompt
 from thirdeye.config import Config
 from thirdeye.eval.agents import get_adapter, list_agent_names
 
@@ -88,4 +88,5 @@ def agent_cmd(
     except FileNotFoundError as e:
         raise click.ClickException(str(e)) from e
 
-    sys.exit(returncode)
+    if returncode != 0:
+        sys.exit(returncode)

@@ -48,6 +48,7 @@ def test_unknown_skill_raises_value_error():
 
 def test_context_block_contains_date():
     from datetime import date
+
     result = build_agent_prompt("x")
     assert f"date: {date.today().isoformat()}" in result
 

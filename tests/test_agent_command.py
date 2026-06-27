@@ -169,3 +169,36 @@ def test_thirdeye_home_is_passed_to_run_agent_streaming():
 def test_agent_command_is_registered_in_main_cli():
     result = CliRunner().invoke(main, ["--help"])
     assert "agent" in result.output
+
+
+def test_cwd_option_passed_down(tmp_path):
+    captured_prompt_cwd = []
+    captured_stream_cwd = []
+
+    def _fake_prompt(task, *, cwd=None, **kwargs):
+        captured_prompt_cwd.append(cwd)
+        return "composed prompt"
+
+    def _fake_stream(harness, prompt, cwd, **kwargs):
+        captured_stream_cwd.append(cwd)
+        return (0, 500)
+
+    # Let's create a custom directory to pass to --cwd
+    custom_dir = tmp_path / "custom-cwd"
+    custom_dir.mkdir()
+
+    with (
+        patch(_PATCH_STREAM, side_effect=_fake_stream),
+        patch(_PATCH_PROMPT, side_effect=_fake_prompt),
+    ):
+        result = CliRunner().invoke(
+            main,
+            ["agent", "do something", "--cwd", str(custom_dir)],
+            catch_exceptions=False,
+        )
+
+    assert result.exit_code == 0
+    assert len(captured_prompt_cwd) == 1
+    assert captured_prompt_cwd[0] == custom_dir
+    assert len(captured_stream_cwd) == 1
+    assert captured_stream_cwd[0] == custom_dir
