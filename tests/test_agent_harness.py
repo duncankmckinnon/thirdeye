@@ -4,12 +4,11 @@ from pathlib import Path
 
 import pytest
 
-from thirdeye.agent.harness import AgentHarness, _FIX_ARGS, _REVIEW_ARGS
+from thirdeye.agent.harness import _FIX_ARGS, _REVIEW_ARGS, AgentHarness
+from thirdeye.eval.agents.base import AgentConfig, ConfigAdapter
 from thirdeye.eval.agents.claude import ClaudeAdapter
 from thirdeye.eval.agents.codex import CodexAdapter
 from thirdeye.eval.agents.gemini import GeminiAdapter
-from thirdeye.eval.agents.base import AgentConfig, ConfigAdapter
-
 
 # --- construction ---
 
