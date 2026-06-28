@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import io
+import subprocess
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
@@ -39,7 +40,9 @@ def test_streams_stdout_to_output_callback():
         patch("shutil.which", return_value="/usr/bin/claude"),
         patch("subprocess.Popen", return_value=mock_proc),
     ):
-        run_agent_streaming(_make_harness(), "task", Path("/tmp"), output=captured.append)
+        run_agent_streaming(
+            _make_harness(), "task", Path("/tmp"), use_pty=False, output=captured.append
+        )
 
     assert captured == ["line one\n", "line two\n"]
 
@@ -52,7 +55,7 @@ def test_returns_returncode_zero_on_success():
         patch("subprocess.Popen", return_value=mock_proc),
     ):
         rc, duration = run_agent_streaming(
-            _make_harness(), "task", Path("/tmp"), output=lambda _: None
+            _make_harness(), "task", Path("/tmp"), use_pty=False, output=lambda _: None
         )
 
     assert rc == 0
@@ -65,7 +68,9 @@ def test_returns_nonzero_returncode_on_failure():
         patch("shutil.which", return_value="/usr/bin/claude"),
         patch("subprocess.Popen", return_value=mock_proc),
     ):
-        rc, _ = run_agent_streaming(_make_harness(), "task", Path("/tmp"), output=lambda _: None)
+        rc, _ = run_agent_streaming(
+            _make_harness(), "task", Path("/tmp"), use_pty=False, output=lambda _: None
+        )
 
     assert rc == 1
 
@@ -78,7 +83,7 @@ def test_returns_duration_ms_as_int():
         patch("subprocess.Popen", return_value=mock_proc),
     ):
         _, duration = run_agent_streaming(
-            _make_harness(), "task", Path("/tmp"), output=lambda _: None
+            _make_harness(), "task", Path("/tmp"), use_pty=False, output=lambda _: None
         )
 
     assert isinstance(duration, int)
@@ -93,7 +98,9 @@ def test_empty_stdout_produces_no_callback_calls():
         patch("shutil.which", return_value="/usr/bin/claude"),
         patch("subprocess.Popen", return_value=mock_proc),
     ):
-        run_agent_streaming(_make_harness(), "task", Path("/tmp"), output=captured.append)
+        run_agent_streaming(
+            _make_harness(), "task", Path("/tmp"), use_pty=False, output=captured.append
+        )
 
     assert captured == []
 
@@ -105,7 +112,7 @@ def test_default_output_uses_click_echo(capsys):
         patch("shutil.which", return_value="/usr/bin/claude"),
         patch("subprocess.Popen", return_value=mock_proc),
     ):
-        run_agent_streaming(_make_harness(), "task", Path("/tmp"))
+        run_agent_streaming(_make_harness(), "task", Path("/tmp"), use_pty=False)
 
     out = capsys.readouterr().out
     assert "hello" in out
@@ -126,6 +133,7 @@ def test_build_command_receives_composed_prompt():
             _make_harness(),
             "my composed prompt",
             Path("/tmp"),
+            use_pty=False,
             output=lambda _: None,
         )
 
@@ -134,6 +142,69 @@ def test_build_command_receives_composed_prompt():
 
 
 # --- tagging: new sessions are tagged 'thirdeye-agent' ---
+
+
+# --- use_pty: configurable PTY vs pipe stdout ---
+
+
+def test_use_pty_false_uses_subprocess_pipe():
+    """use_pty=False forces pipe-based stdout regardless of platform."""
+    captured_kwargs: list[dict] = []
+
+    def _fake_popen(cmd, **kwargs):
+        captured_kwargs.append(kwargs)
+        return _make_mock_proc(stdout="ok\n")
+
+    with (
+        patch("shutil.which", return_value="/usr/bin/claude"),
+        patch("subprocess.Popen", side_effect=_fake_popen),
+    ):
+        run_agent_streaming(
+            _make_harness(), "task", Path("/tmp"), use_pty=False, output=lambda _: None
+        )
+
+    assert captured_kwargs[0]["stdout"] is subprocess.PIPE
+
+
+def test_use_pty_true_calls_open_pty():
+    """use_pty=True invokes _open_pty and passes the slave fd as stdout to Popen."""
+    captured_kwargs: list[dict] = []
+
+    def _fake_popen(cmd, **kwargs):
+        captured_kwargs.append(kwargs)
+        return _make_mock_proc()
+
+    with (
+        patch("shutil.which", return_value="/usr/bin/claude"),
+        patch("subprocess.Popen", side_effect=_fake_popen),
+        patch("thirdeye.agent.exec._open_pty", return_value=(10, 11)) as mock_open_pty,
+        patch("thirdeye.agent.exec._read_fd", side_effect=OSError()),
+        patch("os.close"),
+    ):
+        run_agent_streaming(
+            _make_harness(), "task", Path("/tmp"), use_pty=True, output=lambda _: None
+        )
+
+    mock_open_pty.assert_called_once()
+    assert captured_kwargs[0]["stdout"] == 11
+
+
+def test_pty_streams_output_to_callback():
+    """PTY path decodes chunks and forwards complete lines to the output callback."""
+    captured: list[str] = []
+
+    with (
+        patch("shutil.which", return_value="/usr/bin/claude"),
+        patch("subprocess.Popen", return_value=_make_mock_proc()),
+        patch("thirdeye.agent.exec._open_pty", return_value=(10, 11)),
+        patch("thirdeye.agent.exec._read_fd", side_effect=[b"line one\nline two\n", OSError()]),
+        patch("os.close"),
+    ):
+        run_agent_streaming(
+            _make_harness(), "task", Path("/tmp"), use_pty=True, output=captured.append
+        )
+
+    assert captured == ["line one\n", "line two\n"]
 
 
 def test_no_thirdeye_home_skips_tagging():
@@ -145,7 +216,9 @@ def test_no_thirdeye_home_skips_tagging():
         patch("thirdeye.agent.exec._list_sessions") as mock_list,
         patch("thirdeye.agent.exec._tag_sessions") as mock_tag,
     ):
-        run_agent_streaming(_make_harness(), "x", Path("/tmp"), output=lambda _: None)
+        run_agent_streaming(
+            _make_harness(), "x", Path("/tmp"), use_pty=False, output=lambda _: None
+        )
 
     mock_list.assert_not_called()
     mock_tag.assert_not_called()
@@ -170,6 +243,7 @@ def test_thirdeye_home_triggers_pre_and_post_snapshot(tmp_path):
             _make_harness(),
             "x",
             Path("/tmp"),
+            use_pty=False,
             output=lambda _: None,
             thirdeye_home=tmp_path,
         )
@@ -202,6 +276,7 @@ def test_new_sessions_are_tagged(tmp_path):
             _make_harness(),
             "x",
             Path("/tmp"),
+            use_pty=False,
             output=lambda _: None,
             thirdeye_home=tmp_path,
         )
@@ -230,6 +305,7 @@ def test_no_new_sessions_means_no_tagging(tmp_path):
             _make_harness(),
             "x",
             Path("/tmp"),
+            use_pty=False,
             output=lambda _: None,
             thirdeye_home=tmp_path,
         )
@@ -280,6 +356,7 @@ def test_integration_list_and_tag_sessions(tmp_path):
             harness,
             "task text",
             cwd=Path("/proj/foo"),
+            use_pty=False,
             output=lambda _: None,
             thirdeye_home=tmp_path,
         )

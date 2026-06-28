@@ -46,12 +46,20 @@ from thirdeye.eval.agents import get_adapter, list_agent_names
     type=click.Path(file_okay=False, path_type=Path),
     help="Working directory context injected into the prompt (default: current dir).",
 )
+@click.option(
+    "--stream",
+    "stream",
+    is_flag=True,
+    default=False,
+    help="Allocate a pseudo-terminal so the agent streams output in real time (Unix only).",
+)
 def agent_cmd(
     task: str,
     agent_name: str,
     fix_mode: bool,
     skills: tuple[str, ...],
     cwd: Path | None,
+    stream: bool,
 ) -> None:
     config = Config.load()
 
@@ -81,9 +89,22 @@ def agent_cmd(
     mode = "fix" if fix_mode else "review"
     harness = AgentHarness(adapter, mode)
 
+    use_pty = stream
+    if stream and sys.platform == "win32":
+        click.echo(
+            "Warning: --stream uses a pseudo-terminal which is not supported on Windows; "
+            "falling back to standard pipe output.",
+            err=False,
+        )
+        use_pty = False
+
     try:
         returncode, _ = run_agent_streaming(
-            harness, prompt, cwd=cwd or Path.cwd(), thirdeye_home=config.root
+            harness,
+            prompt,
+            cwd=cwd or Path.cwd(),
+            thirdeye_home=config.root,
+            use_pty=use_pty,
         )
     except FileNotFoundError as e:
         raise click.ClickException(str(e)) from e
