@@ -135,6 +135,7 @@ def test_skill_path_is_loaded_and_injected(tmp_path):
     assert any("My Custom Skill" in b for b in bodies)
     # built-in defaults also present
     from thirdeye.agent.prompt import DEFAULT_SKILLS
+
     assert len(bodies) > len(DEFAULT_SKILLS)
 
 
@@ -161,6 +162,7 @@ def test_multiple_skill_paths_are_all_injected(tmp_path):
         )
 
     from thirdeye.agent.prompt import DEFAULT_SKILLS
+
     bodies = captured_kwargs[0]["skill_bodies"]
     assert len(bodies) == len(DEFAULT_SKILLS) + 2
 
