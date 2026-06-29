@@ -9,6 +9,7 @@ from thirdeye.cli import main
 # Patch targets for the two heavy dependencies.
 _PATCH_STREAM = "thirdeye.commands.agent.run_agent_streaming"
 _PATCH_PROMPT = "thirdeye.commands.agent.build_agent_prompt"
+_PATCH_PLATFORM = "thirdeye.commands.agent.sys.platform"
 
 
 def _invoke(*args, **kwargs):
@@ -202,3 +203,65 @@ def test_cwd_option_passed_down(tmp_path):
     assert captured_prompt_cwd[0] == custom_dir
     assert len(captured_stream_cwd) == 1
     assert captured_stream_cwd[0] == custom_dir
+
+
+# --- --stream flag ---
+
+
+def test_help_mentions_stream_flag():
+    result = CliRunner().invoke(main, ["agent", "--help"])
+    assert "--stream" in result.output
+
+
+def test_stream_flag_passes_use_pty_true():
+    """--stream forwards use_pty=True to run_agent_streaming."""
+    captured_kwargs: list[dict] = []
+
+    def _fake_stream(harness, prompt, cwd, **kwargs):
+        captured_kwargs.append(kwargs)
+        return (0, 500)
+
+    with (
+        patch(_PATCH_STREAM, side_effect=_fake_stream),
+        patch(_PATCH_PROMPT, return_value="p"),
+    ):
+        CliRunner().invoke(main, ["agent", "x", "--stream"], catch_exceptions=False)
+
+    assert captured_kwargs[0].get("use_pty") is True
+
+
+def test_no_stream_flag_passes_use_pty_false():
+    """Without --stream, use_pty=False is forwarded to run_agent_streaming."""
+    captured_kwargs: list[dict] = []
+
+    def _fake_stream(harness, prompt, cwd, **kwargs):
+        captured_kwargs.append(kwargs)
+        return (0, 500)
+
+    with (
+        patch(_PATCH_STREAM, side_effect=_fake_stream),
+        patch(_PATCH_PROMPT, return_value="p"),
+    ):
+        CliRunner().invoke(main, ["agent", "x"], catch_exceptions=False)
+
+    assert captured_kwargs[0].get("use_pty") is False
+
+
+def test_stream_on_windows_prints_warning_and_falls_back_to_pipe():
+    """On Windows, --stream emits a warning and falls back to use_pty=False."""
+    captured_kwargs: list[dict] = []
+
+    def _fake_stream(harness, prompt, cwd, **kwargs):
+        captured_kwargs.append(kwargs)
+        return (0, 500)
+
+    with (
+        patch(_PATCH_STREAM, side_effect=_fake_stream),
+        patch(_PATCH_PROMPT, return_value="p"),
+        patch(_PATCH_PLATFORM, "win32"),
+    ):
+        result = CliRunner().invoke(main, ["agent", "x", "--stream"], catch_exceptions=False)
+
+    assert result.exit_code == 0
+    assert "warning" in result.output.lower()
+    assert captured_kwargs[0].get("use_pty") is False
