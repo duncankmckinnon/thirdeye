@@ -4,7 +4,13 @@ from pathlib import Path
 
 import pytest
 
-from thirdeye.agent.harness import _FIX_ARGS, _REVIEW_ARGS, AgentHarness
+from thirdeye.agent.harness import (
+    _FIX_ARGS,
+    _REVIEW_ARGS,
+    _STREAM_FIX_ARGS,
+    _STREAM_REVIEW_ARGS,
+    AgentHarness,
+)
 from thirdeye.eval.agents.base import AgentConfig, ConfigAdapter
 from thirdeye.eval.agents.claude import ClaudeAdapter
 from thirdeye.eval.agents.codex import CodexAdapter
@@ -192,3 +198,71 @@ def test_all_review_args_contain_prompt_placeholder():
 def test_all_fix_args_contain_prompt_placeholder():
     for name, args in _FIX_ARGS.items():
         assert "{prompt}" in args, f"{name} fix args missing {{prompt}}"
+
+
+# --- streaming mode ---
+
+
+def test_streaming_defaults_to_false():
+    h = AgentHarness(ClaudeAdapter(), "review")
+    assert h.streaming is False
+
+
+def test_streaming_property_reflects_init():
+    h = AgentHarness(ClaudeAdapter(), "review", streaming=True)
+    assert h.streaming is True
+
+
+def test_streaming_review_uses_stream_json_for_claude():
+    h = AgentHarness(ClaudeAdapter(), "review", streaming=True)
+    cmd = h.build_command("task", Path("/tmp"))
+    assert "--output-format" in cmd
+    idx = cmd.index("--output-format")
+    assert cmd[idx + 1] == "stream-json"
+
+
+def test_streaming_fix_uses_stream_json_for_claude():
+    h = AgentHarness(ClaudeAdapter(), "fix", streaming=True)
+    cmd = h.build_command("task", Path("/tmp"))
+    assert "--output-format" in cmd
+    idx = cmd.index("--output-format")
+    assert cmd[idx + 1] == "stream-json"
+
+
+def test_non_streaming_review_still_uses_text_for_claude():
+    h = AgentHarness(ClaudeAdapter(), "review", streaming=False)
+    cmd = h.build_command("task", Path("/tmp"))
+    idx = cmd.index("--output-format")
+    assert cmd[idx + 1] == "text"
+
+
+def test_stream_review_args_table_covers_all_builtin_names():
+    for name in ("claude", "gemini", "codex"):
+        assert name in _STREAM_REVIEW_ARGS
+
+
+def test_stream_fix_args_table_covers_all_builtin_names():
+    for name in ("claude", "gemini", "codex"):
+        assert name in _STREAM_FIX_ARGS
+
+
+def test_stream_review_args_contain_prompt_placeholder():
+    for name, args in _STREAM_REVIEW_ARGS.items():
+        assert "{prompt}" in args, f"{name} stream-review args missing {{prompt}}"
+
+
+def test_stream_fix_args_contain_prompt_placeholder():
+    for name, args in _STREAM_FIX_ARGS.items():
+        assert "{prompt}" in args, f"{name} stream-fix args missing {{prompt}}"
+
+
+def test_streaming_review_includes_verbose_for_claude():
+    h = AgentHarness(ClaudeAdapter(), "review", streaming=True)
+    cmd = h.build_command("task", Path("/tmp"))
+    assert "--verbose" in cmd
+
+
+def test_streaming_fix_includes_verbose_for_claude():
+    h = AgentHarness(ClaudeAdapter(), "fix", streaming=True)
+    cmd = h.build_command("task", Path("/tmp"))
+    assert "--verbose" in cmd

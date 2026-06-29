@@ -9,7 +9,6 @@ from thirdeye.cli import main
 # Patch targets for the two heavy dependencies.
 _PATCH_STREAM = "thirdeye.commands.agent.run_agent_streaming"
 _PATCH_PROMPT = "thirdeye.commands.agent.build_agent_prompt"
-_PATCH_PLATFORM = "thirdeye.commands.agent.sys.platform"
 
 
 def _invoke(*args, **kwargs):
@@ -31,9 +30,10 @@ def test_help_mentions_fix_flag():
     assert "--fix" in result.output
 
 
-def test_help_mentions_skill_flag():
+def test_help_mentions_skill_flags():
     result = CliRunner().invoke(main, ["agent", "--help"])
     assert "--skill" in result.output
+    assert "--skills" in result.output
 
 
 def test_successful_run_exits_zero():
@@ -87,12 +87,69 @@ def test_without_fix_flag_mode_is_review():
     assert captured_harness[0].mode == "review"
 
 
-def test_skill_flag_is_passed_to_build_prompt():
-    captured_skills = []
+def test_skills_flag_lists_builtins_and_exits():
+    result = CliRunner().invoke(main, ["agent", "--skills"], catch_exceptions=False)
+    assert result.exit_code == 0
+    from thirdeye.agent.prompt import VALID_SKILLS
 
-    def _fake_prompt(task, *, skills=None, **kwargs):
-        captured_skills.append(skills)
-        return "p"
+    for name in VALID_SKILLS:
+        assert name in result.output
+
+
+def test_skills_flag_does_not_require_task():
+    result = CliRunner().invoke(main, ["agent", "--skills"], catch_exceptions=False)
+    assert result.exit_code == 0
+
+
+def test_skills_flag_does_not_run_the_agent():
+    with patch(_PATCH_STREAM) as mock_stream, patch(_PATCH_PROMPT) as mock_prompt:
+        CliRunner().invoke(main, ["agent", "--skills"], catch_exceptions=False)
+    mock_stream.assert_not_called()
+    mock_prompt.assert_not_called()
+
+
+def test_skill_path_is_loaded_and_injected(tmp_path):
+    skill_file = tmp_path / "my-skill.md"
+    skill_file.write_text("# My Custom Skill\nDo something useful.\n")
+
+    captured_kwargs: list[dict] = []
+
+    def _fake_prompt(task, **kwargs):
+        captured_kwargs.append(kwargs)
+        return "composed"
+
+    with (
+        patch(_PATCH_STREAM, return_value=(0, 500)),
+        patch(_PATCH_PROMPT, side_effect=_fake_prompt),
+    ):
+        result = CliRunner().invoke(
+            main,
+            ["agent", "do stuff", "--skill", str(skill_file)],
+            catch_exceptions=False,
+        )
+
+    assert result.exit_code == 0
+    assert "skill_bodies" in captured_kwargs[0]
+    bodies = captured_kwargs[0]["skill_bodies"]
+    # custom skill present
+    assert any("My Custom Skill" in b for b in bodies)
+    # built-in defaults also present
+    from thirdeye.agent.prompt import DEFAULT_SKILLS
+
+    assert len(bodies) > len(DEFAULT_SKILLS)
+
+
+def test_multiple_skill_paths_are_all_injected(tmp_path):
+    skill_a = tmp_path / "skill-a.md"
+    skill_b = tmp_path / "skill-b.md"
+    skill_a.write_text("# Skill A\n")
+    skill_b.write_text("# Skill B\n")
+
+    captured_kwargs: list[dict] = []
+
+    def _fake_prompt(task, **kwargs):
+        captured_kwargs.append(kwargs)
+        return "composed"
 
     with (
         patch(_PATCH_STREAM, return_value=(0, 500)),
@@ -100,27 +157,35 @@ def test_skill_flag_is_passed_to_build_prompt():
     ):
         CliRunner().invoke(
             main,
-            ["agent", "x", "--skill", "use-thirdeye", "--skill", "thirdeye-evals"],
+            ["agent", "do stuff", "--skill", str(skill_a), "--skill", str(skill_b)],
             catch_exceptions=False,
         )
 
-    assert captured_skills[0] == ["use-thirdeye", "thirdeye-evals"]
+    from thirdeye.agent.prompt import DEFAULT_SKILLS
+
+    bodies = captured_kwargs[0]["skill_bodies"]
+    assert len(bodies) == len(DEFAULT_SKILLS) + 2
 
 
-def test_no_skill_flag_passes_none_to_build_prompt():
-    captured_skills = []
+def test_no_skill_path_uses_defaults():
+    captured_kwargs: list[dict] = []
 
-    def _fake_prompt(task, *, skills=None, **kwargs):
-        captured_skills.append(skills)
-        return "p"
+    def _fake_prompt(task, **kwargs):
+        captured_kwargs.append(kwargs)
+        return "composed"
 
     with (
         patch(_PATCH_STREAM, return_value=(0, 500)),
         patch(_PATCH_PROMPT, side_effect=_fake_prompt),
     ):
-        CliRunner().invoke(main, ["agent", "x"], catch_exceptions=False)
+        CliRunner().invoke(main, ["agent", "do stuff"], catch_exceptions=False)
 
-    assert captured_skills[0] is None  # triggers DEFAULT_SKILLS in build_agent_prompt
+    assert "skill_bodies" not in captured_kwargs[0]
+
+
+def test_missing_task_without_skills_flag_errors():
+    result = CliRunner().invoke(main, ["agent"])
+    assert result.exit_code != 0
 
 
 # --- error paths ---
@@ -213,12 +278,12 @@ def test_help_mentions_stream_flag():
     assert "--stream" in result.output
 
 
-def test_stream_flag_passes_use_pty_true():
-    """--stream forwards use_pty=True to run_agent_streaming."""
-    captured_kwargs: list[dict] = []
+def test_stream_flag_creates_streaming_harness():
+    """--stream creates an AgentHarness with streaming=True."""
+    captured_harnesses: list = []
 
     def _fake_stream(harness, prompt, cwd, **kwargs):
-        captured_kwargs.append(kwargs)
+        captured_harnesses.append(harness)
         return (0, 500)
 
     with (
@@ -227,15 +292,15 @@ def test_stream_flag_passes_use_pty_true():
     ):
         CliRunner().invoke(main, ["agent", "x", "--stream"], catch_exceptions=False)
 
-    assert captured_kwargs[0].get("use_pty") is True
+    assert captured_harnesses[0].streaming is True
 
 
-def test_no_stream_flag_passes_use_pty_false():
-    """Without --stream, use_pty=False is forwarded to run_agent_streaming."""
-    captured_kwargs: list[dict] = []
+def test_no_stream_flag_creates_non_streaming_harness():
+    """Without --stream, harness.streaming is False."""
+    captured_harnesses: list = []
 
     def _fake_stream(harness, prompt, cwd, **kwargs):
-        captured_kwargs.append(kwargs)
+        captured_harnesses.append(harness)
         return (0, 500)
 
     with (
@@ -244,24 +309,4 @@ def test_no_stream_flag_passes_use_pty_false():
     ):
         CliRunner().invoke(main, ["agent", "x"], catch_exceptions=False)
 
-    assert captured_kwargs[0].get("use_pty") is False
-
-
-def test_stream_on_windows_prints_warning_and_falls_back_to_pipe():
-    """On Windows, --stream emits a warning and falls back to use_pty=False."""
-    captured_kwargs: list[dict] = []
-
-    def _fake_stream(harness, prompt, cwd, **kwargs):
-        captured_kwargs.append(kwargs)
-        return (0, 500)
-
-    with (
-        patch(_PATCH_STREAM, side_effect=_fake_stream),
-        patch(_PATCH_PROMPT, return_value="p"),
-        patch(_PATCH_PLATFORM, "win32"),
-    ):
-        result = CliRunner().invoke(main, ["agent", "x", "--stream"], catch_exceptions=False)
-
-    assert result.exit_code == 0
-    assert "warning" in result.output.lower()
-    assert captured_kwargs[0].get("use_pty") is False
+    assert captured_harnesses[0].streaming is False

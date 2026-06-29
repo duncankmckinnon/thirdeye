@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-import os
+import json
 import shutil
 import subprocess
 import threading
@@ -13,14 +13,47 @@ import click
 from thirdeye.agent.harness import AgentHarness
 
 
-def _open_pty() -> tuple[int, int]:
-    import pty  # deferred: not available on Windows
+def _format_stream_json_line(line: str) -> str | None:
+    """Parse one stream-json event line and return a human-readable string, or None to skip."""
+    line = line.strip()
+    if not line:
+        return None
+    try:
+        event = json.loads(line)
+    except (json.JSONDecodeError, ValueError):
+        return line  # pass through non-JSON lines unchanged
 
-    return pty.openpty()
+    event_type = event.get("type", "")
+    parts: list[str] = []
 
+    if event_type == "assistant":
+        for block in event.get("message", {}).get("content", []):
+            if block.get("type") == "text":
+                text = block.get("text", "").strip()
+                if text:
+                    parts.append(text)
+            elif block.get("type") == "tool_use":
+                name = block.get("name", "tool")
+                inp = block.get("input", {})
+                detail = inp.get("command") or inp.get("file_path") or json.dumps(inp)
+                parts.append(f"[{name}] {detail}")
 
-def _read_fd(fd: int, n: int) -> bytes:
-    return os.read(fd, n)
+    elif event_type == "user":
+        for block in event.get("message", {}).get("content", []):
+            if block.get("type") == "tool_result":
+                content = block.get("content") or []
+                if isinstance(content, str):
+                    text = content.strip()
+                    if text:
+                        parts.append(f"  → {text.splitlines()[0]}")
+                else:
+                    for chunk in content:
+                        if isinstance(chunk, dict) and chunk.get("type") == "text":
+                            text = chunk.get("text", "").strip()
+                            if text:
+                                parts.append(f"  → {text.splitlines()[0]}")
+
+    return ("\n".join(parts) + "\n") if parts else None
 
 
 def _list_sessions(thirdeye_home: Path, platform: str) -> set[str]:
@@ -58,7 +91,6 @@ def run_agent_streaming(
     *,
     output: Callable[[str], None] | None = None,
     thirdeye_home: Path | None = None,
-    use_pty: bool = False,
 ) -> tuple[int, int]:
     """Run the agent subprocess, streaming stdout to the terminal.
 
@@ -66,14 +98,11 @@ def run_agent_streaming(
         harness:        AgentHarness wrapping the desired adapter + mode.
         prompt:         The composed prompt string to pass to the agent.
         cwd:            Working directory for the subprocess.
-        output:         Callable that receives each stdout chunk/line. Defaults to
+        output:         Callable that receives each stdout line. Defaults to
                         click.echo(line, nl=False) so callers can inject a
                         mock for testing.
         thirdeye_home:  If provided, any new sessions the agent spawns on its
                         platform are tagged 'thirdeye-agent' after the run.
-        use_pty:        If True, allocate a pseudo-terminal for stdout so the
-                        subprocess sees a TTY and flushes output in real time.
-                        If False (default), use a pipe.
 
     Returns:
         (returncode, duration_ms)
@@ -89,8 +118,6 @@ def run_agent_streaming(
         def output(line: str) -> None:
             click.echo(line, nl=False)
 
-    _use_pty = use_pty
-
     # Snapshot existing sessions before the run so we can detect new ones.
     pre_ids: set[str] = set()
     if thirdeye_home is not None:
@@ -101,26 +128,14 @@ def run_agent_streaming(
 
     stderr_lines: list[str] = []
 
-    if _use_pty:
-        master_fd, slave_fd = _open_pty()
-        proc = subprocess.Popen(
-            cmd,
-            cwd=cwd,
-            stdin=subprocess.DEVNULL,
-            stdout=slave_fd,
-            stderr=subprocess.PIPE,
-            text=True,
-        )
-        os.close(slave_fd)
-    else:
-        proc = subprocess.Popen(
-            cmd,
-            cwd=cwd,
-            stdin=subprocess.DEVNULL,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            text=True,
-        )
+    proc = subprocess.Popen(
+        cmd,
+        cwd=cwd,
+        stdin=subprocess.DEVNULL,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
 
     def _drain_stderr() -> None:
         assert proc.stderr is not None
@@ -130,27 +145,13 @@ def run_agent_streaming(
     stderr_thread = threading.Thread(target=_drain_stderr, daemon=True)
     stderr_thread.start()
 
-    if _use_pty:
-        buf = b""
-        try:
-            while True:
-                try:
-                    chunk = _read_fd(master_fd, 4096)
-                except OSError:
-                    break
-                if not chunk:
-                    break
-                buf += chunk
-                while b"\n" in buf:
-                    line_bytes, buf = buf.split(b"\n", 1)
-                    output(line_bytes.decode("utf-8", errors="replace") + "\n")
-        finally:
-            os.close(master_fd)
-        if buf:
-            output(buf.decode("utf-8", errors="replace"))
-    else:
-        assert proc.stdout is not None
-        for line in proc.stdout:
+    assert proc.stdout is not None
+    for line in proc.stdout:
+        if harness.streaming:
+            formatted = _format_stream_json_line(line)
+            if formatted is not None:
+                output(formatted)
+        else:
             output(line)
 
     proc.wait()

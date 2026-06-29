@@ -132,9 +132,36 @@ Dispatched agents run in read-only mode (Claude `--allowedTools` allowlist,
 Codex `--sandbox read-only`, Gemini `--approval-mode plan`). No new Python
 deps — thirdeye shells out to the agent binaries you already have installed.
 
+## Agent
+
+Dispatch an AI agent (Claude Code, Codex, or Gemini) against your thirdeye
+history directly from the CLI. The agent is pre-loaded with all built-in
+skills and runs in read-only mode by default.
+
+```bash
+thirdeye agent "review my sessions from the last week"
+thirdeye agent "find sessions where token usage spiked" --stream
+thirdeye agent "fix inefficient tool use in session abc123" --fix
+thirdeye agent "summarize eval findings" --agent gemini
+```
+
+Flags:
+
+| Flag | Description |
+|------|-------------|
+| `--stream` | Print tool calls and results in real time as the agent explores |
+| `--fix` | Unlock full tool access so the agent can edit files (default: read-only) |
+| `--agent NAME` | Agent to dispatch: `claude` (default), `codex`, or `gemini` |
+| `--skill PATH` | Inject an additional skill from a local file (repeatable) |
+| `--skills` | List the built-in skills and exit |
+| `--cwd PATH` | Working directory context injected into the prompt |
+
+New sessions opened by the agent are automatically tagged `thirdeye-agent`
+so you can filter them with `thirdeye list --tag thirdeye-agent`.
+
 ## Agent skills
 
-Four bundled Claude-Code-format skills:
+Four bundled skills are injected into every `thirdeye agent` run by default:
 
 - **`use-thirdeye`** — basic CLI fluency: enable tracing, search sessions,
   debug tool calls, analyze token usage.
@@ -147,6 +174,12 @@ Four bundled Claude-Code-format skills:
 - **`thirdeye-filter`** — directive used by the browser UI's Ask panel
   to translate natural-language queries into filter JSON. Installed
   alongside the others; not invoked directly by agents.
+
+Pass `--skill path/to/skill.md` to inject additional skills from local files
+alongside the defaults. Run `thirdeye agent --skills` to see the built-in list.
+
+You can also install the skills into your project for use outside of
+`thirdeye agent`:
 
 ```bash
 thirdeye skill list                                  # show bundled skill names
