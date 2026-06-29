@@ -1,13 +1,13 @@
 from __future__ import annotations
 
 import io
-import subprocess
+import json as _json
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pytest
 
-from thirdeye.agent.exec import run_agent_streaming
+from thirdeye.agent.exec import _format_stream_json_line, run_agent_streaming
 from thirdeye.agent.harness import AgentHarness
 from thirdeye.eval.agents.claude import ClaudeAdapter
 
@@ -40,9 +40,7 @@ def test_streams_stdout_to_output_callback():
         patch("shutil.which", return_value="/usr/bin/claude"),
         patch("subprocess.Popen", return_value=mock_proc),
     ):
-        run_agent_streaming(
-            _make_harness(), "task", Path("/tmp"), use_pty=False, output=captured.append
-        )
+        run_agent_streaming(_make_harness(), "task", Path("/tmp"), output=captured.append)
 
     assert captured == ["line one\n", "line two\n"]
 
@@ -55,7 +53,7 @@ def test_returns_returncode_zero_on_success():
         patch("subprocess.Popen", return_value=mock_proc),
     ):
         rc, duration = run_agent_streaming(
-            _make_harness(), "task", Path("/tmp"), use_pty=False, output=lambda _: None
+            _make_harness(), "task", Path("/tmp"), output=lambda _: None
         )
 
     assert rc == 0
@@ -68,9 +66,7 @@ def test_returns_nonzero_returncode_on_failure():
         patch("shutil.which", return_value="/usr/bin/claude"),
         patch("subprocess.Popen", return_value=mock_proc),
     ):
-        rc, _ = run_agent_streaming(
-            _make_harness(), "task", Path("/tmp"), use_pty=False, output=lambda _: None
-        )
+        rc, _ = run_agent_streaming(_make_harness(), "task", Path("/tmp"), output=lambda _: None)
 
     assert rc == 1
 
@@ -83,7 +79,7 @@ def test_returns_duration_ms_as_int():
         patch("subprocess.Popen", return_value=mock_proc),
     ):
         _, duration = run_agent_streaming(
-            _make_harness(), "task", Path("/tmp"), use_pty=False, output=lambda _: None
+            _make_harness(), "task", Path("/tmp"), output=lambda _: None
         )
 
     assert isinstance(duration, int)
@@ -98,9 +94,7 @@ def test_empty_stdout_produces_no_callback_calls():
         patch("shutil.which", return_value="/usr/bin/claude"),
         patch("subprocess.Popen", return_value=mock_proc),
     ):
-        run_agent_streaming(
-            _make_harness(), "task", Path("/tmp"), use_pty=False, output=captured.append
-        )
+        run_agent_streaming(_make_harness(), "task", Path("/tmp"), output=captured.append)
 
     assert captured == []
 
@@ -112,7 +106,7 @@ def test_default_output_uses_click_echo(capsys):
         patch("shutil.which", return_value="/usr/bin/claude"),
         patch("subprocess.Popen", return_value=mock_proc),
     ):
-        run_agent_streaming(_make_harness(), "task", Path("/tmp"), use_pty=False)
+        run_agent_streaming(_make_harness(), "task", Path("/tmp"))
 
     out = capsys.readouterr().out
     assert "hello" in out
@@ -133,7 +127,6 @@ def test_build_command_receives_composed_prompt():
             _make_harness(),
             "my composed prompt",
             Path("/tmp"),
-            use_pty=False,
             output=lambda _: None,
         )
 
@@ -142,69 +135,6 @@ def test_build_command_receives_composed_prompt():
 
 
 # --- tagging: new sessions are tagged 'thirdeye-agent' ---
-
-
-# --- use_pty: configurable PTY vs pipe stdout ---
-
-
-def test_use_pty_false_uses_subprocess_pipe():
-    """use_pty=False forces pipe-based stdout regardless of platform."""
-    captured_kwargs: list[dict] = []
-
-    def _fake_popen(cmd, **kwargs):
-        captured_kwargs.append(kwargs)
-        return _make_mock_proc(stdout="ok\n")
-
-    with (
-        patch("shutil.which", return_value="/usr/bin/claude"),
-        patch("subprocess.Popen", side_effect=_fake_popen),
-    ):
-        run_agent_streaming(
-            _make_harness(), "task", Path("/tmp"), use_pty=False, output=lambda _: None
-        )
-
-    assert captured_kwargs[0]["stdout"] is subprocess.PIPE
-
-
-def test_use_pty_true_calls_open_pty():
-    """use_pty=True invokes _open_pty and passes the slave fd as stdout to Popen."""
-    captured_kwargs: list[dict] = []
-
-    def _fake_popen(cmd, **kwargs):
-        captured_kwargs.append(kwargs)
-        return _make_mock_proc()
-
-    with (
-        patch("shutil.which", return_value="/usr/bin/claude"),
-        patch("subprocess.Popen", side_effect=_fake_popen),
-        patch("thirdeye.agent.exec._open_pty", return_value=(10, 11)) as mock_open_pty,
-        patch("thirdeye.agent.exec._read_fd", side_effect=OSError()),
-        patch("os.close"),
-    ):
-        run_agent_streaming(
-            _make_harness(), "task", Path("/tmp"), use_pty=True, output=lambda _: None
-        )
-
-    mock_open_pty.assert_called_once()
-    assert captured_kwargs[0]["stdout"] == 11
-
-
-def test_pty_streams_output_to_callback():
-    """PTY path decodes chunks and forwards complete lines to the output callback."""
-    captured: list[str] = []
-
-    with (
-        patch("shutil.which", return_value="/usr/bin/claude"),
-        patch("subprocess.Popen", return_value=_make_mock_proc()),
-        patch("thirdeye.agent.exec._open_pty", return_value=(10, 11)),
-        patch("thirdeye.agent.exec._read_fd", side_effect=[b"line one\nline two\n", OSError()]),
-        patch("os.close"),
-    ):
-        run_agent_streaming(
-            _make_harness(), "task", Path("/tmp"), use_pty=True, output=captured.append
-        )
-
-    assert captured == ["line one\n", "line two\n"]
 
 
 def test_no_thirdeye_home_skips_tagging():
@@ -216,9 +146,7 @@ def test_no_thirdeye_home_skips_tagging():
         patch("thirdeye.agent.exec._list_sessions") as mock_list,
         patch("thirdeye.agent.exec._tag_sessions") as mock_tag,
     ):
-        run_agent_streaming(
-            _make_harness(), "x", Path("/tmp"), use_pty=False, output=lambda _: None
-        )
+        run_agent_streaming(_make_harness(), "x", Path("/tmp"), output=lambda _: None)
 
     mock_list.assert_not_called()
     mock_tag.assert_not_called()
@@ -243,7 +171,6 @@ def test_thirdeye_home_triggers_pre_and_post_snapshot(tmp_path):
             _make_harness(),
             "x",
             Path("/tmp"),
-            use_pty=False,
             output=lambda _: None,
             thirdeye_home=tmp_path,
         )
@@ -276,7 +203,6 @@ def test_new_sessions_are_tagged(tmp_path):
             _make_harness(),
             "x",
             Path("/tmp"),
-            use_pty=False,
             output=lambda _: None,
             thirdeye_home=tmp_path,
         )
@@ -305,7 +231,6 @@ def test_no_new_sessions_means_no_tagging(tmp_path):
             _make_harness(),
             "x",
             Path("/tmp"),
-            use_pty=False,
             output=lambda _: None,
             thirdeye_home=tmp_path,
         )
@@ -356,7 +281,6 @@ def test_integration_list_and_tag_sessions(tmp_path):
             harness,
             "task text",
             cwd=Path("/proj/foo"),
-            use_pty=False,
             output=lambda _: None,
             thirdeye_home=tmp_path,
         )
@@ -377,3 +301,133 @@ def test_integration_list_and_tag_sessions(tmp_path):
 
     assert "thirdeye-agent" not in existing_ts.tags_for(0)
     assert "thirdeye-agent" in new_ts.tags_for(0)
+
+
+# --- _format_stream_json_line ---
+
+
+def test_formatter_returns_none_for_empty_line():
+    assert _format_stream_json_line("") is None
+    assert _format_stream_json_line("   ") is None
+
+
+def test_formatter_passes_through_non_json():
+    assert _format_stream_json_line("not json at all") == "not json at all"
+
+
+def test_formatter_formats_assistant_text():
+    event = _json.dumps(
+        {
+            "type": "assistant",
+            "message": {"content": [{"type": "text", "text": "I'll look at sessions."}]},
+        }
+    )
+    result = _format_stream_json_line(event)
+    assert result is not None
+    assert "I'll look at sessions." in result
+
+
+def test_formatter_formats_tool_call_with_command():
+    event = _json.dumps(
+        {
+            "type": "assistant",
+            "message": {
+                "content": [
+                    {"type": "tool_use", "name": "Bash", "input": {"command": "thirdeye sessions"}}
+                ]
+            },
+        }
+    )
+    result = _format_stream_json_line(event)
+    assert result is not None
+    assert "[Bash]" in result
+    assert "thirdeye sessions" in result
+
+
+def test_formatter_formats_tool_result():
+    event = _json.dumps(
+        {
+            "type": "user",
+            "message": {
+                "content": [
+                    {
+                        "type": "tool_result",
+                        "tool_use_id": "x",
+                        "content": [{"type": "text", "text": "session-abc\nsession-def"}],
+                    }
+                ]
+            },
+        }
+    )
+    result = _format_stream_json_line(event)
+    assert result is not None
+    assert "session-abc" in result
+
+
+def test_formatter_formats_tool_result_string_content():
+    """tool_result content may be a plain string rather than a list of content objects."""
+    event = _json.dumps(
+        {
+            "type": "user",
+            "message": {
+                "content": [
+                    {
+                        "type": "tool_result",
+                        "tool_use_id": "x",
+                        "content": "session-abc\nsession-def",
+                    }
+                ]
+            },
+        }
+    )
+    result = _format_stream_json_line(event)
+    assert result is not None
+    assert "session-abc" in result
+
+
+def test_formatter_skips_system_events():
+    event = _json.dumps({"type": "system", "subtype": "init", "cwd": "/tmp"})
+    assert _format_stream_json_line(event) is None
+
+
+def test_formatter_skips_result_events():
+    event = _json.dumps({"type": "result", "subtype": "success", "result": "done"})
+    assert _format_stream_json_line(event) is None
+
+
+def test_streaming_harness_applies_formatter_to_output():
+    """When harness.streaming is True, each output line is passed through the formatter."""
+    captured: list[str] = []
+    text_event = (
+        _json.dumps(
+            {
+                "type": "assistant",
+                "message": {"content": [{"type": "text", "text": "hello from agent"}]},
+            }
+        )
+        + "\n"
+    )
+    mock_proc = _make_mock_proc(stdout=text_event)
+
+    with (
+        patch("shutil.which", return_value="/usr/bin/claude"),
+        patch("subprocess.Popen", return_value=mock_proc),
+    ):
+        harness = AgentHarness(ClaudeAdapter(), "review", streaming=True)
+        run_agent_streaming(harness, "task", Path("/tmp"), output=captured.append)
+
+    assert any("hello from agent" in s for s in captured)
+
+
+def test_non_streaming_harness_passes_raw_lines():
+    """When harness.streaming is False, raw lines are forwarded without JSON parsing."""
+    captured: list[str] = []
+    mock_proc = _make_mock_proc(stdout="raw line\n")
+
+    with (
+        patch("shutil.which", return_value="/usr/bin/claude"),
+        patch("subprocess.Popen", return_value=mock_proc),
+    ):
+        run_agent_streaming(_make_harness(), "task", Path("/tmp"), output=captured.append)
+
+    assert captured == ["raw line\n"]

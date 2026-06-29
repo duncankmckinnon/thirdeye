@@ -10,7 +10,7 @@ _FRONTMATTER_RE = re.compile(r"\A---\r?\n.*?\r?\n---\r?\n", re.DOTALL)
 VALID_SKILLS: frozenset[str] = frozenset(
     ["use-thirdeye", "thirdeye-review", "thirdeye-evals", "thirdeye-filter"]
 )
-DEFAULT_SKILLS: list[str] = ["use-thirdeye", "thirdeye-review"]
+DEFAULT_SKILLS: list[str] = sorted(VALID_SKILLS)
 
 
 def _load_skill(name: str) -> str:
@@ -20,10 +20,22 @@ def _load_skill(name: str) -> str:
     return _FRONTMATTER_RE.sub("", text, count=1).lstrip()
 
 
+def load_skill_file(path: Path) -> str:
+    """Load a skill from an arbitrary file path, stripping YAML frontmatter."""
+    text = path.read_text(encoding="utf-8")
+    return _FRONTMATTER_RE.sub("", text, count=1).lstrip()
+
+
+def load_builtin_skills() -> list[str]:
+    """Return the bodies of all DEFAULT_SKILLS in order."""
+    return [_load_skill(name) for name in DEFAULT_SKILLS]
+
+
 def build_agent_prompt(
     task: str,
     *,
     skills: list[str] | None = None,
+    skill_bodies: list[str] | None = None,
     cwd: Path | str | None = None,
     thirdeye_home: Path | str | None = None,
 ) -> str:
@@ -46,16 +58,17 @@ def build_agent_prompt(
         TASK:
         {task}
     """
-    if skills is None:
-        skills = DEFAULT_SKILLS
-
-    unknown = [s for s in skills if s not in VALID_SKILLS]
-    if unknown:
-        raise ValueError(f"unknown skill(s): {unknown!r}. Valid: {sorted(VALID_SKILLS)}")
-
     parts: list[str] = []
-    for name in skills:
-        parts.append(_load_skill(name))
+    if skill_bodies is not None:
+        parts.extend(skill_bodies)
+    else:
+        if skills is None:
+            skills = DEFAULT_SKILLS
+        unknown = [s for s in skills if s not in VALID_SKILLS]
+        if unknown:
+            raise ValueError(f"unknown skill(s): {unknown!r}. Valid: {sorted(VALID_SKILLS)}")
+        for name in skills:
+            parts.append(_load_skill(name))
 
     context_lines = [f"date: {date.today().isoformat()}"]
     if thirdeye_home is not None:

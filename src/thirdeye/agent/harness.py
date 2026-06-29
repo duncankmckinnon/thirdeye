@@ -26,22 +26,55 @@ _FIX_ARGS: dict[str, list[str]] = {
     "codex": ["exec", "{prompt}"],
 }
 
+# Streaming variants: emit each event as newline-delimited JSON for real-time display.
+_STREAM_REVIEW_ARGS: dict[str, list[str]] = {
+    "claude": [
+        "-p",
+        "{prompt}",
+        "--output-format",
+        "stream-json",
+        "--verbose",
+        "--allowedTools",
+        "Bash(thirdeye *) Bash(jq *) Read Glob Grep",
+    ],
+    "gemini": ["-p", "{prompt}", "--approval-mode", "plan"],
+    "codex": ["exec", "--sandbox", "read-only", "{prompt}"],
+}
+
+_STREAM_FIX_ARGS: dict[str, list[str]] = {
+    "claude": ["-p", "{prompt}", "--output-format", "stream-json", "--verbose"],
+    "gemini": ["-p", "{prompt}"],
+    "codex": ["exec", "{prompt}"],
+}
+
 
 class AgentHarness:
     """Wraps an AgentAdapter with mode-specific arg overrides for agent mode.
 
     In review mode (default): restricts tools to thirdeye CLI + read-only ops.
     In fix mode (--fix flag): unrestricted tool access so the agent can edit files.
+    In streaming mode (--stream flag): uses stream-json output format so intermediate
+    tool calls and results are emitted in real time rather than collected until the end.
     For adapters not in the override tables (e.g. custom ConfigAdapter entries),
     the adapter's own config.args are used as-is.
     """
 
-    def __init__(self, adapter: AgentAdapter, mode: Literal["review", "fix"]) -> None:
+    def __init__(
+        self,
+        adapter: AgentAdapter,
+        mode: Literal["review", "fix"],
+        *,
+        streaming: bool = False,
+    ) -> None:
         if mode not in ("review", "fix"):
             raise ValueError(f"mode must be 'review' or 'fix', got {mode!r}")
         self._adapter = adapter
         self._mode = mode
-        table = _REVIEW_ARGS if mode == "review" else _FIX_ARGS
+        self._streaming = streaming
+        if streaming:
+            table = _STREAM_REVIEW_ARGS if mode == "review" else _STREAM_FIX_ARGS
+        else:
+            table = _REVIEW_ARGS if mode == "review" else _FIX_ARGS
         self._args = table.get(adapter.name, list(adapter.config.args))
 
     @property
@@ -51,6 +84,10 @@ class AgentHarness:
     @property
     def mode(self) -> str:
         return self._mode
+
+    @property
+    def streaming(self) -> bool:
+        return self._streaming
 
     @property
     def adapter_name(self) -> str:
