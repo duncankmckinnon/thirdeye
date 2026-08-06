@@ -4,6 +4,8 @@ from __future__ import annotations
 import tomllib as _toml_read
 from pathlib import Path
 
+import pytest
+
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
@@ -162,34 +164,60 @@ class TestInstallExistingNoNotify:
 
 
 class TestInstallExistingNotify:
-    def test_appends_to_existing_notify_array(self, tmp_path: Path, monkeypatch):
+    def test_foreign_notify_raises(self, tmp_path: Path, monkeypatch):
+        """A foreign notify program means conflict: never append, never overwrite."""
+        import click
+
         from thirdeye.platforms.codex.install import CodexPlatform
 
         monkeypatch.setattr("thirdeye.platforms.codex.install.shutil.which", lambda _: None)
         config_file = tmp_path / "config.toml"
         config_file.write_text(SAMPLE_TOML_WITH_NOTIFY)
-        CodexPlatform(config_file=config_file).install()
+        with pytest.raises(click.ClickException):
+            CodexPlatform(config_file=config_file).install()
+
+    def test_foreign_notify_leaves_file_byte_identical(self, tmp_path: Path, monkeypatch):
+        import click
+
+        from thirdeye.platforms.codex.install import CodexPlatform
+
+        monkeypatch.setattr("thirdeye.platforms.codex.install.shutil.which", lambda _: None)
+        config_file = tmp_path / "config.toml"
+        config_file.write_text(SAMPLE_TOML_WITH_NOTIFY)
+        before = config_file.read_bytes()
+        with pytest.raises(click.ClickException):
+            CodexPlatform(config_file=config_file).install()
+        assert config_file.read_bytes() == before
+
+    def test_conflict_error_names_incumbent(self, tmp_path: Path, monkeypatch):
+        import click
+
+        from thirdeye.platforms.codex.install import CodexPlatform
+
+        monkeypatch.setattr("thirdeye.platforms.codex.install.shutil.which", lambda _: None)
+        config_file = tmp_path / "config.toml"
+        config_file.write_text(SAMPLE_TOML_WITH_NOTIFY)
+        with pytest.raises(click.ClickException) as exc_info:
+            CodexPlatform(config_file=config_file).install()
+        assert "/some/other/tool" in str(exc_info.value)
+
+    def test_force_overwrites_foreign_notify(self, tmp_path: Path, monkeypatch):
+        from thirdeye.platforms.codex.install import CodexPlatform
+
+        monkeypatch.setattr("thirdeye.platforms.codex.install.shutil.which", lambda _: None)
+        config_file = tmp_path / "config.toml"
+        config_file.write_text(SAMPLE_TOML_WITH_NOTIFY)
+        CodexPlatform(config_file=config_file, force=True).install()
         data = _toml_read.loads(config_file.read_text())
-        assert "/some/other/tool" in data["notify"]
-        assert any("thirdeye-codex-notify" in item for item in data["notify"])
+        assert data["notify"] == ["thirdeye-codex-notify"]
 
-    def test_preserves_existing_entry(self, tmp_path: Path, monkeypatch):
+    def test_force_preserves_other_content(self, tmp_path: Path, monkeypatch):
         from thirdeye.platforms.codex.install import CodexPlatform
 
         monkeypatch.setattr("thirdeye.platforms.codex.install.shutil.which", lambda _: None)
         config_file = tmp_path / "config.toml"
         config_file.write_text(SAMPLE_TOML_WITH_NOTIFY)
-        CodexPlatform(config_file=config_file).install()
-        data = _toml_read.loads(config_file.read_text())
-        assert data["notify"][0] == "/some/other/tool"
-
-    def test_preserves_other_content(self, tmp_path: Path, monkeypatch):
-        from thirdeye.platforms.codex.install import CodexPlatform
-
-        monkeypatch.setattr("thirdeye.platforms.codex.install.shutil.which", lambda _: None)
-        config_file = tmp_path / "config.toml"
-        config_file.write_text(SAMPLE_TOML_WITH_NOTIFY)
-        CodexPlatform(config_file=config_file).install()
+        CodexPlatform(config_file=config_file, force=True).install()
         data = _toml_read.loads(config_file.read_text())
         assert data["otel"]["exporter"]["otlp-http"]["endpoint"] == "https://example.com/v1/traces"
 
@@ -224,13 +252,13 @@ class TestInstallIdempotent:
         second = config_file.read_bytes()
         assert first == second
 
-    def test_idempotent_with_existing_notify(self, tmp_path: Path, monkeypatch):
+    def test_idempotent_after_force_over_existing_notify(self, tmp_path: Path, monkeypatch):
         from thirdeye.platforms.codex.install import CodexPlatform
 
         monkeypatch.setattr("thirdeye.platforms.codex.install.shutil.which", lambda _: None)
         config_file = tmp_path / "config.toml"
         config_file.write_text(SAMPLE_TOML_WITH_NOTIFY)
-        p = CodexPlatform(config_file=config_file)
+        p = CodexPlatform(config_file=config_file, force=True)
         p.install()
         first = config_file.read_bytes()
         p.install()
@@ -272,17 +300,16 @@ class TestUninstallRemovesNotify:
             )
         # If file is empty or gone, that's fine too
 
-    def test_leaves_other_entries_alone(self, tmp_path: Path, monkeypatch):
+    def test_leaves_foreign_notify_alone(self, tmp_path: Path, monkeypatch):
+        """uninstall must not touch a notify slot owned by a foreign program."""
         from thirdeye.platforms.codex.install import CodexPlatform
 
         monkeypatch.setattr("thirdeye.platforms.codex.install.shutil.which", lambda _: None)
         config_file = tmp_path / "config.toml"
         config_file.write_text(SAMPLE_TOML_WITH_NOTIFY)
-        p = CodexPlatform(config_file=config_file)
-        p.install()
-        p.uninstall()
+        CodexPlatform(config_file=config_file).uninstall()
         data = _toml_read.loads(config_file.read_text())
-        assert "/some/other/tool" in data["notify"]
+        assert data["notify"] == ["/some/other/tool"]
 
     def test_drops_notify_line_entirely_when_empty(self, tmp_path: Path, monkeypatch):
         from thirdeye.platforms.codex.install import CodexPlatform
@@ -421,8 +448,8 @@ class TestResolveCommandAbsolutePath:
         text = config_file.read_text() if config_file.exists() else ""
         assert "thirdeye-codex-notify" not in text
 
-    def test_uninstall_removes_both_variants_if_present(self, tmp_path: Path, monkeypatch):
-        """If somehow both bare and absolute path ended up in notify, both are removed."""
+    def test_uninstall_removes_whole_line_when_we_own_slot_0(self, tmp_path: Path, monkeypatch):
+        """When thirdeye owns slot 0, the whole notify value is ours to remove."""
         from thirdeye.platforms.codex.install import CodexPlatform
 
         config_file = tmp_path / "config.toml"
@@ -435,8 +462,8 @@ class TestResolveCommandAbsolutePath:
             lambda name: f"/usr/local/bin/{name}",
         )
         CodexPlatform(config_file=config_file).uninstall()
-        data = _toml_read.loads(config_file.read_text())
-        assert data["notify"] == ["/some/other/tool"]
+        text = config_file.read_text() if config_file.exists() else ""
+        assert "notify" not in text
 
     def test_idempotent_with_absolute_paths(self, tmp_path: Path, monkeypatch):
         from thirdeye.platforms.codex.install import CodexPlatform
@@ -508,18 +535,17 @@ class TestPreservesNonNotifyContent:
         final_data.pop("notify", None)
         assert original_data == final_data
 
-    def test_preserves_content_with_existing_notify(self, tmp_path: Path, monkeypatch):
+    def test_force_install_uninstall_preserves_content(self, tmp_path: Path, monkeypatch):
         from thirdeye.platforms.codex.install import CodexPlatform
 
         monkeypatch.setattr("thirdeye.platforms.codex.install.shutil.which", lambda _: None)
         config_file = tmp_path / "config.toml"
         config_file.write_text(SAMPLE_TOML_WITH_NOTIFY)
-        p = CodexPlatform(config_file=config_file)
-        p.install()
-        p.uninstall()
+        CodexPlatform(config_file=config_file, force=True).install()
+        CodexPlatform(config_file=config_file).uninstall()
         data = _toml_read.loads(config_file.read_text())
-        # Original notify entry should remain
-        assert "/some/other/tool" in data["notify"]
+        # We took over the slot, so on uninstall notify is removed entirely.
+        assert "notify" not in data
         # OTel section still there
         assert data["otel"]["exporter"]["otlp-http"]["endpoint"] == "https://example.com/v1/traces"
 
@@ -599,3 +625,217 @@ class TestFormatNotifyArray:
 
         result = _format_notify_array(["it's a test"])
         assert "\\'" in result or "it's a test" not in result
+
+
+# ---------------------------------------------------------------------------
+# Single-argv semantics (fixed command via a shared fixture)
+# ---------------------------------------------------------------------------
+
+FAKE_CMD = "/fake/bin/thirdeye-codex-notify"
+
+# A foreign multi-element notify — the real dispatcher shape on the dev machine.
+SAMPLE_TOML_FOREIGN_DISPATCHER = """\
+notify = ['/opt/other/dispatcher', 'turn-ended']
+
+[otel.exporter.otlp-http]
+endpoint = 'https://example.com/v1/traces'
+"""
+
+# A notify array written across multiple lines.
+SAMPLE_TOML_MULTILINE_FOREIGN = """\
+notify = [
+  "/opt/other/dispatcher",
+  "turn-ended"
+]
+
+[otel.exporter.otlp-http]
+endpoint = 'https://example.com/v1/traces'
+"""
+
+SAMPLE_TOML_MULTILINE_OURS = """\
+notify = [
+  "/fake/bin/thirdeye-codex-notify"
+]
+
+[otel.exporter.otlp-http]
+endpoint = 'https://example.com/v1/traces'
+"""
+
+# Content with comments and a top-level model key, to guard preservation.
+SAMPLE_TOML_WITH_COMMENTS = """\
+# thirdeye config
+model = "gpt-5.6-sol"  # inline comment
+
+[otel.exporter.otlp-http]
+endpoint = 'https://example.com/v1/traces'
+"""
+
+
+@pytest.fixture
+def fixed_cmd(monkeypatch):
+    """Resolve the notify command deterministically to FAKE_CMD."""
+    monkeypatch.setattr(
+        "thirdeye.platforms.codex.install.shutil.which",
+        lambda _: FAKE_CMD,
+    )
+    return FAKE_CMD
+
+
+class TestSingleArgvSemantics:
+    def test_absent_notify_sets_our_cmd(self, tmp_path: Path, fixed_cmd):
+        from thirdeye.platforms.codex.install import CodexPlatform
+
+        config_file = tmp_path / "config.toml"
+        CodexPlatform(config_file=config_file).install()
+        data = _toml_read.loads(config_file.read_text())
+        assert data["notify"] == [FAKE_CMD]
+
+    def test_empty_array_sets_our_cmd(self, tmp_path: Path, fixed_cmd):
+        from thirdeye.platforms.codex.install import CodexPlatform
+
+        config_file = tmp_path / "config.toml"
+        config_file.write_text("notify = []\n")
+        CodexPlatform(config_file=config_file).install()
+        data = _toml_read.loads(config_file.read_text())
+        assert data["notify"] == [FAKE_CMD]
+
+    def test_already_our_cmd_is_byte_identical(self, tmp_path: Path, fixed_cmd):
+        from thirdeye.platforms.codex.install import CodexPlatform
+
+        config_file = tmp_path / "config.toml"
+        config_file.write_text(f"notify = ['{FAKE_CMD}']\n")
+        before = config_file.read_bytes()
+        CodexPlatform(config_file=config_file).install()
+        assert config_file.read_bytes() == before
+
+    def test_bare_name_when_which_returns_none(self, tmp_path: Path, monkeypatch):
+        from thirdeye.platforms.codex.install import CodexPlatform
+
+        monkeypatch.setattr("thirdeye.platforms.codex.install.shutil.which", lambda _: None)
+        config_file = tmp_path / "config.toml"
+        CodexPlatform(config_file=config_file).install()
+        data = _toml_read.loads(config_file.read_text())
+        assert data["notify"] == ["thirdeye-codex-notify"]
+
+    def test_foreign_multi_element_raises(self, tmp_path: Path, fixed_cmd):
+        import click
+
+        from thirdeye.platforms.codex.install import CodexPlatform
+
+        config_file = tmp_path / "config.toml"
+        config_file.write_text(SAMPLE_TOML_FOREIGN_DISPATCHER)
+        before = config_file.read_bytes()
+        with pytest.raises(click.ClickException):
+            CodexPlatform(config_file=config_file).install()
+        assert config_file.read_bytes() == before
+
+    def test_force_takes_over_foreign_multi_element(self, tmp_path: Path, fixed_cmd):
+        from thirdeye.platforms.codex.install import CodexPlatform
+
+        config_file = tmp_path / "config.toml"
+        config_file.write_text(SAMPLE_TOML_FOREIGN_DISPATCHER)
+        CodexPlatform(config_file=config_file, force=True).install()
+        data = _toml_read.loads(config_file.read_text())
+        assert data["notify"] == [FAKE_CMD]
+        assert data["otel"]["exporter"]["otlp-http"]["endpoint"] == "https://example.com/v1/traces"
+
+
+class TestMultilineNotify:
+    def test_multiline_foreign_raises_byte_identical(self, tmp_path: Path, fixed_cmd):
+        import click
+
+        from thirdeye.platforms.codex.install import CodexPlatform
+
+        config_file = tmp_path / "config.toml"
+        config_file.write_text(SAMPLE_TOML_MULTILINE_FOREIGN)
+        before = config_file.read_bytes()
+        with pytest.raises(click.ClickException):
+            CodexPlatform(config_file=config_file).install()
+        assert config_file.read_bytes() == before
+
+    def test_multiline_ours_install_is_noop(self, tmp_path: Path, fixed_cmd):
+        from thirdeye.platforms.codex.install import CodexPlatform
+
+        config_file = tmp_path / "config.toml"
+        config_file.write_text(SAMPLE_TOML_MULTILINE_OURS)
+        before = config_file.read_bytes()
+        CodexPlatform(config_file=config_file).install()
+        assert config_file.read_bytes() == before
+
+    def test_multiline_ours_uninstall_removes(self, tmp_path: Path, fixed_cmd):
+        from thirdeye.platforms.codex.install import CodexPlatform
+
+        config_file = tmp_path / "config.toml"
+        config_file.write_text(SAMPLE_TOML_MULTILINE_OURS)
+        CodexPlatform(config_file=config_file).uninstall()
+        data = _toml_read.loads(config_file.read_text())
+        assert "notify" not in data
+        assert data["otel"]["exporter"]["otlp-http"]["endpoint"] == "https://example.com/v1/traces"
+
+
+class TestUninstallArgvOwnership:
+    def test_foreign_slot0_with_our_cmd_as_arg_is_noop(self, tmp_path: Path, monkeypatch):
+        """The corrupt state the old installer produced: a foreign program owns
+        slot 0 and our command trails as a mere argument. Uninstall must not
+        touch it — nothing changed."""
+        from thirdeye.platforms.codex.install import CodexPlatform
+
+        monkeypatch.setattr("thirdeye.platforms.codex.install.shutil.which", lambda _: None)
+        config_file = tmp_path / "config.toml"
+        config_file.write_text(
+            "notify = ['/opt/other/dispatcher', 'turn-ended', 'thirdeye-codex-notify']\n"
+        )
+        before = config_file.read_bytes()
+        CodexPlatform(config_file=config_file).uninstall()
+        assert config_file.read_bytes() == before
+
+
+class TestPreservesCommentsAndModel:
+    def test_install_preserves_comments_and_model(self, tmp_path: Path, fixed_cmd):
+        from thirdeye.platforms.codex.install import CodexPlatform
+
+        config_file = tmp_path / "config.toml"
+        config_file.write_text(SAMPLE_TOML_WITH_COMMENTS)
+        CodexPlatform(config_file=config_file).install()
+        text = config_file.read_text()
+        assert "# thirdeye config" in text
+        assert "# inline comment" in text
+        data = _toml_read.loads(text)
+        assert data["model"] == "gpt-5.6-sol"
+        assert data["notify"] == [FAKE_CMD]
+
+    def test_force_install_preserves_comments_and_model(self, tmp_path: Path, fixed_cmd):
+        from thirdeye.platforms.codex.install import CodexPlatform
+
+        config_file = tmp_path / "config.toml"
+        # Start with a foreign notify plus comments and model.
+        config_file.write_text(
+            "# thirdeye config\n"
+            'model = "gpt-5.6-sol"  # inline comment\n'
+            "notify = ['/opt/other/dispatcher', 'turn-ended']\n"
+            "\n"
+            "[otel.exporter.otlp-http]\n"
+            "endpoint = 'https://example.com/v1/traces'\n"
+        )
+        CodexPlatform(config_file=config_file, force=True).install()
+        text = config_file.read_text()
+        assert "# thirdeye config" in text
+        assert "# inline comment" in text
+        data = _toml_read.loads(text)
+        assert data["model"] == "gpt-5.6-sol"
+        assert data["notify"] == [FAKE_CMD]
+        assert data["otel"]["exporter"]["otlp-http"]["endpoint"] == "https://example.com/v1/traces"
+
+    def test_uninstall_preserves_comments_and_model(self, tmp_path: Path, fixed_cmd):
+        from thirdeye.platforms.codex.install import CodexPlatform
+
+        config_file = tmp_path / "config.toml"
+        config_file.write_text(SAMPLE_TOML_WITH_COMMENTS)
+        CodexPlatform(config_file=config_file).install()
+        CodexPlatform(config_file=config_file).uninstall()
+        text = config_file.read_text()
+        assert "# thirdeye config" in text
+        assert "# inline comment" in text
+        data = _toml_read.loads(text)
+        assert data["model"] == "gpt-5.6-sol"
+        assert "notify" not in data
