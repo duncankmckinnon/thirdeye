@@ -148,3 +148,66 @@ def test_truncated_final_line_not_yielded(tmp_path: Path) -> None:
 def test_end_offset_full_file_equals_size(tmp_path: Path) -> None:
     dest = _make_tree(tmp_path / "sessions")
     assert end_offset(dest, 0) == dest.stat().st_size
+
+
+# -- supplementary: disambiguation & resume (added by testing agent) -----------
+
+
+def test_resolves_correct_file_among_multiple(tmp_path: Path) -> None:
+    """Two rollouts share one root; each session resolves to its OWN file.
+
+    Directly targets defect #4: returning matches[0] of an unordered walk would
+    hand back the wrong file for at least one of these sessions.
+    """
+    root = tmp_path / "sessions"
+    # File A: the real fixture, session_meta names FIXTURE_SID.
+    dest_a = _make_tree(root)
+
+    # File B: a second session with NO session_meta (accepted on filename).
+    sid_b = "secondsession"
+    lines = FIXTURE.read_text().splitlines(keepends=True)
+    kept = [ln for ln in lines if json.loads(ln).get("type") != "session_meta"]
+    dest_b = root / "2026" / "07" / "30" / f"rollout-2026-07-30T09-00-00-{sid_b}.jsonl"
+    dest_b.write_text("".join(kept))
+
+    assert resolve_rollout(FIXTURE_SID, root) == dest_a.resolve()
+    assert resolve_rollout(sid_b, root) == dest_b.resolve()
+
+
+def test_decoy_with_matching_meta_but_wrong_name_not_returned(tmp_path: Path) -> None:
+    """A file whose session_meta names FIXTURE_SID but whose filename does not
+    must not be returned when resolving FIXTURE_SID — the suffix check gates it.
+    """
+    root = tmp_path / "sessions"
+    # Only the decoy exists: correct meta, wrong filename suffix.
+    _make_tree(root, name="rollout-2026-07-30T17-01-26-someoneelse.jsonl")
+    assert resolve_rollout(FIXTURE_SID, root) is None
+
+
+def test_end_offset_resume_reaches_size(tmp_path: Path) -> None:
+    """Resuming end_offset from a prior bookmark advances to the full size."""
+    dest = _make_tree(tmp_path / "sessions")
+    frames = list(iter_frames(dest, 0))
+    mid = frames[10][0]
+    assert end_offset(dest, mid) == dest.stat().st_size
+    # And a re-scan from the resumed offset yields exactly the tail.
+    assert list(iter_frames(dest, mid)) == frames[10:]
+
+
+def test_valid_underscore_hyphen_session_id_accepted(tmp_path: Path) -> None:
+    """The whitelist permits `_` and `-`; such an id must still resolve."""
+    sid = "sess_id-123"
+    root = tmp_path / "sessions"
+    lines = FIXTURE.read_text().splitlines(keepends=True)
+    kept = [ln for ln in lines if json.loads(ln).get("type") != "session_meta"]
+    dest = root / "2026" / "07" / "30" / f"rollout-2026-07-30T17-01-26-{sid}.jsonl"
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    dest.write_text("".join(kept))
+    assert resolve_rollout(sid, root) == dest.resolve()
+
+
+def test_overlong_session_id_rejected(tmp_path: Path) -> None:
+    """SESSION_ID_RE caps length at 128 chars; longer ids never reach a glob."""
+    root = tmp_path / "sessions"
+    _make_tree(root)
+    assert resolve_rollout("a" * 129, root) is None
