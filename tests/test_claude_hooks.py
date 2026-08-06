@@ -461,6 +461,67 @@ class TestPermissionRequest:
         assert events[1]["data"]["tool_name"] == "Bash"
 
 
+# -- new hook events (Claude Code 2.1.195) -------------------------------------
+
+
+# (handler, mapped event type)
+_NEW_HANDLERS = [
+    ("post_tool_use_failure", "tool_result"),
+    ("subagent_start", "subagent_start"),
+    ("user_prompt_expansion", "user_prompt_expansion"),
+    ("pre_compact", "compact_start"),
+    ("post_compact", "compact_end"),
+    ("permission_denied", "permission_denied"),
+]
+
+
+class TestNewHooks:
+    @pytest.mark.parametrize("handler_name,event_type", _NEW_HANDLERS)
+    def test_appends_one_event_of_mapped_type(
+        self, monkeypatch, env: Path, handler_name: str, event_type: str
+    ):
+        _stdin(monkeypatch, {"session_id": "s1", "cwd": "/p", "extra": 42})
+        getattr(hooks, handler_name)()
+        events = list(Store(Config.load()).reader("s1").iter_events())
+        assert len(events) == 1
+        assert events[0]["t"] == event_type
+        assert events[0]["data"]["extra"] == 42
+
+    @pytest.mark.parametrize("handler_name,event_type", _NEW_HANDLERS)
+    def test_strips_routing_keys(self, monkeypatch, env: Path, handler_name: str, event_type: str):
+        _stdin(
+            monkeypatch,
+            {
+                "session_id": "s1",
+                "cwd": "/p",
+                "transcript_path": "/long/path.jsonl",
+                "agent_transcript_path": "/long/agent.jsonl",
+                "kept": "yes",
+            },
+        )
+        getattr(hooks, handler_name)()
+        data = list(Store(Config.load()).reader("s1").iter_events())[0].get("data", {})
+        assert "session_id" not in data
+        assert "cwd" not in data
+        assert "transcript_path" not in data
+        assert "agent_transcript_path" not in data
+        assert data == {"kept": "yes"}
+
+    @pytest.mark.parametrize("handler_name,event_type", _NEW_HANDLERS)
+    def test_missing_session_id_is_noop(
+        self, monkeypatch, env: Path, handler_name: str, event_type: str
+    ):
+        _stdin(monkeypatch, {"cwd": "/p"})
+        getattr(hooks, handler_name)()
+        assert list(Store(Config.load()).list_sessions()) == []
+
+    def test_pre_compact_preserves_trigger(self, monkeypatch, env: Path):
+        _stdin(monkeypatch, {"session_id": "s1", "cwd": "/p", "trigger": "auto"})
+        hooks.pre_compact()
+        data = list(Store(Config.load()).reader("s1").iter_events())[0].get("data", {})
+        assert data["trigger"] == "auto"
+
+
 # -- session_end ---------------------------------------------------------------
 
 

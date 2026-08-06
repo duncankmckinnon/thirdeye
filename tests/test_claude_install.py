@@ -307,11 +307,11 @@ class TestHookEntryStructure:
                     assert set(h.keys()) == {"type", "command"}
                     assert h["type"] == "command"
 
-    def test_all_ten_events_registered(self, tmp_path: Path):
+    def test_all_events_registered(self, tmp_path: Path):
         settings_file = tmp_path / "settings.json"
         ClaudePlatform(settings_file=settings_file).install()
         settings = json.loads(settings_file.read_text())
-        assert len(settings["hooks"]) == 10
+        assert len(settings["hooks"]) == len(HOOK_EVENTS)
 
 
 class TestResolveCommandAbsolutePath:
