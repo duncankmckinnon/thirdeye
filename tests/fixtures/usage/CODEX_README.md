@@ -88,7 +88,7 @@ A much smaller fixture proving the **older token schema still parses**.
 ### Provenance
 
 - **Source:** `~/.codex/sessions/2026/06/26/rollout-2026-06-26T11-47-19-019f0542-0112-7583-bdbe-e55f44ef80b5.jsonl`
-- **CLI version:** `codex-cli 0.146.0-alpha.9.2` era rollouts from 2026-06-26.
+- **CLI version:** `codex-cli 0.141.0` (from `session_meta.payload.cli_version`).
 - **Model:** `gpt-5.5`.
 
 Its `last_token_usage` / `total_token_usage` carry only
