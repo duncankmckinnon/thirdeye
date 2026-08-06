@@ -590,6 +590,12 @@ class TestNotifyRolloutWiring:
         # agent_turn is appended before the capture calls, so it survives.
         events = list(Store(Config.load()).reader(FIXTURE_SID).iter_events())
         assert any(e["t"] == "agent_turn" for e in events)
+        # The bookmark must NOT advance when a capture step fails: the final
+        # write_state is never reached, so the range replays next run rather than
+        # being silently skipped ("do not advance the offset before both capture
+        # calls complete").
+        state = UsageStore(session_dir(env, "codex", FIXTURE_SID)).read_state()
+        assert state.get("rollout_offset", 0) == 0
 
     def test_exception_from_usage_capture_does_not_propagate(self, monkeypatch, env: Path):
         from thirdeye.platforms.codex import hooks
