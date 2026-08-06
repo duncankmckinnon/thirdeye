@@ -29,6 +29,9 @@
         <th>model</th>
         <th class="num">input</th>
         <th class="num">output</th>
+        <th class="num">cache read</th>
+        <th class="num">cache creation</th>
+        <th class="num">reasoning</th>
         <th class="num">total</th>
         <th>ts</th>
       </tr>
@@ -37,9 +40,12 @@
       {% for row in rows %}
       <tr>
         <td>{{ row.seq }}</td>
-        <td>{{ row.model }}</td>
+        <td>{{ row.response_model }}</td>
         <td class="num">{{ row.input_tokens }}</td>
         <td class="num">{{ row.output_tokens }}</td>
+        <td class="num">{{ row.cache_read_input_tokens if row.cache_read_input_tokens is not none else "-" }}</td>
+        <td class="num">{{ row.cache_creation_input_tokens if row.cache_creation_input_tokens is not none else "-" }}</td>
+        <td class="num">{{ row.reasoning_output_tokens if row.reasoning_output_tokens is not none else "-" }}</td>
         <td class="num">{{ row.total_tokens }}</td>
         <td>{{ row.ts }}</td>
       </tr>
