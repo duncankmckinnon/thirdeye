@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 import sqlite3
 import time
-from datetime import datetime
+from datetime import UTC, datetime
 from pathlib import Path
 
 import click
@@ -11,6 +11,7 @@ import click
 from thirdeye.commands.add import find_orphaned_hooks
 from thirdeye.config import Config
 from thirdeye.paths import (
+    session_dir,
     sessions_root,
     usage_db_path,
     usage_jsonl_path,
@@ -46,9 +47,14 @@ def _row_ts(row: UsageRow) -> datetime | None:
     if s.endswith("Z"):
         s = s[:-1] + "+00:00"
     try:
-        return datetime.fromisoformat(s)
-    except ValueError:
+        dt = datetime.fromisoformat(s)
+    except (TypeError, ValueError):
         return None
+    # Normalize to UTC-aware so comparisons against the aware --since/--until
+    # bounds never raise on a naive timestamp lacking an offset.
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=UTC)
+    return dt
 
 
 def _keep_row(
@@ -186,8 +192,6 @@ def reindex_cmd(session_prefix):
         conn.execute("DELETE FROM usage WHERE session_id = ?", (sid,))
         conn.execute("DELETE FROM usage_sync WHERE session_id = ?", (sid,))
         conn.commit()
-        from thirdeye.paths import session_dir
-
         sd = session_dir(config.root, platform, sid)
         n = idx.refresh_session(conn, sid, sd)
         elapsed_ms = int((time.monotonic() - t0) * 1000)
@@ -292,8 +296,6 @@ def _run_show(
 
     if session_prefix:
         platform, sid = _resolve_session(config, session_prefix)
-        from thirdeye.paths import session_dir
-
         _render_session(
             session_dir(config.root, platform, sid),
             sid,
@@ -421,7 +423,7 @@ def _render_rollup(
                     {
                         "session_id": sid,
                         "platform": platform,
-                        "turns": turns,
+                        "calls": turns,
                         "gen_ai.usage.input_tokens": in_tok,
                         "gen_ai.usage.output_tokens": out_tok,
                     },
@@ -468,12 +470,15 @@ def _run_reset(root: Path, *, yes: bool) -> None:
     db = usage_db_path(root)
     db_rows = 0
     if db.exists():
+        conn = None
         try:
             conn = sqlite3.connect(db)
             db_rows = conn.execute("SELECT COUNT(*) FROM usage").fetchone()[0]
-            conn.close()
         except sqlite3.Error:
             db_rows = 0
+        finally:
+            if conn is not None:
+                conn.close()
 
     click.echo("usage reset will destroy:")
     click.echo(f"  sidecar files:     {len(sidecar_files)}")
@@ -488,9 +493,10 @@ def _run_reset(root: Path, *, yes: bool) -> None:
             f.unlink()
         except FileNotFoundError:
             pass
-    if db.exists():
+    # Remove usage.db and its WAL/SHM companions if present.
+    for p in (db, db.with_name(db.name + "-wal"), db.with_name(db.name + "-shm")):
         try:
-            db.unlink()
+            p.unlink()
         except FileNotFoundError:
             pass
 
