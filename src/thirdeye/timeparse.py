@@ -6,7 +6,7 @@ from datetime import UTC, datetime, timedelta
 _ROLLING_RE = re.compile(r"^(\d+)(d|h|m)$")
 _ISO_DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
 
-_ERR = "could not parse {input!r}: " "expected ISO date, 'NN(d|h|m)', 'today', or 'yesterday'"
+_ERR = "could not parse {input!r}: expected ISO date, 'NN(d|h|m)', 'today', or 'yesterday'"
 
 
 def parse_when(s: str | None, *, now: datetime | None = None) -> datetime | None:

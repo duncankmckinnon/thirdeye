@@ -7,11 +7,7 @@ pytest.importorskip("starlette")
 
 def test_defs_list_shows_saved_defs(client, web_config):
     (web_config.root / "evals" / "defs" / "foo.yaml").write_text(
-        "name: foo\n"
-        "description: test def\n"
-        "default_agent: claude\n"
-        "directive: |\n"
-        "  do the thing\n"
+        "name: foo\ndescription: test def\ndefault_agent: claude\ndirective: |\n  do the thing\n"
     )
     r = client.get("/evals/defs")
     assert r.status_code == 200
@@ -20,11 +16,7 @@ def test_defs_list_shows_saved_defs(client, web_config):
 
 def test_def_show_renders_directive(client, web_config):
     (web_config.root / "evals" / "defs" / "foo.yaml").write_text(
-        "name: foo\n"
-        "default_agent: claude\n"
-        "description: ''\n"
-        "directive: |\n"
-        "  do the thing\n"
+        "name: foo\ndefault_agent: claude\ndescription: ''\ndirective: |\n  do the thing\n"
     )
     r = client.get("/evals/defs/foo")
     assert r.status_code == 200

@@ -58,7 +58,7 @@ def load_definition(thirdeye_home: Path, name: str) -> EvalDefinition:
         shipped = _shipped_path(name)
         if shipped is None:
             raise FileNotFoundError(
-                f"no eval definition named '{name}' " f"(checked {user_path} and shipped defaults)"
+                f"no eval definition named '{name}' (checked {user_path} and shipped defaults)"
             )
         user_path.parent.mkdir(parents=True, exist_ok=True)
         user_path.write_text(shipped.read_text(encoding="utf-8"), encoding="utf-8")
