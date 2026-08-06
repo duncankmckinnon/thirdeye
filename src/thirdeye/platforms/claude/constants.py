@@ -17,4 +17,10 @@ HOOK_EVENTS: dict[str, str] = {
     "Notification": "thirdeye-claude-notification",
     "PermissionRequest": "thirdeye-claude-permission-request",
     "SessionEnd": "thirdeye-claude-session-end",
+    "PostToolUseFailure": "thirdeye-claude-post-tool-use-failure",
+    "SubagentStart": "thirdeye-claude-subagent-start",
+    "UserPromptExpansion": "thirdeye-claude-user-prompt-expansion",
+    "PreCompact": "thirdeye-claude-pre-compact",
+    "PostCompact": "thirdeye-claude-post-compact",
+    "PermissionDenied": "thirdeye-claude-permission-denied",
 }

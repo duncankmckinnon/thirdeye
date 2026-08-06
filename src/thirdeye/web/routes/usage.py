@@ -12,7 +12,7 @@ from starlette.routing import Route
 from thirdeye.paths import session_dir
 from thirdeye.timeparse import parse_when
 from thirdeye.usage.aggregate import aggregate_by_day
-from thirdeye.usage.store import UsageStore
+from thirdeye.usage.read import iter_calls
 
 
 async def _session_usage(request: Request) -> HTMLResponse:
@@ -24,7 +24,7 @@ async def _session_usage(request: Request) -> HTMLResponse:
     except (KeyError, ValueError) as e:
         raise HTTPException(status_code=404, detail=str(e)) from e
     sdir = session_dir(config.root, platform, sid)
-    rows = list(UsageStore(sdir).iter_rows())
+    rows = list(iter_calls(sdir))
     aggregate = store.stats(session_id=sid)
     templates = request.app.state.templates
     return templates.TemplateResponse(

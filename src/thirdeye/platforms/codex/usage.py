@@ -47,9 +47,15 @@ def capture_usage_codex(
     rp = Path(rollout_path)
     last_model: str | None = state.get("last_model")
     new_rows: list[UsageRow] = []
+    # Track each frame's absolute byte offset for a stable, unique call_id. Codex
+    # frames carry no natural id, and the offset is monotonic across incremental
+    # captures, so no two frames ever collide under the (session_id, call_id) key.
+    pos = offset
     with rp.open("rb") as f:
         f.seek(offset)
         for raw in f:
+            frame_offset = pos
+            pos += len(raw)
             line = raw.decode("utf-8", errors="replace").strip()
             if not line:
                 continue
@@ -60,7 +66,7 @@ def capture_usage_codex(
             inferred = _extract_model(frame)
             if inferred:
                 last_model = inferred
-            row = _extract_usage_row(frame, session_id, triggering_seq, last_model)
+            row = _extract_usage_row(frame, session_id, triggering_seq, last_model, frame_offset)
             if row is not None:
                 new_rows.append(row)
         new_offset = f.tell()
@@ -100,6 +106,7 @@ def _extract_usage_row(
     session_id: str,
     triggering_seq: int,
     last_model: str | None,
+    frame_offset: int,
 ) -> UsageRow | None:
     if not isinstance(frame, dict):
         return None
@@ -109,6 +116,8 @@ def _extract_usage_row(
     input_tokens = payload.get("input_tokens")
     output_tokens = payload.get("output_tokens")
     total_tokens = payload.get("total_tokens")
+    # A Codex usage frame reports all three counts; the presence of total_tokens
+    # identifies it. Totals are derived, never stored, so it is not persisted.
     if input_tokens is None or output_tokens is None or total_tokens is None:
         return None
     model = _extract_model(frame) or last_model or "unknown"
@@ -116,10 +125,16 @@ def _extract_usage_row(
     return UsageRow(
         session_id=session_id,
         seq=triggering_seq,
+        call_id=f"{session_id}:{frame_offset}",
         ts=str(ts),
         platform="codex",
-        model=str(model),
+        provider_name="openai",
+        response_model=str(model),
         input_tokens=int(input_tokens),
         output_tokens=int(output_tokens),
-        total_tokens=int(total_tokens),
+        operation_name="chat",
+        # Codex rollout frames do not break out cache or reasoning tokens.
+        cache_read_input_tokens=None,
+        cache_creation_input_tokens=None,
+        reasoning_output_tokens=None,
     )

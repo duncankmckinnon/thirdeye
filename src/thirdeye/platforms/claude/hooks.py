@@ -136,6 +136,10 @@ def stop() -> None:
 
 
 def subagent_stop() -> None:
+    # SubagentStop keeps its historical "subagent_message" type on purpose:
+    # renaming it would orphan the 966 sessions already recorded under it.
+    # SubagentStart (below) uses a distinct "subagent_start" type; the
+    # start/stop asymmetry is intentional, not an oversight.
     _emit("subagent_message", _read_stdin())
 
 
@@ -155,3 +159,30 @@ def session_end() -> None:
     payload = _read_stdin()
     if _emit("session_end", payload) is not None:
         Store(Config.load()).close_session(payload["session_id"], platform=_PLATFORM)
+
+
+def post_tool_use_failure() -> None:
+    # Emits "tool_result", not "error", on purpose: web/routes/sessions.py pairs
+    # each "tool_call" with a "tool_result", so a distinct type would leave failed
+    # tool calls rendering as dangling. The failure is evident from the payload.
+    _emit("tool_result", _read_stdin())
+
+
+def subagent_start() -> None:
+    _emit("subagent_start", _read_stdin())
+
+
+def user_prompt_expansion() -> None:
+    _emit("user_prompt_expansion", _read_stdin())
+
+
+def pre_compact() -> None:
+    _emit("compact_start", _read_stdin())
+
+
+def post_compact() -> None:
+    _emit("compact_end", _read_stdin())
+
+
+def permission_denied() -> None:
+    _emit("permission_denied", _read_stdin())

@@ -39,7 +39,12 @@ class UsageStore:
                 f.write(json.dumps(row.to_dict(), separators=(",", ":")) + "\n")
 
     def iter_rows(self) -> Iterator[UsageRow]:
-        """Yield rows from usage.jsonl. Skips empty / malformed lines silently."""
+        """Yield rows from usage.jsonl. Skips empty / malformed lines silently.
+
+        Raw and undeduplicated: this is the faithful mirror of the sidecar, so
+        the same logical call may appear many times. Callers wanting one row per
+        logical LLM call must use ``read.iter_calls``.
+        """
         if not self.jsonl_path.exists():
             return
         with self.jsonl_path.open("r", encoding="utf-8") as f:

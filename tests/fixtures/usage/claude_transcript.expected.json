@@ -1,0 +1,20 @@
+{
+  "source": "~/.claude/projects/scrubbed/16a1e984-1dbd-454b-b9f2-0a9e4b4683d3.jsonl",
+  "cli_version": "2.1.214 (Claude Code)",
+  "total_lines": 15,
+  "assistant_frames": 13,
+  "distinct_message_ids": 8,
+  "synthetic_frames": 1,
+  "null_request_id_frames": 1,
+  "expected_calls": 7,
+  "repeated_message_id": "msg_011CdBpZs1PvZ3gsGPM8rXdf",
+  "repeated_message_id_frame_count": 6,
+  "sample_call": {
+    "message_id": "msg_011CdBpZs1PvZ3gsGPM8rXdf",
+    "input_tokens": 2,
+    "cache_read_input_tokens": 254643,
+    "cache_creation_input_tokens": 504,
+    "output_tokens": 3195,
+    "expected_inclusive_input_tokens": 255149
+  }
+}

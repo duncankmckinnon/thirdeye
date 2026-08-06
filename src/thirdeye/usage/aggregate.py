@@ -9,7 +9,7 @@ from datetime import UTC, date, datetime, timedelta
 from thirdeye.config import Config
 from thirdeye.paths import session_dir as _session_dir
 from thirdeye.store import Store
-from thirdeye.usage.store import UsageStore
+from thirdeye.usage.read import iter_calls
 
 
 @dataclass(frozen=True)
@@ -56,7 +56,7 @@ def aggregate_by_day(
     store = Store(config)
     for meta in store.list_sessions(platform=platform, since=since, until=until):
         sd = _session_dir(config.root, meta.platform, meta.session_id)
-        for row in UsageStore(sd).iter_rows():
+        for row in iter_calls(sd):
             day = _row_day(row.ts)
             b = sums[day]
             b["events"] = int(b["events"]) + 1

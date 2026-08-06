@@ -32,17 +32,24 @@ def _make_session(root: Path, *, sid: str, platform: str, started_at: str) -> Pa
 
 
 def _row(
-    *, sid: str, platform: str, ts: str, input_tokens: int = 100, output_tokens: int = 10
+    *,
+    sid: str,
+    platform: str,
+    ts: str,
+    input_tokens: int = 100,
+    output_tokens: int = 10,
+    call_id: str | None = None,
 ) -> UsageRow:
     return UsageRow(
         session_id=sid,
         seq=0,
+        call_id=call_id or f"{sid}:{ts}",
         ts=ts,
         platform=platform,
-        model="claude-opus-4-7",
+        provider_name="anthropic",
+        response_model="claude-opus-4-7",
         input_tokens=input_tokens,
         output_tokens=output_tokens,
-        total_tokens=input_tokens + output_tokens,
     )
 
 
@@ -204,7 +211,7 @@ def test_global_usage_platform_codex_filter(client, web_config) -> None:
 
 
 def test_global_usage_filters_echoed_in_form(client) -> None:
-    r = client.get("/usage?platform=gemini&since=7d&until=today")
+    r = client.get("/usage?platform=claude&since=7d&until=today")
     assert r.status_code == 200
     body = r.content.decode("utf-8")
     assert 'name="since"' in body
@@ -212,8 +219,8 @@ def test_global_usage_filters_echoed_in_form(client) -> None:
     assert 'name="until"' in body
     assert 'value="today"' in body
     assert (
-        '<option value="gemini"\n            selected>gemini</option>' in body
-        or 'value="gemini"' in body
+        '<option value="claude"\n            selected>claude</option>' in body
+        or 'value="claude"' in body
         and "selected" in body
     )
 
@@ -303,6 +310,46 @@ def test_global_usage_chart_data_arrays_aligned(client, web_config) -> None:
     assert data["input"][idx7] == 20
     assert data["output"][idx5] == 1
     assert data["output"][idx7] == 2
+
+
+def test_chart_series_match_aggregate_totals(client, web_config) -> None:
+    """The chart series arrays sum to the aggregate totals tiles."""
+    sd = _make_session(
+        web_config.root,
+        sid="agg1",
+        platform="claude",
+        started_at="2026-05-05T10:00:00.000Z",
+    )
+    UsageStore(sd).append(
+        [
+            _row(
+                sid="agg1",
+                platform="claude",
+                ts="2026-05-05T10:00:00.000Z",
+                input_tokens=100,
+                output_tokens=10,
+                call_id="a",
+            ),
+            _row(
+                sid="agg1",
+                platform="claude",
+                ts="2026-05-06T10:00:00.000Z",
+                input_tokens=50,
+                output_tokens=5,
+                call_id="b",
+            ),
+        ]
+    )
+
+    r = client.get("/usage?since=2026-05-01&until=2026-05-10")
+    assert r.status_code == 200
+    body = r.content.decode("utf-8")
+    data = _extract_chart_json(r.content)
+    # Chart series sum to the aggregate totals rendered in the tiles.
+    assert sum(data["input"]) == 150
+    assert sum(data["output"]) == 15
+    assert 'class="aggregate-value">150</div>' in body
+    assert 'class="aggregate-value">15</div>' in body
 
 
 def test_global_usage_session_view_unchanged(client, web_store) -> None:

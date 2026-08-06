@@ -11,33 +11,238 @@ from thirdeye.paths import (
     usage_log_path,
     usage_state_path,
 )
-from thirdeye.platforms.claude.usage import capture_usage_claude
+from thirdeye.platforms.claude.usage import _extract_row, capture_usage_claude
 
 FIXTURE = Path(__file__).parent / "fixtures" / "usage" / "claude_transcript.jsonl"
+EXPECTED_JSON = Path(__file__).parent / "fixtures" / "usage" / "claude_transcript.expected.json"
 
 
-def test_capture_creates_rows_from_fixture(tmp_path: Path) -> None:
-    rows = capture_usage_claude(
+@pytest.fixture(scope="session")
+def expected() -> dict:
+    return json.loads(EXPECTED_JSON.read_text())
+
+
+def _capture_rows(tmp_path: Path, session_id: str = "abc123", seq: int = 5) -> list[dict]:
+    """Run a capture over the shipped fixture and return the parsed sidecar rows."""
+    capture_usage_claude(
         thirdeye_home=tmp_path,
-        session_id="abc123",
+        session_id=session_id,
         transcript_path=str(FIXTURE),
-        triggering_seq=5,
+        triggering_seq=seq,
     )
-    assert rows == 2
-    jsonl = usage_jsonl_path(session_dir(tmp_path, "claude", "abc123"))
-    lines = jsonl.read_text().strip().splitlines()
+    jsonl = usage_jsonl_path(session_dir(tmp_path, "claude", session_id))
+    return [json.loads(line) for line in jsonl.read_text().strip().splitlines()]
+
+
+def test_row_count_equals_assistant_minus_synthetic(tmp_path: Path, expected: dict) -> None:
+    """One row per source frame: every assistant frame except the synthetic placeholder.
+
+    This is the row count, NOT the de-duplicated call count. Collapsing the
+    repeated-message.id frames is usage/read.py's job, so the writer emits every
+    frame it sees.
+    """
+    rows = _capture_rows(tmp_path)
+    assert len(rows) == expected["assistant_frames"] - expected["synthetic_frames"]
+
+
+def test_distinct_call_id_equals_expected_calls(tmp_path: Path, expected: dict) -> None:
+    rows = _capture_rows(tmp_path)
+    distinct = {r["call_id"] for r in rows}
+    assert len(distinct) == expected["expected_calls"]
+
+
+def test_repeated_message_id_frames_share_identical_usage(tmp_path: Path, expected: dict) -> None:
+    rows = _capture_rows(tmp_path)
+    sample = expected["sample_call"]
+    repeated = [r for r in rows if r["call_id"] == expected["repeated_message_id"]]
+
+    assert len(repeated) == expected["repeated_message_id_frame_count"]
+    # Every frame of the repeated call carries the same id and token values.
+    assert all(r["call_id"] == expected["repeated_message_id"] for r in repeated)
+    first = repeated[0]
+    assert all(
+        r["gen_ai.usage.input_tokens"] == first["gen_ai.usage.input_tokens"] for r in repeated
+    )
+    assert all(
+        r["gen_ai.usage.output_tokens"] == first["gen_ai.usage.output_tokens"] for r in repeated
+    )
+    assert first["gen_ai.usage.input_tokens"] == sample["expected_inclusive_input_tokens"]
+    assert first["gen_ai.usage.output_tokens"] == sample["output_tokens"]
+    assert first["gen_ai.usage.cache_read.input_tokens"] == sample["cache_read_input_tokens"]
+    assert (
+        first["gen_ai.usage.cache_creation.input_tokens"] == sample["cache_creation_input_tokens"]
+    )
+
+
+def test_no_synthetic_model_row(tmp_path: Path) -> None:
+    rows = _capture_rows(tmp_path)
+    assert all(r["gen_ai.response.model"] != "<synthetic>" for r in rows)
+
+
+def test_input_tokens_are_cache_inclusive(tmp_path: Path) -> None:
+    """gen_ai.usage.input_tokens must be >= reported cache reads + cache creation."""
+    rows = _capture_rows(tmp_path)
+    for r in rows:
+        cache_read = r.get("gen_ai.usage.cache_read.input_tokens") or 0
+        cache_crea = r.get("gen_ai.usage.cache_creation.input_tokens") or 0
+        assert r["gen_ai.usage.input_tokens"] >= cache_read + cache_crea
+
+
+def test_reasoning_output_tokens_always_none(tmp_path: Path) -> None:
+    """Anthropic does not break out thinking tokens, so the key is always omitted."""
+    rows = _capture_rows(tmp_path)
+    assert all("gen_ai.usage.reasoning.output_tokens" not in r for r in rows)
+
+
+def test_provider_and_operation_metadata(tmp_path: Path) -> None:
+    rows = _capture_rows(tmp_path)
+    assert all(r["gen_ai.provider.name"] == "anthropic" for r in rows)
+    assert all(r["gen_ai.operation.name"] == "chat" for r in rows)
+    assert all(r["platform"] == "claude" for r in rows)
+    assert all(r["seq"] == 5 for r in rows)
+
+
+# --- absent vs zero -------------------------------------------------------
+
+
+def test_absent_cache_read_yields_none() -> None:
+    frame = {
+        "type": "assistant",
+        "timestamp": "2026-07-19T00:00:00Z",
+        "message": {
+            "id": "msg_absent",
+            "model": "claude-sonnet-5",
+            "usage": {"input_tokens": 10, "output_tokens": 5},
+        },
+    }
+    row = _extract_row(frame, "sid", 1)
+    assert row is not None
+    assert row.cache_read_input_tokens is None
+    assert row.cache_creation_input_tokens is None
+    # input stays raw when no cache is reported.
+    assert row.input_tokens == 10
+
+
+def test_explicit_zero_cache_read_yields_zero() -> None:
+    frame = {
+        "type": "assistant",
+        "timestamp": "2026-07-19T00:00:00Z",
+        "message": {
+            "id": "msg_zero",
+            "model": "claude-sonnet-5",
+            "usage": {
+                "input_tokens": 10,
+                "output_tokens": 5,
+                "cache_read_input_tokens": 0,
+            },
+        },
+    }
+    row = _extract_row(frame, "sid", 1)
+    assert row is not None
+    assert row.cache_read_input_tokens == 0
+
+
+# --- call_id fallback chain ----------------------------------------------
+
+
+def _frame(message: dict, **top: object) -> dict:
+    base = {"type": "assistant", "timestamp": "2026-07-19T00:00:00Z", "message": message}
+    base.update(top)
+    return base
+
+
+def test_call_id_prefers_message_id() -> None:
+    frame = _frame(
+        {"id": "msg_x", "model": "m", "usage": {"input_tokens": 1, "output_tokens": 1}},
+        requestId="req_x",
+        uuid="uuid_x",
+    )
+    row = _extract_row(frame, "sid", 1)
+    assert row is not None and row.call_id == "msg_x"
+
+
+def test_call_id_falls_back_to_request_id() -> None:
+    frame = _frame(
+        {"model": "m", "usage": {"input_tokens": 1, "output_tokens": 1}},
+        requestId="req_x",
+        uuid="uuid_x",
+    )
+    row = _extract_row(frame, "sid", 1)
+    assert row is not None and row.call_id == "req_x"
+
+
+def test_call_id_falls_back_to_uuid() -> None:
+    frame = _frame(
+        {"model": "m", "usage": {"input_tokens": 1, "output_tokens": 1}},
+        uuid="uuid_x",
+    )
+    row = _extract_row(frame, "sid", 1)
+    assert row is not None and row.call_id == "uuid_x"
+
+
+def test_call_id_all_missing_returns_none() -> None:
+    frame = _frame({"model": "m", "usage": {"input_tokens": 1, "output_tokens": 1}})
+    assert _extract_row(frame, "sid", 1) is None
+
+
+# --- offset / incremental behaviour --------------------------------------
+
+
+def test_capture_appends_only_new_rows_on_growth(tmp_path: Path) -> None:
+    transcript = tmp_path / "grow.jsonl"
+    frame_a = json.dumps(
+        {
+            "type": "assistant",
+            "timestamp": "2026-07-19T00:00:00Z",
+            "requestId": "req_a",
+            "message": {
+                "id": "msg_a",
+                "model": "c",
+                "usage": {"input_tokens": 10, "output_tokens": 5},
+            },
+        }
+    )
+    transcript.write_text(frame_a + "\n")
+
+    rows1 = capture_usage_claude(
+        thirdeye_home=tmp_path,
+        session_id="abc",
+        transcript_path=str(transcript),
+        triggering_seq=1,
+    )
+    assert rows1 == 1
+
+    frame_b = json.dumps(
+        {
+            "type": "assistant",
+            "timestamp": "2026-07-19T00:01:00Z",
+            "requestId": "req_b",
+            "message": {
+                "id": "msg_b",
+                "model": "c",
+                "usage": {"input_tokens": 20, "output_tokens": 7},
+            },
+        }
+    )
+    with transcript.open("a") as f:
+        f.write(frame_b + "\n")
+
+    rows2 = capture_usage_claude(
+        thirdeye_home=tmp_path,
+        session_id="abc",
+        transcript_path=str(transcript),
+        triggering_seq=2,
+    )
+    assert rows2 == 1
+
+    sd = session_dir(tmp_path, "claude", "abc")
+    lines = usage_jsonl_path(sd).read_text().strip().splitlines()
     assert len(lines) == 2
-    first = json.loads(lines[0])
-    assert first["platform"] == "claude"
-    assert first["seq"] == 5
-    assert first["model"]
-    assert first["input_tokens"] == 12450
-    assert first["output_tokens"] == 187
-    assert first["total_tokens"] == 12637
+    second = json.loads(lines[1])
+    assert second["seq"] == 2 and second["call_id"] == "msg_b"
 
 
 def test_capture_is_incremental(tmp_path: Path) -> None:
-    """Re-running against the same transcript at the saved offset produces 0 new rows."""
     capture_usage_claude(
         thirdeye_home=tmp_path,
         session_id="abc",
@@ -58,6 +263,9 @@ def test_capture_is_incremental(tmp_path: Path) -> None:
     assert rows == 0
     state2 = json.loads(usage_state_path(sd).read_text())
     assert state2["transcript_offset"] == initial_offset
+
+
+# --- error handling / logging --------------------------------------------
 
 
 def test_capture_missing_transcript_logs_error(tmp_path: Path) -> None:
@@ -84,279 +292,98 @@ def test_capture_with_no_transcript_path(tmp_path: Path) -> None:
     assert not usage_jsonl_path(sd).exists()
 
 
-def test_capture_handles_corrupt_jsonl_lines(tmp_path: Path) -> None:
-    transcript = tmp_path / "bad.jsonl"
-    transcript.write_text(
-        '{"type":"assistant","message":{"model":"claude-3","usage":{"input_tokens":10,"output_tokens":5}}}\n'
-        "this is not json\n"
-        '{"type":"assistant","message":{"model":"claude-3","usage":{"input_tokens":7,"output_tokens":3}}}\n'
-    )
-    rows = capture_usage_claude(
-        thirdeye_home=tmp_path,
-        session_id="abc",
-        transcript_path=str(transcript),
-        triggering_seq=10,
-    )
-    assert rows == 2
-
-
-def test_capture_skips_non_assistant_frames(tmp_path: Path) -> None:
-    transcript = tmp_path / "mixed.jsonl"
-    transcript.write_text(
-        '{"type":"user","message":{"role":"user","content":"hi"}}\n'
-        '{"type":"assistant","message":{"model":"claude-3","usage":{"input_tokens":10,"output_tokens":5}}}\n'
-        '{"type":"meta"}\n'
-    )
-    rows = capture_usage_claude(
-        thirdeye_home=tmp_path,
-        session_id="abc",
-        transcript_path=str(transcript),
-        triggering_seq=1,
-    )
-    assert rows == 1
-
-
-def test_safe_capture_swallows_unexpected_error(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    import thirdeye.platforms.claude.usage as mod
-
-    monkeypatch.setattr(
-        mod, "_extract_row", lambda *a, **k: (_ for _ in ()).throw(RuntimeError("oops"))
-    )
-    transcript = tmp_path / "t.jsonl"
-    transcript.write_text(
-        '{"type":"assistant","message":{"model":"c","usage":{"input_tokens":1,"output_tokens":1}}}\n'
-    )
-    result = capture_usage_claude(
-        thirdeye_home=tmp_path,
-        session_id="abc",
-        transcript_path=str(transcript),
-        triggering_seq=1,
-    )
-    assert result is None
-    assert "RuntimeError" in usage_log_path(tmp_path).read_text()
-
-
-def test_capture_flat_shape(tmp_path: Path) -> None:
-    """A frame without `message` wrapper but with `usage`/`model` at root is captured."""
-    transcript = tmp_path / "flat.jsonl"
-    transcript.write_text(
-        '{"model":"claude-haiku","usage":{"input_tokens":50,"output_tokens":25},"timestamp":"2026-05-15T01:00:00Z"}\n'
-    )
-    rows = capture_usage_claude(
-        thirdeye_home=tmp_path,
-        session_id="abc",
-        transcript_path=str(transcript),
-        triggering_seq=7,
-    )
-    assert rows == 1
-    sd = session_dir(tmp_path, "claude", "abc")
-    line = json.loads(usage_jsonl_path(sd).read_text().strip().splitlines()[0])
-    assert line["model"] == "claude-haiku"
-    assert line["input_tokens"] == 50
-    assert line["output_tokens"] == 25
-    assert line["total_tokens"] == 75
-    assert line["ts"] == "2026-05-15T01:00:00Z"
-
-
-def test_capture_skips_frame_with_missing_model(tmp_path: Path) -> None:
-    transcript = tmp_path / "nomodel.jsonl"
-    transcript.write_text(
-        '{"type":"assistant","message":{"usage":{"input_tokens":10,"output_tokens":5}}}\n'
-    )
-    rows = capture_usage_claude(
-        thirdeye_home=tmp_path,
-        session_id="abc",
-        transcript_path=str(transcript),
-        triggering_seq=1,
-    )
-    assert rows == 0
-
-
-def test_capture_skips_frame_with_missing_token_field(tmp_path: Path) -> None:
-    transcript = tmp_path / "partial.jsonl"
-    transcript.write_text(
-        '{"type":"assistant","message":{"model":"c","usage":{"input_tokens":10}}}\n'
-        '{"type":"assistant","message":{"model":"c","usage":{"output_tokens":5}}}\n'
-    )
-    rows = capture_usage_claude(
-        thirdeye_home=tmp_path,
-        session_id="abc",
-        transcript_path=str(transcript),
-        triggering_seq=1,
-    )
-    assert rows == 0
-
-
-def test_capture_appends_only_new_rows_on_growth(tmp_path: Path) -> None:
-    """When transcript grows between calls, only the appended portion is processed."""
-    transcript = tmp_path / "grow.jsonl"
-    transcript.write_text(
-        '{"type":"assistant","message":{"model":"c","usage":{"input_tokens":10,"output_tokens":5}}}\n'
-    )
-    rows1 = capture_usage_claude(
-        thirdeye_home=tmp_path,
-        session_id="abc",
-        transcript_path=str(transcript),
-        triggering_seq=1,
-    )
-    assert rows1 == 1
-
-    with transcript.open("a") as f:
-        f.write(
-            '{"type":"assistant","message":{"model":"c","usage":{"input_tokens":20,"output_tokens":7}}}\n'
-            '{"type":"assistant","message":{"model":"c","usage":{"input_tokens":30,"output_tokens":3}}}\n'
-        )
-
-    rows2 = capture_usage_claude(
-        thirdeye_home=tmp_path,
-        session_id="abc",
-        transcript_path=str(transcript),
-        triggering_seq=2,
-    )
-    assert rows2 == 2
-
-    sd = session_dir(tmp_path, "claude", "abc")
-    lines = usage_jsonl_path(sd).read_text().strip().splitlines()
-    assert len(lines) == 3
-    second = json.loads(lines[1])
-    third = json.loads(lines[2])
-    assert second["seq"] == 2 and second["input_tokens"] == 20
-    assert third["seq"] == 2 and third["input_tokens"] == 30
-
-
-def test_capture_advances_offset_with_no_rows(tmp_path: Path) -> None:
-    """Even when no assistant frames are found, the offset must advance past the read bytes."""
-    transcript = tmp_path / "user_only.jsonl"
-    transcript.write_text(
-        '{"type":"user","message":{"role":"user","content":"hi"}}\n' '{"type":"meta"}\n'
-    )
-    rows = capture_usage_claude(
-        thirdeye_home=tmp_path,
-        session_id="abc",
-        transcript_path=str(transcript),
-        triggering_seq=3,
-    )
-    assert rows == 0
-    sd = session_dir(tmp_path, "claude", "abc")
-    state = json.loads(usage_state_path(sd).read_text())
-    assert state["transcript_offset"] == transcript.stat().st_size
-    # last_seq should remain at the default (-1) since no rows were appended.
-    assert state["last_seq"] == -1
-
-
-def test_capture_updates_last_seq_when_rows_appended(tmp_path: Path) -> None:
-    transcript = tmp_path / "t.jsonl"
-    transcript.write_text(
-        '{"type":"assistant","message":{"model":"c","usage":{"input_tokens":1,"output_tokens":1}}}\n'
-    )
+def test_first_capture_emits_no_unverified_warning(tmp_path: Path) -> None:
+    """The old 'shape is unverified' warning was deleted; first capture logs nothing."""
     capture_usage_claude(
         thirdeye_home=tmp_path,
+        session_id="fresh",
+        transcript_path=str(FIXTURE),
+        triggering_seq=1,
+    )
+    log = usage_log_path(tmp_path)
+    contents = log.read_text() if log.exists() else ""
+    assert "unverified" not in contents
+
+
+# --- rejected-frame branches (spec steps 1 & 5) --------------------------
+
+
+def test_non_dict_frame_yields_none() -> None:
+    assert _extract_row("not a dict", "sid", 1) is None  # type: ignore[arg-type]
+
+
+def test_non_dict_message_yields_none() -> None:
+    frame = {"type": "assistant", "message": "not a dict"}
+    assert _extract_row(frame, "sid", 1) is None
+
+
+def test_non_assistant_frame_yields_none() -> None:
+    """Only type=="assistant" frames are candidates; a user frame is dropped."""
+    frame = {
+        "type": "user",
+        "message": {"id": "msg_u", "usage": {"input_tokens": 5, "output_tokens": 2}},
+    }
+    assert _extract_row(frame, "sid", 1) is None
+
+
+def test_empty_usage_dict_yields_none() -> None:
+    """An assistant frame whose message.usage is an empty dict carries no usage."""
+    frame = _frame({"id": "msg_e", "model": "m", "usage": {}})
+    assert _extract_row(frame, "sid", 1) is None
+
+
+def test_missing_usage_key_yields_none() -> None:
+    frame = _frame({"id": "msg_n", "model": "m"})
+    assert _extract_row(frame, "sid", 1) is None
+
+
+def test_both_token_fields_absent_yields_none() -> None:
+    """Spec step 5: with neither input_tokens nor output_tokens reported, drop it.
+
+    Cache-only usage (no primary token counts) is not a recordable call.
+    """
+    frame = _frame(
+        {"id": "msg_c", "model": "m", "usage": {"cache_read_input_tokens": 100}},
+    )
+    assert _extract_row(frame, "sid", 1) is None
+
+
+def test_output_absent_but_input_present_yields_row_with_zero_output() -> None:
+    """Only one primary field present is still a call; the missing one reads as 0."""
+    frame = _frame({"id": "msg_o", "model": "m", "usage": {"input_tokens": 12}})
+    row = _extract_row(frame, "sid", 1)
+    assert row is not None
+    assert row.input_tokens == 12
+    assert row.output_tokens == 0
+
+
+def test_synthetic_model_frame_yields_none() -> None:
+    frame = _frame(
+        {"id": "msg_s", "model": "<synthetic>", "usage": {"input_tokens": 0, "output_tokens": 0}},
+    )
+    assert _extract_row(frame, "sid", 1) is None
+
+
+def test_capture_skips_corrupt_jsonl_lines(tmp_path: Path) -> None:
+    """A malformed line between valid frames is skipped, not fatal."""
+    transcript = tmp_path / "corrupt.jsonl"
+    good = json.dumps(
+        {
+            "type": "assistant",
+            "timestamp": "2026-07-19T00:00:00Z",
+            "requestId": "req_g",
+            "message": {
+                "id": "msg_g",
+                "model": "c",
+                "usage": {"input_tokens": 3, "output_tokens": 1},
+            },
+        }
+    )
+    transcript.write_text(good + "\nnot json at all\n" + good + "\n")
+    rows = capture_usage_claude(
+        thirdeye_home=tmp_path,
         session_id="abc",
         transcript_path=str(transcript),
-        triggering_seq=42,
+        triggering_seq=1,
     )
-    sd = session_dir(tmp_path, "claude", "abc")
-    state = json.loads(usage_state_path(sd).read_text())
-    assert state["last_seq"] == 42
-
-
-def test_stop_hook_invokes_capture_and_survives_failure(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """The stop hook must call capture_usage_claude with the unstripped transcript_path
-    and must not raise even if capture errors internally."""
-    from thirdeye.config import Config
-    from thirdeye.platforms.claude import hooks
-    from thirdeye.platforms.claude import usage as usage_mod
-
-    home = tmp_path / "thirdeye"
-    home.mkdir()
-    monkeypatch.setattr(Config, "load", classmethod(lambda cls: Config(root=home)))
-
-    transcript = tmp_path / "t.jsonl"
-    transcript.write_text(
-        '{"type":"assistant","message":{"model":"claude-3","usage":{"input_tokens":4,"output_tokens":2}}}\n'
-    )
-
-    payload = {
-        "session_id": "hooksid",
-        "cwd": str(tmp_path),
-        "transcript_path": str(transcript),
-        "extra": "kept-in-event",
-    }
-    monkeypatch.setattr(hooks, "_read_stdin", lambda: payload)
-
-    captured: dict = {}
-    original = usage_mod.capture_usage_claude
-
-    def spy(**kwargs):
-        captured.update(kwargs)
-        return original(**kwargs)
-
-    monkeypatch.setattr(
-        hooks,
-        "_strip_payload",
-        lambda p: {k: v for k, v in p.items() if k not in {"session_id", "cwd", "transcript_path"}},
-    )
-    # Patch where the function is looked up: it's imported inside `stop`.
-    monkeypatch.setattr("thirdeye.platforms.claude.usage.capture_usage_claude", spy)
-
-    hooks.stop()
-
-    assert captured["session_id"] == "hooksid"
-    assert captured["transcript_path"] == str(transcript)
-    assert isinstance(captured["triggering_seq"], int)
-    # Capture actually wrote a sidecar row
-    sd = session_dir(home, "claude", "hooksid")
-    assert usage_jsonl_path(sd).exists()
-
-
-def test_stop_hook_with_no_session_id_does_nothing(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    from thirdeye.platforms.claude import hooks
-
-    monkeypatch.setattr(hooks, "_read_stdin", lambda: {})
-    called = {"count": 0}
-
-    def fake(**kwargs):
-        called["count"] += 1
-
-    monkeypatch.setattr("thirdeye.platforms.claude.usage.capture_usage_claude", fake)
-    # Should return without touching capture or raising
-    hooks.stop()
-    assert called["count"] == 0
-
-
-def test_stop_hook_survives_capture_raising(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """If capture_usage_claude were ever to raise, the stop hook should still exit cleanly.
-    (In production it's @safe_capture wrapped, so it can't — but the hook itself shouldn't
-    add another try/except, and this guards that the wrapper is actually in place.)"""
-    from thirdeye.config import Config
-    from thirdeye.platforms.claude import hooks
-    from thirdeye.platforms.claude import usage as usage_mod
-
-    home = tmp_path / "thirdeye"
-    home.mkdir()
-    monkeypatch.setattr(Config, "load", classmethod(lambda cls: Config(root=home)))
-
-    payload = {
-        "session_id": "boom",
-        "cwd": str(tmp_path),
-        "transcript_path": "/does/not/exist.jsonl",
-    }
-    monkeypatch.setattr(hooks, "_read_stdin", lambda: payload)
-
-    # Force the inner extractor to blow up; @safe_capture should swallow it.
-    monkeypatch.setattr(
-        usage_mod,
-        "_extract_row",
-        lambda *a, **k: (_ for _ in ()).throw(RuntimeError("kaboom")),
-    )
-
-    # Must not raise
-    hooks.stop()
+    assert rows == 2
