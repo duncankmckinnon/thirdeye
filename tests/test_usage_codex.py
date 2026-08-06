@@ -39,10 +39,12 @@ def test_capture_creates_rows_from_fixture(tmp_path: Path, fake_codex_root: Path
     first = json.loads(lines[0])
     assert first["platform"] == "codex"
     assert first["seq"] == 5
-    assert first["model"] == "gpt-5.5"
-    assert first["input_tokens"] == 1000
-    assert first["output_tokens"] == 50
-    assert first["total_tokens"] == 1050
+    assert first["gen_ai.response.model"] == "gpt-5.5"
+    assert first["gen_ai.usage.input_tokens"] == 1000
+    assert first["gen_ai.usage.output_tokens"] == 50
+    # Totals are derived, never stored or serialized.
+    assert "total_tokens" not in first
+    assert "gen_ai.usage.total_tokens" not in first
 
 
 def test_capture_is_incremental(tmp_path: Path, fake_codex_root: Path) -> None:

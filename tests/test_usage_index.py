@@ -13,12 +13,13 @@ def make_row(seq: int, **overrides) -> UsageRow:
     defaults = dict(
         session_id="abc",
         seq=seq,
+        call_id=f"call{seq}",
         ts=f"2026-05-15T00:00:{seq:02d}.000Z",
         platform="claude",
-        model="claude-opus-4-7",
+        provider_name="anthropic",
+        response_model="claude-opus-4-7",
         input_tokens=100,
         output_tokens=10,
-        total_tokens=110,
     )
     defaults.update(overrides)
     return UsageRow(**defaults)
@@ -58,7 +59,9 @@ def test_refresh_incremental(tmp_path: Path) -> None:
     conn = idx.connect()
     assert idx.refresh(conn) == 1
     UsageStore(sd).append([make_row(1)])
-    assert idx.refresh(conn) == 1  # only the new row
+    # The grown sidecar is re-read whole via iter_calls and every logical call is
+    # upserted, so both calls are (re)written; the new row lands in the table.
+    assert idx.refresh(conn) == 2
     seqs = [r[0] for r in conn.execute("SELECT seq FROM usage ORDER BY seq").fetchall()]
     assert seqs == [0, 1]
 
@@ -122,15 +125,23 @@ def test_refresh_across_multiple_platforms(tmp_path: Path) -> None:
     _seed_session(tmp_path, "claude", "abc", [make_row(0, platform="claude")])
     _seed_session(
         tmp_path,
-        "gemini",
+        "codex",
         "def",
-        [make_row(0, session_id="def", platform="gemini", model="gemini-3-flash-preview")],
+        [
+            make_row(
+                0,
+                session_id="def",
+                platform="codex",
+                provider_name="openai",
+                response_model="gpt-5.5",
+            )
+        ],
     )
     idx = UsageIndex(tmp_path)
     conn = idx.connect()
     assert idx.refresh(conn) == 2
     platforms = sorted(r[0] for r in conn.execute("SELECT DISTINCT platform FROM usage").fetchall())
-    assert platforms == ["claude", "gemini"]
+    assert platforms == ["claude", "codex"]
 
 
 def test_refresh_session_targets_one_session(tmp_path: Path) -> None:
