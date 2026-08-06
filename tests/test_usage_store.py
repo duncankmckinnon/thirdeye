@@ -20,12 +20,13 @@ def make_row(seq: int, **overrides) -> UsageRow:
     defaults = dict(
         session_id="abc123",
         seq=seq,
+        call_id=f"call-{seq}",
         ts=f"2026-05-15T00:00:{seq:02d}.000Z",
         platform="claude",
-        model="claude-opus-4-7",
+        provider_name="anthropic",
+        response_model="claude-opus-4-7",
         input_tokens=100,
         output_tokens=10,
-        total_tokens=110,
     )
     defaults.update(overrides)
     return UsageRow(**defaults)
@@ -75,6 +76,19 @@ def test_iter_rows_skips_malformed_lines(session: Path) -> None:
     )
     rows = list(UsageStore(session).iter_rows())
     assert [r.seq for r in rows] == [0, 1]
+
+
+def test_iter_rows_returns_duplicates_raw(session: Path) -> None:
+    """The sidecar is a faithful raw mirror: iter_rows must NOT deduplicate.
+
+    If dedup ever leaks into the writer or store, this fails — the collapse of
+    duplicate call_ids belongs only in read.iter_calls.
+    """
+    store = UsageStore(session)
+    store.append([make_row(0, call_id="dup") for _ in range(6)])
+    rows = list(store.iter_rows())
+    assert len(rows) == 6
+    assert all(r.call_id == "dup" for r in rows)
 
 
 def test_read_state_missing_returns_empty(session: Path) -> None:
