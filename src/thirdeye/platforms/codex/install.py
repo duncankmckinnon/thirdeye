@@ -4,6 +4,8 @@ import re
 import shutil
 from pathlib import Path
 
+import click
+
 from thirdeye.platforms.base import Platform
 from thirdeye.platforms.codex.constants import (
     CODEX_CONFIG_FILE,
@@ -41,19 +43,45 @@ class CodexPlatform(Platform):
     name = PLATFORM_NAME
     display_name = DISPLAY_NAME
 
-    def __init__(self, config_file: Path | None = None) -> None:
+    def __init__(self, config_file: Path | None = None, force: bool = False) -> None:
         self._config_file = config_file or CODEX_CONFIG_FILE
+        self._force = force
 
     def install(self) -> None:
+        """Install thirdeye's notify handler.
+
+        Codex's ``notify`` is a single program's argv, not a list of callbacks.
+        thirdeye therefore owns the whole value or nothing:
+
+        * absent, or ``[]`` -> ``notify = [our_cmd]``
+        * exactly ``[our_cmd]`` -> no-op (idempotent)
+        * anything else -> conflict; raise without touching the file, unless
+          ``force=True``, in which case take over the slot.
+        """
         cmd = shutil.which(NOTIFY_BIN_NAME) or NOTIFY_BIN_NAME
         text = _read_text(self._config_file)
         match = _NOTIFY_LINE_RE.search(text)
         if match:
             existing = _parse_notify_array(match.group(1))
-            if cmd in existing:
+            if existing == [cmd]:
+                # Already ours; nothing to do.
                 return
-            items = existing + [cmd]
-            new_line = _format_notify_array(items)
+            if existing and not self._force:
+                # A foreign notify program owns the slot. Validate before
+                # writing anything so the file is left byte-identical.
+                incumbent = existing[0]
+                raise click.ClickException(
+                    f"Codex 'notify' is already set to {incumbent!r} in "
+                    f"{self._config_file}. Codex's notify is a single program's argv, "
+                    "not a list of callbacks, so thirdeye-codex-notify cannot be added "
+                    "without breaking it. Either remove the existing notify value, or "
+                    "install a dispatcher program that invokes both it and "
+                    "thirdeye-codex-notify (e.g. via a --previous-notify argument). "
+                    "Pass force=True (thirdeye add --force) to have thirdeye take over "
+                    "the notify slot instead."
+                )
+            # Empty array, or force=True: take over the slot.
+            new_line = _format_notify_array([cmd])
             new_text = text[: match.start()] + new_line + text[match.end() :]
         else:
             notify_line = _format_notify_array([cmd]) + "\n"
@@ -69,31 +97,28 @@ class CodexPlatform(Platform):
         self._config_file.write_text(new_text)
 
     def uninstall(self) -> None:
+        """Remove the notify handler, but only when thirdeye owns slot 0.
+
+        Under argv semantics only the first element is the program. If a
+        foreign dispatcher owns slot 0 we must not touch it, even if our
+        command name appears later as a mere argument.
+        """
         text = _read_text(self._config_file)
         if not text:
             return
-        cmd_to_remove = shutil.which(NOTIFY_BIN_NAME) or NOTIFY_BIN_NAME
         match = _NOTIFY_LINE_RE.search(text)
         if not match:
             return
         existing = _parse_notify_array(match.group(1))
-        filtered = [
-            x
-            for x in existing
-            if x not in (cmd_to_remove, NOTIFY_BIN_NAME) and Path(x).name != NOTIFY_BIN_NAME
-        ]
-        if filtered == existing:
+        if not existing or Path(existing[0]).name != NOTIFY_BIN_NAME:
+            # We don't own the program slot; leave everything as-is.
             return
-        if not filtered:
-            # Remove the entire notify line (and one trailing newline)
-            start = match.start()
-            end = match.end()
-            if end < len(text) and text[end] == "\n":
-                end += 1
-            new_text = text[:start] + text[end:]
-        else:
-            new_line = _format_notify_array(filtered)
-            new_text = text[: match.start()] + new_line + text[match.end() :]
+        # Remove the entire notify line (and one trailing newline).
+        start = match.start()
+        end = match.end()
+        if end < len(text) and text[end] == "\n":
+            end += 1
+        new_text = text[:start] + text[end:]
         if not new_text.strip():
             if self._config_file.exists():
                 self._config_file.unlink()
