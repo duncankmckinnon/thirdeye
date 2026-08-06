@@ -22,6 +22,10 @@ def capture_usage_claude(
     Returns the number of rows appended. Wrapped in @safe_capture so any error
     is logged to usage-errors.jsonl and the function returns None instead of
     raising.
+
+    One row is appended per assistant frame - Claude writes one frame per content
+    block, all carrying the identical ``message.usage``. Collapsing those
+    duplicates is ``usage/read.py``'s job, never this writer's.
     """
     if not transcript_path:
         return 0
@@ -40,20 +44,6 @@ def capture_usage_claude(
     sd = session_dir(thirdeye_home, "claude", session_id)
     store = UsageStore(sd)
     state = store.read_state()
-    if "transcript_offset" not in state:
-        log_capture_error(
-            thirdeye_home=thirdeye_home,
-            phase="discover_transcript",
-            message=(
-                "first capture for session; transcript frame shape is unverified "
-                "against a real Claude Code transcript — remove this warning once "
-                "format is confirmed end-to-end"
-            ),
-            platform="claude",
-            session_id=session_id,
-            source_path=str(transcript_path),
-            level="warn",
-        )
     offset = int(state.get("transcript_offset", 0))
 
     new_rows: list[UsageRow] = []
@@ -82,42 +72,66 @@ def capture_usage_claude(
 
 
 def _extract_row(frame: dict, session_id: str, triggering_seq: int) -> UsageRow | None:
-    """Return a UsageRow if `frame` looks like an assistant turn with usage.
+    """Return a UsageRow for an assistant frame carrying real API usage, else None.
 
-    Handles both nested (`frame["message"]["usage"]`) and flat
-    (`frame["usage"]`) shapes.
+    Emits a row per source frame; deduplication happens on read. Cache-inclusive
+    input tokens follow the OTel GenAI convention: ``gen_ai.usage.input_tokens``
+    includes cache reads and cache creation, which Anthropic reports separately.
     """
     if not isinstance(frame, dict):
         return None
-
-    message = frame.get("message") if isinstance(frame.get("message"), dict) else None
-    if message and "usage" in message:
-        model = message.get("model") or frame.get("model")
-        usage = message.get("usage") or {}
-        ts = message.get("timestamp") or frame.get("timestamp") or ""
-    elif "usage" in frame:
-        model = frame.get("model")
-        usage = frame.get("usage") or {}
-        ts = frame.get("timestamp") or ""
-    else:
+    if frame.get("type") != "assistant":
         return None
 
-    if not isinstance(usage, dict):
+    message = frame.get("message")
+    if not isinstance(message, dict):
         return None
-    input_tokens = usage.get("input_tokens")
-    output_tokens = usage.get("output_tokens")
-    if input_tokens is None or output_tokens is None or not model:
+    usage = message.get("usage")
+    if not isinstance(usage, dict) or not usage:
         return None
 
-    total = int(input_tokens) + int(output_tokens)
+    # "<synthetic>" is Claude's zero-token placeholder for injected messages,
+    # not a real API call.
+    model = message.get("model")
+    if not model or model == "<synthetic>":
+        return None
+
+    # Claude carries the timestamp at the top level, never inside `message`.
+    ts = frame.get("timestamp") or ""
+
+    # message.id is the most reliable key (no nulls over a real transcript);
+    # fall back to requestId, then the frame uuid.
+    call_id = message.get("id") or frame.get("requestId") or frame.get("uuid")
+    if not call_id:
+        return None
+
+    # Anthropic reports input_tokens EXCLUDING cache; add both cache classes back
+    # in for a comparable, cache-inclusive total.
+    raw_input = int(usage.get("input_tokens") or 0)
+    cache_read = usage.get("cache_read_input_tokens")
+    cache_crea = usage.get("cache_creation_input_tokens")
+    output = usage.get("output_tokens")
+
+    # Absent both token fields means this frame carries no usage worth recording.
+    if usage.get("input_tokens") is None and output is None:
+        return None
+
+    input_tokens = raw_input + int(cache_read or 0) + int(cache_crea or 0)
 
     return UsageRow(
         session_id=session_id,
         seq=triggering_seq,
-        ts=str(ts) if ts else "",
+        call_id=str(call_id),
+        ts=str(ts),
         platform="claude",
-        model=str(model),
-        input_tokens=int(input_tokens),
-        output_tokens=int(output_tokens),
-        total_tokens=total,
+        provider_name="anthropic",
+        response_model=str(model),
+        input_tokens=input_tokens,
+        output_tokens=int(output or 0),
+        operation_name="chat",
+        # Absent vs zero: pass cache fields through only when reported.
+        cache_read_input_tokens=int(cache_read) if cache_read is not None else None,
+        cache_creation_input_tokens=(int(cache_crea) if cache_crea is not None else None),
+        # Anthropic does not break out thinking/reasoning tokens.
+        reasoning_output_tokens=None,
     )
