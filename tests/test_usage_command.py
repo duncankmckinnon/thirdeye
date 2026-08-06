@@ -318,6 +318,129 @@ def test_reset_clean_home_reports_zeros(tmp_path: Path, monkeypatch: pytest.Monk
     assert "usage.db rows:     0" in result.output
 
 
+def test_reset_reports_exact_counts(home: Path) -> None:
+    """Counts name every deleted sidecar and the affected session set exactly."""
+    # One session with jsonl + state = 2 sidecars; second session jsonl = 1.
+    sd = session_dir(home, "claude", "abc123")
+    usage_state_path(sd).write_text("{}")
+    _make_db(home, 7)
+
+    result = CliRunner().invoke(usage, ["reset", "--yes"], catch_exceptions=False)
+    assert result.exit_code == 0
+    # abc123: usage.jsonl + usage.state.json ; def456: usage.jsonl -> 3 files.
+    assert "sidecar files:     3" in result.output
+    assert "sessions affected: 2" in result.output
+    assert "usage.db rows:     7" in result.output
+    # Deletion summary echoes the same numbers.
+    assert "Deleted 3 sidecar file(s) across 2 session(s) and 7 usage.db row(s)." in result.output
+
+
+def test_reset_without_yes_reports_counts_but_deletes_nothing(home: Path) -> None:
+    """Refusal still prints the destroy plan (counts) before bailing out."""
+    _make_db(home, 4)
+    result = CliRunner().invoke(usage, ["reset"])
+    assert result.exit_code != 0
+    assert "usage reset will destroy:" in result.output
+    assert "usage.db rows:     4" in result.output
+    # And genuinely nothing was removed.
+    assert usage_db_path(home).exists()
+    assert usage_jsonl_path(session_dir(home, "claude", "abc123")).exists()
+
+
+def test_reset_yes_preserves_tags_and_upstream(home: Path) -> None:
+    """tags.jsonl (named in the spec) and an unrelated upstream file survive."""
+    from thirdeye.paths import tags_path
+
+    sd = session_dir(home, "claude", "abc123")
+    tags_path(sd).write_text("tags")
+    # A stand-in for an upstream transcript living beside the session.
+    upstream = sd / "transcript.jsonl"
+    upstream.write_text("upstream")
+
+    result = CliRunner().invoke(usage, ["reset", "--yes"], catch_exceptions=False)
+    assert result.exit_code == 0
+    assert tags_path(sd).read_text() == "tags"
+    assert upstream.read_text() == "upstream"
+    # But its usage sidecar is gone.
+    assert not usage_jsonl_path(sd).exists()
+
+
+def test_reset_reports_orphaned_hooks(home: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """After deleting, reset surfaces orphaned removed-platform hooks (detection only)."""
+    fake = Path("/home/u/.gemini/settings.json")
+
+    def _fake_orphans():
+        return [(fake, "thirdeye-gemini-hook")]
+
+    monkeypatch.setattr("thirdeye.commands.usage.find_orphaned_hooks", _fake_orphans)
+    result = CliRunner().invoke(usage, ["reset", "--yes"], catch_exceptions=False)
+    assert result.exit_code == 0
+    assert "thirdeye-gemini-hook" in result.output
+    assert str(fake) in result.output
+    # The orphan's config file was never created/edited by reset.
+    assert not fake.exists()
+
+
+def test_reset_no_orphan_warning_when_none(home: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr("thirdeye.commands.usage.find_orphaned_hooks", lambda: [])
+    result = CliRunner().invoke(usage, ["reset", "--yes"], catch_exceptions=False)
+    assert result.exit_code == 0
+    assert "still references removed hook" not in result.output
+
+
+# --------------------------------------------------------------------------
+# per-session filters + sort ordering
+# --------------------------------------------------------------------------
+
+
+def test_per_session_sort_ts_orders_chronologically(home: Path) -> None:
+    result = CliRunner().invoke(usage, ["abc", "--sort", "ts", "--json"], catch_exceptions=False)
+    assert result.exit_code == 0
+    rows = [json.loads(ln) for ln in result.output.splitlines() if ln.strip()]
+    ts_values = [r["ts"] for r in rows]
+    assert ts_values == sorted(ts_values)
+
+
+def test_per_session_model_filter(home: Path) -> None:
+    # Only claude rows match; a bogus substring yields nothing.
+    hit = CliRunner().invoke(usage, ["abc", "--model", "opus", "--json"], catch_exceptions=False)
+    assert hit.exit_code == 0
+    assert [json.loads(ln) for ln in hit.output.splitlines() if ln.strip()]
+
+    miss = CliRunner().invoke(usage, ["abc", "--model", "gpt-5", "--json"], catch_exceptions=False)
+    assert miss.exit_code == 0
+    assert [ln for ln in miss.output.splitlines() if ln.strip()] == []
+
+
+def test_per_session_since_until_window(home: Path) -> None:
+    # abc123 has calls at 00:00:00, 00:00:05, 00:00:09. Window keeps the middle one.
+    result = CliRunner().invoke(
+        usage,
+        ["abc", "--since", "2026-05-10T00:00:03Z", "--until", "2026-05-10T00:00:07Z", "--json"],
+        catch_exceptions=False,
+    )
+    assert result.exit_code == 0
+    rows = [json.loads(ln) for ln in result.output.splitlines() if ln.strip()]
+    assert [r["call_id"] for r in rows] == ["c2"]
+
+
+def test_per_session_empty_message_when_no_rows(home: Path) -> None:
+    result = CliRunner().invoke(usage, ["abc", "--model", "no-such-model"], catch_exceptions=False)
+    assert result.exit_code == 0
+    assert "No usage data for session" in result.output
+
+
+def test_rollup_totals_are_input_plus_output(home: Path) -> None:
+    """Rollup TOTAL column equals summed input + output, never a stored value."""
+    result = CliRunner().invoke(usage, ["--json"], catch_exceptions=False)
+    rows = [json.loads(ln) for ln in result.output.splitlines() if ln.strip()]
+    by_sid = {r["session_id"]: r for r in rows}
+    # abc123 dedups the duplicate c1: c1(100/10)+c2(200/20)+c3(5/500).
+    assert by_sid["abc123"]["gen_ai.usage.input_tokens"] == 305
+    assert by_sid["abc123"]["gen_ai.usage.output_tokens"] == 530
+    assert by_sid["abc123"]["turns"] == 3  # three distinct call_ids, not four rows
+
+
 # --------------------------------------------------------------------------
 # errors (format-independent, retained coverage)
 # --------------------------------------------------------------------------
