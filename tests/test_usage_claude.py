@@ -303,3 +303,87 @@ def test_first_capture_emits_no_unverified_warning(tmp_path: Path) -> None:
     log = usage_log_path(tmp_path)
     contents = log.read_text() if log.exists() else ""
     assert "unverified" not in contents
+
+
+# --- rejected-frame branches (spec steps 1 & 5) --------------------------
+
+
+def test_non_dict_frame_yields_none() -> None:
+    assert _extract_row("not a dict", "sid", 1) is None  # type: ignore[arg-type]
+
+
+def test_non_dict_message_yields_none() -> None:
+    frame = {"type": "assistant", "message": "not a dict"}
+    assert _extract_row(frame, "sid", 1) is None
+
+
+def test_non_assistant_frame_yields_none() -> None:
+    """Only type=="assistant" frames are candidates; a user frame is dropped."""
+    frame = {
+        "type": "user",
+        "message": {"id": "msg_u", "usage": {"input_tokens": 5, "output_tokens": 2}},
+    }
+    assert _extract_row(frame, "sid", 1) is None
+
+
+def test_empty_usage_dict_yields_none() -> None:
+    """An assistant frame whose message.usage is an empty dict carries no usage."""
+    frame = _frame({"id": "msg_e", "model": "m", "usage": {}})
+    assert _extract_row(frame, "sid", 1) is None
+
+
+def test_missing_usage_key_yields_none() -> None:
+    frame = _frame({"id": "msg_n", "model": "m"})
+    assert _extract_row(frame, "sid", 1) is None
+
+
+def test_both_token_fields_absent_yields_none() -> None:
+    """Spec step 5: with neither input_tokens nor output_tokens reported, drop it.
+
+    Cache-only usage (no primary token counts) is not a recordable call.
+    """
+    frame = _frame(
+        {"id": "msg_c", "model": "m", "usage": {"cache_read_input_tokens": 100}},
+    )
+    assert _extract_row(frame, "sid", 1) is None
+
+
+def test_output_absent_but_input_present_yields_row_with_zero_output() -> None:
+    """Only one primary field present is still a call; the missing one reads as 0."""
+    frame = _frame({"id": "msg_o", "model": "m", "usage": {"input_tokens": 12}})
+    row = _extract_row(frame, "sid", 1)
+    assert row is not None
+    assert row.input_tokens == 12
+    assert row.output_tokens == 0
+
+
+def test_synthetic_model_frame_yields_none() -> None:
+    frame = _frame(
+        {"id": "msg_s", "model": "<synthetic>", "usage": {"input_tokens": 0, "output_tokens": 0}},
+    )
+    assert _extract_row(frame, "sid", 1) is None
+
+
+def test_capture_skips_corrupt_jsonl_lines(tmp_path: Path) -> None:
+    """A malformed line between valid frames is skipped, not fatal."""
+    transcript = tmp_path / "corrupt.jsonl"
+    good = json.dumps(
+        {
+            "type": "assistant",
+            "timestamp": "2026-07-19T00:00:00Z",
+            "requestId": "req_g",
+            "message": {
+                "id": "msg_g",
+                "model": "c",
+                "usage": {"input_tokens": 3, "output_tokens": 1},
+            },
+        }
+    )
+    transcript.write_text(good + "\nnot json at all\n" + good + "\n")
+    rows = capture_usage_claude(
+        thirdeye_home=tmp_path,
+        session_id="abc",
+        transcript_path=str(transcript),
+        triggering_seq=1,
+    )
+    assert rows == 2
