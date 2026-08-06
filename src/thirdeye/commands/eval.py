@@ -49,8 +49,7 @@ def run_cmd(session_prefix, using, agent, background, as_json, save):
 
     if agent not in list_agent_names(config.root):
         raise click.ClickException(
-            f"unknown agent {agent!r} — choose one of "
-            f"{', '.join(list_agent_names(config.root))}"
+            f"unknown agent {agent!r} — choose one of {', '.join(list_agent_names(config.root))}"
         )
 
     if background:
@@ -267,7 +266,7 @@ def status_cmd(session_prefix, as_json):
         click.echo("No background eval jobs.")
         return
     click.echo(
-        f"{'JOB':<28} {'SESSION':<14} {'USING':<18} {'AGENT':<8} " f"{'STATUS':<10} {'STARTED':<26}"
+        f"{'JOB':<28} {'SESSION':<14} {'USING':<18} {'AGENT':<8} {'STATUS':<10} {'STARTED':<26}"
     )
     for j in jobs:
         click.echo(

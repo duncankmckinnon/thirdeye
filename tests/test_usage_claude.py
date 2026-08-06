@@ -230,7 +230,7 @@ def test_capture_advances_offset_with_no_rows(tmp_path: Path) -> None:
     """Even when no assistant frames are found, the offset must advance past the read bytes."""
     transcript = tmp_path / "user_only.jsonl"
     transcript.write_text(
-        '{"type":"user","message":{"role":"user","content":"hi"}}\n' '{"type":"meta"}\n'
+        '{"type":"user","message":{"role":"user","content":"hi"}}\n{"type":"meta"}\n'
     )
     rows = capture_usage_claude(
         thirdeye_home=tmp_path,

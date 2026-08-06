@@ -92,11 +92,7 @@ def test_panel_filters_to_definition_and_sorts_desc(client, web_store, web_confi
     )
 
     (web_config.root / "evals" / "defs" / "parity.yaml").write_text(
-        "name: parity\n"
-        "description: ''\n"
-        "default_agent: claude\n"
-        "directive: |\n"
-        "  parity directive\n"
+        "name: parity\ndescription: ''\ndefault_agent: claude\ndirective: |\n  parity directive\n"
     )
 
     r = client.get(f"/sessions/{sid}/evals/parity")

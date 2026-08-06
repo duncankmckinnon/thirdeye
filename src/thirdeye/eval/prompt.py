@@ -74,7 +74,7 @@ def build_prompt(
     blocks.append("=== Tool inventory ===")
     blocks.append("You have read-only access to:")
     blocks.append(
-        "- `thirdeye` CLI: list, events, show, tail, event, search, " "tag, tags, stats, usage"
+        "- `thirdeye` CLI: list, events, show, tail, event, search, tag, tags, stats, usage"
     )
     blocks.append(f"- `sqlite3 {db}`")
     blocks.append("- `jq`, `Read`")

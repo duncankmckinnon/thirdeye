@@ -191,9 +191,9 @@ def errors_cmd(n, as_json, platform_filter, phase, since, until):
         return
     for e in entries:
         click.echo(
-            f"{e.get('ts','')}  {e.get('level','?'):<5}  "
-            f"{e.get('platform','?'):<7}  {e.get('phase','?'):<20}  "
-            f"{e.get('session_id','')[:12]:<12}  {e.get('message','')}"
+            f"{e.get('ts', '')}  {e.get('level', '?'):<5}  "
+            f"{e.get('platform', '?'):<7}  {e.get('phase', '?'):<20}  "
+            f"{e.get('session_id', '')[:12]:<12}  {e.get('message', '')}"
         )
 
 
@@ -302,7 +302,7 @@ def _render_session(
     click.echo(f"{'SEQ':<5} {'TS':<26} {'MODEL':<25} {'INPUT':>10} {'OUTPUT':>8} {'TOTAL':>10}")
     tot_in = tot_out = tot = 0
     for r in rows:
-        click.echo(f"{r[0]:<5} {r[1]:<26} {r[3][:25]:<25} " f"{r[4]:>10,} {r[5]:>8,} {r[6]:>10,}")
+        click.echo(f"{r[0]:<5} {r[1]:<26} {r[3][:25]:<25} {r[4]:>10,} {r[5]:>8,} {r[6]:>10,}")
         tot_in += r[4]
         tot_out += r[5]
         tot += r[6]
@@ -378,7 +378,7 @@ def _render_rollup(
     )
     tot_in = tot_out = tot = 0
     for r in rows:
-        click.echo(f"{r[0][:14]:<14} {r[1]:<9} {r[2]:>5} " f"{r[3]:>12,} {r[4]:>10,} {r[5]:>12,}")
+        click.echo(f"{r[0][:14]:<14} {r[1]:<9} {r[2]:>5} {r[3]:>12,} {r[4]:>10,} {r[5]:>12,}")
         tot_in += r[3]
         tot_out += r[4]
         tot += r[5]
