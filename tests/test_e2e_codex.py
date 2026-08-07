@@ -6,15 +6,34 @@ from pathlib import Path
 import pytest
 
 from thirdeye.config import Config
+from thirdeye.paths import session_dir
 from thirdeye.platforms.codex import hooks as c_hooks
 from thirdeye.platforms.codex.install import CodexPlatform
 from thirdeye.store import Store
+from thirdeye.usage.store import UsageStore
+
+FIXTURE = Path(__file__).parent / "fixtures" / "usage" / "codex_rollout.jsonl"
+FIXTURE_SID = "019fb579-cdda-7a03-86df-65c87b6c4ae2"
 
 
 @pytest.fixture
 def env(monkeypatch, tmp_path: Path):
     monkeypatch.setenv("THIRDEYE_HOME", str(tmp_path))
+    # Sandbox the rollout sessions root so notify() never touches the
+    # developer's real ~/.codex/sessions.
+    sessions_root = tmp_path / "codex_sessions"
+    sessions_root.mkdir()
+    monkeypatch.setattr("thirdeye.platforms.codex.rollout.CODEX_SESSIONS_ROOT", sessions_root)
     return tmp_path
+
+
+def _plant_rollout(env: Path, sid: str = FIXTURE_SID) -> Path:
+    """Copy the real rollout fixture into the sandboxed sessions tree."""
+    nested = env / "codex_sessions" / "2026" / "07" / "30"
+    nested.mkdir(parents=True, exist_ok=True)
+    dest = nested / f"rollout-2026-07-30T17-01-26-{sid}.jsonl"
+    dest.write_bytes(FIXTURE.read_bytes())
+    return dest
 
 
 def _argv(monkeypatch, payload: dict) -> None:
@@ -283,3 +302,37 @@ class TestCodexFlexibleKeys:
         c_hooks.notify()
         events = list(Store(Config.load()).reader("camel-001").iter_events())
         assert len(events) == 1
+
+
+# -- end-to-end: notify wires rollout events + usage ---------------------------
+
+
+class TestCodexNotifyEndToEnd:
+    """Regression guard for the original failure mode: Codex capture silently
+    doing nothing. A single simulated notify against a resolvable rollout must
+    produce high-fidelity events (tool_call / tool_result) AND token usage."""
+
+    def _payload(self) -> dict:
+        return {
+            "type": "agent-turn-complete",
+            "thread-id": FIXTURE_SID,
+            "cwd": "/proj/codex",
+            "input-messages": ["do the thing"],
+            "last-assistant-message": "Done.",
+        }
+
+    def test_notify_produces_tool_events_and_usage(self, monkeypatch, env: Path):
+        _plant_rollout(env)
+        _argv(monkeypatch, self._payload())
+        c_hooks.notify()
+
+        events = list(Store(Config.load()).reader(FIXTURE_SID).iter_events())
+        types = [e["t"] for e in events]
+        assert "agent_turn" in types
+        assert "tool_call" in types
+        assert "tool_result" in types
+
+        rows = list(UsageStore(session_dir(env, "codex", FIXTURE_SID)).iter_rows())
+        assert rows, "expected non-zero usage rows from the rollout"
+        assert all(r.platform == "codex" for r in rows)
+        assert any(r.input_tokens and r.output_tokens for r in rows)

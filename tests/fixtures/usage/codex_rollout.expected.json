@@ -1,0 +1,32 @@
+{
+  "source": "~/.codex/sessions/2026/07/30/rollout-2026-07-30T17-01-26-019fb579-cdda-7a03-86df-65c87b6c4ae2.jsonl",
+  "cli_version": "codex-cli 0.146.0-alpha.9.2",
+  "total_lines": 97,
+  "frame_census": {
+    "event_msg/token_count": 81,
+    "response_item/custom_tool_call": 3,
+    "response_item/custom_tool_call_output": 3,
+    "response_item/function_call": 3,
+    "response_item/function_call_output": 3,
+    "event_msg/agent_message": 1,
+    "event_msg/user_message": 1,
+    "session_meta/-": 1,
+    "turn_context/-": 1
+  },
+  "token_count_frames": 81,
+  "distinct_cumulative_totals": 80,
+  "expected_calls": 80,
+  "final_cumulative_total_tokens": 6694163,
+  "naive_per_frame_sum": 6832295,
+  "resolved_model": "gpt-5.6-sol",
+  "expected_tool_call_events": 6,
+  "expected_tool_result_events": 6,
+  "sample_call": {
+    "cumulative_total_tokens": 6694163,
+    "input_tokens": 198800,
+    "cached_input_tokens": 192256,
+    "output_tokens": 622,
+    "reasoning_output_tokens": 338,
+    "total_tokens": 199422
+  }
+}

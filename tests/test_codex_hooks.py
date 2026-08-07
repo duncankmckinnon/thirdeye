@@ -6,13 +6,40 @@ from pathlib import Path
 import pytest
 
 from thirdeye.config import Config
+from thirdeye.paths import session_dir
 from thirdeye.store import Store
+from thirdeye.usage.store import UsageStore
+
+FIXTURE = Path(__file__).parent / "fixtures" / "usage" / "codex_rollout.jsonl"
+FIXTURE_SID = "019fb579-cdda-7a03-86df-65c87b6c4ae2"
 
 
 @pytest.fixture
 def env(monkeypatch, tmp_path: Path):
     monkeypatch.setenv("THIRDEYE_HOME", str(tmp_path))
+    # Sandbox the rollout sessions root so notify() never scans the developer's
+    # real ~/.codex/sessions. Empty by default -> resolve_rollout returns None.
+    sessions_root = tmp_path / "codex_sessions"
+    sessions_root.mkdir()
+    monkeypatch.setattr("thirdeye.platforms.codex.rollout.CODEX_SESSIONS_ROOT", sessions_root)
     return tmp_path
+
+
+def _sessions_root(env: Path) -> Path:
+    return env / "codex_sessions"
+
+
+def _plant_rollout(env: Path, sid: str = FIXTURE_SID) -> Path:
+    """Copy the real rollout fixture into the sandboxed sessions tree."""
+    nested = _sessions_root(env) / "2026" / "07" / "30"
+    nested.mkdir(parents=True, exist_ok=True)
+    dest = nested / f"rollout-2026-07-30T17-01-26-{sid}.jsonl"
+    dest.write_bytes(FIXTURE.read_bytes())
+    return dest
+
+
+def _usage_rows(env: Path, sid: str) -> list:
+    return list(UsageStore(session_dir(env, "codex", sid)).iter_rows())
 
 
 def _argv(monkeypatch, payload: dict) -> None:
@@ -416,3 +443,171 @@ class TestSessionStartEnvTags:
         _argv(monkeypatch, {"cwd": "/p"})
         hooks.session_start()
         assert list(Store(Config.load()).list_sessions()) == []
+
+
+# -- notify: rollout event + usage wiring --------------------------------------
+
+
+class TestNotifyRolloutWiring:
+    def _payload(self, sid: str = FIXTURE_SID, key: str = "thread-id") -> dict:
+        return {
+            "type": "agent-turn-complete",
+            key: sid,
+            "cwd": "/proj/codex",
+            "input-messages": ["fix the bug"],
+            "last-assistant-message": "Fixed it.",
+        }
+
+    def test_type_not_agent_turn_complete_produces_nothing(self, monkeypatch, env: Path):
+        from thirdeye.platforms.codex import hooks
+
+        _plant_rollout(env)
+        _argv(monkeypatch, {"type": "session-configured", "thread-id": FIXTURE_SID})
+        hooks.notify()
+        assert list(Store(Config.load()).list_sessions()) == []
+        assert _usage_rows(env, FIXTURE_SID) == []
+
+    def test_no_thread_id_produces_nothing_and_does_not_raise(self, monkeypatch, env: Path):
+        from thirdeye.platforms.codex import hooks
+
+        _plant_rollout(env)
+        _argv(monkeypatch, {"type": "agent-turn-complete", "cwd": "/p"})
+        hooks.notify()  # must not raise
+        assert list(Store(Config.load()).list_sessions()) == []
+
+    def test_resolvable_rollout_appends_events_and_usage(self, monkeypatch, env: Path):
+        from thirdeye.platforms.codex import hooks
+
+        _plant_rollout(env)
+        _argv(monkeypatch, self._payload())
+        hooks.notify()
+
+        events = list(Store(Config.load()).reader(FIXTURE_SID).iter_events())
+        types = {e["t"] for e in events}
+        # The agent_turn from the notify payload, PLUS rollout-derived events.
+        assert "agent_turn" in types
+        assert "tool_call" in types
+        assert "tool_result" in types
+        assert "user_message" in types
+        # Exactly one agent_turn; the rest come from the rollout.
+        assert sum(1 for e in events if e["t"] == "agent_turn") == 1
+        assert len(events) > 1
+        # Usage rows were extracted from the rollout's token_count frames.
+        assert len(_usage_rows(env, FIXTURE_SID)) > 0
+
+    def test_thread_id_kebab_snake_camel_all_accepted(self, monkeypatch, env: Path):
+        from thirdeye.platforms.codex import hooks
+
+        for key, sid in (
+            ("thread-id", "kebab-sid"),
+            ("thread_id", "snake-sid"),
+            ("threadId", "camel-sid"),
+        ):
+            _argv(monkeypatch, self._payload(sid=sid, key=key))
+            hooks.notify()
+            events = list(Store(Config.load()).reader(sid).iter_events())
+            assert len(events) == 1
+            assert events[0]["t"] == "agent_turn"
+
+    def test_agent_turn_data_strips_routing_keeps_message(self, monkeypatch, env: Path):
+        from thirdeye.platforms.codex import hooks
+
+        _argv(monkeypatch, self._payload())
+        hooks.notify()
+
+        events = list(Store(Config.load()).reader(FIXTURE_SID).iter_events())
+        agent_turn = next(e for e in events if e["t"] == "agent_turn")
+        data = agent_turn["data"]
+        assert "thread-id" not in data
+        assert "cwd" not in data
+        assert data["last-assistant-message"] == "Fixed it."
+
+    def test_unresolvable_rollout_still_records_agent_turn_and_logs(self, monkeypatch, env: Path):
+        from thirdeye.platforms.codex import hooks
+
+        # No rollout planted -> resolve_rollout returns None.
+        _argv(monkeypatch, self._payload())
+        hooks.notify()
+
+        events = list(Store(Config.load()).reader(FIXTURE_SID).iter_events())
+        assert len(events) == 1
+        assert events[0]["t"] == "agent_turn"
+        assert _usage_rows(env, FIXTURE_SID) == []
+
+        errlog = env / "logs" / "usage-errors.jsonl"
+        assert errlog.exists()
+        entries = [json.loads(line) for line in errlog.read_text().splitlines() if line.strip()]
+        assert any(e["phase"] == "open_source" for e in entries)
+
+    def test_two_notifications_unchanged_rollout_add_no_new_rollout_events(
+        self, monkeypatch, env: Path
+    ):
+        from thirdeye.platforms.codex import hooks
+
+        _plant_rollout(env)
+        _argv(monkeypatch, self._payload())
+        hooks.notify()
+
+        events1 = list(Store(Config.load()).reader(FIXTURE_SID).iter_events())
+        rollout_events1 = sum(1 for e in events1 if e["t"] != "agent_turn")
+        usage1 = len(_usage_rows(env, FIXTURE_SID))
+        assert rollout_events1 > 0
+        assert usage1 > 0
+
+        _argv(monkeypatch, self._payload())
+        hooks.notify()
+
+        events2 = list(Store(Config.load()).reader(FIXTURE_SID).iter_events())
+        # agent_turn appended a second time...
+        assert sum(1 for e in events2 if e["t"] == "agent_turn") == 2
+        # ...but no new rollout-derived events and no new usage rows.
+        assert sum(1 for e in events2 if e["t"] != "agent_turn") == rollout_events1
+        assert len(_usage_rows(env, FIXTURE_SID)) == usage1
+
+    def test_rollout_path_and_offset_persisted_in_state(self, monkeypatch, env: Path):
+        from thirdeye.platforms.codex import hooks
+
+        rollout = _plant_rollout(env)
+        _argv(monkeypatch, self._payload())
+        hooks.notify()
+
+        state = UsageStore(session_dir(env, "codex", FIXTURE_SID)).read_state()
+        assert state.get("rollout_path") == str(rollout)
+        assert state.get("rollout_offset") == rollout.stat().st_size
+
+    def test_exception_from_events_capture_does_not_propagate(self, monkeypatch, env: Path):
+        from thirdeye.platforms.codex import hooks
+
+        _plant_rollout(env)
+
+        def _boom(**kwargs):
+            raise RuntimeError("events capture blew up")
+
+        monkeypatch.setattr("thirdeye.platforms.codex.events.capture_events_codex", _boom)
+        _argv(monkeypatch, self._payload())
+        hooks.notify()  # must not raise
+
+        # agent_turn is appended before the capture calls, so it survives.
+        events = list(Store(Config.load()).reader(FIXTURE_SID).iter_events())
+        assert any(e["t"] == "agent_turn" for e in events)
+        # The bookmark must NOT advance when a capture step fails: the final
+        # write_state is never reached, so the range replays next run rather than
+        # being silently skipped ("do not advance the offset before both capture
+        # calls complete").
+        state = UsageStore(session_dir(env, "codex", FIXTURE_SID)).read_state()
+        assert state.get("rollout_offset", 0) == 0
+
+    def test_exception_from_usage_capture_does_not_propagate(self, monkeypatch, env: Path):
+        from thirdeye.platforms.codex import hooks
+
+        _plant_rollout(env)
+
+        def _boom(**kwargs):
+            raise RuntimeError("usage capture blew up")
+
+        monkeypatch.setattr("thirdeye.platforms.codex.usage.capture_usage_codex", _boom)
+        _argv(monkeypatch, self._payload())
+        hooks.notify()  # must not raise
+
+        events = list(Store(Config.load()).reader(FIXTURE_SID).iter_events())
+        assert any(e["t"] == "agent_turn" for e in events)
