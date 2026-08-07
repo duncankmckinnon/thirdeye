@@ -23,7 +23,7 @@ pipx install thrdi                           # or: uv tool install thrdi
 ## Enable tracing
 
 ```bash
-thirdeye add --claude        # also: --cursor, --codex, --gemini, --copilot
+thirdeye add --claude        # also: --cursor, --codex
 ```
 
 To detach: `thirdeye remove --claude`.
