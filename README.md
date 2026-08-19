@@ -69,6 +69,21 @@ thirdeye usage errors                   # tail the capture audit log
 Filters: `--platform` / `--harness`, `--model SUBSTR`, `--since` / `--until`,
 `--top N`, `--sort total|input|output|ts`.
 
+## Export to Pydantic Logfire
+
+Mirror every captured session into [Logfire](https://pydantic.dev/logfire) live, as traces — no separate export step. Once enabled, each thirdeye session becomes one Logfire trace: tool calls appear as spans with real durations (paired from `PreToolUse`/`PostToolUse`, or Codex's `call_id`), everything else (messages, notifications, compaction, ...) as timeline markers, all searchable by `gen_ai.conversation.id`.
+
+```bash
+pip install 'thrdi[logfire]'
+thirdeye logfire enable --token pylf_v1_... --project my-project   # gateway key from Logfire
+thirdeye logfire status
+thirdeye logfire disable                                          # keeps the saved key
+```
+
+Or from `thirdeye ui`, under **settings**: paste the gateway key and project name and hit Enable — persisted the same way, in `~/.thirdeye/config.yaml`.
+
+Export is dispatched from the same Claude Code / Codex hooks that already capture events, but the actual Logfire call (including a flush, a real network round trip) runs in a detached background process — the hook itself never waits on the network, so enabling this adds no latency to your tool calls.
+
 ## Browse in a browser
 
 For a richer experience than the CLI, install the UI extra and launch:
