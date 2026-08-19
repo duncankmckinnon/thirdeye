@@ -5,12 +5,14 @@ from pathlib import Path
 
 import pytest
 
+from thirdeye.config import Config, LogfireSettings
 from thirdeye.paths import (
     session_dir,
     usage_jsonl_path,
     usage_log_path,
     usage_state_path,
 )
+from thirdeye.platforms.claude import usage as usage_module
 from thirdeye.platforms.claude.usage import _extract_row, capture_usage_claude
 
 FIXTURE = Path(__file__).parent / "fixtures" / "usage" / "claude_transcript.jsonl"
@@ -387,3 +389,61 @@ def test_capture_skips_corrupt_jsonl_lines(tmp_path: Path) -> None:
         triggering_seq=1,
     )
     assert rows == 2
+
+
+def test_config_and_cwd_export_new_rows_to_logfire(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """New rows must reach `otel_export.export_usage_rows`, otherwise token
+    usage is captured to the sidecar sqlite store but never mirrored to
+    Logfire — `stop()` in claude/hooks.py must pass `config` and `cwd` through.
+    """
+    calls = []
+    monkeypatch.setattr(
+        usage_module,
+        "export_usage_rows",
+        lambda config, sd, session_id, platform, cwd, rows: calls.append(
+            (config, sd, session_id, platform, cwd, rows)
+        ),
+    )
+    config = Config(root=tmp_path, logfire=LogfireSettings(enabled=True, token="t"))
+    rows = capture_usage_claude(
+        thirdeye_home=tmp_path,
+        session_id="abc123",
+        transcript_path=str(FIXTURE),
+        triggering_seq=5,
+        config=config,
+        cwd="/proj",
+    )
+    assert len(calls) == 1
+    got_config, sd, session_id, platform, cwd, exported_rows = calls[0]
+    assert got_config is config
+    assert sd == session_dir(tmp_path, "claude", "abc123")
+    assert session_id == "abc123"
+    assert platform == "claude"
+    assert cwd == "/proj"
+    assert len(exported_rows) == rows
+
+
+def test_no_config_passes_none_through_to_export(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """When the caller omits `config`/`cwd` (as every existing test call site
+    does), `capture_usage_claude` still calls `export_usage_rows` — it relies
+    entirely on `export_usage_rows`'s own `config is None` guard (tested in
+    test_otel_export.py) to no-op, rather than duplicating that guard here.
+    """
+    calls = []
+    monkeypatch.setattr(
+        usage_module, "export_usage_rows", lambda *a, **k: calls.append((a, k))
+    )
+    capture_usage_claude(
+        thirdeye_home=tmp_path,
+        session_id="abc123",
+        transcript_path=str(FIXTURE),
+        triggering_seq=5,
+    )
+    assert len(calls) == 1
+    args, _kwargs = calls[0]
+    assert args[0] is None  # config
+    assert args[4] is None  # cwd

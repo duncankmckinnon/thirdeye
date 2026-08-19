@@ -1,10 +1,12 @@
 """Detached worker process for `thirdeye.otel_export`.
 
 `otel_export.export_event` writes a small job file describing one thirdeye
-event and spawns this module (``python -m thirdeye.otel_worker <job_path>``)
-as a detached, unwaited-for child. All the actual Logfire work — configuring
-the SDK, building the span, and flushing it (a real network round trip) —
-happens here, off the hook process's critical path.
+event, and `otel_export.export_usage_rows` writes one describing a whole batch
+of usage rows (tagged ``"kind": "usage_rows"``); either way they spawn this
+module (``python -m thirdeye.otel_worker <job_path>``) as a detached,
+unwaited-for child. All the actual Logfire work — configuring the SDK,
+building the span(s), and flushing (a real network round trip) — happens
+here, off the hook process's critical path.
 
 Run standalone, never imported by anything that cares about its return value:
 every failure mode ends in a clean process exit, never a traceback on stderr
@@ -33,19 +35,33 @@ def main(argv: list[str] | None = None) -> None:
 
     try:
         from thirdeye.config import Config
-        from thirdeye.otel_export import _export_event_inner
 
-        _export_event_inner(
-            config=Config.load(),
-            session_dir_=Path(payload["session_dir"]),
-            session_id=payload["session_id"],
-            platform=payload["platform"],
-            cwd=payload["cwd"],
-            t=payload["t"],
-            seq=payload["seq"],
-            ts=payload["ts"],
-            data=payload.get("data"),
-        )
+        config = Config.load()
+        if payload.get("kind") == "usage_rows":
+            from thirdeye.otel_export import _export_usage_rows_inner
+
+            _export_usage_rows_inner(
+                config=config,
+                session_dir_=Path(payload["session_dir"]),
+                session_id=payload["session_id"],
+                platform=payload["platform"],
+                cwd=payload["cwd"],
+                rows=payload["rows"],
+            )
+        else:
+            from thirdeye.otel_export import _export_event_inner
+
+            _export_event_inner(
+                config=config,
+                session_dir_=Path(payload["session_dir"]),
+                session_id=payload["session_id"],
+                platform=payload["platform"],
+                cwd=payload["cwd"],
+                t=payload["t"],
+                seq=payload["seq"],
+                ts=payload["ts"],
+                data=payload.get("data"),
+            )
     except Exception:
         pass
 

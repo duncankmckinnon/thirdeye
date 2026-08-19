@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from thirdeye.config import Config
+from thirdeye.otel_export import export_usage_rows
 from thirdeye.paths import session_dir
 from thirdeye.platforms.codex.rollout import (
     CODEX_SESSIONS_ROOT,
@@ -25,14 +27,19 @@ def capture_usage_codex(
     sessions_root: Path | None = None,
     rollout_path: str | None = None,
     model: str | None = None,
+    config: Config | None = None,
+    cwd: str | None = None,
 ) -> int:
     """Tail-parse the Codex rollout file for session_id, append new rows.
 
     `sessions_root` is overrideable for testing (default: ~/.codex/sessions).
     `rollout_path`, when given, skips resolution; `model`, when given, skips the
-    turn_context model carry-forward and is used verbatim. Both exist so a future
-    hooks integration can pass them without reworking this function; `notify`
-    passes neither today.
+    turn_context model carry-forward and is used verbatim. `config` and `cwd`,
+    when both given, additionally mirror each new row to Logfire as a `usage`
+    span (skipped, same as the rest of otel_export, when Logfire isn't
+    enabled). All four exist so a future hooks integration can pass them
+    without reworking this function; `notify` passes `config` and `cwd` today,
+    neither `rollout_path` nor `model`.
 
     Returns the number of rows appended (one per ``token_count`` frame). Codex
     re-reports the same call, so distinct rows may carry duplicate
@@ -78,6 +85,7 @@ def capture_usage_codex(
 
     if new_rows:
         store.append(new_rows)
+        export_usage_rows(config, sd, session_id, "codex", cwd, new_rows)
     store.write_state(
         rollout_path=resolved_path,
         rollout_offset=new_offset,

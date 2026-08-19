@@ -98,7 +98,7 @@ class TestMainExportsThroughToLogfire:
             console=False,
             additional_span_processors=[SimpleSpanProcessor(exporter)],
         )
-        monkeypatch.setattr(otel_export, "_get_instance", lambda config: instance)
+        monkeypatch.setattr(otel_export, "_get_instance", lambda config, platform: instance)
 
         job_path = _write_job(home)
         otel_worker.main([str(job_path)])
@@ -123,3 +123,42 @@ class TestMainExportsThroughToLogfire:
         otel_worker.main([str(job_path)])
 
         assert calls == []
+
+    def test_usage_rows_job_dispatches_to_the_batch_exporter(
+        self, home: Path, enabled: None, monkeypatch: pytest.MonkeyPatch
+    ):
+        """A `"kind": "usage_rows"` job must route to
+        `_export_usage_rows_inner`, not the ordinary single-event path.
+        """
+        import logfire
+
+        exporter = TestExporter()
+        instance = logfire.configure(
+            send_to_logfire=False,
+            console=False,
+            additional_span_processors=[SimpleSpanProcessor(exporter)],
+        )
+        monkeypatch.setattr(otel_export, "_get_instance", lambda config, platform: instance)
+
+        job_path = home / "job.json"
+        payload = {
+            "kind": "usage_rows",
+            "session_dir": str(home / "traces" / "claude" / "s1"),
+            "session_id": "s1",
+            "platform": "claude",
+            "cwd": "/proj",
+            "rows": [
+                {
+                    "seq": 5,
+                    "ts": "2026-01-01T00:00:00.000Z",
+                    "data": {"gen_ai.usage.input_tokens": 10, "gen_ai.usage.output_tokens": 5},
+                }
+            ],
+        }
+        job_path.write_text(json.dumps(payload))
+        otel_worker.main([str(job_path)])
+
+        spans = exporter.exported_spans_as_dict()
+        assert len(spans) == 1
+        assert spans[0]["name"] == "usage"
+        assert spans[0]["attributes"]["gen_ai.usage.input_tokens"] == 10

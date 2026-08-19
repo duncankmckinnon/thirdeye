@@ -150,6 +150,8 @@ def notify() -> None:
             session_id=sid,
             triggering_seq=seq,
             rollout_path=rollout_path,
+            config=config,
+            cwd=cwd,
         )
         usage_store.write_state(
             rollout_path=rollout_path,

@@ -132,6 +132,8 @@ def stop() -> None:
         session_id=sid,
         transcript_path=payload.get("transcript_path"),
         triggering_seq=seq,
+        config=config,
+        cwd=cwd,
     )
 
 

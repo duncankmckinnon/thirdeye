@@ -3,6 +3,8 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+from thirdeye.config import Config
+from thirdeye.otel_export import export_usage_rows
 from thirdeye.paths import session_dir
 from thirdeye.usage.errlog import log_capture_error, safe_capture
 from thirdeye.usage.store import UsageStore
@@ -16,6 +18,8 @@ def capture_usage_claude(
     session_id: str,
     transcript_path: str | None,
     triggering_seq: int,
+    config: Config | None = None,
+    cwd: str | None = None,
 ) -> int:
     """Tail-parse the Claude transcript, append new UsageRows, advance offset.
 
@@ -26,6 +30,10 @@ def capture_usage_claude(
     One row is appended per assistant frame - Claude writes one frame per content
     block, all carrying the identical ``message.usage``. Collapsing those
     duplicates is ``usage/read.py``'s job, never this writer's.
+
+    `config` and `cwd`, when both given, additionally mirror each new row to
+    Logfire as a `usage` span (see `otel_export.export_usage_rows`); `stop`
+    passes both today.
     """
     if not transcript_path:
         return 0
@@ -64,6 +72,7 @@ def capture_usage_claude(
 
     if new_rows:
         store.append(new_rows)
+        export_usage_rows(config, sd, session_id, "claude", cwd, new_rows)
     store.write_state(
         transcript_offset=new_offset,
         last_seq=triggering_seq if new_rows else state.get("last_seq", -1),
