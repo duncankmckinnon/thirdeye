@@ -924,9 +924,7 @@ class TestHooksJsonInstall:
         for event in SUPPORTED_HOOKS_JSON_EVENTS:
             assert len(_commands_for(data, event)) == 1
 
-    def test_foreign_tool_entries_are_preserved_alongside_ours(
-        self, tmp_path: Path, monkeypatch
-    ):
+    def test_foreign_tool_entries_are_preserved_alongside_ours(self, tmp_path: Path, monkeypatch):
         from thirdeye.platforms.codex.install import CodexPlatform
 
         _no_which(monkeypatch)
@@ -938,15 +936,17 @@ class TestHooksJsonInstall:
         assert "/some/other/tool" in commands
         assert any(Path(c).name == "thirdeye-codex-session-start" for c in commands)
 
-    def test_stale_claude_entry_on_supported_event_is_replaced(
-        self, tmp_path: Path, monkeypatch
-    ):
+    def test_stale_claude_entry_on_supported_event_is_replaced(self, tmp_path: Path, monkeypatch):
         from thirdeye.platforms.codex.install import CodexPlatform
 
         _no_which(monkeypatch)
         hooks_file = tmp_path / "hooks.json"
         hooks_file.write_text(
-            json.dumps(_hooks_json_with({"SessionStart": "/opt/homebrew/bin/thirdeye-claude-session-start"}))
+            json.dumps(
+                _hooks_json_with(
+                    {"SessionStart": "/opt/homebrew/bin/thirdeye-claude-session-start"}
+                )
+            )
         )
         CodexPlatform(config_file=tmp_path / "config.toml", hooks_file=hooks_file).install()
         data = json.loads(hooks_file.read_text())
