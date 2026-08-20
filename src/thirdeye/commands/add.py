@@ -31,10 +31,13 @@ def _platform_options(fn):
     return fn
 
 
-def _resolve_platform(platform_flag: str | None) -> Platform:
+def _resolve_platform(platform_flag: str | None, *, force: bool = False) -> Platform:
     if not platform_flag:
         raise click.UsageError("Pick a platform: --claude, --codex")
-    return PLATFORMS[platform_flag]()
+    platform_cls = PLATFORMS[platform_flag]
+    if platform_flag == "codex" and force:
+        return platform_cls(force=True)
+    return platform_cls()
 
 
 def _is_stale_command(command: str) -> bool:
@@ -83,8 +86,13 @@ def _iter_commands(node: object) -> Iterable[str]:
     is_flag=True,
     help="List supported platforms and warn about orphaned hooks from removed platforms.",
 )
+@click.option(
+    "--force",
+    is_flag=True,
+    help="Codex only: take over an existing 'notify' program instead of erroring.",
+)
 @_platform_options
-def add(platform_flag: str | None, list_platforms: bool) -> None:
+def add(platform_flag: str | None, list_platforms: bool, force: bool) -> None:
     if list_platforms:
         click.echo("Supported platforms:")
         for name in PLATFORMS:
@@ -95,7 +103,7 @@ def add(platform_flag: str | None, list_platforms: bool) -> None:
                 "Remove it from that tool's config to stop the missing-binary error.",
             )
         return
-    platform = _resolve_platform(platform_flag)
+    platform = _resolve_platform(platform_flag, force=force)
     platform.install()
     click.echo(f"Installed tracing for {platform.display_name}")
 
