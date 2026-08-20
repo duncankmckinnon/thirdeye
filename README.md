@@ -73,6 +73,8 @@ Filters: `--platform` / `--harness`, `--model SUBSTR`, `--since` / `--until`,
 
 Mirror every captured session into [Logfire](https://pydantic.dev/logfire) live, as traces — no separate export step. Once enabled, each thirdeye session becomes one Logfire trace: tool calls appear as spans with real durations (paired from `PreToolUse`/`PostToolUse`, or Codex's `call_id`), everything else (messages, notifications, compaction, ...) as timeline markers, all searchable by `gen_ai.conversation.id`.
 
+On Claude Code, each individual model call within a turn — a turn routinely makes several before it's done — also gets its own `chat <model>` span nested under that turn's `assistant_message`, populated the same way Logfire's own GenAI instrumentations populate theirs: real per-call `gen_ai.usage.*` token counts, plus `gen_ai.input.messages` / `gen_ai.output.messages` holding the actual conversation content — text, tool calls and their results, and reasoning/thinking blocks. (Codex's usage is still tracked locally for `thirdeye usage`, but isn't exported per-call to Logfire — its rollout reports far more token-usage entries than it has matching content frames, so there's no clean per-call content to attach.)
+
 ```bash
 pip install 'thrdi[logfire]'
 thirdeye logfire enable --token pylf_v1_... --project my-project   # gateway key from Logfire

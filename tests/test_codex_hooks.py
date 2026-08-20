@@ -495,6 +495,24 @@ class TestNotifyRolloutWiring:
         # Usage rows were extracted from the rollout's token_count frames.
         assert len(_usage_rows(env, FIXTURE_SID)) > 0
 
+    def test_agent_turn_data_carries_no_usage_attributes(self, monkeypatch, env: Path):
+        """Codex usage stays in the local sqlite sidecar only for now — it
+        isn't exported to Logfire at all (unlike Claude, whose individual LLM
+        calls export via extract_new_calls_claude / export_llm_calls). A
+        rollout's ~80 token_count entries routinely correlate with only a
+        handful of visible content frames, so there's no clean per-call
+        content to attach the way there is for Claude's transcript.
+        """
+        from thirdeye.platforms.codex import hooks
+
+        _plant_rollout(env)
+        _argv(monkeypatch, self._payload())
+        hooks.notify()
+
+        events = list(Store(Config.load()).reader(FIXTURE_SID).iter_events())
+        agent_turn = next(e for e in events if e["t"] == "agent_turn")
+        assert not any(k.startswith("gen_ai.") for k in agent_turn["data"])
+
     def test_thread_id_kebab_snake_camel_all_accepted(self, monkeypatch, env: Path):
         from thirdeye.platforms.codex import hooks
 

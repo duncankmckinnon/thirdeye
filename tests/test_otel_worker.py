@@ -124,11 +124,11 @@ class TestMainExportsThroughToLogfire:
 
         assert calls == []
 
-    def test_usage_rows_job_dispatches_to_the_batch_exporter(
+    def test_llm_calls_job_dispatches_to_the_batch_exporter(
         self, home: Path, enabled: None, monkeypatch: pytest.MonkeyPatch
     ):
-        """A `"kind": "usage_rows"` job must route to
-        `_export_usage_rows_inner`, not the ordinary single-event path.
+        """A `"kind": "llm_calls"` job must route to `_export_llm_calls_inner`,
+        not the ordinary single-event path.
         """
         import logfire
 
@@ -142,16 +142,23 @@ class TestMainExportsThroughToLogfire:
 
         job_path = home / "job.json"
         payload = {
-            "kind": "usage_rows",
+            "kind": "llm_calls",
             "session_dir": str(home / "traces" / "claude" / "s1"),
             "session_id": "s1",
             "platform": "claude",
             "cwd": "/proj",
-            "rows": [
+            "calls": [
                 {
                     "seq": 5,
                     "ts": "2026-01-01T00:00:00.000Z",
-                    "data": {"gen_ai.usage.input_tokens": 10, "gen_ai.usage.output_tokens": 5},
+                    "call_id": "call_1",
+                    "data": {
+                        "gen_ai.usage.input_tokens": 10,
+                        "gen_ai.usage.output_tokens": 5,
+                        "gen_ai.output.messages": [
+                            {"role": "assistant", "parts": [{"type": "text", "content": "hi"}]}
+                        ],
+                    },
                 }
             ],
         }
@@ -160,5 +167,5 @@ class TestMainExportsThroughToLogfire:
 
         spans = exporter.exported_spans_as_dict()
         assert len(spans) == 1
-        assert spans[0]["name"] == "usage"
         assert spans[0]["attributes"]["gen_ai.usage.input_tokens"] == 10
+        assert "gen_ai.output.messages" in spans[0]["attributes"]

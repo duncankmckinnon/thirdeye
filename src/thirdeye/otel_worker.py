@@ -1,8 +1,8 @@
 """Detached worker process for `thirdeye.otel_export`.
 
 `otel_export.export_event` writes a small job file describing one thirdeye
-event, and `otel_export.export_usage_rows` writes one describing a whole batch
-of usage rows (tagged ``"kind": "usage_rows"``); either way they spawn this
+event, and `otel_export.export_llm_calls` writes one describing a whole batch
+of LLM calls (tagged ``"kind": "llm_calls"``); either way they spawn this
 module (``python -m thirdeye.otel_worker <job_path>``) as a detached,
 unwaited-for child. All the actual Logfire work — configuring the SDK,
 building the span(s), and flushing (a real network round trip) — happens
@@ -37,16 +37,16 @@ def main(argv: list[str] | None = None) -> None:
         from thirdeye.config import Config
 
         config = Config.load()
-        if payload.get("kind") == "usage_rows":
-            from thirdeye.otel_export import _export_usage_rows_inner
+        if payload.get("kind") == "llm_calls":
+            from thirdeye.otel_export import _export_llm_calls_inner
 
-            _export_usage_rows_inner(
+            _export_llm_calls_inner(
                 config=config,
                 session_dir_=Path(payload["session_dir"]),
                 session_id=payload["session_id"],
                 platform=payload["platform"],
                 cwd=payload["cwd"],
-                rows=payload["rows"],
+                calls=payload["calls"],
             )
         else:
             from thirdeye.otel_export import _export_event_inner

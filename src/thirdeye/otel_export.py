@@ -4,31 +4,35 @@ Every thirdeye event (tool call, message, notification, ...) funnels through
 one call site, ``Store.append_event`` — including calls made from inside
 Claude Code / Codex hook subprocesses. That makes it the one place to add
 Logfire export and have it cover every platform automatically, with no
-separate sync step. Token usage is the one exception: it's captured by a
-separate pipeline straight into ``UsageStore``, never through
-``Store.append_event``, so ``export_usage_rows`` is a second, explicit entry
-point the two platforms' usage-capture functions call directly.
+separate sync step.
+
+Each underlying LLM call within a turn (Claude's transcript / Codex's rollout
+can both hold several — an agentic turn routinely makes multiple model calls
+before it's done) gets its *own* span, populated the way Logfire's own
+GenAI-provider instrumentations populate theirs: ``gen_ai.usage.*`` for that
+call's own tokens (not a turn-wide sum), plus ``gen_ai.input.messages`` /
+``gen_ai.output.messages`` holding the actual conversation content — text,
+tool calls and their results, and (Claude only, for now) reasoning/thinking
+content — as OTel GenAI semantic-convention message parts. See
+``platforms/claude/usage.py``'s ``extract_new_calls_claude`` for how those are
+built from the raw transcript, and ``export_llm_calls`` below for how they
+reach Logfire. This is a second, explicit entry point into export — call
+content is captured by a separate pipeline from ordinary session events
+(straight from the transcript/rollout, never through ``Store.append_event``).
 
 Each thirdeye session becomes one Logfire trace. The first event exported for
 a session becomes that trace's root span; its real (SDK-generated) trace_id
 and span_id are persisted to ``otel.json`` in the session directory so later
 events — emitted by separate, later hook subprocesses — can reference the same
 trace and parent under it. Every exported event's own span id is *also*
-persisted, individually, to ``otel-spans/<seq>.json`` — this is what lets
-usage rows (see below) parent directly under the specific interaction they
-belong to rather than dangling off the trace root as unconnected siblings. A
-``tool_call`` is never exported on its own; it is folded into the matching
-``tool_result`` as one span with an accurate start/end duration, found by
-scanning back through the session's own stored events for the nearest event
-sharing the same tool id (Claude's ``tool_use_id`` / Codex's ``call_id``).
-
-Usage rows are exported as children of the ``assistant_message`` /
-``agent_turn`` span whose seq they were captured against (that seq is exactly
-what ``UsageRow.seq`` holds — see ``platforms/*/usage.py``). That parent span
-is built by a *separate* detached worker process racing this one, so
-``export_usage_rows`` polls briefly for its ``otel-spans/<seq>.json`` record
-before falling back to the session root — a bounded wait that costs nothing
-since it happens off the hook's critical path either way.
+persisted, individually, to ``otel-spans/<seq>.json`` — this is what lets a
+turn's LLM-call spans parent directly under the specific ``assistant_message``
+/ ``agent_turn`` span for that turn, rather than dangling off the trace root
+as unconnected siblings. A ``tool_call`` is never exported on its own; it is
+folded into the matching ``tool_result`` as one span with an accurate
+start/end duration, found by scanning back through the session's own stored
+events for the nearest event sharing the same tool id (Claude's
+``tool_use_id`` / Codex's ``call_id``).
 
 The actual Logfire call — including a flush, which is a real network round
 trip — never happens in the hook process itself. ``export_event`` (called
@@ -64,7 +68,6 @@ from thirdeye.config import Config
 from thirdeye.ids import new_ulid
 from thirdeye.paths import otel_jobs_dir, otel_span_path, otel_state_path
 from thirdeye.usage.errlog import log_capture_error
-from thirdeye.usage.types import UsageRow
 
 # Cache across calls *within one process*. Each hook invocation is its own
 # short-lived process, so this only saves repeat configure() calls when a
@@ -79,17 +82,17 @@ _ATTR_PRIMITIVES = (str, bool, int, float)
 # (tool_call) is never exported on its own.
 _PAIR_START_FOR_END = {"tool_result": "tool_call"}
 
-_SCAN_CAP = 500  # bound on how far back to search for a matching start event
-_FLUSH_TIMEOUT_MS = 2000
-
-# How long export_usage_rows waits for the triggering event's own span record
+# How long export_llm_calls waits for the triggering event's own span record
 # to show up before giving up and parenting under the session root instead.
 # Both workers are spawned within moments of each other from the same hook
 # call, and each pays real (if brief) network setup cost before either one
 # gets as far as persisting anything, so a handful of short polls is usually
 # enough to observe the other side land first.
-_USAGE_PARENT_RETRIES = 6
-_USAGE_PARENT_RETRY_DELAY_S = 0.1
+_CALL_PARENT_RETRIES = 6
+_CALL_PARENT_RETRY_DELAY_S = 0.1
+
+_SCAN_CAP = 500  # bound on how far back to search for a matching start event
+_FLUSH_TIMEOUT_MS = 2000
 
 
 def is_available() -> bool:
@@ -276,37 +279,14 @@ def _create_root_atomic(path: Path, trace_id: int, span_id: int) -> tuple[int, i
 
 def _persist_span(path: Path, trace_id: int, span_id: int) -> None:
     """Best-effort record of one exported event's own span id, keyed by its
-    seq — so a later, separate process (usage export) can parent under this
-    exact span rather than only ever the session root. Every seq is exported
-    at most once, so a collision here would mean something else is wrong;
-    either way this must never raise, so a loss is silently ignored rather
-    than reconciled the way `_create_root_atomic` reconciles a root collision.
+    seq — so a later, separate process (LLM-call export) can parent under
+    this exact span rather than only ever the session root. Every seq is
+    exported at most once, so a collision here would mean something else is
+    wrong; either way this must never raise, so a loss is silently ignored
+    rather than reconciled the way `_create_root_atomic` reconciles a root
+    collision.
     """
     _atomic_create(path, _span_payload(trace_id, span_id))
-
-
-def _usage_claim_path(session_dir_: Path, call_id: str) -> Path:
-    # Hashed, not the raw call_id, as a filename: Codex's call_id already
-    # contains a colon (`cum:<n>`), and nothing guarantees any platform's
-    # call_id is otherwise filesystem- or path-traversal-safe.
-    digest = hashlib.sha256(call_id.encode()).hexdigest()
-    return session_dir_ / "otel-usage-sent" / f"{digest}.json"
-
-
-def _claim_usage_export(session_dir_: Path, call_id: str) -> bool:
-    """First-wins claim on exporting this call_id's usage span, ever, for this
-    session. `UsageStore` is a deliberately dumb, faithful mirror that never
-    deduplicates writes — Codex re-reports the same call verbatim, and two
-    capture calls racing on the same not-yet-advanced transcript offset can
-    each independently discover and append the same rows (see
-    `usage/read.py`'s module docstring) — so the *same* new row can legitimately
-    reach `export_usage_rows` more than once. Every duplicate carries identical
-    token values (same invariant `usage/read.py`'s last-wins read-side dedup
-    relies on), so first-wins here is equally correct and doesn't need to
-    reconcile which copy survives — it just answers whether THIS call is the
-    one that gets to export.
-    """
-    return _atomic_create(_usage_claim_path(session_dir_, call_id), "1")
 
 
 def _parent_context(trace_id: int, span_id: int):
@@ -390,60 +370,6 @@ def export_event(
         )
 
 
-def export_usage_rows(
-    config: Config | None,
-    session_dir_: Path,
-    session_id: str,
-    platform: str,
-    cwd: str | None,
-    rows: list[UsageRow],
-) -> None:
-    """Hand a whole batch of new UsageRows off for background export as
-    children of the interaction span they belong to (see module docstring).
-    Never raises, never blocks on network I/O — same guarantee as
-    `export_event`, which this deliberately does *not* delegate to: every row
-    in one capture call shares the same `seq` (the triggering event's), so
-    they belong in one job and one flush, not one detached subprocess each —
-    a session's transcript is tail-parsed in a burst, so a turn with a dozen
-    tool calls would otherwise fan out into a dozen concurrent processes all
-    hitting Logfire's ingest endpoint for a single hook invocation.
-
-    No-op if `config` or `cwd` is missing (older call sites that predate this
-    integration don't pass them), or no row carries a timestamp (some usage
-    frames don't report one; `_ts_to_ns` can't place a span without one).
-    Rows whose `call_id` has already been exported — Codex repeat-reports and
-    same-offset capture races can hand this the same row more than once, see
-    `_claim_usage_export` — are silently dropped rather than exported again as
-    a duplicate span nested under the same interaction.
-    """
-    if config is None or cwd is None:
-        return
-    if not config.logfire.enabled or not config.logfire.token:
-        return
-    claimed = [
-        row for row in rows if row.ts and _claim_usage_export(session_dir_, row.call_id)
-    ]
-    if not claimed:
-        return
-    try:
-        _spawn_usage_worker(
-            thirdeye_home=config.root,
-            session_dir_=session_dir_,
-            session_id=session_id,
-            platform=platform,
-            cwd=cwd,
-            rows=[{"seq": row.seq, "ts": row.ts, "data": row.attributes()} for row in claimed],
-        )
-    except Exception as exc:
-        log_capture_error(
-            thirdeye_home=config.root,
-            phase="logfire_usage_export_spawn",
-            error=exc,
-            platform=platform,
-            session_id=session_id,
-        )
-
-
 def _write_job(thirdeye_home: Path, payload: dict[str, Any]) -> Path:
     jobs_dir = otel_jobs_dir(thirdeye_home)
     jobs_dir.mkdir(parents=True, exist_ok=True)
@@ -499,27 +425,85 @@ def _spawn_worker(
     _spawn(job_path)
 
 
-def _spawn_usage_worker(
-    *,
-    thirdeye_home: Path,
+def export_llm_calls(
+    config: Config | None,
     session_dir_: Path,
     session_id: str,
     platform: str,
-    cwd: str,
-    rows: list[dict[str, Any]],
+    cwd: str | None,
+    calls: list[dict[str, Any]],
 ) -> None:
-    job_path = _write_job(
-        thirdeye_home,
-        {
-            "kind": "usage_rows",
-            "session_dir": str(session_dir_),
-            "session_id": session_id,
-            "platform": platform,
-            "cwd": cwd,
-            "rows": rows,
-        },
-    )
-    _spawn(job_path)
+    """Hand a whole batch of new LLM calls (from one turn's transcript/rollout
+    segment) off for background export as children of the interaction span
+    they belong to (see module docstring). Never raises, never blocks on
+    network I/O — same guarantee as `export_event`, which this deliberately
+    does *not* delegate to: every call in one batch shares the same `seq`
+    (the triggering event's), so they belong in one job and one flush, not
+    one detached subprocess each — a turn with several LLM calls would
+    otherwise fan out into that many concurrent processes all hitting
+    Logfire's ingest endpoint for a single hook invocation.
+
+    Each item in `calls` is `{"seq": int, "ts": str, "call_id": str, "data":
+    dict}`, where `data` is the fully-formed span attributes (gen_ai.usage.*,
+    gen_ai.input.messages, gen_ai.output.messages, ...) — see
+    `platforms/claude/usage.py`'s `extract_new_calls_claude`.
+
+    No-op if `config` or `cwd` is missing (older call sites that predate this
+    integration don't pass them), or no call carries a timestamp. Calls whose
+    `call_id` has already been exported — Codex repeat-reports and
+    same-offset capture races can hand this the same call more than once —
+    are silently dropped rather than exported again as a duplicate span
+    nested under the same interaction.
+    """
+    if config is None or cwd is None:
+        return
+    if not config.logfire.enabled or not config.logfire.token:
+        return
+    claimed = [
+        call for call in calls if call.get("ts") and _claim_call_export(session_dir_, call["call_id"])
+    ]
+    if not claimed:
+        return
+    try:
+        job_path = _write_job(
+            config.root,
+            {
+                "kind": "llm_calls",
+                "session_dir": str(session_dir_),
+                "session_id": session_id,
+                "platform": platform,
+                "cwd": cwd,
+                "calls": claimed,
+            },
+        )
+        _spawn(job_path)
+    except Exception as exc:
+        log_capture_error(
+            thirdeye_home=config.root,
+            phase="logfire_llm_calls_export_spawn",
+            error=exc,
+            platform=platform,
+            session_id=session_id,
+        )
+
+
+def _call_claim_path(session_dir_: Path, call_id: str) -> Path:
+    # Hashed, not the raw call_id, as a filename: nothing guarantees any
+    # platform's call_id is filesystem- or path-traversal-safe (Codex's, for
+    # instance, contains a raw colon: `cum:<n>`).
+    digest = hashlib.sha256(call_id.encode()).hexdigest()
+    return session_dir_ / "otel-calls-sent" / f"{digest}.json"
+
+
+def _claim_call_export(session_dir_: Path, call_id: str) -> bool:
+    """First-wins claim on exporting this call_id's span, ever, for this
+    session. Same-offset capture races (two hook invocations independently
+    rediscovering the same not-yet-persisted rows) can otherwise hand the
+    same call to export twice; every duplicate describes the same underlying
+    call identically, so first-wins is correct and needs no reconciliation —
+    it just answers whether THIS call is the one that gets to export.
+    """
+    return _atomic_create(_call_claim_path(session_dir_, call_id), "1")
 
 
 def _export_event_inner(
@@ -589,43 +573,43 @@ def _export_event_inner(
     instance.force_flush(timeout_millis=_FLUSH_TIMEOUT_MS)
 
 
-def _resolve_usage_parent(
+def _resolve_call_parent(
     session_dir_: Path, root_path: Path, triggering_seq: int
 ) -> tuple[int, int] | None:
-    """Find the span usage rows for `triggering_seq` should nest under.
+    """Find the span a turn's LLM-call spans should nest under.
 
-    Polls briefly for that event's own span record, since it's built by a
-    separate worker process racing this one with no ordering guarantee
-    between them. Falls back to the session root (whatever it is *right now*
-    — possibly still None, if this is racing to be the very first export in
-    a brand-new session too) rather than dropping the data if the specific
-    span never shows up in time.
+    Polls briefly for the triggering event's own span record, since it's
+    built by a separate worker process racing this one with no ordering
+    guarantee between them. Falls back to the session root (whatever it is
+    *right now* — possibly still None, if this is racing to be the very
+    first export in a brand-new session too) rather than dropping the data
+    if the specific span never shows up in time.
     """
     span_path = otel_span_path(session_dir_, triggering_seq)
-    for attempt in range(_USAGE_PARENT_RETRIES):
+    for attempt in range(_CALL_PARENT_RETRIES):
         found = _read_root(span_path)
         if found is not None:
             return found
-        if attempt < _USAGE_PARENT_RETRIES - 1:
-            time.sleep(_USAGE_PARENT_RETRY_DELAY_S)
+        if attempt < _CALL_PARENT_RETRIES - 1:
+            time.sleep(_CALL_PARENT_RETRY_DELAY_S)
     return _read_root(root_path)
 
 
-def _export_usage_rows_inner(
+def _export_llm_calls_inner(
     *,
     config: Config,
     session_dir_: Path,
     session_id: str,
     platform: str,
     cwd: str,
-    rows: list[dict[str, Any]],
+    calls: list[dict[str, Any]],
 ) -> None:
-    """Export a whole batch of usage rows in one process: one shared Logfire
-    instance, one flush — never one subprocess and one network round trip per
-    row (see `export_usage_rows`). Every row shares the same triggering seq,
-    so there's exactly one parent to resolve for the whole batch.
+    """Export a whole batch of LLM-call spans in one process: one shared
+    Logfire instance, one flush — never one subprocess and one network round
+    trip per call (see `export_llm_calls`). Every call shares the same
+    triggering seq, so there's exactly one parent to resolve for the batch.
     """
-    if not rows:
+    if not calls:
         return
     instance = _get_instance(config, platform)
     if instance is None:
@@ -633,17 +617,24 @@ def _export_usage_rows_inner(
 
     tracer = instance.config.get_tracer_provider().get_tracer("thirdeye")
     root_path = otel_state_path(session_dir_)
-    parent = _resolve_usage_parent(session_dir_, root_path, rows[0]["seq"])
+    parent = _resolve_call_parent(session_dir_, root_path, calls[0]["seq"])
 
-    for row in rows:
-        ts_ns = _ts_to_ns(row["ts"])
-        attrs = dict(row["data"])
+    for call in calls:
+        ts_ns = _ts_to_ns(call["ts"])
+        # gen_ai.input.messages / .output.messages are nested lists of dicts —
+        # raw OTel attributes can only hold a primitive or a homogeneous
+        # sequence of one, so _flatten_attrs JSON-encodes them to a string,
+        # same as it already does for ordinary event data. This is the same
+        # wire format Logfire's own SDK produces from its convenience
+        # `span.set_attribute(OUTPUT_MESSAGES, [...])` API, which does this
+        # encoding internally before anything reaches OTLP.
+        attrs = _flatten_attrs(call["data"])
         attrs["gen_ai.conversation.id"] = session_id
         attrs["thirdeye.platform"] = platform
         attrs["thirdeye.cwd"] = cwd
-        attrs["thirdeye.seq"] = row["seq"]
+        attrs["thirdeye.seq"] = call["seq"]
         model = attrs.get("gen_ai.response.model")
-        name = f"usage: {model}" if model else "usage"
+        name = f"chat {model}" if model else "chat"
 
         if parent is None:
             span = tracer.start_span(name, start_time=ts_ns, attributes=attrs)
