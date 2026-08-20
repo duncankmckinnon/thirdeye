@@ -1,0 +1,53 @@
+<div class="settings-panel">
+  <h2>Pydantic Logfire</h2>
+  <p class="muted">
+    Mirror every captured session into Logfire live, as traces, the moment
+    Claude Code / Codex hooks fire. No separate export step once enabled.
+  </p>
+
+  <dl class="settings-status">
+    <dt>status</dt>
+    <dd>
+      {% if logfire.enabled and logfire.has_token %}
+        <span class="settings-badge on">enabled</span>
+      {% else %}
+        <span class="settings-badge off">disabled</span>
+      {% endif %}
+    </dd>
+    <dt>gateway key</dt>
+    <dd>{% if logfire.token_suffix %}...{{ logfire.token_suffix }}{% else %}(none saved){% endif %}</dd>
+    <dt>project</dt>
+    <dd>{{ logfire.project or "(unset)" }}</dd>
+    <dt>package</dt>
+    <dd>
+      {% if logfire.package_installed %}installed{% else %}
+        not installed — <code>pip install 'thrdi[logfire]'</code>
+      {% endif %}
+    </dd>
+  </dl>
+
+  <form class="settings-form"
+        hx-post="/settings/logfire"
+        hx-target="#logfire-panel"
+        hx-swap="innerHTML">
+    <label>Gateway key
+      <input type="password" name="token" placeholder="pylf_v1_..." required
+             autocomplete="off">
+    </label>
+    <label>Project <span class="muted">(optional, for your reference)</span>
+      <input type="text" name="project" value="{{ logfire.project or '' }}"
+             placeholder="my-project">
+    </label>
+    <div class="settings-actions">
+      <button type="submit">
+        {% if logfire.enabled %}Update & keep enabled{% else %}Enable{% endif %}
+      </button>
+      {% if logfire.enabled %}
+        <button type="button" class="secondary"
+                hx-post="/settings/logfire/disable"
+                hx-target="#logfire-panel"
+                hx-swap="innerHTML">Disable</button>
+      {% endif %}
+    </div>
+  </form>
+</div>

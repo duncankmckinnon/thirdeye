@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import dataclasses
 from pathlib import Path
 
 from thirdeye.paths import session_dir
@@ -17,32 +18,43 @@ __all__ = ["CODEX_SESSIONS_ROOT", "capture_usage_codex"]
 
 
 @safe_capture(phase="parse_rollout", platform="codex")
-def capture_usage_codex(
+def parse_new_usage_rows_codex(
     *,
     thirdeye_home: Path,
     session_id: str,
-    triggering_seq: int,
     sessions_root: Path | None = None,
     rollout_path: str | None = None,
     model: str | None = None,
-) -> int:
-    """Tail-parse the Codex rollout file for session_id, append new rows.
+) -> tuple[list[UsageRow], str | None, int | None, str | None] | None:
+    """Tail-parse the Codex rollout for session_id since the last stored
+    offset. Pure with respect to `UsageStore`: reads state but does not
+    advance it or append anything — pass the result to
+    `persist_usage_rows_codex` (with the seq of whatever event this usage
+    belongs to) to actually commit it.
 
     `sessions_root` is overrideable for testing (default: ~/.codex/sessions).
-    `rollout_path`, when given, skips resolution; `model`, when given, skips the
-    turn_context model carry-forward and is used verbatim. Both exist so a future
-    hooks integration can pass them without reworking this function; `notify`
-    passes neither today.
+    `rollout_path`, when given, skips resolution; `model`, when given, skips
+    the turn_context model carry-forward and is used verbatim.
 
-    Returns the number of rows appended (one per ``token_count`` frame). Codex
-    re-reports the same call, so distinct rows may carry duplicate
-    ``call_id``s — ``usage/read.py`` collapses those on read; this writer never
-    deduplicates.
+    Rows are stamped with a placeholder `seq=0`; `persist_usage_rows_codex`
+    replaces it with the real triggering seq. `capture_usage_codex` combines
+    this with `persist_usage_rows_codex` for callers with nothing else to do
+    in between; the two are split out separately mainly for testability.
+
+    Returns `(new_rows, resolved_path, new_offset, last_model)`.
+    `resolved_path` is `None` when the rollout couldn't be found — expected,
+    not an error; the caller should skip persisting in that case. The whole
+    return value is `None` only on a genuine unexpected error (caught and
+    logged to usage-errors.jsonl by @safe_capture) — callers must distinguish
+    the two, same as this function's undivided predecessor did.
+
+    Codex re-reports the same call, so distinct rows may carry duplicate
+    ``call_id``s — ``usage/read.py`` collapses those on read; this writer
+    never deduplicates.
     """
     root = sessions_root if sessions_root is not None else CODEX_SESSIONS_ROOT
     sd = session_dir(thirdeye_home, "codex", session_id)
-    store = UsageStore(sd)
-    state = store.read_state()
+    state = UsageStore(sd).read_state()
 
     resolved_path = rollout_path or state.get("rollout_path")
     if not resolved_path or not Path(resolved_path).is_file():
@@ -55,7 +67,7 @@ def capture_usage_codex(
                 platform="codex",
                 session_id=session_id,
             )
-            return 0
+            return [], None, None, None
         resolved_path = str(rollout)
 
     rp = Path(resolved_path)
@@ -71,20 +83,80 @@ def capture_usage_codex(
             inferred = _extract_model(frame)
             if inferred:
                 last_model = inferred
-        row = _extract_usage_row(frame, session_id, triggering_seq, last_model)
+        row = _extract_usage_row(frame, session_id, 0, last_model)
         if row is not None:
             new_rows.append(row)
     new_offset = end_offset(rp, offset)
+    return new_rows, resolved_path, new_offset, last_model
 
-    if new_rows:
-        store.append(new_rows)
+
+@safe_capture(phase="parse_rollout", platform="codex")
+def persist_usage_rows_codex(
+    *,
+    thirdeye_home: Path,
+    session_id: str,
+    rows: list[UsageRow],
+    resolved_path: str,
+    new_offset: int,
+    last_model: str | None,
+    triggering_seq: int,
+) -> int:
+    """Stamp `rows` (from `parse_new_usage_rows_codex`) with the real
+    triggering seq and commit them, and the new rollout offset/path/model, to
+    UsageStore. Returns the number of rows persisted.
+    """
+    sd = session_dir(thirdeye_home, "codex", session_id)
+    store = UsageStore(sd)
+    stamped = [dataclasses.replace(row, seq=triggering_seq) for row in rows]
+    if stamped:
+        store.append(stamped)
+    state = store.read_state()
     store.write_state(
         rollout_path=resolved_path,
         rollout_offset=new_offset,
         last_model=last_model,
-        last_seq=triggering_seq if new_rows else state.get("last_seq", -1),
+        last_seq=triggering_seq if stamped else state.get("last_seq", -1),
     )
-    return len(new_rows)
+    return len(stamped)
+
+
+def capture_usage_codex(
+    *,
+    thirdeye_home: Path,
+    session_id: str,
+    triggering_seq: int,
+    sessions_root: Path | None = None,
+    rollout_path: str | None = None,
+    model: str | None = None,
+) -> int | None:
+    """Parse and persist new usage rows in one call — thin composition of
+    `parse_new_usage_rows_codex` and `persist_usage_rows_codex`, which are
+    also usable independently.
+
+    Returns `None` on a genuine parse error (already logged), `0` if there
+    was nothing to parse, else the number of rows persisted.
+    """
+    parsed = parse_new_usage_rows_codex(
+        thirdeye_home=thirdeye_home,
+        session_id=session_id,
+        sessions_root=sessions_root,
+        rollout_path=rollout_path,
+        model=model,
+    )
+    if parsed is None:
+        return None
+    rows, resolved_path, new_offset, last_model = parsed
+    if resolved_path is None or new_offset is None:
+        return 0
+    return persist_usage_rows_codex(
+        thirdeye_home=thirdeye_home,
+        session_id=session_id,
+        rows=rows,
+        resolved_path=resolved_path,
+        new_offset=new_offset,
+        last_model=last_model,
+        triggering_seq=triggering_seq,
+    )
 
 
 def _extract_model(frame: dict) -> str | None:

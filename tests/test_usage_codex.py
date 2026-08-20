@@ -11,7 +11,11 @@ from thirdeye.paths import (
     usage_log_path,
     usage_state_path,
 )
-from thirdeye.platforms.codex.usage import capture_usage_codex
+from thirdeye.platforms.codex.usage import (
+    capture_usage_codex,
+    parse_new_usage_rows_codex,
+    persist_usage_rows_codex,
+)
 from thirdeye.usage.read import iter_calls
 from thirdeye.usage.store import UsageStore
 
@@ -333,3 +337,91 @@ def test_safe_capture_swallows_unexpected_error(
     )
     assert result is None
     assert "RuntimeError" in usage_log_path(tmp_path).read_text()
+
+
+# --- parse/persist split: lets the caller aggregate usage onto the
+# triggering event's own span before it's built (see otel_export.py's module
+# docstring and notify() in codex/hooks.py) -------------------------------
+
+
+def test_parse_is_pure_and_does_not_persist(tmp_path: Path, codex_root: Path) -> None:
+    first = parse_new_usage_rows_codex(
+        thirdeye_home=tmp_path, session_id=SID, sessions_root=codex_root
+    )
+    second = parse_new_usage_rows_codex(
+        thirdeye_home=tmp_path, session_id=SID, sessions_root=codex_root
+    )
+    assert first is not None and second is not None
+    assert first == second
+    sd = session_dir(tmp_path, "codex", SID)
+    assert not usage_state_path(sd).exists()
+
+
+def test_parse_no_rollout_returns_none_path_and_logs(tmp_path: Path) -> None:
+    empty = tmp_path / "empty"
+    empty.mkdir()
+    parsed = parse_new_usage_rows_codex(
+        thirdeye_home=tmp_path, session_id="nope", sessions_root=empty
+    )
+    assert parsed == ([], None, None, None)
+    log = usage_log_path(tmp_path)
+    entries = [json.loads(line) for line in log.read_text().splitlines() if line.strip()]
+    assert any(e["phase"] == "open_source" for e in entries)
+
+
+def test_persist_stamps_seq_onto_stored_rows(tmp_path: Path, codex_root: Path) -> None:
+    parsed = parse_new_usage_rows_codex(
+        thirdeye_home=tmp_path, session_id=SID, sessions_root=codex_root
+    )
+    assert parsed is not None
+    rows, resolved_path, new_offset, last_model = parsed
+    assert resolved_path is not None and new_offset is not None
+    assert all(row.seq == 0 for row in rows)  # placeholder, pre-persist
+
+    n = persist_usage_rows_codex(
+        thirdeye_home=tmp_path,
+        session_id=SID,
+        rows=rows,
+        resolved_path=resolved_path,
+        new_offset=new_offset,
+        last_model=last_model,
+        triggering_seq=42,
+    )
+    assert n == len(rows)
+    sd = session_dir(tmp_path, "codex", SID)
+    stored = list(UsageStore(sd).iter_rows())
+    assert all(row.seq == 42 for row in stored)
+
+
+def test_parse_then_persist_matches_capture_usage_codex(tmp_path: Path, codex_root: Path) -> None:
+    """The split path and the combined compat wrapper must agree exactly on
+    what ends up in the sidecar, for the same fixture and triggering_seq.
+    """
+    combined_home = tmp_path / "combined"
+    split_home = tmp_path / "split"
+
+    capture_usage_codex(
+        thirdeye_home=combined_home, session_id=SID, triggering_seq=7, sessions_root=codex_root
+    )
+    parsed = parse_new_usage_rows_codex(
+        thirdeye_home=split_home, session_id=SID, sessions_root=codex_root
+    )
+    assert parsed is not None
+    rows, resolved_path, new_offset, last_model = parsed
+    persist_usage_rows_codex(
+        thirdeye_home=split_home,
+        session_id=SID,
+        rows=rows,
+        resolved_path=resolved_path,
+        new_offset=new_offset,
+        last_model=last_model,
+        triggering_seq=7,
+    )
+
+    combined_rows = sorted(
+        r.call_id for r in UsageStore(session_dir(combined_home, "codex", SID)).iter_rows()
+    )
+    split_rows = sorted(
+        r.call_id for r in UsageStore(session_dir(split_home, "codex", SID)).iter_rows()
+    )
+    assert combined_rows == split_rows

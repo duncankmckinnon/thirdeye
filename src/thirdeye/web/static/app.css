@@ -71,7 +71,7 @@ th, td {
 
 th { color: var(--muted); font-weight: 500; }
 
-input[type="text"], input[type="search"], textarea, select {
+input[type="text"], input[type="search"], input[type="password"], textarea, select {
   background: var(--surface);
   color: var(--text);
   border: 1px solid var(--border);

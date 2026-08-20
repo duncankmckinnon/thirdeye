@@ -23,20 +23,25 @@ from thirdeye.usage.store import UsageStore
 from thirdeye.usage.types import UsageRow
 
 
+def _collapse_by_call(rows: Iterable[UsageRow]) -> list[UsageRow]:
+    """Collapse to one row per distinct (session_id, call_id); last occurrence
+    wins. Order follows first appearance of each call_id, so output is stable
+    and roughly chronological even though the surviving value is the last one
+    seen. Last-wins is safe because duplicate rows for one call_id carry
+    identical token values, so which copy survives cannot change any result.
+    """
+    latest: dict[tuple[str, str], UsageRow] = {}
+    for row in rows:
+        latest[(row.session_id, row.call_id)] = row
+    return list(latest.values())
+
+
 def iter_calls(session_dir_: Path) -> Iterator[UsageRow]:
     """Yield one row per distinct (session_id, call_id); last occurrence wins.
 
     Reads the raw sidecar via UsageStore.iter_rows() and collapses duplicates.
-    Row order follows first appearance of each call_id, so output is stable and
-    roughly chronological even though the surviving value is the last one seen.
-
-    Last-wins is safe because duplicate rows for one call_id carry identical
-    token values, so which copy survives cannot change any result.
     """
-    latest: dict[tuple[str, str], UsageRow] = {}
-    for row in UsageStore(session_dir_).iter_rows():
-        latest[(row.session_id, row.call_id)] = row
-    yield from latest.values()
+    yield from _collapse_by_call(UsageStore(session_dir_).iter_rows())
 
 
 def call_totals(rows: Iterable[UsageRow]) -> tuple[int, int]:

@@ -16,6 +16,7 @@ from thirdeye.web.routes import (
     index,
     search,
     sessions,
+    settings,
     stream,
     tags,
     usage,
@@ -53,6 +54,7 @@ def create_app(config: Config | None = None) -> Starlette:
         stream,
         agents,
         views,
+        settings,
     ):
         module.register(app)
 
