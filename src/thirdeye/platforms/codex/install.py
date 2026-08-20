@@ -1,20 +1,27 @@
 from __future__ import annotations
 
+import json
 import re
 import shutil
 from pathlib import Path
+from typing import Any
 
 import click
 
 from thirdeye.platforms.base import Platform
 from thirdeye.platforms.codex.constants import (
     CODEX_CONFIG_FILE,
+    CODEX_HOOKS_FILE,
     DISPLAY_NAME,
+    HOOKS_JSON_BIN_NAMES,
+    HOOKS_JSON_UNSUPPORTED_EVENTS,
     NOTIFY_BIN_NAME,
     PLATFORM_NAME,
 )
 
 _NOTIFY_LINE_RE = re.compile(r"^notify\s*=\s*(\[.*?\])\s*$", re.MULTILINE | re.DOTALL)
+_STALE_CLAUDE_PREFIX = "thirdeye-claude-"
+_OWN_PREFIX = "thirdeye-codex-"
 
 
 def _read_text(path: Path) -> str:
@@ -24,6 +31,68 @@ def _read_text(path: Path) -> str:
         return path.read_text()
     except OSError:
         return ""
+
+
+def _read_json(path: Path) -> dict[str, Any]:
+    try:
+        data = json.loads(path.read_text())
+    except (OSError, ValueError):
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
+def _command_name(command: object) -> str:
+    return Path(str(command)).name if isinstance(command, str) and command else ""
+
+
+def _filter_event_commands(hooks: dict[str, Any], event: str, drop_prefix: str) -> bool:
+    """Remove hook entries under `event` whose command basename starts with
+    `drop_prefix`, pruning now-empty groups and the event key itself.
+    Returns whether anything changed.
+    """
+    groups = hooks.get(event)
+    if not isinstance(groups, list):
+        return False
+    changed = False
+    kept_groups: list[Any] = []
+    for group in groups:
+        if not isinstance(group, dict) or not isinstance(group.get("hooks"), list):
+            kept_groups.append(group)
+            continue
+        entries = group["hooks"]
+        kept_entries = [
+            e
+            for e in entries
+            if not (isinstance(e, dict) and _command_name(e.get("command")).startswith(drop_prefix))
+        ]
+        if len(kept_entries) != len(entries):
+            changed = True
+        if kept_entries:
+            kept_groups.append({**group, "hooks": kept_entries})
+    if changed:
+        if kept_groups:
+            hooks[event] = kept_groups
+        else:
+            hooks.pop(event, None)
+    return changed
+
+
+def _ensure_event_command(hooks: dict[str, Any], event: str, cmd: str) -> bool:
+    """Add `cmd` as a hook for `event` unless already present. Returns
+    whether anything changed.
+    """
+    groups = hooks.get(event)
+    if not isinstance(groups, list):
+        groups = []
+    for group in groups:
+        if not isinstance(group, dict):
+            continue
+        for entry in group.get("hooks") or []:
+            if isinstance(entry, dict) and entry.get("command") == cmd:
+                return False
+    groups.append({"hooks": [{"type": "command", "command": cmd}]})
+    hooks[event] = groups
+    return True
 
 
 def _parse_notify_array(value: str) -> list[str]:
@@ -43,12 +112,18 @@ class CodexPlatform(Platform):
     name = PLATFORM_NAME
     display_name = DISPLAY_NAME
 
-    def __init__(self, config_file: Path | None = None, force: bool = False) -> None:
+    def __init__(
+        self,
+        config_file: Path | None = None,
+        force: bool = False,
+        hooks_file: Path | None = None,
+    ) -> None:
         self._config_file = config_file or CODEX_CONFIG_FILE
+        self._hooks_file = hooks_file or CODEX_HOOKS_FILE
         self._force = force
 
     def install(self) -> None:
-        """Install thirdeye's notify handler.
+        """Install thirdeye's notify handler and hooks.json bindings.
 
         Codex's ``notify`` is a single program's argv, not a list of callbacks.
         thirdeye therefore owns the whole value or nothing:
@@ -57,7 +132,20 @@ class CodexPlatform(Platform):
         * exactly ``[our_cmd]`` -> no-op (idempotent)
         * anything else -> conflict; raise without touching the file, unless
           ``force=True``, in which case take over the slot.
+
+        hooks.json is a separate, newer, per-event mechanism (see
+        HOOKS_JSON_BIN_NAMES) and unlike notify is additive: thirdeye's
+        command is appended to whatever else is already registered for an
+        event, never taking exclusive ownership of it, so it always runs
+        unconditionally regardless of ``force``. It also strips any
+        thirdeye-claude-* entry it finds under any event, including the
+        three thirdeye deliberately never wires (PreToolUse/PostToolUse/Stop
+        — see hooks_json.py's docstring for why) — that combination is
+        always a misconfiguration (Codex's hooks pointed at Claude's own
+        handlers, mislabeling every captured session as platform=claude),
+        never a legitimate integration.
         """
+        self._install_hooks_json()
         cmd = shutil.which(NOTIFY_BIN_NAME) or NOTIFY_BIN_NAME
         text = _read_text(self._config_file)
         match = _NOTIFY_LINE_RE.search(text)
@@ -122,5 +210,48 @@ class CodexPlatform(Platform):
         if not new_text.strip():
             if self._config_file.exists():
                 self._config_file.unlink()
+        else:
+            self._config_file.write_text(new_text)
+        self._uninstall_hooks_json()
+
+    def _install_hooks_json(self) -> None:
+        data = _read_json(self._hooks_file)
+        hooks = data.get("hooks")
+        if not isinstance(hooks, dict):
+            hooks = {}
+        changed = False
+
+        # Every event Codex's hooks.json recognizes, whether or not thirdeye
+        # wires it: a stale thirdeye-claude-* entry under any of them,
+        # including the three thirdeye deliberately skips, is always wrong.
+        for event in set(hooks) | set(HOOKS_JSON_BIN_NAMES) | set(HOOKS_JSON_UNSUPPORTED_EVENTS):
+            if _filter_event_commands(hooks, event, _STALE_CLAUDE_PREFIX):
+                changed = True
+
+        for event, bin_name in HOOKS_JSON_BIN_NAMES.items():
+            cmd = shutil.which(bin_name) or bin_name
+            if _ensure_event_command(hooks, event, cmd):
+                changed = True
+
+        if not changed:
             return
-        self._config_file.write_text(new_text)
+        data["hooks"] = hooks
+        self._hooks_file.parent.mkdir(parents=True, exist_ok=True)
+        self._hooks_file.write_text(json.dumps(data, indent=2) + "\n")
+
+    def _uninstall_hooks_json(self) -> None:
+        data = _read_json(self._hooks_file)
+        hooks = data.get("hooks")
+        if not isinstance(hooks, dict):
+            return
+        changed = False
+        for event in list(hooks):
+            if _filter_event_commands(hooks, event, _OWN_PREFIX):
+                changed = True
+        if not changed:
+            return
+        data["hooks"] = hooks
+        if hooks or set(data) != {"hooks"}:
+            self._hooks_file.write_text(json.dumps(data, indent=2) + "\n")
+        elif self._hooks_file.exists():
+            self._hooks_file.unlink()

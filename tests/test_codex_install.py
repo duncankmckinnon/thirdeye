@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import json
+
 # Use tomllib (3.11+) or tomli (3.10) for verifying written TOML
 import tomllib as _toml_read
 from pathlib import Path
@@ -55,11 +57,15 @@ class TestCodexPlatformAttributes:
         assert issubclass(CodexPlatform, Platform)
 
     def test_default_config_file_matches_constants(self):
-        from thirdeye.platforms.codex.constants import CODEX_CONFIG_FILE
+        from thirdeye.platforms.codex import install
         from thirdeye.platforms.codex.install import CodexPlatform
 
         p = CodexPlatform()
-        assert p._config_file == CODEX_CONFIG_FILE
+        # Compare against install's own imported binding, not constants.py's
+        # directly: the autouse _never_touch_real_platform_configs fixture
+        # patches the former (what __init__'s default actually resolves)
+        # for every test in the suite, not the latter.
+        assert p._config_file == install.CODEX_CONFIG_FILE
 
 
 # ---------------------------------------------------------------------------
@@ -839,3 +845,202 @@ class TestPreservesCommentsAndModel:
         data = _toml_read.loads(text)
         assert data["model"] == "gpt-5.6-sol"
         assert "notify" not in data
+
+
+# ---------------------------------------------------------------------------
+# TestHooksJson — Codex's separate, newer per-event hooks.json mechanism
+# ---------------------------------------------------------------------------
+
+SUPPORTED_HOOKS_JSON_EVENTS = (
+    "SessionStart",
+    "SessionEnd",
+    "UserPromptSubmit",
+    "SubagentStart",
+    "SubagentStop",
+    "PermissionRequest",
+    "PreCompact",
+    "PostCompact",
+)
+
+# The three events thirdeye deliberately never wires (see hooks_json.py):
+# notify's rollout reconstruction already covers them more richly.
+UNSUPPORTED_HOOKS_JSON_EVENTS = ("PreToolUse", "PostToolUse", "Stop")
+
+
+def _no_which(monkeypatch) -> None:
+    """So a resolved command is just the bare binary name, deterministically."""
+    monkeypatch.setattr("thirdeye.platforms.codex.install.shutil.which", lambda _: None)
+
+
+def _commands_for(hooks_data: dict, event: str) -> list[str]:
+    out: list[str] = []
+    for group in hooks_data.get("hooks", {}).get(event, []):
+        for entry in group.get("hooks", []):
+            out.append(entry["command"])
+    return out
+
+
+def _hooks_json_with(events: dict[str, str]) -> dict:
+    return {
+        "hooks": {
+            event: [{"hooks": [{"type": "command", "command": cmd}]}]
+            for event, cmd in events.items()
+        }
+    }
+
+
+class TestHooksJsonInstall:
+    def test_fresh_file_gets_every_supported_event(self, tmp_path: Path, monkeypatch):
+        from thirdeye.platforms.codex.install import CodexPlatform
+
+        _no_which(monkeypatch)
+        hooks_file = tmp_path / "hooks.json"
+        CodexPlatform(config_file=tmp_path / "config.toml", hooks_file=hooks_file).install()
+        data = json.loads(hooks_file.read_text())
+        for event in SUPPORTED_HOOKS_JSON_EVENTS:
+            commands = _commands_for(data, event)
+            assert len(commands) == 1
+            assert Path(commands[0]).name.startswith("thirdeye-codex-")
+
+    def test_unsupported_events_are_never_added(self, tmp_path: Path, monkeypatch):
+        from thirdeye.platforms.codex.install import CodexPlatform
+
+        _no_which(monkeypatch)
+        hooks_file = tmp_path / "hooks.json"
+        CodexPlatform(config_file=tmp_path / "config.toml", hooks_file=hooks_file).install()
+        data = json.loads(hooks_file.read_text())
+        for event in UNSUPPORTED_HOOKS_JSON_EVENTS:
+            assert event not in data.get("hooks", {})
+
+    def test_idempotent_on_repeated_install(self, tmp_path: Path, monkeypatch):
+        from thirdeye.platforms.codex.install import CodexPlatform
+
+        _no_which(monkeypatch)
+        hooks_file = tmp_path / "hooks.json"
+        p = CodexPlatform(config_file=tmp_path / "config.toml", hooks_file=hooks_file)
+        p.install()
+        p.install()
+        data = json.loads(hooks_file.read_text())
+        for event in SUPPORTED_HOOKS_JSON_EVENTS:
+            assert len(_commands_for(data, event)) == 1
+
+    def test_foreign_tool_entries_are_preserved_alongside_ours(
+        self, tmp_path: Path, monkeypatch
+    ):
+        from thirdeye.platforms.codex.install import CodexPlatform
+
+        _no_which(monkeypatch)
+        hooks_file = tmp_path / "hooks.json"
+        hooks_file.write_text(json.dumps(_hooks_json_with({"SessionStart": "/some/other/tool"})))
+        CodexPlatform(config_file=tmp_path / "config.toml", hooks_file=hooks_file).install()
+        data = json.loads(hooks_file.read_text())
+        commands = _commands_for(data, "SessionStart")
+        assert "/some/other/tool" in commands
+        assert any(Path(c).name == "thirdeye-codex-session-start" for c in commands)
+
+    def test_stale_claude_entry_on_supported_event_is_replaced(
+        self, tmp_path: Path, monkeypatch
+    ):
+        from thirdeye.platforms.codex.install import CodexPlatform
+
+        _no_which(monkeypatch)
+        hooks_file = tmp_path / "hooks.json"
+        hooks_file.write_text(
+            json.dumps(_hooks_json_with({"SessionStart": "/opt/homebrew/bin/thirdeye-claude-session-start"}))
+        )
+        CodexPlatform(config_file=tmp_path / "config.toml", hooks_file=hooks_file).install()
+        data = json.loads(hooks_file.read_text())
+        commands = _commands_for(data, "SessionStart")
+        assert not any("thirdeye-claude-" in c for c in commands)
+        assert any(Path(c).name == "thirdeye-codex-session-start" for c in commands)
+
+    def test_stale_claude_entry_on_unsupported_event_is_stripped_not_replaced(
+        self, tmp_path: Path, monkeypatch
+    ):
+        """The exact misconfiguration this feature exists to fix: Codex's
+        PreToolUse/PostToolUse/Stop pointed at Claude's own handlers, which
+        mislabels every captured Codex session as platform=claude.
+        """
+        from thirdeye.platforms.codex.install import CodexPlatform
+
+        _no_which(monkeypatch)
+        hooks_file = tmp_path / "hooks.json"
+        hooks_file.write_text(
+            json.dumps(
+                _hooks_json_with(
+                    {
+                        "PreToolUse": "/opt/homebrew/bin/thirdeye-claude-pre-tool-use",
+                        "PostToolUse": "/opt/homebrew/bin/thirdeye-claude-post-tool-use",
+                        "Stop": "/opt/homebrew/bin/thirdeye-claude-stop",
+                    }
+                )
+            )
+        )
+        CodexPlatform(config_file=tmp_path / "config.toml", hooks_file=hooks_file).install()
+        data = json.loads(hooks_file.read_text())
+        for event in UNSUPPORTED_HOOKS_JSON_EVENTS:
+            assert event not in data.get("hooks", {})
+
+    def test_preserves_a_foreign_entry_on_an_unsupported_event(self, tmp_path: Path, monkeypatch):
+        from thirdeye.platforms.codex.install import CodexPlatform
+
+        _no_which(monkeypatch)
+        hooks_file = tmp_path / "hooks.json"
+        hooks_file.write_text(json.dumps(_hooks_json_with({"Stop": "/some/other/tool"})))
+        CodexPlatform(config_file=tmp_path / "config.toml", hooks_file=hooks_file).install()
+        data = json.loads(hooks_file.read_text())
+        assert _commands_for(data, "Stop") == ["/some/other/tool"]
+
+    def test_creates_parent_dir(self, tmp_path: Path, monkeypatch):
+        from thirdeye.platforms.codex.install import CodexPlatform
+
+        _no_which(monkeypatch)
+        hooks_file = tmp_path / "nested" / "deeper" / "hooks.json"
+        CodexPlatform(config_file=tmp_path / "config.toml", hooks_file=hooks_file).install()
+        assert hooks_file.exists()
+
+    def test_no_op_when_already_correctly_configured(self, tmp_path: Path, monkeypatch):
+        """install() must not rewrite (and so not touch the mtime of) a
+        hooks.json that's already exactly right.
+        """
+        from thirdeye.platforms.codex.install import CodexPlatform
+
+        _no_which(monkeypatch)
+        hooks_file = tmp_path / "hooks.json"
+        p = CodexPlatform(config_file=tmp_path / "config.toml", hooks_file=hooks_file)
+        p.install()
+        before = hooks_file.read_text()
+        p.install()
+        assert hooks_file.read_text() == before
+
+
+class TestHooksJsonUninstall:
+    def test_removes_only_our_entries(self, tmp_path: Path, monkeypatch):
+        from thirdeye.platforms.codex.install import CodexPlatform
+
+        _no_which(monkeypatch)
+        hooks_file = tmp_path / "hooks.json"
+        p = CodexPlatform(config_file=tmp_path / "config.toml", hooks_file=hooks_file)
+        p.install()
+        p.uninstall()
+        assert not hooks_file.exists()
+
+    def test_preserves_foreign_entries(self, tmp_path: Path, monkeypatch):
+        from thirdeye.platforms.codex.install import CodexPlatform
+
+        _no_which(monkeypatch)
+        hooks_file = tmp_path / "hooks.json"
+        hooks_file.write_text(json.dumps(_hooks_json_with({"SessionStart": "/some/other/tool"})))
+        p = CodexPlatform(config_file=tmp_path / "config.toml", hooks_file=hooks_file)
+        p.install()
+        p.uninstall()
+        data = json.loads(hooks_file.read_text())
+        assert _commands_for(data, "SessionStart") == ["/some/other/tool"]
+
+    def test_missing_file_is_noop(self, tmp_path: Path, monkeypatch):
+        from thirdeye.platforms.codex.install import CodexPlatform
+
+        _no_which(monkeypatch)
+        hooks_file = tmp_path / "hooks.json"
+        CodexPlatform(config_file=tmp_path / "config.toml", hooks_file=hooks_file).uninstall()
+        assert not hooks_file.exists()

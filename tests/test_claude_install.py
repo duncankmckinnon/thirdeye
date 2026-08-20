@@ -287,10 +287,14 @@ class TestUninstallEdgeCases:
 
 class TestDefaultSettingsFile:
     def test_default_settings_file_matches_constants(self):
-        from thirdeye.platforms.claude.constants import SETTINGS_FILE
+        from thirdeye.platforms.claude import install
 
         p = ClaudePlatform()
-        assert p._settings_file == SETTINGS_FILE
+        # Compare against install's own imported binding, not constants.py's
+        # directly: the autouse _never_touch_real_platform_configs fixture
+        # patches the former (what __init__'s default actually resolves)
+        # for every test in the suite, not the latter.
+        assert p._settings_file == install.SETTINGS_FILE
 
 
 class TestHookEntryStructure:
