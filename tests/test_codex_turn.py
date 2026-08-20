@@ -1,0 +1,238 @@
+from __future__ import annotations
+
+import json
+from pathlib import Path
+
+from thirdeye.platforms.codex.turn import extract_turn_codex
+
+
+def _frame(ts: str, outer: str, payload: dict) -> str:
+    return json.dumps({"timestamp": ts, "type": outer, "payload": payload})
+
+
+def test_extracts_exact_turn_deduplicates_usage_and_pairs_tools(tmp_path: Path) -> None:
+    path = tmp_path / "rollout.jsonl"
+    lines = [
+        _frame("2026-01-01T00:00:00Z", "turn_context", {"turn_id": "t1", "model": "gpt-5"}),
+        _frame("2026-01-01T00:00:01Z", "event_msg", {"type": "task_started", "turn_id": "t1"}),
+        _frame("2026-01-01T00:00:02Z", "event_msg", {"type": "user_message", "message": "fix it"}),
+        _frame(
+            "2026-01-01T00:00:03Z",
+            "response_item",
+            {
+                "type": "function_call",
+                "call_id": "c1",
+                "name": "exec_command",
+                "arguments": '{"cmd":"pytest"}',
+            },
+        ),
+        _frame(
+            "2026-01-01T00:00:04Z",
+            "response_item",
+            {"type": "function_call_output", "call_id": "c1", "output": "passed"},
+        ),
+        _frame(
+            "2026-01-01T00:00:05Z",
+            "event_msg",
+            {
+                "type": "token_count",
+                "info": {
+                    "total_token_usage": {"total_tokens": 15},
+                    "last_token_usage": {
+                        "input_tokens": 10,
+                        "cached_input_tokens": 4,
+                        "output_tokens": 5,
+                        "reasoning_output_tokens": 2,
+                    },
+                },
+            },
+        ),
+        # Repeat report for the same call: it must not double the turn total.
+        _frame(
+            "2026-01-01T00:00:06Z",
+            "event_msg",
+            {
+                "type": "token_count",
+                "info": {
+                    "total_token_usage": {"total_tokens": 15},
+                    "last_token_usage": {
+                        "input_tokens": 10,
+                        "cached_input_tokens": 4,
+                        "output_tokens": 5,
+                        "reasoning_output_tokens": 2,
+                    },
+                },
+            },
+        ),
+        _frame("2026-01-01T00:00:07Z", "event_msg", {"type": "agent_message", "message": "done"}),
+        _frame(
+            "2026-01-01T00:00:08Z",
+            "event_msg",
+            {"type": "task_complete", "turn_id": "t1", "last_agent_message": "done"},
+        ),
+        _frame("2026-01-01T00:00:09Z", "turn_context", {"turn_id": "t2", "model": "gpt-5"}),
+    ]
+    path.write_text("\n".join(lines) + "\n")
+
+    turn = extract_turn_codex(str(path), "t1")
+    assert turn is not None
+    assert turn["model"] == "gpt-5"
+    assert turn["start_ts"] == "2026-01-01T00:00:01Z"
+    assert turn["end_ts"] == "2026-01-01T00:00:08Z"
+    assert turn["user_prompt"] == "fix it"
+    assert turn["assistant_output"] == "done"
+    assert turn["usage"] == {
+        "input_tokens": 10,
+        "output_tokens": 5,
+        "cached_input_tokens": 4,
+        "reasoning_output_tokens": 2,
+    }
+    assert turn["tools"] == [
+        {
+            "name": "exec_command",
+            "call_id": "c1",
+            "arguments": '{"cmd":"pytest"}',
+            "result": "passed",
+            "start_ts": "2026-01-01T00:00:03Z",
+            "end_ts": "2026-01-01T00:00:04Z",
+        }
+    ]
+
+
+def test_missing_turn_returns_none(tmp_path: Path) -> None:
+    path = tmp_path / "rollout.jsonl"
+    path.write_text(_frame("2026-01-01T00:00:00Z", "turn_context", {"turn_id": "t1"}))
+    assert extract_turn_codex(str(path), "other") is None
+
+
+def test_reconstructs_per_call_messages_and_tool_result_input(tmp_path: Path) -> None:
+    path = tmp_path / "rollout.jsonl"
+    path.write_text(
+        "\n".join(
+            [
+                _frame("2026-01-01T00:00:00Z", "turn_context", {"turn_id": "t1", "model": "gpt-5"}),
+                _frame(
+                    "2026-01-01T00:00:01Z",
+                    "event_msg",
+                    {"type": "user_message", "message": "inspect"},
+                ),
+                _frame(
+                    "2026-01-01T00:00:02Z",
+                    "response_item",
+                    {
+                        "type": "reasoning",
+                        "summary": [{"type": "summary_text", "text": "I should read"}],
+                    },
+                ),
+                _frame(
+                    "2026-01-01T00:00:03Z",
+                    "response_item",
+                    {
+                        "type": "function_call",
+                        "call_id": "c1",
+                        "name": "read",
+                        "arguments": {"path": "a.py"},
+                    },
+                ),
+                _frame(
+                    "2026-01-01T00:00:04Z",
+                    "response_item",
+                    {"type": "function_call_output", "call_id": "c1", "output": "contents"},
+                ),
+                _frame(
+                    "2026-01-01T00:00:05Z",
+                    "event_msg",
+                    {
+                        "type": "token_count",
+                        "info": {
+                            "total_token_usage": {"total_tokens": 12},
+                            "last_token_usage": {"input_tokens": 10, "output_tokens": 2},
+                        },
+                    },
+                ),
+                _frame(
+                    "2026-01-01T00:00:06Z",
+                    "response_item",
+                    {
+                        "type": "message",
+                        "role": "assistant",
+                        "content": [{"type": "output_text", "text": "found it"}],
+                    },
+                ),
+                _frame(
+                    "2026-01-01T00:00:07Z",
+                    "event_msg",
+                    {
+                        "type": "token_count",
+                        "info": {
+                            "total_token_usage": {"total_tokens": 20},
+                            "last_token_usage": {"input_tokens": 6, "output_tokens": 2},
+                        },
+                    },
+                ),
+            ]
+        )
+        + "\n"
+    )
+
+    calls = extract_turn_codex(str(path), "t1")["calls"]
+    assert len(calls) == 2
+    assert calls[0]["input_messages"][0]["parts"][0]["content"] == "inspect"
+    assert [part["type"] for part in calls[0]["output_messages"][0]["parts"]] == [
+        "reasoning",
+        "tool_call",
+    ]
+    assert calls[0]["tools"][0]["call_id"] == "c1"
+    assert calls[1]["input_messages"][0]["parts"] == [
+        {"type": "tool_call_response", "id": "c1", "response": "contents"}
+    ]
+    assert calls[1]["output_messages"][0]["parts"][0]["content"] == "found it"
+
+
+def test_extracts_mcp_and_image_tools_and_provider_timing(tmp_path: Path) -> None:
+    path = tmp_path / "rollout.jsonl"
+    path.write_text(
+        "\n".join(
+            [
+                _frame("2026-01-01T00:00:00Z", "turn_context", {"turn_id": "t1", "model": "gpt-5"}),
+                _frame(
+                    "2026-01-01T00:00:01Z",
+                    "event_msg",
+                    {"type": "task_started", "turn_id": "t1", "started_at": 1767225600},
+                ),
+                _frame(
+                    "2026-01-01T00:00:03Z",
+                    "event_msg",
+                    {
+                        "type": "mcp_tool_call_end",
+                        "call_id": "m1",
+                        "invocation": {"server": "files", "tool": "read", "arguments": {"p": "a"}},
+                        "duration": {"secs": 2, "nanos": 0},
+                        "result": {"Ok": "content"},
+                    },
+                ),
+                _frame(
+                    "2026-01-01T00:00:04Z",
+                    "response_item",
+                    {
+                        "type": "image_generation_call",
+                        "call_id": "i1",
+                        "prompt": "a fox",
+                        "status": "completed",
+                    },
+                ),
+                _frame(
+                    "2026-01-01T00:00:05Z",
+                    "event_msg",
+                    {"type": "task_complete", "turn_id": "t1", "completed_at": 1767225605},
+                ),
+            ]
+        )
+        + "\n"
+    )
+    turn = extract_turn_codex(str(path), "t1")
+    assert turn is not None
+    assert turn["start_ts"] == "2026-01-01T00:00:00Z"
+    assert turn["end_ts"] == "2026-01-01T00:00:05Z"
+    assert [tool["name"] for tool in turn["tools"]] == ["files.read", "image_generation"]
+    assert turn["tools"][0]["start_ts"] == "2026-01-01T00:00:01Z"

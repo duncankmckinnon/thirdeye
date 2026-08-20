@@ -85,6 +85,31 @@ class TestFlattenAttrs:
     def test_non_dict_input_yields_empty(self):
         assert otel_export._flatten_attrs("not a dict") == {}
 
+    def test_primitives_and_homogeneous_lists_get_no_json_schema(self):
+        # Without a JSON-encoded key, there's nothing to tell the backend to
+        # parse back into structured data.
+        out = otel_export._flatten_attrs({"a": 1, "tags": ["a", "b"]})
+        assert "logfire.json_schema" not in out
+
+    def test_nested_dict_marked_as_object_in_json_schema(self):
+        out = otel_export._flatten_attrs({"tool_input": {"path": "x.py"}})
+        schema = json.loads(out["logfire.json_schema"])
+        assert schema == {"type": "object", "properties": {"tool_input": {"type": "object"}}}
+
+    def test_list_of_dicts_marked_as_array_in_json_schema(self):
+        out = otel_export._flatten_attrs({"gen_ai.input.messages": [{"role": "user", "parts": []}]})
+        schema = json.loads(out["logfire.json_schema"])
+        assert schema == {
+            "type": "object",
+            "properties": {"gen_ai.input.messages": {"type": "array"}},
+        }
+
+    def test_merge_raw_combines_before_flattening_so_schema_covers_both(self):
+        merged = otel_export._merge_raw({"a": {"x": 1}}, {"b": ["y", "z"], "c": [{"n": 1}]})
+        out = otel_export._flatten_attrs(merged)
+        schema = json.loads(out["logfire.json_schema"])
+        assert schema["properties"] == {"a": {"type": "object"}, "c": {"type": "array"}}
+
 
 class TestToolId:
     def test_claude_tool_use_id(self):
@@ -306,6 +331,71 @@ class TestExportEventInner:
             data={"tool_name": "Bash", "tool_use_id": "tu_1"},
         )
         assert exporter.exported_spans_as_dict() == []
+
+
+class TestCodexEventDispatch:
+    def test_codex_rollout_tools_are_left_for_turn_batch(
+        self, tmp_path: Path, enabled_config: Config, monkeypatch: pytest.MonkeyPatch
+    ):
+        spawned = []
+        monkeypatch.setattr(otel_export, "_spawn_worker", lambda **kwargs: spawned.append(kwargs))
+        otel_export.export_event(
+            config=enabled_config,
+            session_dir_=tmp_path,
+            session_id="s1",
+            platform="codex",
+            cwd="/proj",
+            t="tool_result",
+            seq=2,
+            ts="2026-01-01T00:00:01Z",
+            data={"call_id": "c1", "thirdeye.codex_turn_batched": True},
+        )
+        assert spawned == []
+
+    def test_unbatched_codex_tool_keeps_generic_fallback(
+        self, tmp_path: Path, enabled_config: Config, monkeypatch: pytest.MonkeyPatch
+    ):
+        spawned = []
+        monkeypatch.setattr(otel_export, "_spawn_worker", lambda **kwargs: spawned.append(kwargs))
+        otel_export.export_event(
+            config=enabled_config,
+            session_dir_=tmp_path,
+            session_id="s1",
+            platform="codex",
+            cwd="/proj",
+            t="tool_result",
+            seq=2,
+            ts="2026-01-01T00:00:01Z",
+            data={"call_id": "c1"},
+        )
+        assert len(spawned) == 1
+
+    def test_failed_turn_queue_releases_pending_state(
+        self, tmp_path: Path, enabled_config: Config, monkeypatch: pytest.MonkeyPatch
+    ):
+        monkeypatch.setattr(
+            otel_export,
+            "_write_job",
+            lambda *args, **kwargs: (_ for _ in ()).throw(OSError("disk")),
+        )
+        turn = {
+            "turn_id": "t1",
+            "start_ts": "2026-01-01T00:00:00Z",
+            "end_ts": "2026-01-01T00:00:01Z",
+        }
+        assert otel_export.export_codex_turn(enabled_config, tmp_path, "s1", "/p", 1, turn) is False
+        assert not otel_export._call_claim_path(tmp_path, "codex-turn:t1").exists()
+
+    def test_root_creation_is_exclusive(self, tmp_path: Path):
+        root_path = tmp_path / "otel.json"
+        root, first_lock = otel_export._root_or_ownership(root_path)
+        assert root is None
+        assert first_lock is not None
+        otel_export._create_root_atomic(root_path, 0xAA, 0xBB)
+        first_lock.unlink()
+        root, second_lock = otel_export._root_or_ownership(root_path)
+        assert root == (0xAA, 0xBB)
+        assert second_lock is None
 
     def test_tool_result_pairs_with_matching_tool_call(
         self, tmp_path: Path, enabled_config: Config, wired_instance, exporter
@@ -678,3 +768,239 @@ class TestExportLlmCallsInner:
         assert input_messages[0]["parts"][0]["content"] == "hello"
         assert output_messages[0]["parts"][0]["type"] == "reasoning"
         assert output_messages[0]["parts"][1]["content"] == "hi there"
+        # Without this, Logfire's UI renders the messages as opaque text
+        # instead of a structured chat view.
+        schema = json.loads(attrs["logfire.json_schema"])["properties"]
+        assert schema["gen_ai.input.messages"] == {"type": "array"}
+        assert schema["gen_ai.output.messages"] == {"type": "array"}
+
+
+class TestToolCallNestsUnderChatSpan:
+    """A `tool: X` span should nest under the specific `chat` call whose
+    response requested it, not flatly under the session root — mirroring
+    what Codex's `_export_codex_turn_inner` already does for its own tool
+    children.
+    """
+
+    def test_tool_span_parents_under_the_chat_call_that_requested_it(
+        self, tmp_path: Path, enabled_config: Config, wired_instance, exporter
+    ):
+        sd = tmp_path / "traces" / "claude" / "s1"
+        call = _call(
+            seq=3,
+            data={
+                "gen_ai.response.model": "claude-sonnet-5",
+                "gen_ai.output.messages": [
+                    {
+                        "role": "assistant",
+                        "parts": [
+                            {"type": "tool_call", "id": "tu_1", "name": "Bash", "arguments": {}}
+                        ],
+                    }
+                ],
+            },
+        )
+        otel_export._export_llm_calls_inner(
+            config=enabled_config,
+            session_dir_=sd,
+            session_id="s1",
+            platform="claude",
+            cwd="/proj",
+            calls=[call],
+        )
+        chat_span_id = exporter.exported_spans_as_dict()[0]["context"]["span_id"]
+
+        Store(Config(root=tmp_path)).append_event(
+            session_id="s1",
+            platform="claude",
+            cwd="/proj",
+            t="tool_call",
+            data={"tool_name": "Bash", "tool_use_id": "tu_1", "command": "ls"},
+        )
+        _export(
+            enabled_config,
+            sd,
+            session_id="s1",
+            platform="claude",
+            cwd="/proj",
+            t="tool_result",
+            seq=4,
+            ts=utc_iso_ms(),
+            data={"tool_use_id": "tu_1", "tool_response": "file.txt"},
+        )
+        tool_span = exporter.exported_spans_as_dict()[-1]
+        assert tool_span["name"] == "tool: Bash"
+        assert tool_span["parent"]["span_id"] == chat_span_id
+
+    def test_falls_back_to_session_root_when_no_matching_chat_call(
+        self,
+        tmp_path: Path,
+        enabled_config: Config,
+        wired_instance,
+        exporter,
+        monkeypatch: pytest.MonkeyPatch,
+    ):
+        monkeypatch.setattr(otel_export.time, "sleep", lambda s: None)
+        sd = tmp_path / "traces" / "claude" / "s1"
+        _export(
+            enabled_config,
+            sd,
+            session_id="s1",
+            platform="claude",
+            cwd="/p",
+            t="session_start",
+            seq=0,
+            ts="2026-01-01T00:00:00.000Z",
+        )
+        root_span_id = exporter.exported_spans_as_dict()[0]["context"]["span_id"]
+
+        Store(Config(root=tmp_path)).append_event(
+            session_id="s1",
+            platform="claude",
+            cwd="/proj",
+            t="tool_call",
+            data={"tool_name": "Bash", "tool_use_id": "tu_orphan", "command": "ls"},
+        )
+        _export(
+            enabled_config,
+            sd,
+            session_id="s1",
+            platform="claude",
+            cwd="/p",
+            t="tool_result",
+            seq=2,
+            ts=utc_iso_ms(),
+            data={"tool_use_id": "tu_orphan", "tool_response": "file.txt"},
+        )
+        tool_span = exporter.exported_spans_as_dict()[-1]
+        assert tool_span["parent"]["span_id"] == root_span_id
+
+
+class TestExportCodexTurnInner:
+    def test_emits_semconv_inference_parent_and_tool_child(
+        self, tmp_path: Path, enabled_config: Config, wired_instance, exporter
+    ):
+        sd = tmp_path / "traces" / "codex" / "s1"
+        otel_export._export_codex_turn_inner(
+            config=enabled_config,
+            session_dir_=sd,
+            session_id="s1",
+            cwd="/proj",
+            seq=7,
+            turn={
+                "turn_id": "t1",
+                "start_ts": "2026-01-01T00:00:00Z",
+                "end_ts": "2026-01-01T00:00:10Z",
+                "model": "gpt-5",
+                "user_prompt": "fix it",
+                "assistant_output": "done",
+                "usage": {
+                    "input_tokens": 100,
+                    "output_tokens": 20,
+                    "cached_input_tokens": 40,
+                    "reasoning_output_tokens": 5,
+                },
+                "tools": [
+                    {
+                        "name": "exec_command",
+                        "call_id": "c1",
+                        "arguments": '{"cmd":"pytest"}',
+                        "result": "passed",
+                        "start_ts": "2026-01-01T00:00:02Z",
+                        "end_ts": "2026-01-01T00:00:04Z",
+                    }
+                ],
+            },
+        )
+
+        spans = exporter.exported_spans_as_dict()
+        assert len(spans) == 2
+        inference, tool = spans
+        assert inference["name"] == "chat gpt-5"
+        assert inference["attributes"]["gen_ai.operation.name"] == "chat"
+        assert inference["attributes"]["gen_ai.provider.name"] == "openai"
+        assert inference["attributes"]["gen_ai.request.model"] == "gpt-5"
+        assert inference["attributes"]["gen_ai.usage.input_tokens"] == 100
+        assert inference["attributes"]["gen_ai.usage.cache_read.input_tokens"] == 40
+        assert json.loads(inference["attributes"]["gen_ai.input.messages"])[0]["role"] == "user"
+        inference_schema = json.loads(inference["attributes"]["logfire.json_schema"])["properties"]
+        assert inference_schema["gen_ai.input.messages"] == {"type": "array"}
+        assert inference_schema["gen_ai.output.messages"] == {"type": "array"}
+        assert tool["name"] == "execute_tool exec_command"
+        assert tool["attributes"]["gen_ai.operation.name"] == "execute_tool"
+        assert tool["attributes"]["gen_ai.tool.name"] == "exec_command"
+        assert tool["attributes"]["gen_ai.tool.call.id"] == "c1"
+        # arguments was already a JSON string, so it passes through
+        # unencoded and isn't marked in the schema.
+        assert tool["attributes"]["gen_ai.tool.call.arguments"] == '{"cmd":"pytest"}'
+        assert "logfire.json_schema" not in tool["attributes"]
+        assert tool["parent"]["span_id"] == inference["context"]["span_id"]
+        assert tool["context"]["trace_id"] == inference["context"]["trace_id"]
+
+    def test_each_tool_is_child_of_the_call_that_requested_it(
+        self, tmp_path: Path, enabled_config: Config, wired_instance, exporter
+    ):
+        sd = tmp_path / "traces" / "codex" / "s1"
+        otel_export._persist_span(otel_export.otel_state_path(sd), 0xAA, 0xBB)
+        otel_export._export_codex_turn_inner(
+            config=enabled_config,
+            session_dir_=sd,
+            session_id="s1",
+            cwd="/proj",
+            seq=7,
+            turn={
+                "turn_id": "t1",
+                "start_ts": "2026-01-01T00:00:00Z",
+                "end_ts": "2026-01-01T00:00:06Z",
+                "model": "gpt-5",
+                "calls": [
+                    {
+                        "start_ts": "2026-01-01T00:00:00Z",
+                        "end_ts": "2026-01-01T00:00:01Z",
+                        "input_messages": otel_export._message("user", "inspect"),
+                        "output_messages": [
+                            {
+                                "role": "assistant",
+                                "parts": [
+                                    {
+                                        "type": "tool_call",
+                                        "id": "c1",
+                                        "name": "read",
+                                        "arguments": {},
+                                    }
+                                ],
+                            }
+                        ],
+                        "usage": {"input_tokens": 10, "output_tokens": 2},
+                        "tools": [
+                            {
+                                "name": "read",
+                                "call_id": "c1",
+                                "start_ts": "2026-01-01T00:00:01Z",
+                                "end_ts": "2026-01-01T00:00:02Z",
+                            }
+                        ],
+                    },
+                    {
+                        "start_ts": "2026-01-01T00:00:02Z",
+                        "end_ts": "2026-01-01T00:00:03Z",
+                        "input_messages": [
+                            {
+                                "role": "tool",
+                                "parts": [
+                                    {"type": "tool_call_response", "id": "c1", "response": "ok"}
+                                ],
+                            }
+                        ],
+                        "output_messages": otel_export._message("assistant", "done"),
+                        "usage": {"input_tokens": 8, "output_tokens": 1},
+                        "tools": [],
+                    },
+                ],
+            },
+        )
+
+        first_call, tool, second_call = exporter.exported_spans_as_dict()
+        assert tool["parent"]["span_id"] == first_call["context"]["span_id"]
+        assert second_call["parent"]["span_id"] != first_call["context"]["span_id"]
+        assert json.loads(second_call["attributes"]["gen_ai.input.messages"])[0]["role"] == "tool"

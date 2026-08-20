@@ -76,6 +76,13 @@ _state: dict[str, Any] = {"attempted": False, "instance": None}
 
 _TOOL_ID_KEYS = ("tool_use_id", "call_id")
 _ATTR_PRIMITIVES = (str, bool, int, float)
+# Logfire's own convention for telling its backend which JSON-encoded string
+# attributes to parse back into structured data (objects/arrays) rather than
+# render as opaque text. Spans built via `logfire.span()` get this set
+# automatically; ours go through the raw OTel API, so `_flatten_attrs` sets
+# it by hand. Without it, `gen_ai.input.messages` / `.output.messages` never
+# render as a chat view in the UI, just a flat "prompt" text field.
+_LOGFIRE_JSON_SCHEMA_KEY = "logfire.json_schema"
 
 # Keyed by the *end* event type -> the matching *start* event type it pairs
 # with to form one real-duration span. A start-side type with no entry here
@@ -206,11 +213,15 @@ def _ts_to_ns(ts: str) -> int:
 
 def _flatten_attrs(data: Any) -> dict[str, Any]:
     """OTel attribute values must be a primitive or a homogeneous sequence of
-    one; anything else (nested dicts, mixed lists) is JSON-encoded to a string.
+    one; anything else (nested dicts, mixed lists) is JSON-encoded to a
+    string, and its key recorded under a `logfire.json_schema` companion
+    attribute so Logfire's backend parses it back into structured data
+    (object/array) instead of rendering it as opaque text.
     """
     if not isinstance(data, dict):
         return {}
     out: dict[str, Any] = {}
+    schema_properties: dict[str, Any] = {}
     for key, value in data.items():
         if value is None:
             continue
@@ -225,7 +236,27 @@ def _flatten_attrs(data: Any) -> dict[str, Any]:
                 out[key] = json.dumps(value, default=str, ensure_ascii=False)
             except (TypeError, ValueError):
                 out[key] = str(value)
+            else:
+                schema_properties[key] = {"type": "object" if isinstance(value, dict) else "array"}
+    if schema_properties:
+        out[_LOGFIRE_JSON_SCHEMA_KEY] = json.dumps(
+            {"type": "object", "properties": schema_properties}
+        )
     return out
+
+
+def _merge_raw(*parts: Any) -> dict[str, Any]:
+    """Merge zero or more raw (pre-flatten) attribute dicts, later keys
+    overriding earlier ones. Used to combine several sources into one dict
+    before a single `_flatten_attrs` pass, so the resulting
+    `logfire.json_schema` covers every JSON-encoded key instead of just
+    whichever source was flattened last.
+    """
+    merged: dict[str, Any] = {}
+    for part in parts:
+        if isinstance(part, dict):
+            merged.update(part)
+    return merged
 
 
 def _tool_id(data: Any) -> str | None:
@@ -260,6 +291,35 @@ def _atomic_create(path: Path, payload: str) -> bool:
         return True
     except FileExistsError:
         return False
+
+
+def _root_or_ownership(root_path: Path) -> tuple[tuple[int, int] | None, Path | None]:
+    """Return an existing root or exclusive ownership of creating it.
+
+    Span ids are SDK-generated, so the root cannot be reserved directly. A
+    short-lived sibling lock serializes the read/start/persist sequence across
+    detached workers and prevents two first spans from creating split traces.
+    """
+    lock_path = root_path.with_name(f"{root_path.name}.lock")
+    deadline = time.monotonic() + 2.0
+    while time.monotonic() < deadline:
+        root = _read_root(root_path)
+        if root is not None:
+            return root, None
+        if _atomic_create(lock_path, str(os.getpid())):
+            return None, lock_path
+        time.sleep(0.02)
+
+    # A worker may have died while owning the lock. Reclaim only an old lock;
+    # otherwise decline this export rather than emitting a split trace.
+    try:
+        if time.time() - lock_path.stat().st_mtime > 2.0:
+            lock_path.unlink(missing_ok=True)
+            if _atomic_create(lock_path, str(os.getpid())):
+                return None, lock_path
+    except OSError:
+        pass
+    return _read_root(root_path), None
 
 
 def _span_payload(trace_id: int, span_id: int) -> str:
@@ -345,6 +405,17 @@ def export_event(
     process this spawns and does not wait for. See module docstring.
     """
     if not config.logfire.enabled or not config.logfire.token:
+        return
+    # Codex tools are reconstructed as children of the completed turn's
+    # inference span from the rollout JSONL. Exporting their local event-store
+    # representation too would create a second, generic copy elsewhere in the
+    # trace. Claude still uses event pairing here.
+    if (
+        platform == "codex"
+        and t in {"tool_call", "tool_result"}
+        and isinstance(data, dict)
+        and data.get("thirdeye.codex_turn_batched") is True
+    ):
         return
     if t == "tool_call":
         return  # nothing to export yet; folded into the matching tool_result
@@ -489,6 +560,192 @@ def export_llm_calls(
         )
 
 
+def export_codex_turn(
+    config: Config,
+    session_dir_: Path,
+    session_id: str,
+    cwd: str,
+    seq: int,
+    turn: dict[str, Any],
+) -> bool:
+    """Export one rollout-reconstructed Codex turn and its tool children."""
+    if not config.logfire.enabled or not config.logfire.token:
+        return False
+    turn_id = str(turn.get("turn_id") or "")
+    if not turn_id or not turn.get("start_ts") or not turn.get("end_ts"):
+        return False
+    state_path = _call_claim_path(session_dir_, f"codex-turn:{turn_id}")
+    try:
+        state = state_path.read_text()
+    except OSError:
+        state = ""
+    if state == "pending":
+        try:
+            stale = time.time() - state_path.stat().st_mtime > 30.0
+        except OSError:
+            stale = True
+        if stale:
+            state_path.unlink(missing_ok=True)
+            state = ""
+        else:
+            return True
+    if state in {"sent", "1"}:
+        return True
+    if not _atomic_create(state_path, "pending"):
+        return True
+    try:
+        job_path = _write_job(
+            config.root,
+            {
+                "kind": "codex_turn",
+                "session_dir": str(session_dir_),
+                "session_id": session_id,
+                "cwd": cwd,
+                "seq": seq,
+                "turn": turn,
+                "state_path": str(state_path),
+            },
+        )
+        _spawn(job_path)
+        return True
+    except Exception as exc:
+        state_path.unlink(missing_ok=True)
+        log_capture_error(
+            thirdeye_home=config.root,
+            phase="logfire_codex_turn_export_spawn",
+            error=exc,
+            platform="codex",
+            session_id=session_id,
+        )
+        return False
+
+
+def _message(role: str, content: str) -> list[dict[str, Any]]:
+    return [{"role": role, "parts": [{"type": "text", "content": content}]}]
+
+
+def _export_codex_turn_inner(
+    *,
+    config: Config,
+    session_dir_: Path,
+    session_id: str,
+    cwd: str,
+    seq: int,
+    turn: dict[str, Any],
+) -> bool:
+    """Emit a semconv inference span with semconv execute-tool children."""
+    from opentelemetry.trace import SpanKind
+
+    instance = _get_instance(config, "codex")
+    if instance is None:
+        return False
+    tracer = instance.config.get_tracer_provider().get_tracer("thirdeye")
+    root_path = otel_state_path(session_dir_)
+    parent, root_lock = _root_or_ownership(root_path)
+    if parent is None and root_lock is None:
+        return False
+    model = str(turn.get("model") or "")
+    usage_keys = {
+        "input_tokens": "gen_ai.usage.input_tokens",
+        "output_tokens": "gen_ai.usage.output_tokens",
+        "cached_input_tokens": "gen_ai.usage.cache_read.input_tokens",
+        "cache_write_input_tokens": "gen_ai.usage.cache_creation.input_tokens",
+        "reasoning_output_tokens": "gen_ai.usage.reasoning.output_tokens",
+    }
+    calls = turn.get("calls") or [
+        {
+            "start_ts": turn["start_ts"],
+            "end_ts": turn["end_ts"],
+            "input_messages": (
+                _message("user", str(turn["user_prompt"])) if turn.get("user_prompt") else []
+            ),
+            "output_messages": (
+                _message("assistant", str(turn["assistant_output"]))
+                if turn.get("assistant_output")
+                else []
+            ),
+            "usage": turn.get("usage") or {},
+            "tools": turn.get("tools") or [],
+        }
+    ]
+    context = _parent_context(*parent) if parent else None
+    try:
+        for call_index, call in enumerate(calls):
+            attrs: dict[str, Any] = {
+                "gen_ai.operation.name": "chat",
+                "gen_ai.provider.name": "openai",
+                "gen_ai.conversation.id": session_id,
+                "thirdeye.platform": "codex",
+                "thirdeye.cwd": cwd,
+                "thirdeye.seq": seq,
+                "codex.turn.id": str(turn.get("turn_id") or ""),
+                "codex.call.index": call_index,
+            }
+            if model:
+                attrs["gen_ai.request.model"] = model
+            if call.get("input_messages"):
+                attrs["gen_ai.input.messages"] = call["input_messages"]
+            if call.get("output_messages"):
+                attrs["gen_ai.output.messages"] = call["output_messages"]
+            for source, target in usage_keys.items():
+                value = (call.get("usage") or {}).get(source)
+                if isinstance(value, int):
+                    attrs[target] = value
+
+            span = tracer.start_span(
+                f"chat {model}" if model else "chat",
+                context=context,
+                kind=SpanKind.CLIENT,
+                start_time=_ts_to_ns(call.get("start_ts") or turn["start_ts"]),
+                attributes=_flatten_attrs(attrs),
+            )
+            span.end(end_time=_ts_to_ns(call.get("end_ts") or turn["end_ts"]))
+            span_ctx = span.get_span_context()
+            if parent is None and call_index == 0:
+                _create_root_atomic(root_path, span_ctx.trace_id, span_ctx.span_id)
+                # Later calls in a rootless session share the first call's
+                # trace, while remaining siblings rather than nesting calls.
+                context = _parent_context(span_ctx.trace_id, span_ctx.span_id)
+
+            tool_parent = _parent_context(span_ctx.trace_id, span_ctx.span_id)
+            for tool in call.get("tools") or []:
+                name = str(tool.get("name") or "unknown_tool")
+                tool_attrs: dict[str, Any] = {
+                    "gen_ai.operation.name": "execute_tool",
+                    "gen_ai.tool.name": name,
+                    "gen_ai.conversation.id": session_id,
+                    "thirdeye.platform": "codex",
+                }
+                if tool.get("call_id"):
+                    tool_attrs["gen_ai.tool.call.id"] = str(tool["call_id"])
+                if tool.get("arguments") not in (None, ""):
+                    tool_attrs["gen_ai.tool.call.arguments"] = tool["arguments"]
+                if tool.get("result") not in (None, ""):
+                    tool_attrs["gen_ai.tool.call.result"] = tool["result"]
+                child = tracer.start_span(
+                    f"execute_tool {name}",
+                    context=tool_parent,
+                    kind=SpanKind.INTERNAL,
+                    start_time=_ts_to_ns(
+                        tool.get("start_ts") or call.get("start_ts") or turn["start_ts"]
+                    ),
+                    attributes=_flatten_attrs(tool_attrs),
+                )
+                child.end(
+                    end_time=_ts_to_ns(
+                        tool.get("end_ts")
+                        or tool.get("start_ts")
+                        or call.get("end_ts")
+                        or turn["end_ts"]
+                    )
+                )
+    finally:
+        if root_lock is not None:
+            root_lock.unlink(missing_ok=True)
+
+    return instance.force_flush(timeout_millis=_FLUSH_TIMEOUT_MS) is not False
+
+
 def _call_claim_path(session_dir_: Path, call_id: str) -> Path:
     # Hashed, not the raw call_id, as a filename: nothing guarantees any
     # platform's call_id is filesystem- or path-traversal-safe (Codex's, for
@@ -531,14 +788,14 @@ def _export_event_inner(
     end_ns = _ts_to_ns(ts)
 
     start_type = _PAIR_START_FOR_END.get(t)
+    tool_id: str | None = None
     if start_type is not None:
         from thirdeye.reader import SessionReader
 
         tool_id = _tool_id(data)
         matched = _find_matching_start(SessionReader(session_dir_), seq, start_type, tool_id)
         start_ns = _ts_to_ns(matched["ts"]) if matched else end_ns
-        attrs = _flatten_attrs(matched.get("data") if matched else None)
-        attrs.update(_flatten_attrs(data))
+        attrs = _flatten_attrs(_merge_raw(matched.get("data") if matched else None, data))
         tool_name = attrs.get("tool_name")
         name = f"tool: {tool_name}" if tool_name else t
     else:
@@ -557,16 +814,36 @@ def _export_event_inner(
     attrs["thirdeye.seq"] = seq
 
     root_path = otel_state_path(session_dir_)
-    root = _read_root(root_path)
+    # A tool span nests under the specific chat call that requested it, so
+    # tool execution reads as a child of the model call that made it rather
+    # than a flat sibling under the whole session; every other event type
+    # (user_message, assistant_message, ...) still nests directly under root.
+    if tool_id is not None:
+        parent = _resolve_tool_parent(session_dir_, root_path, tool_id)
+    else:
+        parent = _read_root(root_path)
 
-    if root is None:
-        span = tracer.start_span(name, start_time=start_ns, attributes=attrs)
-        span.end(end_time=end_ns)
-        ctx = span.get_span_context()
-        _create_root_atomic(root_path, ctx.trace_id, ctx.span_id)
+    if parent is None:
+        parent, root_lock = _root_or_ownership(root_path)
+        if parent is None and root_lock is None:
+            return
+        if parent is None:
+            try:
+                span = tracer.start_span(name, start_time=start_ns, attributes=attrs)
+                span.end(end_time=end_ns)
+                ctx = span.get_span_context()
+                _create_root_atomic(root_path, ctx.trace_id, ctx.span_id)
+            finally:
+                root_lock.unlink(missing_ok=True)
+        else:
+            span = tracer.start_span(
+                name, context=_parent_context(*parent), start_time=start_ns, attributes=attrs
+            )
+            span.end(end_time=end_ns)
+            ctx = span.get_span_context()
     else:
         span = tracer.start_span(
-            name, context=_parent_context(*root), start_time=start_ns, attributes=attrs
+            name, context=_parent_context(*parent), start_time=start_ns, attributes=attrs
         )
         span.end(end_time=end_ns)
         ctx = span.get_span_context()
@@ -575,26 +852,64 @@ def _export_event_inner(
     instance.force_flush(timeout_millis=_FLUSH_TIMEOUT_MS)
 
 
-def _resolve_call_parent(
-    session_dir_: Path, root_path: Path, triggering_seq: int
-) -> tuple[int, int] | None:
-    """Find the span a turn's LLM-call spans should nest under.
+def _resolve_parent(specific_path: Path, root_path: Path) -> tuple[int, int] | None:
+    """Poll briefly for a specific span record, falling back to the session
+    root (whatever it is *right now* — possibly still None, if this is
+    racing to be the very first export in a brand-new session too) if it
+    never shows up in time.
 
-    Polls briefly for the triggering event's own span record, since it's
-    built by a separate worker process racing this one with no ordering
-    guarantee between them. Falls back to the session root (whatever it is
-    *right now* — possibly still None, if this is racing to be the very
-    first export in a brand-new session too) rather than dropping the data
-    if the specific span never shows up in time.
+    The record is built by a separate worker process racing this one with no
+    ordering guarantee between them, hence the poll rather than a single read.
     """
-    span_path = otel_span_path(session_dir_, triggering_seq)
     for attempt in range(_CALL_PARENT_RETRIES):
-        found = _read_root(span_path)
+        found = _read_root(specific_path)
         if found is not None:
             return found
         if attempt < _CALL_PARENT_RETRIES - 1:
             time.sleep(_CALL_PARENT_RETRY_DELAY_S)
     return _read_root(root_path)
+
+
+def _resolve_call_parent(
+    session_dir_: Path, root_path: Path, triggering_seq: int
+) -> tuple[int, int] | None:
+    """Find the span a turn's LLM-call spans should nest under: the specific
+    triggering event's own span (typically its `assistant_message`).
+    """
+    return _resolve_parent(otel_span_path(session_dir_, triggering_seq), root_path)
+
+
+def _tool_call_span_path(session_dir_: Path, tool_use_id: str) -> Path:
+    # Hashed, not the raw tool_use_id, as a filename: nothing guarantees any
+    # platform's tool call id is filesystem- or path-traversal-safe.
+    digest = hashlib.sha256(tool_use_id.encode()).hexdigest()
+    return session_dir_ / "otel-tool-call-spans" / f"{digest}.json"
+
+
+def _resolve_tool_parent(
+    session_dir_: Path, root_path: Path, tool_use_id: str
+) -> tuple[int, int] | None:
+    """Find the span a tool call should nest under: the specific `chat` LLM
+    call whose response requested it, so tool execution spans read as
+    children of the model call that made them rather than flat siblings
+    under the whole session.
+    """
+    return _resolve_parent(_tool_call_span_path(session_dir_, tool_use_id), root_path)
+
+
+def _tool_call_ids(data: dict[str, Any]) -> list[str]:
+    """Extract every tool_call id from a chat call's raw (pre-flatten)
+    gen_ai.output.messages, so each can be recorded as a lookup key for the
+    span that produced it.
+    """
+    ids: list[str] = []
+    for message in data.get("gen_ai.output.messages") or []:
+        if not isinstance(message, dict):
+            continue
+        for part in message.get("parts") or []:
+            if isinstance(part, dict) and part.get("type") == "tool_call" and part.get("id"):
+                ids.append(str(part["id"]))
+    return ids
 
 
 def _export_llm_calls_inner(
@@ -648,5 +963,14 @@ def _export_llm_calls_inner(
                 name, context=_parent_context(*parent), start_time=ts_ns, attributes=attrs
             )
             span.end(end_time=ts_ns)
+            ctx = span.get_span_context()
+
+        # So the tool: X spans this call's tool_calls eventually produce (via
+        # _export_event_inner, exported later by a separate hook invocation)
+        # can nest under this exact call instead of the flat session root.
+        for tool_use_id in _tool_call_ids(call["data"]):
+            _persist_span(
+                _tool_call_span_path(session_dir_, tool_use_id), ctx.trace_id, ctx.span_id
+            )
 
     instance.force_flush(timeout_millis=_FLUSH_TIMEOUT_MS)
