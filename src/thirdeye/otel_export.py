@@ -624,6 +624,27 @@ def _message(role: str, content: str) -> list[dict[str, Any]]:
     return [{"role": role, "parts": [{"type": "text", "content": content}]}]
 
 
+def _preceding_user_message_ns(session_dir_: Path, seq: int) -> int | None:
+    """Return the timestamp of the latest user event before ``seq``.
+
+    Codex's rollout timestamps can precede the hook timestamp which recorded
+    the prompt by a small amount. Logfire sorts by span start time, so without
+    a floor the model call can appear above the user input that initiated it.
+    """
+    from thirdeye.reader import SessionReader
+
+    try:
+        events = list(
+            SessionReader(session_dir_).iter_events(types={"user_message"}, seq_range=(0, seq))
+        )
+    except (OSError, IndexError, ValueError):
+        return None
+    if not events:
+        return None
+    ts = events[-1].get("ts")
+    return _ts_to_ns(ts) if ts else None
+
+
 def _export_codex_turn_inner(
     *,
     config: Config,
@@ -669,6 +690,7 @@ def _export_codex_turn_inner(
         }
     ]
     context = _parent_context(*parent) if parent else None
+    user_message_ns = _preceding_user_message_ns(session_dir_, seq)
     try:
         for call_index, call in enumerate(calls):
             attrs: dict[str, Any] = {
@@ -692,11 +714,16 @@ def _export_codex_turn_inner(
                 if isinstance(value, int):
                     attrs[target] = value
 
+            start_ns = _ts_to_ns(call.get("start_ts") or turn["start_ts"])
+            if call_index == 0 and user_message_ns is not None:
+                # Preserve rollout timing unless hook/rollout clock skew would
+                # render the initiating prompt after this call.
+                start_ns = max(start_ns, user_message_ns + 1)
             span = tracer.start_span(
                 f"chat {model}" if model else "chat",
                 context=context,
                 kind=SpanKind.CLIENT,
-                start_time=_ts_to_ns(call.get("start_ts") or turn["start_ts"]),
+                start_time=start_ns,
                 attributes=_flatten_attrs(attrs),
             )
             span.end(end_time=_ts_to_ns(call.get("end_ts") or turn["end_ts"]))
@@ -800,7 +827,15 @@ def _export_event_inner(
         name = f"tool: {tool_name}" if tool_name else t
     else:
         start_ns = end_ns
-        attrs = _flatten_attrs(data)
+        raw_attrs = data if isinstance(data, dict) else {}
+        if t == "user_message":
+            # Retain the raw payload while also supplying the GenAI semantic
+            # attribute Logfire uses to recognize and render user messages.
+            prompt = raw_attrs.get("prompt") or raw_attrs.get("message") or raw_attrs.get("content")
+            if isinstance(prompt, str) and prompt:
+                raw_attrs = dict(raw_attrs)
+                raw_attrs["gen_ai.input.messages"] = _message("user", prompt)
+        attrs = _flatten_attrs(raw_attrs)
         name = t
 
     # gen_ai.conversation.id, not thirdeye.session_id: Logfire's default
@@ -935,9 +970,12 @@ def _export_llm_calls_inner(
     tracer = instance.config.get_tracer_provider().get_tracer("thirdeye")
     root_path = otel_state_path(session_dir_)
     parent = _resolve_call_parent(session_dir_, root_path, calls[0]["seq"])
+    user_message_ns = _preceding_user_message_ns(session_dir_, calls[0]["seq"])
 
-    for call in calls:
+    for call_index, call in enumerate(calls):
         ts_ns = _ts_to_ns(call["ts"])
+        if call_index == 0 and user_message_ns is not None:
+            ts_ns = max(ts_ns, user_message_ns + 1)
         # gen_ai.input.messages / .output.messages are nested lists of dicts —
         # raw OTel attributes can only hold a primitive or a homogeneous
         # sequence of one, so _flatten_attrs JSON-encodes them to a string,

@@ -334,6 +334,30 @@ class TestExportEventInner:
 
 
 class TestCodexEventDispatch:
+    def test_user_message_has_genai_input_messages(
+        self, tmp_path: Path, enabled_config: Config, wired_instance, exporter
+    ):
+        sd = tmp_path / "traces" / "codex" / "s1"
+        _export(
+            enabled_config,
+            sd,
+            session_id="s1",
+            platform="codex",
+            cwd="/proj",
+            t="user_message",
+            seq=1,
+            ts="2026-01-01T00:00:01Z",
+            data={"prompt": "fix the ordering"},
+        )
+        attrs = exporter.exported_spans_as_dict()[0]["attributes"]
+        messages = json.loads(attrs["gen_ai.input.messages"])
+        assert messages == [
+            {"role": "user", "parts": [{"type": "text", "content": "fix the ordering"}]}
+        ]
+        assert json.loads(attrs["logfire.json_schema"])["properties"]["gen_ai.input.messages"] == {
+            "type": "array"
+        }
+
     def test_codex_rollout_tools_are_left_for_turn_batch(
         self, tmp_path: Path, enabled_config: Config, monkeypatch: pytest.MonkeyPatch
     ):
@@ -876,7 +900,68 @@ class TestToolCallNestsUnderChatSpan:
         assert tool_span["parent"]["span_id"] == root_span_id
 
 
+def test_claude_first_call_is_ordered_after_preceding_user_message(
+    tmp_path: Path, enabled_config: Config, wired_instance, exporter
+):
+    store = Store(Config(root=tmp_path))
+    store.append_event(session_id="s1", platform="claude", cwd="/proj", t="session_start", data={})
+    store.append_event(
+        session_id="s1", platform="claude", cwd="/proj", t="user_message", data={"prompt": "go"}
+    )
+    store.append_event(
+        session_id="s1", platform="claude", cwd="/proj", t="assistant_message", data={}
+    )
+    sd = tmp_path / "traces" / "claude" / "s1"
+    from thirdeye.reader import SessionReader
+
+    user_ts_ns = otel_export._ts_to_ns(SessionReader(sd).get_event(1)["ts"])
+    otel_export._export_llm_calls_inner(
+        config=enabled_config,
+        session_dir_=sd,
+        session_id="s1",
+        platform="claude",
+        cwd="/proj",
+        calls=[_call(seq=2, ts="2020-01-01T00:00:00Z")],
+    )
+    assert exporter.exported_spans_as_dict()[0]["start_time"] > user_ts_ns
+
+
 class TestExportCodexTurnInner:
+    def test_first_call_is_ordered_after_preceding_user_message(
+        self, tmp_path: Path, enabled_config: Config, wired_instance, exporter
+    ):
+        store = Store(Config(root=tmp_path))
+        store.append_event(
+            session_id="s1", platform="codex", cwd="/proj", t="session_start", data={}
+        )
+        store.append_event(
+            session_id="s1", platform="codex", cwd="/proj", t="user_message", data={"prompt": "go"}
+        )
+        sd = tmp_path / "traces" / "codex" / "s1"
+        from thirdeye.reader import SessionReader
+
+        user_ts_ns = otel_export._ts_to_ns(SessionReader(sd).get_event(1)["ts"])
+        otel_export._export_codex_turn_inner(
+            config=enabled_config,
+            session_dir_=sd,
+            session_id="s1",
+            cwd="/proj",
+            seq=2,
+            turn={
+                "turn_id": "t1",
+                "start_ts": "2020-01-01T00:00:00Z",
+                "end_ts": "2027-01-01T00:00:10Z",
+                "model": "gpt-5",
+                "calls": [
+                    {
+                        "start_ts": "2020-01-01T00:00:00Z",
+                        "end_ts": "2027-01-01T00:00:10Z",
+                    }
+                ],
+            },
+        )
+        assert exporter.exported_spans_as_dict()[0]["start_time"] > user_ts_ns
+
     def test_emits_semconv_inference_parent_and_tool_child(
         self, tmp_path: Path, enabled_config: Config, wired_instance, exporter
     ):
