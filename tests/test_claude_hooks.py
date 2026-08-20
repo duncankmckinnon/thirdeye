@@ -437,9 +437,7 @@ class TestStopExportsLLMCalls:
 
         transcript = Path(__file__).parent / "fixtures" / "usage" / "claude_transcript.jsonl"
         spawned = []
-        monkeypatch.setattr(
-            otel_export.subprocess, "Popen", lambda argv, **k: spawned.append(argv)
-        )
+        monkeypatch.setattr(otel_export.subprocess, "Popen", lambda argv, **k: spawned.append(argv))
         monkeypatch.setattr(
             Config,
             "load",

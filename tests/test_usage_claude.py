@@ -539,7 +539,10 @@ def _assistant_frame(
 
 class TestMapContentBlock:
     def test_text(self):
-        assert _map_content_block({"type": "text", "text": "hi"}) == {"type": "text", "content": "hi"}
+        assert _map_content_block({"type": "text", "text": "hi"}) == {
+            "type": "text",
+            "content": "hi",
+        }
 
     def test_empty_text_is_dropped(self):
         assert _map_content_block({"type": "text", "text": ""}) is None
@@ -618,12 +621,11 @@ class TestExtractNewCallsClaude:
             _user_frame("run ls")
             + "\n"
             + _assistant_frame(
-                "msg_1", [{"type": "tool_use", "id": "tu_1", "name": "Bash", "input": {"command": "ls"}}]
+                "msg_1",
+                [{"type": "tool_use", "id": "tu_1", "name": "Bash", "input": {"command": "ls"}}],
             )
             + "\n"
-            + _user_frame(
-                [{"type": "tool_result", "tool_use_id": "tu_1", "content": "file1"}]
-            )
+            + _user_frame([{"type": "tool_result", "tool_use_id": "tu_1", "content": "file1"}])
             + "\n"
             + _assistant_frame("msg_2", [{"type": "text", "text": "found file1"}])
             + "\n"
@@ -641,9 +643,7 @@ class TestExtractNewCallsClaude:
             }
         ]
 
-    def test_consecutive_calls_with_no_intervening_user_frame_has_no_input(
-        self, tmp_path: Path
-    ):
+    def test_consecutive_calls_with_no_intervening_user_frame_has_no_input(self, tmp_path: Path):
         transcript = tmp_path / "t.jsonl"
         transcript.write_text(
             _user_frame("go")
@@ -720,4 +720,3 @@ class TestExtractNewCallsClaude:
         calls, _new_offset = extract_new_calls_claude(transcript_path=str(transcript), offset=0)
         assert len(calls) == 1
         assert "gen_ai.output.messages" not in calls[0]["data"]
-

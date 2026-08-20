@@ -393,9 +393,7 @@ def test_persist_stamps_seq_onto_stored_rows(tmp_path: Path, codex_root: Path) -
     assert all(row.seq == 42 for row in stored)
 
 
-def test_parse_then_persist_matches_capture_usage_codex(
-    tmp_path: Path, codex_root: Path
-) -> None:
+def test_parse_then_persist_matches_capture_usage_codex(tmp_path: Path, codex_root: Path) -> None:
     """The split path and the combined compat wrapper must agree exactly on
     what ends up in the sidecar, for the same fixture and triggering_seq.
     """

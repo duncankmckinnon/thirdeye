@@ -199,7 +199,9 @@ def extract_new_calls_claude(
                 {"role": current["input_role"], "parts": current["input_parts"]}
             ]
         if current["output_parts"]:
-            data["gen_ai.output.messages"] = [{"role": "assistant", "parts": current["output_parts"]}]
+            data["gen_ai.output.messages"] = [
+                {"role": "assistant", "parts": current["output_parts"]}
+            ]
         new_calls.append(
             {"seq": 0, "ts": current["ts"], "call_id": current["call_id"], "data": data}
         )
@@ -236,7 +238,9 @@ def extract_new_calls_claude(
                         part = _map_content_block(block)
                         if part is not None:
                             pending_input_parts.append(part)
-                            has_tool_result = has_tool_result or part["type"] == "tool_call_response"
+                            has_tool_result = (
+                                has_tool_result or part["type"] == "tool_call_response"
+                            )
                     pending_input_role = "tool" if has_tool_result else "user"
                 continue
 

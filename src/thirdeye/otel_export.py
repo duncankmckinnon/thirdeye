@@ -460,7 +460,9 @@ def export_llm_calls(
     if not config.logfire.enabled or not config.logfire.token:
         return
     claimed = [
-        call for call in calls if call.get("ts") and _claim_call_export(session_dir_, call["call_id"])
+        call
+        for call in calls
+        if call.get("ts") and _claim_call_export(session_dir_, call["call_id"])
     ]
     if not claimed:
         return

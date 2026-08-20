@@ -473,9 +473,7 @@ class TestExportLlmCalls:
     ):
         spawned = []
         monkeypatch.setattr(otel_export.subprocess, "Popen", lambda *a, **k: spawned.append(a))
-        otel_export.export_llm_calls(
-            enabled_config, tmp_path, "s1", "claude", "/p", [_call(ts="")]
-        )
+        otel_export.export_llm_calls(enabled_config, tmp_path, "s1", "claude", "/p", [_call(ts="")])
         assert spawned == []
 
     def test_one_worker_spawned_for_the_whole_batch(
@@ -680,4 +678,3 @@ class TestExportLlmCallsInner:
         assert input_messages[0]["parts"][0]["content"] == "hello"
         assert output_messages[0]["parts"][0]["type"] == "reasoning"
         assert output_messages[0]["parts"][1]["content"] == "hi there"
-
