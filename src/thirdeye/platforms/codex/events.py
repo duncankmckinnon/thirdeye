@@ -85,7 +85,7 @@ def _event_type_for(frame: dict) -> str | None:
     return None
 
 
-def _event_data(frame: dict, offset: int) -> dict:
+def _event_data(frame: dict, offset: int, *, batched_tool: bool = False) -> dict:
     """The event's data: the frame's payload (minus ``type``) plus the offset.
 
     Preserving the payload keeps ``call_id`` intact so ``tool_call`` and
@@ -95,6 +95,8 @@ def _event_data(frame: dict, offset: int) -> dict:
     payload = frame.get("payload")
     data = {k: v for k, v in payload.items() if k != "type"} if isinstance(payload, dict) else {}
     data["rollout_offset"] = offset
+    if batched_tool:
+        data["thirdeye.codex_turn_batched"] = True
     return data
 
 
@@ -106,6 +108,7 @@ def capture_events_codex(
     cwd: str,
     rollout_path: str,
     offset: int,
+    batch_tools: bool = False,
 ) -> tuple[int, int]:
     """Append events for new rollout frames. Returns (events_appended, new_offset).
 
@@ -136,7 +139,11 @@ def capture_events_codex(
             platform="codex",
             cwd=cwd,
             t=event_type,
-            data=_event_data(frame, frame_offset),
+            data=_event_data(
+                frame,
+                frame_offset,
+                batched_tool=batch_tools and event_type in {"tool_call", "tool_result"},
+            ),
         )
         appended += 1
 

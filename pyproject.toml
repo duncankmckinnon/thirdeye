@@ -50,6 +50,14 @@ thirdeye-claude-pre-compact = "thirdeye.platforms.claude.hooks:pre_compact"
 thirdeye-claude-post-compact = "thirdeye.platforms.claude.hooks:post_compact"
 thirdeye-claude-permission-denied = "thirdeye.platforms.claude.hooks:permission_denied"
 thirdeye-codex-notify = "thirdeye.platforms.codex.hooks:notify"
+thirdeye-codex-session-start = "thirdeye.platforms.codex.hooks_json:session_start"
+thirdeye-codex-user-prompt-submit = "thirdeye.platforms.codex.hooks_json:user_prompt_submit"
+thirdeye-codex-subagent-start = "thirdeye.platforms.codex.hooks_json:subagent_start"
+thirdeye-codex-subagent-stop = "thirdeye.platforms.codex.hooks_json:subagent_stop"
+thirdeye-codex-permission-request = "thirdeye.platforms.codex.hooks_json:permission_request"
+thirdeye-codex-pre-compact = "thirdeye.platforms.codex.hooks_json:pre_compact"
+thirdeye-codex-post-compact = "thirdeye.platforms.codex.hooks_json:post_compact"
+thirdeye-codex-session-end = "thirdeye.platforms.codex.hooks_json:session_end"
 
 [build-system]
 requires = ["setuptools>=64", "setuptools-scm>=8", "wheel"]

@@ -169,3 +169,34 @@ class TestMainExportsThroughToLogfire:
         assert len(spans) == 1
         assert spans[0]["attributes"]["gen_ai.usage.input_tokens"] == 10
         assert "gen_ai.output.messages" in spans[0]["attributes"]
+
+    @pytest.mark.parametrize("exported,expected_exists", [(True, True), (False, False)])
+    def test_codex_turn_job_commits_or_releases_state(
+        self,
+        home: Path,
+        enabled: None,
+        monkeypatch: pytest.MonkeyPatch,
+        exported: bool,
+        expected_exists: bool,
+    ):
+        state_path = home / "turn-state"
+        state_path.write_text("pending")
+        monkeypatch.setattr(otel_export, "_export_codex_turn_inner", lambda **kwargs: exported)
+        job_path = home / "job.json"
+        job_path.write_text(
+            json.dumps(
+                {
+                    "kind": "codex_turn",
+                    "session_dir": str(home / "traces" / "codex" / "s1"),
+                    "session_id": "s1",
+                    "cwd": "/proj",
+                    "seq": 1,
+                    "turn": {},
+                    "state_path": str(state_path),
+                }
+            )
+        )
+        otel_worker.main([str(job_path)])
+        assert state_path.exists() is expected_exists
+        if expected_exists:
+            assert state_path.read_text() == "sent"

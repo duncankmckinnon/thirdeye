@@ -37,7 +37,26 @@ def main(argv: list[str] | None = None) -> None:
         from thirdeye.config import Config
 
         config = Config.load()
-        if payload.get("kind") == "llm_calls":
+        if payload.get("kind") == "codex_turn":
+            from thirdeye.otel_export import _export_codex_turn_inner
+
+            state_path = Path(payload["state_path"])
+            try:
+                exported = _export_codex_turn_inner(
+                    config=config,
+                    session_dir_=Path(payload["session_dir"]),
+                    session_id=payload["session_id"],
+                    cwd=payload["cwd"],
+                    seq=payload["seq"],
+                    turn=payload["turn"],
+                )
+                if not exported:
+                    raise RuntimeError("Codex turn export was not flushed")
+                state_path.write_text("sent")
+            except Exception:
+                state_path.unlink(missing_ok=True)
+                raise
+        elif payload.get("kind") == "llm_calls":
             from thirdeye.otel_export import _export_llm_calls_inner
 
             _export_llm_calls_inner(
