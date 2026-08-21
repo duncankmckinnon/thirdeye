@@ -18,9 +18,13 @@ from pathlib import Path
 from typing import Any
 
 
+def _iso_ms(value: datetime) -> str:
+    return value.strftime("%Y-%m-%dT%H:%M:%S.") + f"{value.microsecond // 1000:03d}Z"
+
+
 def _unix_seconds_to_iso(value: Any, fallback: str) -> str:
     if isinstance(value, (int, float)):
-        return datetime.fromtimestamp(value, tz=UTC).isoformat().replace("+00:00", "Z")
+        return _iso_ms(datetime.fromtimestamp(value, tz=UTC))
     return fallback
 
 
@@ -32,7 +36,7 @@ def _subtract_duration(ts: str, duration: Any) -> str:
         delta = timedelta(
             seconds=float(duration.get("secs", 0)) + float(duration.get("nanos", 0)) / 1e9
         )
-        return (end - delta).isoformat().replace("+00:00", "Z")
+        return _iso_ms(end - delta)
     except (TypeError, ValueError, OverflowError):
         return ts
 

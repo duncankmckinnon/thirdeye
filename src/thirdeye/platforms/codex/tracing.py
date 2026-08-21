@@ -66,20 +66,18 @@ def _permission_requests_in_range(
 
 
 def _subagent_turn(
-    session_id: str, start: dict[str, Any], stop: dict[str, Any] | None
+    session_id: str, start: dict[str, Any], stop: dict[str, Any]
 ) -> TurnSpanDict:
     start_data = start.get("data") or {}
-    stop_data = (stop.get("data") or {}) if stop is not None else {}
+    stop_data = stop.get("data") or {}
     input_message = start_data.get("prompt") or start_data.get("description") or ""
     output_message = stop_data.get("message") or stop_data.get("output") or ""
     return {
         "turn_id": f"subagent:{session_id}:{start.get('seq')}",
         "start_ts": str(start.get("ts") or ""),
-        "end_ts": str((stop or start).get("ts") or ""),
+        "end_ts": str(stop.get("ts") or ""),
         "input_message": str(input_message),
-        # A start with no matching stop inside this turn's window means the
-        # subagent never reported back before its parent turn ended.
-        "status": "completed" if stop is not None else "interrupted",
+        "status": "completed",
         "output_message": str(output_message),
         "llm_calls": [],
         "permission_requests": [],
@@ -116,10 +114,6 @@ def _subagents_in_range(
         # A stop with nothing open on the stack has no start in this turn's
         # own window to pair with -- nothing to nest it under, so it's
         # dropped rather than fabricating a start for it.
-
-    # Anything left open never got a matching stop before the turn ended.
-    while stack:
-        subagents.append(_subagent_turn(session_id, stack.pop(), None))
 
     subagents.sort(key=lambda subagent: subagent["start_ts"])
     return subagents

@@ -206,6 +206,23 @@ class TestBuildTurnFromLocalStore:
         turn = build_turn(session_dir_=sd, session_id="s1", seq=seq + 1, turn=_bare_turn())
         assert turn["subagents"] == []
 
+    def test_unmatched_subagent_start_is_excluded(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ):
+        store = Store(Config(root=tmp_path))
+        _set_next_timestamps(monkeypatch, ["2026-01-01T00:00:02.000Z"])
+        seq = store.append_event(
+            session_id="s1",
+            platform="codex",
+            cwd="/p",
+            t="subagent_start",
+            data={"prompt": "unfinished"},
+        )
+        sd = session_dir(tmp_path, "codex", "s1")
+
+        turn = build_turn(session_dir_=sd, session_id="s1", seq=seq + 1, turn=_bare_turn())
+        assert turn["subagents"] == []
+
     def test_malformed_event_timestamp_is_excluded_not_raised(
         self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
     ):

@@ -243,11 +243,49 @@ def test_extracts_mcp_and_image_tools_and_provider_timing(tmp_path: Path) -> Non
     )
     turn = extract_turn_codex(str(path), "t1")
     assert turn is not None
-    assert turn["start_ts"] == "2026-01-01T00:00:00Z"
-    assert turn["end_ts"] == "2026-01-01T00:00:05Z"
+    assert turn["start_ts"] == "2026-01-01T00:00:00.000Z"
+    assert turn["end_ts"] == "2026-01-01T00:00:05.000Z"
     tool_calls = turn["calls"][0]["tool_calls"]
     assert [tool["name"] for tool in tool_calls] == ["files.read", "image_generation"]
-    assert tool_calls[0]["start_ts"] == "2026-01-01T00:00:01Z"
+    assert tool_calls[0]["start_ts"] == "2026-01-01T00:00:01.000Z"
+
+
+def test_synthesized_timestamps_use_millisecond_format(tmp_path: Path) -> None:
+    path = tmp_path / "rollout.jsonl"
+    path.write_text(
+        "\n".join(
+            [
+                _frame("fallback", "turn_context", {"turn_id": "t1", "model": "gpt-5"}),
+                _frame(
+                    "fallback",
+                    "event_msg",
+                    {"type": "task_started", "turn_id": "t1", "started_at": 0},
+                ),
+                _frame(
+                    "1970-01-01T00:00:01.000Z",
+                    "event_msg",
+                    {
+                        "type": "mcp_tool_call_end",
+                        "call_id": "m1",
+                        "invocation": {"server": "files", "tool": "read"},
+                        "duration": {"secs": 0, "nanos": 876544000},
+                    },
+                ),
+                _frame(
+                    "fallback",
+                    "event_msg",
+                    {"type": "task_complete", "turn_id": "t1", "completed_at": 0.123456},
+                ),
+            ]
+        )
+        + "\n"
+    )
+
+    turn = extract_turn_codex(str(path), "t1")
+    assert turn is not None
+    assert turn["start_ts"] == "1970-01-01T00:00:00.000Z"
+    assert turn["end_ts"] == "1970-01-01T00:00:00.123Z"
+    assert turn["calls"][0]["tool_calls"][0]["start_ts"] == "1970-01-01T00:00:00.123Z"
 
 
 def test_turn_aborted_marks_interrupted_and_keeps_partial_call(tmp_path: Path) -> None:
