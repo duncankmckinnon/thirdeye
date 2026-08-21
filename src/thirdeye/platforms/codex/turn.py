@@ -1,9 +1,13 @@
 """Reconstruct one completed Codex turn from its rollout JSONL.
 
-Codex's notify payload is intentionally small.  The rollout is the source of
-truth for turn timing, messages, usage, and tool execution, so Logfire export
-uses one turn-level inference span with tool children instead of trying to
-correlate the many repeated ``token_count`` frames to individual responses.
+Codex's notify payload is intentionally small. The rollout is the source of
+truth for turn timing, messages, usage, and tool execution, so
+``extract_turn_codex`` walks it to group frames into one entry per model
+inference (``calls``, each already shaped as a
+``thirdeye.tracing.model.LlmCallSpanDict`` with its own ``ToolCallSpanDict``
+children) instead of trying to correlate the many repeated ``token_count``
+frames to individual responses some other way. ``platforms/codex/tracing.py``
+adapts this dict's shape into a full ``TurnSpanDict``.
 """
 
 from __future__ import annotations
@@ -33,12 +37,76 @@ def _subtract_duration(ts: str, duration: Any) -> str:
         return ts
 
 
+# Renames a Codex rollout usage block's own key names onto UsageDict's, per
+# thirdeye.tracing.model.UsageDict.
+_USAGE_RENAME = {
+    "input_tokens": "input_tokens",
+    "output_tokens": "output_tokens",
+    "cached_input_tokens": "cache_read_input_tokens",
+    "cache_write_input_tokens": "cache_creation_input_tokens",
+    "reasoning_output_tokens": "reasoning_output_tokens",
+}
+
+
+def _usage_dict(raw: dict[str, Any]) -> dict[str, int]:
+    return {
+        target: raw[source]
+        for source, target in _USAGE_RENAME.items()
+        if isinstance(raw.get(source), int)
+    }
+
+
+def _tool_call_dicts(entries: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    return [
+        {
+            "tool_call_id": entry["call_id"],
+            "name": entry["name"],
+            "start_ts": entry["start_ts"],
+            "end_ts": entry["end_ts"],
+            "attributes": {"arguments": entry["arguments"], "result": entry["result"]},
+        }
+        for entry in entries
+    ]
+
+
+def _llm_call_dict(
+    *,
+    turn_id: str,
+    call_index: int,
+    model: str,
+    start_ts: str,
+    end_ts: str,
+    input_parts: list[dict[str, Any]],
+    output_parts: list[dict[str, Any]],
+    usage: dict[str, Any],
+    tools: list[dict[str, Any]],
+) -> dict[str, Any]:
+    return {
+        "call_id": f"{turn_id}:{call_index}",
+        "provider": "openai",
+        "model": model,
+        "start_ts": start_ts,
+        "end_ts": end_ts,
+        "input_messages": (
+            [{"role": "user" if call_index == 0 else "tool", "parts": input_parts}]
+            if input_parts
+            else []
+        ),
+        "output_messages": (
+            [{"role": "assistant", "parts": output_parts}] if output_parts else []
+        ),
+        "usage": _usage_dict(usage),
+        "tool_calls": _tool_call_dicts(tools),
+    }
+
+
 def extract_turn_codex(rollout_path: str, turn_id: str) -> dict[str, Any] | None:
     path = Path(rollout_path)
     if not turn_id or not path.is_file():
         return None
 
     in_turn = False
+    status = "completed"
     start_ts = ""
     end_ts = ""
     model = ""
@@ -52,7 +120,6 @@ def extract_turn_codex(rollout_path: str, turn_id: str) -> dict[str, Any] | None
     next_input_parts: list[dict[str, Any]] = []
     call_start_ts = ""
     last_output_ts = ""
-    tools: list[dict[str, Any]] = []
     pending: dict[str, dict[str, Any]] = {}
     pending_search: dict[str, Any] | None = None
 
@@ -98,6 +165,13 @@ def extract_turn_codex(rollout_path: str, turn_id: str) -> dict[str, Any] | None
                 assistant_output = str(payload.get("last_agent_message") or assistant_output)
                 end_ts = _unix_seconds_to_iso(payload.get("completed_at"), ts or end_ts)
             continue
+        if outer == "event_msg" and subtype == "turn_aborted":
+            frame_turn = str(payload.get("turn_id") or turn_id)
+            if frame_turn == turn_id:
+                status = "interrupted"
+                end_ts = ts or end_ts
+                break
+            continue
         if outer == "event_msg" and subtype == "user_message":
             user_prompt = str(payload.get("message") or user_prompt)
             if user_prompt and not input_parts:
@@ -130,22 +204,17 @@ def extract_turn_codex(rollout_path: str, turn_id: str) -> dict[str, Any] | None
                 end_ts = ts or end_ts
                 if is_new_call and (output_parts or call_tools):
                     calls.append(
-                        {
-                            "start_ts": call_start_ts or start_ts or ts,
-                            "end_ts": last_output_ts or ts,
-                            "input_messages": (
-                                [{"role": "user" if not calls else "tool", "parts": input_parts}]
-                                if input_parts
-                                else []
-                            ),
-                            "output_messages": (
-                                [{"role": "assistant", "parts": output_parts}]
-                                if output_parts
-                                else []
-                            ),
-                            "usage": dict(last),
-                            "tools": call_tools,
-                        }
+                        _llm_call_dict(
+                            turn_id=turn_id,
+                            call_index=len(calls),
+                            model=model,
+                            start_ts=call_start_ts or start_ts or ts,
+                            end_ts=last_output_ts or ts,
+                            input_parts=input_parts,
+                            output_parts=output_parts,
+                            usage=dict(last),
+                            tools=call_tools,
+                        )
                     )
                     input_parts = next_input_parts
                     output_parts = []
@@ -194,7 +263,6 @@ def extract_turn_codex(rollout_path: str, turn_id: str) -> dict[str, Any] | None
                 "start_ts": ts,
                 "end_ts": ts,
             }
-            tools.append(entry)
             call_tools.append(entry)
             output_parts.append(
                 {
@@ -218,7 +286,6 @@ def extract_turn_codex(rollout_path: str, turn_id: str) -> dict[str, Any] | None
                 "start_ts": ts,
                 "end_ts": ts,
             }
-            tools.append(entry)
             call_tools.append(entry)
             output_parts.append(
                 {
@@ -244,7 +311,6 @@ def extract_turn_codex(rollout_path: str, turn_id: str) -> dict[str, Any] | None
                 "start_ts": _subtract_duration(ts, payload.get("duration")),
                 "end_ts": ts,
             }
-            tools.append(entry)
             call_tools.append(entry)
             output_parts.append(
                 {
@@ -287,7 +353,6 @@ def extract_turn_codex(rollout_path: str, turn_id: str) -> dict[str, Any] | None
                 "start_ts": (pending_search or {}).get("ts") or ts,
                 "end_ts": ts,
             }
-            tools.append(entry)
             call_tools.append(entry)
             output_parts.append(
                 {
@@ -303,49 +368,29 @@ def extract_turn_codex(rollout_path: str, turn_id: str) -> dict[str, Any] | None
     if not in_turn:
         return None
 
-    totals = {
-        "input_tokens": 0,
-        "output_tokens": 0,
-        "cached_input_tokens": 0,
-        "cache_write_input_tokens": 0,
-        "reasoning_output_tokens": 0,
-    }
-    present: set[str] = set()
-    for usage in usage_by_total.values():
-        for key in totals:
-            value = usage.get(key)
-            if isinstance(value, int):
-                totals[key] += value
-                present.add(key)
-
     # Some older/trimmed rollouts omit the final token_count frame. Preserve
     # their final visible assistant output as a call even without usage.
     if output_parts or call_tools:
         calls.append(
-            {
-                "start_ts": call_start_ts or start_ts or end_ts,
-                "end_ts": last_output_ts or end_ts or start_ts,
-                "input_messages": (
-                    [{"role": "user" if not calls else "tool", "parts": input_parts}]
-                    if input_parts
-                    else []
-                ),
-                "output_messages": (
-                    [{"role": "assistant", "parts": output_parts}] if output_parts else []
-                ),
-                "usage": {},
-                "tools": call_tools,
-            }
+            _llm_call_dict(
+                turn_id=turn_id,
+                call_index=len(calls),
+                model=model,
+                start_ts=call_start_ts or start_ts or end_ts,
+                end_ts=last_output_ts or end_ts or start_ts,
+                input_parts=input_parts,
+                output_parts=output_parts,
+                usage={},
+                tools=call_tools,
+            )
         )
 
     return {
         "turn_id": turn_id,
         "start_ts": start_ts or end_ts,
         "end_ts": end_ts or start_ts,
-        "model": model,
         "user_prompt": user_prompt,
         "assistant_output": assistant_output,
-        "usage": {key: value for key, value in totals.items() if key in present},
-        "tools": tools,
+        "status": status,
         "calls": calls,
     }
