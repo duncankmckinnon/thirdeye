@@ -89,7 +89,6 @@ def session_start() -> None:
 def notify() -> None:
     from thirdeye.platforms.codex.events import capture_events_codex
     from thirdeye.platforms.codex.rollout import resolve_rollout
-    from thirdeye.platforms.codex.turn import extract_turn_codex
     from thirdeye.platforms.codex.usage import capture_usage_codex
 
     try:
@@ -100,7 +99,6 @@ def notify() -> None:
         if not sid:
             return
         cwd = _flex_get(payload, "cwd", "working-directory", "working_directory") or os.getcwd()
-        turn_id = _flex_get(payload, "turn-id", "turn_id", "turnId") or ""
         config = Config.load()
 
         # The agent_turn event uniquely carries `input-messages` and
@@ -137,15 +135,8 @@ def notify() -> None:
 
         offset = int(state.get("rollout_offset", 0))
 
-        # Queue the rollout-reconstructed turn first. Rollout tool events are
-        # suppressed from generic export only when this succeeds, so legacy or
-        # unsupported payloads retain the old paired-tool fallback.
-        turn = extract_turn_codex(rollout_path, turn_id)
-        turn_queued = False
-        if turn is not None:
-            from thirdeye.otel_export import export_codex_turn
-
-            turn_queued = export_codex_turn(config, sd, sid, cwd, seq, turn)
+        # Turn reconstruction and export via thirdeye.otel_export.export_turn
+        # is wired up by a separate, later change to this module.
 
         # One pass over the new rollout range: events first, then usage, then
         # advance the shared bookmark in a single write. Ordering is the one the
@@ -156,7 +147,6 @@ def notify() -> None:
             cwd=cwd,
             rollout_path=rollout_path,
             offset=offset,
-            batch_tools=turn_queued,
         )
         capture_usage_codex(
             thirdeye_home=config.root,

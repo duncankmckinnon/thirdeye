@@ -112,9 +112,7 @@ def post_tool_use() -> None:
 
 
 def stop() -> None:
-    from thirdeye.otel_export import export_llm_calls
-    from thirdeye.platforms.claude.usage import capture_usage_claude, extract_new_calls_claude
-    from thirdeye.usage.store import UsageStore
+    from thirdeye.platforms.claude.usage import capture_usage_claude
 
     payload = _read_stdin()
     sid = payload.get("session_id")
@@ -131,11 +129,6 @@ def stop() -> None:
     )
 
     transcript_path = payload.get("transcript_path")
-    sd = session_dir(config.root, _PLATFORM, sid)
-    # Captured before capture_usage_claude (below) advances it, so
-    # extract_new_calls_claude tail-reads exactly the same new segment
-    # capture_usage_claude just read for token accounting.
-    prior_offset = int(UsageStore(sd).read_state().get("transcript_offset", 0))
 
     capture_usage_claude(
         thirdeye_home=config.root,
@@ -143,16 +136,8 @@ def stop() -> None:
         transcript_path=transcript_path,
         triggering_seq=seq,
     )
-
-    try:
-        new_calls, _new_calls_offset = extract_new_calls_claude(
-            transcript_path=transcript_path, offset=prior_offset
-        )
-        for call in new_calls:
-            call["seq"] = seq
-        export_llm_calls(config, sd, sid, _PLATFORM, cwd, new_calls)
-    except Exception:
-        pass
+    # Turn assembly and export via thirdeye.otel_export.export_turn is wired
+    # up by a separate, later change to this module.
 
 
 def subagent_stop() -> None:
