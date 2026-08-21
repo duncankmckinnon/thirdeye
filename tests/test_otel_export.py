@@ -549,3 +549,99 @@ class TestExportTurnInner:
         )
         spans = exporter.exported_spans_as_dict()
         assert spans[0]["context"]["trace_id"] != spans[-1]["context"]["trace_id"]
+
+
+class TestExportTurnInnerFailureRecovery:
+    """A turn's claim must only become permanent ("sent") once its whole
+    subtree has actually been built and flushed — not the moment export is
+    attempted. Otherwise a transient failure (root ownership never resolves,
+    or the flush itself fails) would permanently suppress every future retry
+    of that turn, silently losing it for good.
+    """
+
+    def test_root_ownership_failure_releases_claim_so_a_retry_can_succeed(
+        self, tmp_path: Path, enabled_config: Config, wired_instance, exporter
+    ):
+        sd = tmp_path / "traces" / "claude" / "s1"
+        turn = _turn()
+        real_root_or_ownership = otel_export._root_or_ownership
+        attempt = {"n": 0}
+
+        def _fails_once(root_path):
+            attempt["n"] += 1
+            if attempt["n"] == 1:
+                return None, None  # simulates _root_or_ownership timing out
+            return real_root_or_ownership(root_path)
+
+        with pytest.MonkeyPatch.context() as mp:
+            mp.setattr(otel_export, "_root_or_ownership", _fails_once)
+            with pytest.raises(RuntimeError):
+                otel_export._export_turn_inner(
+                    config=enabled_config,
+                    session_dir_=sd,
+                    session_id="s1",
+                    platform="claude",
+                    cwd="/proj",
+                    turn=turn,
+                )
+        assert exporter.exported_spans_as_dict() == []
+        claim_path = otel_export._turn_claim_path(sd, turn["turn_id"])
+        assert not claim_path.exists()
+
+        otel_export._export_turn_inner(
+            config=enabled_config,
+            session_dir_=sd,
+            session_id="s1",
+            platform="claude",
+            cwd="/proj",
+            turn=turn,
+        )
+        assert claim_path.read_text() == "sent"
+        spans = exporter.exported_spans_as_dict()
+        assert len(spans) == 2  # session root + turn span
+        assert spans[-1]["name"] == "agent-turn"
+
+    def test_flush_failure_releases_claim_so_a_retry_can_succeed(
+        self,
+        tmp_path: Path,
+        enabled_config: Config,
+        wired_instance,
+        exporter,
+        monkeypatch: pytest.MonkeyPatch,
+    ):
+        sd = tmp_path / "traces" / "claude" / "s1"
+        turn = _turn()
+        real_force_flush = wired_instance.force_flush
+        attempt = {"n": 0}
+
+        def _flush_fails_once(*args, **kwargs):
+            attempt["n"] += 1
+            if attempt["n"] == 1:
+                return False
+            return real_force_flush(*args, **kwargs)
+
+        monkeypatch.setattr(wired_instance, "force_flush", _flush_fails_once)
+
+        with pytest.raises(RuntimeError):
+            otel_export._export_turn_inner(
+                config=enabled_config,
+                session_dir_=sd,
+                session_id="s1",
+                platform="claude",
+                cwd="/proj",
+                turn=turn,
+            )
+        claim_path = otel_export._turn_claim_path(sd, turn["turn_id"])
+        assert not claim_path.exists()
+        spans_after_failure = len(exporter.exported_spans_as_dict())
+
+        otel_export._export_turn_inner(
+            config=enabled_config,
+            session_dir_=sd,
+            session_id="s1",
+            platform="claude",
+            cwd="/proj",
+            turn=turn,
+        )
+        assert claim_path.read_text() == "sent"
+        assert len(exporter.exported_spans_as_dict()) > spans_after_failure

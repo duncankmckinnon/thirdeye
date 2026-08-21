@@ -368,6 +368,13 @@ def _spawn(job_path: Path) -> None:
     )
 
 
+# How long a "pending" turn claim is honored before being treated as
+# abandoned (the worker that made it died mid-export) and reclaimed by a
+# later retry — same threshold and pending/sent shape the old per-turn Codex
+# export claim used.
+_TURN_CLAIM_STALE_S = 30.0
+
+
 def _turn_claim_path(session_dir_: Path, turn_id: str) -> Path:
     # Hashed, not the raw turn_id, as a filename: nothing guarantees any
     # platform's turn id is filesystem- or path-traversal-safe.
@@ -376,12 +383,31 @@ def _turn_claim_path(session_dir_: Path, turn_id: str) -> Path:
 
 
 def _claim_turn_export(session_dir_: Path, turn_id: str) -> bool:
-    """First-wins claim on exporting this turn_id's span tree, ever, for this
+    """First-wins claim on exporting this turn's span tree, ever, for this
     session. A replayed/duplicate hook invocation for the same turn (e.g. the
     open-turn-marker catch-all firing after the turn was already closed out
-    normally) must not export it a second time.
+    normally) must not export it a second time — but a claim only becomes
+    permanent ("sent") once the whole subtree has actually been built and
+    flushed; until then it's "pending", so a crash or a failed flush partway
+    through releases the claim (see `_export_turn_inner`) rather than losing
+    the turn forever.
     """
-    return _atomic_create(_turn_claim_path(session_dir_, turn_id), "1")
+    claim_path = _turn_claim_path(session_dir_, turn_id)
+    try:
+        state = claim_path.read_text()
+    except OSError:
+        state = ""
+    if state == "sent":
+        return False
+    if state == "pending":
+        try:
+            stale = time.time() - claim_path.stat().st_mtime > _TURN_CLAIM_STALE_S
+        except OSError:
+            stale = True
+        if not stale:
+            return False
+        claim_path.unlink(missing_ok=True)
+    return _atomic_create(claim_path, "pending")
 
 
 def export_turn(
@@ -435,37 +461,47 @@ def _export_turn_inner(
         return
     if not _claim_turn_export(session_dir_, turn["turn_id"]):
         return
+    claim_path = _turn_claim_path(session_dir_, turn["turn_id"])
 
-    tracer = instance.config.get_tracer_provider().get_tracer("thirdeye")
-    root_path = otel_state_path(session_dir_)
-    parent, root_lock = _root_or_ownership(root_path)
     try:
-        if parent is None and root_lock is None:
-            return
-        if parent is None:
-            # First export for this session: the root is purely an anchor,
-            # so it carries none of the turn's own input/output content.
-            root_ns = _ts_to_ns(turn["start_ts"])
-            root_attrs = _flatten_attrs(
-                {
-                    "gen_ai.conversation.id": session_id,
-                    "thirdeye.platform": platform,
-                    "thirdeye.cwd": cwd,
-                }
-            )
-            root_span = tracer.start_span("session", start_time=root_ns, attributes=root_attrs)
-            root_span.end(end_time=root_ns)
-            root_ctx = root_span.get_span_context()
-            parent = _create_root_atomic(root_path, root_ctx.trace_id, root_ctx.span_id)
-    finally:
-        if root_lock is not None:
-            root_lock.unlink(missing_ok=True)
+        tracer = instance.config.get_tracer_provider().get_tracer("thirdeye")
+        root_path = otel_state_path(session_dir_)
+        parent, root_lock = _root_or_ownership(root_path)
+        try:
+            if parent is None and root_lock is None:
+                raise RuntimeError("could not resolve or create session root")
+            if parent is None:
+                # First export for this session: the root is purely an
+                # anchor, so it carries none of the turn's own input/output
+                # content.
+                root_ns = _ts_to_ns(turn["start_ts"])
+                root_attrs = _flatten_attrs(
+                    {
+                        "gen_ai.conversation.id": session_id,
+                        "thirdeye.platform": platform,
+                        "thirdeye.cwd": cwd,
+                    }
+                )
+                root_span = tracer.start_span(
+                    "session", start_time=root_ns, attributes=root_attrs
+                )
+                root_span.end(end_time=root_ns)
+                root_ctx = root_span.get_span_context()
+                parent = _create_root_atomic(root_path, root_ctx.trace_id, root_ctx.span_id)
+        finally:
+            if root_lock is not None:
+                root_lock.unlink(missing_ok=True)
 
-    parent_ctx = _parent_context(*parent)
-    _export_turn_subtree(
-        tracer, parent_ctx, turn, session_id=session_id, platform=platform, cwd=cwd
-    )
-    instance.force_flush(timeout_millis=_FLUSH_TIMEOUT_MS)
+        parent_ctx = _parent_context(*parent)
+        _export_turn_subtree(
+            tracer, parent_ctx, turn, session_id=session_id, platform=platform, cwd=cwd
+        )
+        if instance.force_flush(timeout_millis=_FLUSH_TIMEOUT_MS) is False:
+            raise RuntimeError("turn export was not flushed")
+    except Exception:
+        claim_path.unlink(missing_ok=True)
+        raise
+    claim_path.write_text("sent")
 
 
 def _export_turn_subtree(
