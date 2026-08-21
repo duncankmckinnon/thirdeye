@@ -448,6 +448,31 @@ class TestBuildTurn:
 
 
 class TestInterruptionHandling:
+    def test_different_prompt_id_closes_interrupted_turn_on_any_hook(
+        self, monkeypatch, env: Path
+    ):
+        exported = []
+        monkeypatch.setattr(
+            "thirdeye.otel_export.export_turn",
+            lambda config, sd, sid, platform, cwd, turn: exported.append(turn),
+        )
+        sid = "s1"
+        _stdin(
+            monkeypatch,
+            {"session_id": sid, "cwd": "/p", "prompt": "first", "prompt_id": "p1"},
+        )
+        hooks.user_prompt_submit()
+
+        _stdin(
+            monkeypatch,
+            {"session_id": sid, "cwd": "/p", "message": "next", "prompt_id": "p2"},
+        )
+        hooks.notification()
+
+        assert len(exported) == 1
+        assert exported[0]["status"] == "interrupted"
+        assert not hooks._open_turn_path(session_dir(env, "claude", sid)).exists()
+
     def test_session_end_closes_stale_turn_as_interrupted(self, monkeypatch, env: Path):
         exported = []
         monkeypatch.setattr(
@@ -578,6 +603,49 @@ class TestInterruptionHandling:
 
         assert len(exported) == 1
         assert exported[0]["status"] == "completed"
+
+    @pytest.mark.parametrize(
+        "hook_name,payload",
+        [
+            ("pre_tool_use", {"tool_name": "Bash", "tool_use_id": "tu_1", "tool_input": {}}),
+            ("post_tool_use", {"tool_name": "Bash", "tool_use_id": "tu_1", "tool_response": "ok"}),
+            ("permission_request", {"tool_name": "Write"}),
+            ("permission_denied", {"tool_name": "Write"}),
+            ("subagent_start", {"agent_id": "agent_1", "agent_type": "explore"}),
+            ("subagent_stop", {"agent_id": "agent_1", "last_assistant_message": "done"}),
+            ("post_compact", {}),
+        ],
+    )
+    def test_every_mid_turn_event_type_leaves_the_open_turn_untouched(
+        self, monkeypatch, env: Path, hook_name: str, payload: dict
+    ):
+        """Regression coverage for the whole `_MID_TURN_EVENT_TYPES` set, not
+        just notification/pre_compact (the two that were actually caught
+        exporting early): every event type in that set must be exempt from
+        `_close_stale_turn_if_open`, or a still-running turn gets truncated
+        and exported early the moment that event type fires.
+        """
+        exported = []
+        monkeypatch.setattr(
+            "thirdeye.otel_export.export_turn",
+            lambda config, sd, sid, platform, cwd, turn: exported.append(turn),
+        )
+        sid = "s1"
+        _stdin(monkeypatch, {"session_id": sid, "cwd": "/p"})
+        hooks.session_start()
+        _stdin(monkeypatch, {"session_id": sid, "cwd": "/p", "prompt": "first prompt"})
+        hooks.user_prompt_submit()
+
+        sd = session_dir(env, "claude", sid)
+        assert hooks._open_turn_path(sd).exists()
+
+        _stdin(monkeypatch, {"session_id": sid, "cwd": "/p", **payload})
+        getattr(hooks, hook_name)()
+
+        assert exported == [], f"{hook_name}() must not export the still-running turn"
+        assert hooks._open_turn_path(sd).exists(), (
+            f"{hook_name}() must not delete the marker of a still-running turn"
+        )
 
 
 # -- stop() normal completion path -----------------------------------------------

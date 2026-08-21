@@ -12,6 +12,7 @@ from thirdeye.tracing.model import (
     PermissionRequestSpanDict,
     ToolCallSpanDict,
     TurnSpanDict,
+    TurnStatus,
 )
 
 _CORRELATED_TYPES = frozenset(
@@ -24,6 +25,9 @@ _CORRELATED_TYPES = frozenset(
         "subagent_message",
     }
 )
+_TOOL_AND_PERMISSION_TYPES = frozenset(
+    {"tool_call", "tool_result", "permission_request", "permission_denied"}
+)
 
 
 def _tool_use_id(data: Any) -> str | None:
@@ -32,10 +36,6 @@ def _tool_use_id(data: Any) -> str | None:
 
 
 def _pair_tool_calls(events: list[dict[str, Any]]) -> list[ToolCallSpanDict]:
-    """Mirrors `web/routes/sessions.py`'s `_pair_events`. A call with no
-    result yet (still running, or the turn was interrupted first) is
-    omitted — there's nothing to attach it to.
-    """
     open_calls: dict[str, dict[str, Any]] = {}
     pairs: list[ToolCallSpanDict] = []
     for ev in events:
@@ -94,86 +94,127 @@ def _attach_tool_calls(
         call["tool_calls"] = attached
 
 
-def _build_subagent_turn(
-    start_ev: dict[str, Any], stop_ev: dict[str, Any], task_ev: dict[str, Any] | None
-) -> TurnSpanDict:
-    start_data = start_ev.get("data") or {}
-    stop_data = stop_ev.get("data") or {}
-    # `hooks.subagent_stop` renames the SubagentStop payload's
-    # `agent_transcript_path` to `agent_transcript` so it survives
-    # `_STRIP_KEYS`, which otherwise strips every `agent_transcript_path`.
-    transcript_path = stop_data.get("agent_transcript")
-    llm_calls, _ = extract_calls_from_transcript(transcript_path, 0)
-
-    # SubagentStart/SubagentStop carry no prompt/result text of their own —
-    # the task text lives on the `Task` tool invocation that launched this
-    # subagent, correlated positionally (see `_pair_subagents`).
-    task_input = (task_ev.get("data") or {}).get("tool_input") if task_ev else None
-    task_input = task_input if isinstance(task_input, dict) else {}
-
-    return {
-        "turn_id": str(start_ev.get("seq")),
-        "start_ts": str(start_ev.get("ts") or ""),
-        "end_ts": str(stop_ev.get("ts") or ""),
-        "input_message": str(task_input.get("prompt") or task_input.get("description") or ""),
-        "output_message": str(stop_data.get("last_assistant_message") or ""),
-        # A subagent only appears here once its own SubagentStop has fired,
-        # so it completed by definition; Claude Code has no "interrupted
-        # subagent" signal to check for instead.
-        "status": "completed",
-        "llm_calls": llm_calls,
-        "permission_requests": [],
-        "subagents": [],
-        "attributes": {k: v for k, v in start_data.items() if k != "agent_id"},
-    }
-
-
-def _pair_subagents(events: list[dict[str, Any]]) -> list[TurnSpanDict]:
-    """Starts and stops are paired by `agent_id`, which SubagentStart and
-    SubagentStop both carry — parallel subagents can finish out of order, so
-    FIFO pairing would mismatch them. The originating `Task` tool call has no
-    shared id with either hook, so it's matched positionally: Claude Code
-    issues each Task's PreToolUse before that subagent's own SubagentStart,
-    in the same relative order, so the oldest not-yet-claimed Task tool_call
-    is that start's likely source.
-    """
-    starts_by_agent: dict[str, dict[str, Any]] = {}
-    task_by_agent: dict[str, dict[str, Any]] = {}
-    pending_tasks: list[dict[str, Any]] = []
-    subagents: list[TurnSpanDict] = []
-    for ev in events:
-        data = ev.get("data") or {}
-        t = ev.get("t")
-        if t == "tool_call" and data.get("tool_name") == "Task":
-            pending_tasks.append(ev)
-        elif t == "subagent_start":
-            agent_id = data.get("agent_id")
-            if not agent_id:
-                continue
-            starts_by_agent[str(agent_id)] = ev
-            if pending_tasks:
-                task_by_agent[str(agent_id)] = pending_tasks.pop(0)
-        elif t == "subagent_message":
-            agent_id = data.get("agent_id")
-            start_ev = starts_by_agent.pop(str(agent_id), None) if agent_id else None
-            if start_ev is None:
-                continue
-            task_ev = task_by_agent.pop(str(agent_id), None)
-            subagents.append(_build_subagent_turn(start_ev, ev, task_ev))
-    return subagents
+def _first_input_text(llm_calls: list[LlmCallSpanDict]) -> str:
+    if not llm_calls:
+        return ""
+    for message in llm_calls[0]["input_messages"]:
+        for part in message.get("parts", []):
+            if part.get("type") == "text" and part.get("content"):
+                return str(part["content"])
+    return ""
 
 
 def _fallback_output_message(llm_calls: list[LlmCallSpanDict]) -> str:
-    """Used when the caller has no `final_response` of its own (the
-    interruption catch-all never has one) — the last text part of the last
-    LLM call's output is the next best source of what the user actually saw.
-    """
     for call in reversed(llm_calls):
         for message in reversed(call["output_messages"]):
             for part in reversed(message.get("parts", [])):
                 if part.get("type") == "text" and part.get("content"):
                     return str(part["content"])
     return ""
+
+
+def _subagent_windows(events: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    starts: dict[str, dict[str, Any]] = {}
+    tasks: dict[str, dict[str, Any]] = {}
+    pending_tasks: list[dict[str, Any]] = []
+    windows: list[dict[str, Any]] = []
+    for ev in events:
+        data = ev.get("data") or {}
+        if ev.get("t") == "tool_call" and data.get("tool_name") == "Task":
+            pending_tasks.append(ev)
+            continue
+        agent_id = data.get("agent_id")
+        if not agent_id:
+            continue
+        agent_id = str(agent_id)
+        if ev.get("t") == "subagent_start":
+            starts[agent_id] = ev
+            if pending_tasks:
+                tasks[agent_id] = pending_tasks.pop(0)
+        elif ev.get("t") == "subagent_message":
+            start_ev = starts.pop(agent_id, None)
+            if start_ev is None:
+                continue
+            windows.append(
+                {
+                    "start": int(start_ev["seq"]),
+                    "stop": int(ev["seq"]),
+                    "agent_id": agent_id,
+                    "start_ev": start_ev,
+                    "stop_ev": ev,
+                    "task_ev": tasks.pop(agent_id, None),
+                }
+            )
+    windows.sort(key=lambda w: w["start"])
+    return windows
+
+
+def _owning_agent(seq: int, windows: list[dict[str, Any]]) -> str | None:
+    # Claude Code doesn't tag a subagent's own tool/permission hook events
+    # with its agent_id, so the smallest seq-range window containing the
+    # event is the best available proxy. This is exact for sequential or
+    # properly-nested subagents; genuinely interleaved concurrent subagents
+    # sharing overlapping windows can still be misattributed to a sibling.
+    owner = None
+    owner_width = None
+    for w in windows:
+        if w["start"] <= seq <= w["stop"]:
+            width = w["stop"] - w["start"]
+            if owner_width is None or width < owner_width:
+                owner, owner_width = w["agent_id"], width
+    return owner
+
+
+def _partition_events(
+    events: list[dict[str, Any]], windows: list[dict[str, Any]]
+) -> tuple[list[dict[str, Any]], dict[str, list[dict[str, Any]]]]:
+    top_level: list[dict[str, Any]] = []
+    owned: dict[str, list[dict[str, Any]]] = {w["agent_id"]: [] for w in windows}
+    for ev in events:
+        if ev.get("t") not in _TOOL_AND_PERMISSION_TYPES:
+            continue
+        owner = _owning_agent(int(ev["seq"]), windows)
+        if owner is None:
+            top_level.append(ev)
+        else:
+            owned[owner].append(ev)
+    return top_level, owned
+
+
+def _build_subagent_turn(
+    start_ev: dict[str, Any],
+    stop_ev: dict[str, Any],
+    tool_calls: list[ToolCallSpanDict],
+    permission_requests: list[PermissionRequestSpanDict],
+    task_ev: dict[str, Any] | None,
+) -> TurnSpanDict:
+    start_data = start_ev.get("data") or {}
+    stop_data = stop_ev.get("data") or {}
+    # `hooks.subagent_stop` renames the SubagentStop payload's
+    # `agent_transcript_path` to `agent_transcript` so it survives `_STRIP_KEYS`.
+    llm_calls, _ = extract_calls_from_transcript(stop_data.get("agent_transcript"), 0)
+    _attach_tool_calls(llm_calls, tool_calls)
+    task_input = (task_ev.get("data") or {}).get("tool_input") if task_ev else None
+    task_input = task_input if isinstance(task_input, dict) else {}
+    return {
+        "turn_id": str(start_ev.get("seq")),
+        "start_ts": str(start_ev.get("ts") or ""),
+        "end_ts": str(stop_ev.get("ts") or ""),
+        # The subagent's own transcript opens with its task prompt as a plain
+        # user message — more reliable than correlating back to the Task tool
+        # call that spawned it, which shares no id with SubagentStart/Stop.
+        "input_message": _first_input_text(llm_calls)
+        or str(task_input.get("prompt") or task_input.get("description") or ""),
+        "output_message": str(stop_data.get("last_assistant_message") or ""),
+        # A subagent only appears here once its own SubagentStop has fired,
+        # so it completed by definition; Claude Code has no "interrupted
+        # subagent" signal to check instead.
+        "status": "completed",
+        "llm_calls": llm_calls,
+        "permission_requests": permission_requests,
+        "subagents": [],
+        "attributes": {k: v for k, v in start_data.items() if k != "agent_id"},
+    }
 
 
 def build_turn(
@@ -186,6 +227,7 @@ def build_turn(
     stop_ts: str,
     transcript_path: str | None,
     final_response: str,
+    status: TurnStatus = "completed",
 ) -> TurnSpanDict | None:
     from thirdeye.platforms.claude.hooks import _open_turn_path
 
@@ -200,9 +242,22 @@ def build_turn(
             types=_CORRELATED_TYPES, seq_range=(turn_seq, stop_seq)
         )
     )
-    tool_calls = _pair_tool_calls(events)
-    permission_requests = _pair_permission_events(events)
-    subagents = _pair_subagents(events)
+    windows = _subagent_windows(events)
+    top_level_events, owned = _partition_events(events, windows)
+
+    subagents = [
+        _build_subagent_turn(
+            w["start_ev"],
+            w["stop_ev"],
+            _pair_tool_calls(owned[w["agent_id"]]),
+            _pair_permission_events(owned[w["agent_id"]]),
+            w["task_ev"],
+        )
+        for w in windows
+    ]
+
+    tool_calls = _pair_tool_calls(top_level_events)
+    permission_requests = _pair_permission_events(top_level_events)
 
     offset = int(marker.get("transcript_offset", 0))
     llm_calls, _ = extract_calls_from_transcript(
@@ -210,13 +265,20 @@ def build_turn(
     )
     _attach_tool_calls(llm_calls, tool_calls)
 
+    # The interruption catch-all has no real final_response and must not
+    # backfill one from the transcript — an empty output is the correct,
+    # honest signal for a turn that never actually finished.
+    output_message = final_response
+    if status == "completed" and not output_message:
+        output_message = _fallback_output_message(llm_calls)
+
     return {
         "turn_id": str(turn_seq),
         "start_ts": str(marker.get("start_ts") or ""),
         "end_ts": stop_ts,
         "input_message": str(marker.get("prompt") or ""),
-        "output_message": final_response or _fallback_output_message(llm_calls),
-        "status": "completed",
+        "output_message": output_message,
+        "status": status,
         "llm_calls": llm_calls,
         "permission_requests": permission_requests,
         "subagents": subagents,
