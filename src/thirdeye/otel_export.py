@@ -388,6 +388,44 @@ def _find_matching_start(
     return fallback
 
 
+def _find_tool_pair(
+    reader: Any, before_seq: int, tool_id: str
+) -> tuple[dict[str, Any] | None, dict[str, Any] | None, int | None]:
+    """Scan backward from before_seq for the tool_call/tool_result events
+    matching tool_id, returning (call_event, result_event, result_seq).
+
+    Used by `_export_llm_calls_inner` to export a Claude tool span nested
+    under the LLM call span that requested it: by the time an
+    assistant_message triggers that scan, the turn's tool calls have already
+    run to completion (Claude Code blocks on PostToolUse before Stop fires),
+    so both events are already in the session store even though the
+    tool_result's own export was deferred — see `export_event`'s
+    ``platform == "claude"`` skip.
+    """
+    call_event = None
+    result_event: dict[str, Any] | None = None
+    result_seq: int | None = None
+    lo = max(0, before_seq - _SCAN_CAP)
+    for seq in range(before_seq - 1, lo - 1, -1):
+        try:
+            event = reader.get_event(seq)
+        except (IndexError, OSError):
+            continue
+        etype = event.get("t")
+        if (
+            etype == "tool_result"
+            and result_event is None
+            and _tool_id(event.get("data")) == tool_id
+        ):
+            result_event = event
+            result_seq = seq
+        elif etype == "tool_call" and call_event is None and _tool_id(event.get("data")) == tool_id:
+            call_event = event
+        if call_event is not None and result_event is not None:
+            break
+    return call_event, result_event, result_seq
+
+
 def export_event(
     *,
     config: Config,
@@ -409,7 +447,7 @@ def export_event(
     # Codex tools are reconstructed as children of the completed turn's
     # inference span from the rollout JSONL. Exporting their local event-store
     # representation too would create a second, generic copy elsewhere in the
-    # trace. Claude still uses event pairing here.
+    # trace.
     if (
         platform == "codex"
         and t in {"tool_call", "tool_result"}
@@ -419,6 +457,15 @@ def export_event(
         return
     if t == "tool_call":
         return  # nothing to export yet; folded into the matching tool_result
+    if platform == "claude" and t == "tool_result":
+        # Claude's tool_call/tool_result hooks fire live, mid-turn, well
+        # before Stop fires the assistant_message whose transcript segment
+        # produces this turn's LLM-call ("chat") spans — the span a tool
+        # result should nest under. Exporting live here would always miss
+        # that not-yet-created parent and fall back to the session root.
+        # Instead these are exported from export_llm_calls, alongside the
+        # chat span, once it actually exists — see _export_llm_calls_inner.
+        return
     try:
         _spawn_worker(
             thirdeye_home=config.root,
@@ -662,9 +709,18 @@ def _export_codex_turn_inner(
         return False
     tracer = instance.config.get_tracer_provider().get_tracer("thirdeye")
     root_path = otel_state_path(session_dir_)
-    parent, root_lock = _root_or_ownership(root_path)
-    if parent is None and root_lock is None:
-        return False
+    # The notify hook has already recorded an ``agent_turn`` event at ``seq``
+    # and queued its generic event span. Its detached worker may still be
+    # racing this one, so wait for that span's persisted context before
+    # falling back to the session root. This keeps every model call for the
+    # completed turn under the turn that triggered it instead of flattening
+    # calls directly beneath the whole session.
+    parent = _resolve_call_parent(session_dir_, root_path, seq)
+    root_lock = None
+    if parent is None:
+        parent, root_lock = _root_or_ownership(root_path)
+        if parent is None and root_lock is None:
+            return False
     model = str(turn.get("model") or "")
     usage_keys = {
         "input_tokens": "gen_ai.usage.input_tokens",
@@ -960,6 +1016,12 @@ def _export_llm_calls_inner(
     Logfire instance, one flush — never one subprocess and one network round
     trip per call (see `export_llm_calls`). Every call shares the same
     triggering seq, so there's exactly one parent to resolve for the batch.
+
+    For Claude, each call's own tool-call spans are exported right here too,
+    as children of the chat span that requested them (see
+    `_find_tool_pair`) — `export_event` defers a Claude `tool_result`
+    specifically so this is the one place it gets exported, once its real
+    parent actually exists instead of racing to find it live.
     """
     if not calls:
         return
@@ -967,10 +1029,15 @@ def _export_llm_calls_inner(
     if instance is None:
         return
 
+    from opentelemetry.trace import SpanKind
+
+    from thirdeye.reader import SessionReader
+
     tracer = instance.config.get_tracer_provider().get_tracer("thirdeye")
     root_path = otel_state_path(session_dir_)
     parent = _resolve_call_parent(session_dir_, root_path, calls[0]["seq"])
     user_message_ns = _preceding_user_message_ns(session_dir_, calls[0]["seq"])
+    reader = SessionReader(session_dir_) if platform == "claude" else None
 
     for call_index, call in enumerate(calls):
         ts_ns = _ts_to_ns(call["ts"])
@@ -1003,12 +1070,44 @@ def _export_llm_calls_inner(
             span.end(end_time=ts_ns)
             ctx = span.get_span_context()
 
-        # So the tool: X spans this call's tool_calls eventually produce (via
-        # _export_event_inner, exported later by a separate hook invocation)
-        # can nest under this exact call instead of the flat session root.
-        for tool_use_id in _tool_call_ids(call["data"]):
+        tool_ids = _tool_call_ids(call["data"])
+        for tool_use_id in tool_ids:
             _persist_span(
                 _tool_call_span_path(session_dir_, tool_use_id), ctx.trace_id, ctx.span_id
+            )
+
+        if reader is None or not tool_ids:
+            continue
+        tool_parent = _parent_context(ctx.trace_id, ctx.span_id)
+        for tool_use_id in tool_ids:
+            if not _claim_call_export(session_dir_, f"tool:{tool_use_id}"):
+                continue
+            call_event, result_event, result_seq = _find_tool_pair(reader, call["seq"], tool_use_id)
+            if result_event is None or result_seq is None:
+                continue
+            tool_attrs = _flatten_attrs(
+                _merge_raw(call_event.get("data") if call_event else None, result_event.get("data"))
+            )
+            tool_name = tool_attrs.get("tool_name")
+            tool_span_name = f"tool: {tool_name}" if tool_name else "tool_result"
+            tool_attrs["gen_ai.conversation.id"] = session_id
+            tool_attrs["thirdeye.platform"] = platform
+            tool_attrs["thirdeye.cwd"] = cwd
+            tool_attrs["thirdeye.seq"] = result_seq
+            tool_start_ns = (
+                _ts_to_ns(call_event["ts"]) if call_event else _ts_to_ns(result_event["ts"])
+            )
+            tool_span = tracer.start_span(
+                tool_span_name,
+                context=tool_parent,
+                kind=SpanKind.INTERNAL,
+                start_time=tool_start_ns,
+                attributes=tool_attrs,
+            )
+            tool_span.end(end_time=_ts_to_ns(result_event["ts"]))
+            tool_ctx = tool_span.get_span_context()
+            _persist_span(
+                otel_span_path(session_dir_, result_seq), tool_ctx.trace_id, tool_ctx.span_id
             )
 
     instance.force_flush(timeout_millis=_FLUSH_TIMEOUT_MS)

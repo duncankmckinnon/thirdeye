@@ -347,6 +347,26 @@ def test_codex_platform_name_matches_key():
     assert instance.name == "codex"
 
 
+def test_add_codex_foreign_notify_errors_without_force(tmp_path: Path, monkeypatch):
+    config = tmp_path / "config.toml"
+    config.write_text("notify = ['/usr/local/bin/other-notify']\n")
+    monkeypatch.setitem(PLATFORMS, "codex", lambda **kw: CodexPlatform(config_file=config, **kw))
+    r = CliRunner().invoke(main, ["add", "--codex"])
+    assert r.exit_code != 0
+    assert "--force" in r.output
+
+
+def test_add_codex_force_takes_over_foreign_notify(tmp_path: Path, monkeypatch):
+    config = tmp_path / "config.toml"
+    config.write_text("notify = ['/usr/local/bin/other-notify']\n")
+    monkeypatch.setitem(PLATFORMS, "codex", lambda **kw: CodexPlatform(config_file=config, **kw))
+    r = CliRunner().invoke(main, ["add", "--codex", "--force"])
+    assert r.exit_code == 0, r.output
+    text = config.read_text()
+    assert "thirdeye-codex-notify" in text
+    assert "other-notify" not in text
+
+
 # -- add --list ----------------------------------------------------------------
 
 
