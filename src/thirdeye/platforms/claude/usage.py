@@ -3,8 +3,10 @@ from __future__ import annotations
 import dataclasses
 import json
 from pathlib import Path
+from typing import Any
 
 from thirdeye.paths import session_dir
+from thirdeye.tracing.model import LlmCallSpanDict, UsageDict
 from thirdeye.usage.errlog import log_capture_error, safe_capture
 from thirdeye.usage.store import UsageStore
 from thirdeye.usage.types import UsageRow
@@ -110,10 +112,11 @@ def capture_usage_claude(
 ) -> int | None:
     """Parse and persist new usage rows in one call — thin composition of
     `parse_new_usage_rows_claude` and `persist_usage_rows_claude`, which are
-    also usable independently (`stop()` in claude/hooks.py reads the
-    transcript offset before calling this, for `extract_new_calls_claude`'s
-    sake, but does that with its own separate `UsageStore` read rather than
-    needing the split itself).
+    also usable independently. This is purely local token accounting for
+    `thirdeye usage` reporting; `build_turn` (claude/tracing.py) reads the
+    transcript for `extract_calls_from_transcript`'s sake completely
+    separately, via the open-turn marker's own captured offset, not this
+    function's `UsageStore` bookmark.
 
     Returns `None` on a genuine parse error (already logged), `0` if there
     was nothing to parse, else the number of rows persisted.
@@ -135,14 +138,14 @@ def capture_usage_claude(
     )
 
 
-def extract_new_calls_claude(
-    *,
+def extract_calls_from_transcript(
     transcript_path: str | None,
     offset: int,
-) -> tuple[list[dict], int]:
+) -> tuple[list[LlmCallSpanDict], int]:
     """Tail-parse the Claude transcript for new LLM calls since `offset`,
-    building the rich per-call span data (content, not just token counts)
-    that `otel_export.export_llm_calls` sends to Logfire.
+    building `LlmCallSpanDict` records for `thirdeye.platforms.claude.tracing
+    .build_turn` to assemble into a `TurnSpanDict` for `otel_export
+    .export_turn`.
 
     Claude Code logs each content block of one API response as its own JSONL
     line — several consecutive frames can share one `message.id`, each
@@ -151,18 +154,18 @@ def extract_new_calls_claude(
     non-assistant content (user text, tool results) that preceded it, as its
     input.
 
-    `offset` is the caller's responsibility, not read from state here: this
-    walks the *same* transcript range `parse_new_usage_rows_claude` already
-    reads for token accounting (pass it the same offset that came from
-    `UsageStore.read_state()`), so the two must agree on what "new" means for
-    a given hook invocation rather than each independently reading state.
+    `tool_calls` is always empty on every returned call: a tool_use/
+    tool_result content block carries only arguments/response content, not
+    real start/end timestamps, which live in thirdeye's own `tool_call`/
+    `tool_result` events instead — pairing those in against the local event
+    store is `build_turn`'s job, not this function's.
 
-    Returns `(new_calls, new_offset)`. Each call is `{"seq": 0, "ts": str,
-    "call_id": str, "data": dict}` — `data` holds the fully-formed gen_ai.*
-    span attributes, including `gen_ai.input.messages` /
-    `gen_ai.output.messages` when there was anything to report. `seq` is a
-    placeholder; the caller stamps it with the real triggering seq before
-    passing calls to `export_llm_calls`. Never raises: any error here should
+    `offset` is the caller's responsibility, not read from state here — see
+    `build_turn`, which sources it from the open-turn marker it already reads
+    for `turn_seq`/`prompt`, independently of `parse_new_usage_rows_claude`'s
+    own `UsageStore` bookmark.
+
+    Returns `(new_calls, new_offset)`. Never raises: any error here should
     not be able to block the ordinary usage/event capture paths that already
     run in the same hook call, so unlike the other functions in this module
     this one is not `@safe_capture`-wrapped by itself — call it inside a
@@ -174,36 +177,45 @@ def extract_new_calls_claude(
     if not tp.is_file():
         return [], offset
 
-    new_calls: list[dict] = []
+    new_calls: list[LlmCallSpanDict] = []
     pending_input_parts: list[dict] = []
     pending_input_role = "user"
-    current: dict[str, object] | None = None
+    current: dict[str, Any] | None = None
 
     def flush_current() -> None:
         nonlocal current
         if current is None:
             return
-        data: dict[str, object] = {
-            "gen_ai.provider.name": "anthropic",
-            "gen_ai.operation.name": "chat",
-            "gen_ai.response.model": current["model"],
-            "gen_ai.usage.input_tokens": current["input_tokens"],
-            "gen_ai.usage.output_tokens": current["output_tokens"],
+        usage: UsageDict = {
+            "input_tokens": current["input_tokens"],
+            "output_tokens": current["output_tokens"],
         }
         if current["cache_read"] is not None:
-            data["gen_ai.usage.cache_read.input_tokens"] = current["cache_read"]
+            usage["cache_read_input_tokens"] = current["cache_read"]
         if current["cache_creation"] is not None:
-            data["gen_ai.usage.cache_creation.input_tokens"] = current["cache_creation"]
-        if current["input_parts"]:
-            data["gen_ai.input.messages"] = [
-                {"role": current["input_role"], "parts": current["input_parts"]}
-            ]
-        if current["output_parts"]:
-            data["gen_ai.output.messages"] = [
-                {"role": "assistant", "parts": current["output_parts"]}
-            ]
+            usage["cache_creation_input_tokens"] = current["cache_creation"]
+        input_messages = (
+            [{"role": current["input_role"], "parts": current["input_parts"]}]
+            if current["input_parts"]
+            else []
+        )
+        output_messages = (
+            [{"role": "assistant", "parts": current["output_parts"]}]
+            if current["output_parts"]
+            else []
+        )
         new_calls.append(
-            {"seq": 0, "ts": current["ts"], "call_id": current["call_id"], "data": data}
+            {
+                "call_id": current["call_id"],
+                "provider": "anthropic",
+                "model": current["model"],
+                "start_ts": current["ts"],
+                "end_ts": current["ts"],
+                "input_messages": input_messages,
+                "output_messages": output_messages,
+                "usage": usage,
+                "tool_calls": [],
+            }
         )
         current = None
 

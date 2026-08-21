@@ -73,8 +73,26 @@ def _emit(t: str, payload: dict) -> int | None:
     )
 
 
+def _reap_mid_turn_marker(payload: dict) -> None:
+    from thirdeye.platforms.codex.interrupt_marker import reap_marker_for_event
+
+    sid = payload.get("session_id")
+    if not sid:
+        return
+    config = Config.load()
+    cwd = payload.get("cwd") or os.getcwd()
+    reap_marker_for_event(
+        config,
+        session_dir(config.root, _PLATFORM, sid),
+        sid,
+        cwd,
+        prompt_id=payload.get("prompt_id"),
+    )
+
+
 def session_start() -> None:
     payload = _read_stdin()
+    _reap_mid_turn_marker(payload)
     sid = payload.get("session_id")
     seq = _emit("session_start", payload)
     if seq is None:
@@ -93,12 +111,15 @@ def session_start() -> None:
 
 
 def user_prompt_submit() -> None:
+    from thirdeye.platforms.codex.interrupt_marker import replace_open_turn
+
     payload = _read_stdin()
     sid = payload.get("session_id")
     if not sid:
         return
     cwd = payload.get("cwd") or os.getcwd()
     config = Config.load()
+    sd = session_dir(config.root, _PLATFORM, sid)
     seq = Store(config).append_event(
         session_id=sid,
         platform=_PLATFORM,
@@ -106,12 +127,20 @@ def user_prompt_submit() -> None:
         t="user_message",
         data=_strip_payload(payload),
     )
+    replace_open_turn(
+        config,
+        sd,
+        sid,
+        cwd,
+        prompt=str(payload.get("prompt") or ""),
+        prompt_id=payload.get("prompt_id"),
+        turn_seq=seq,
+    )
     try:
         prompt = payload.get("prompt") or ""
         tags = extract_hashtags(prompt)
         if not tags:
             return
-        sd = session_dir(config.root, _PLATFORM, sid)
         tagstore = TagStore(sd)
         for tag in tags:
             tagstore.add(seq, tag, source="auto")
@@ -125,29 +154,50 @@ def user_prompt_submit() -> None:
 
 
 def subagent_start() -> None:
-    _emit("subagent_start", _read_stdin())
+    payload = _read_stdin()
+    _reap_mid_turn_marker(payload)
+    _emit("subagent_start", payload)
 
 
 def subagent_stop() -> None:
     # Matches claude/hooks.py's "subagent_message" naming for the same event
     # concept, so cross-platform tooling that treats event types generically
     # doesn't need a second vocabulary for the same thing.
-    _emit("subagent_message", _read_stdin())
+    payload = _read_stdin()
+    _reap_mid_turn_marker(payload)
+    _emit("subagent_message", payload)
 
 
 def permission_request() -> None:
-    _emit("permission_request", _read_stdin())
+    payload = _read_stdin()
+    _reap_mid_turn_marker(payload)
+    _emit("permission_request", payload)
 
 
 def pre_compact() -> None:
-    _emit("compact_start", _read_stdin())
+    payload = _read_stdin()
+    _reap_mid_turn_marker(payload)
+    _emit("compact_start", payload)
 
 
 def post_compact() -> None:
-    _emit("compact_end", _read_stdin())
+    payload = _read_stdin()
+    _reap_mid_turn_marker(payload)
+    _emit("compact_end", payload)
 
 
 def session_end() -> None:
+    from thirdeye.platforms.codex.interrupt_marker import close_stale_turn_if_open
+
     payload = _read_stdin()
+    sid = payload.get("session_id")
+    if sid:
+        config = Config.load()
+        close_stale_turn_if_open(
+            config,
+            session_dir(config.root, _PLATFORM, sid),
+            sid,
+            payload.get("cwd") or os.getcwd(),
+        )
     if _emit("session_end", payload) is not None:
         Store(Config.load()).close_session(payload["session_id"], platform=_PLATFORM)

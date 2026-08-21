@@ -397,13 +397,12 @@ class TestStop:
         assert events[1]["data"]["response"] == "done"
 
     def test_assistant_message_carries_no_usage_attributes(self, monkeypatch, env: Path):
-        """Usage now rides on each call's own span (see TestStopExportsLLMCalls
-        below), not merged onto assistant_message's attributes — a span can't
-        be amended once built, so there's no way to attach a turn-wide total
-        to assistant_message without either delaying its export (which this
-        codebase deliberately never does — see otel_export.py's module
-        docstring) or losing per-call granularity, which the reasoning/content
-        capture below depends on.
+        """Usage now rides on each LLM call's own span, not merged onto
+        assistant_message's attributes — a span can't be amended once built,
+        so there's no way to attach a turn-wide total to assistant_message
+        without either delaying its export (which this codebase deliberately
+        never does — see otel_export.py's module docstring) or losing
+        per-call granularity, which the reasoning/content capture depends on.
         """
         transcript = Path(__file__).parent / "fixtures" / "usage" / "claude_transcript.jsonl"
         _stdin(monkeypatch, {"session_id": "s1", "cwd": "/p"})
@@ -417,71 +416,6 @@ class TestStop:
         events = list(Store(Config.load()).reader("s1").iter_events())
         assistant_message = next(e for e in events if e["t"] == "assistant_message")
         assert not any(k.startswith("gen_ai.") for k in assistant_message["data"])
-
-
-class TestStopExportsLLMCalls:
-    """`stop()` also extracts each individual LLM call from the transcript
-    (via `extract_new_calls_claude`) and hands them to `export_llm_calls` —
-    this is what makes reasoning/tool content visible per call in Logfire.
-    `subprocess.Popen` is mocked so these tests don't spawn a real worker.
-    """
-
-    def _run_stop_capturing_jobs(self, monkeypatch, env: Path) -> dict:
-        """Run session_start() + stop() against the real usage fixture, with
-        subprocess.Popen mocked, and return the payload of the one job whose
-        kind is "llm_calls" — session_start/assistant_message each spawn
-        their own ordinary-event job too, so there are more than one.
-        """
-        from thirdeye import otel_export
-        from thirdeye.config import LogfireSettings
-
-        transcript = Path(__file__).parent / "fixtures" / "usage" / "claude_transcript.jsonl"
-        spawned = []
-        monkeypatch.setattr(otel_export.subprocess, "Popen", lambda argv, **k: spawned.append(argv))
-        monkeypatch.setattr(
-            Config,
-            "load",
-            classmethod(
-                lambda cls: Config(root=env, logfire=LogfireSettings(enabled=True, token="t"))
-            ),
-        )
-
-        _stdin(monkeypatch, {"session_id": "s1", "cwd": "/p"})
-        hooks.session_start()
-        _stdin(
-            monkeypatch,
-            {"session_id": "s1", "cwd": "/p", "transcript_path": str(transcript)},
-        )
-        hooks.stop()
-
-        payloads = [json.loads(Path(argv[3]).read_text()) for argv in spawned]
-        llm_calls_jobs = [p for p in payloads if p.get("kind") == "llm_calls"]
-        assert len(llm_calls_jobs) == 1
-        return llm_calls_jobs[0]
-
-    def test_spawns_one_worker_carrying_every_new_call(self, monkeypatch, env: Path):
-        payload = self._run_stop_capturing_jobs(monkeypatch, env)
-        assert payload["session_id"] == "s1"
-        assert len(payload["calls"]) == 7  # expected_calls in the fixture's expected.json
-
-        seqs = {c["seq"] for c in payload["calls"]}
-        events = list(Store(Config.load()).reader("s1").iter_events())
-        assistant_message = next(e for e in events if e["t"] == "assistant_message")
-        assert seqs == {assistant_message["seq"]}
-
-    def test_a_call_with_a_tool_use_carries_reasoning_and_tool_call_parts(
-        self, monkeypatch, env: Path
-    ):
-        payload = self._run_stop_capturing_jobs(monkeypatch, env)
-        the_call = next(
-            c for c in payload["calls"] if c["call_id"] == "msg_011CdBpZs1PvZ3gsGPM8rXdf"
-        )
-        data = the_call["data"]
-        output = data["gen_ai.output.messages"][0]
-        part_types = [p["type"] for p in output["parts"]]
-        assert "reasoning" in part_types
-        assert part_types.count("tool_call") == 5
-        assert data["gen_ai.usage.input_tokens"] > 0
 
 
 # -- subagent_stop -------------------------------------------------------------

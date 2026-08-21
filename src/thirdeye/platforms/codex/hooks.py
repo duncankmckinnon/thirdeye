@@ -88,7 +88,9 @@ def session_start() -> None:
 
 def notify() -> None:
     from thirdeye.platforms.codex.events import capture_events_codex
+    from thirdeye.platforms.codex.interrupt_marker import clear_marker_not_after
     from thirdeye.platforms.codex.rollout import resolve_rollout
+    from thirdeye.platforms.codex.tracing import build_turn
     from thirdeye.platforms.codex.turn import extract_turn_codex
     from thirdeye.platforms.codex.usage import capture_usage_codex
 
@@ -137,15 +139,26 @@ def notify() -> None:
 
         offset = int(state.get("rollout_offset", 0))
 
-        # Queue the rollout-reconstructed turn first. Rollout tool events are
-        # suppressed from generic export only when this succeeds, so legacy or
-        # unsupported payloads retain the old paired-tool fallback.
         turn = extract_turn_codex(rollout_path, turn_id)
-        turn_queued = False
         if turn is not None:
-            from thirdeye.otel_export import export_codex_turn
+            from thirdeye.otel_export import export_turn
 
-            turn_queued = export_codex_turn(config, sd, sid, cwd, seq, turn)
+            # A real completion is happening now, whatever the fallback
+            # open-turn marker (interrupt_marker.py) thinks: this is the
+            # definitive result for the turn it was tracking. Only clear a
+            # marker opened at or before this turn's own end -- a delayed
+            # notify for an earlier turn must not be able to clobber a
+            # newer marker a later UserPromptSubmit already opened while
+            # this notify was still in flight.
+            clear_marker_not_after(sd, not_after_ts=turn["end_ts"])
+            export_turn(
+                config,
+                sd,
+                sid,
+                _PLATFORM,
+                cwd,
+                build_turn(session_dir_=sd, session_id=sid, seq=seq, turn=turn),
+            )
 
         # One pass over the new rollout range: events first, then usage, then
         # advance the shared bookmark in a single write. Ordering is the one the
@@ -156,7 +169,6 @@ def notify() -> None:
             cwd=cwd,
             rollout_path=rollout_path,
             offset=offset,
-            batch_tools=turn_queued,
         )
         capture_usage_codex(
             thirdeye_home=config.root,
