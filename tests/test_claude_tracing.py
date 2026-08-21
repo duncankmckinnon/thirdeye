@@ -313,7 +313,19 @@ class TestBuildTurn:
 
         _stdin(
             monkeypatch,
-            {"session_id": sid, "cwd": "/p", "tool_use_id": "tu_sub1", "prompt": "explore code"},
+            {
+                "session_id": sid,
+                "cwd": "/p",
+                "tool_name": "Task",
+                "tool_use_id": "tu_task1",
+                "tool_input": {"description": "explore", "prompt": "explore code"},
+            },
+        )
+        hooks.pre_tool_use()
+
+        _stdin(
+            monkeypatch,
+            {"session_id": sid, "cwd": "/p", "agent_id": "agent_1", "agent_type": "explore"},
         )
         hooks.subagent_start()
 
@@ -322,12 +334,24 @@ class TestBuildTurn:
             {
                 "session_id": sid,
                 "cwd": "/p",
-                "tool_use_id": "tu_sub1",
+                "agent_id": "agent_1",
                 "agent_transcript_path": str(sub_transcript),
-                "result": "found stuff",
+                "last_assistant_message": "found stuff",
             },
         )
         hooks.subagent_stop()
+
+        _stdin(
+            monkeypatch,
+            {
+                "session_id": sid,
+                "cwd": "/p",
+                "tool_name": "Task",
+                "tool_use_id": "tu_task1",
+                "tool_response": "found stuff",
+            },
+        )
+        hooks.post_tool_use()
 
         sd = session_dir(env, "claude", sid)
         from thirdeye.reader import SessionReader
@@ -485,6 +509,75 @@ class TestInterruptionHandling:
         _stdin(monkeypatch, {"session_id": sid, "cwd": "/p"})
         hooks.session_end()
         assert exported == []
+
+    def test_notification_mid_turn_does_not_close_the_open_turn(self, monkeypatch, env: Path):
+        """Claude Code fires the Notification hook *during* an active,
+        non-interrupted turn (e.g. "permission needed", "idle 60s+") — this
+        must not be treated as proof the turn was abandoned. If it wrongly
+        closes/exports the marker here, the turn's real `stop()` call later
+        finds no marker, returns None from build_turn, and the turn's actual
+        completion (LLM calls, tool calls, final response) is silently never
+        exported at all.
+        """
+        exported = []
+        monkeypatch.setattr(
+            "thirdeye.otel_export.export_turn",
+            lambda config, sd, sid, platform, cwd, turn: exported.append(turn),
+        )
+        sid = "s1"
+        _stdin(monkeypatch, {"session_id": sid, "cwd": "/p"})
+        hooks.session_start()
+        _stdin(monkeypatch, {"session_id": sid, "cwd": "/p", "prompt": "first prompt"})
+        hooks.user_prompt_submit()
+
+        sd = session_dir(env, "claude", sid)
+        assert hooks._open_turn_path(sd).exists()
+
+        _stdin(monkeypatch, {"session_id": sid, "cwd": "/p", "message": "needs permission"})
+        hooks.notification()
+
+        assert exported == [], "notification() must not export the still-running turn"
+        assert hooks._open_turn_path(sd).exists(), (
+            "notification() must not delete the marker of a still-running turn"
+        )
+
+        _stdin(monkeypatch, {"session_id": sid, "cwd": "/p", "response": "done"})
+        hooks.stop()
+
+        assert len(exported) == 1, "the turn's real completion must still be exported by stop()"
+        assert exported[0]["status"] == "completed"
+
+    def test_pre_compact_mid_turn_does_not_close_the_open_turn(self, monkeypatch, env: Path):
+        """PreCompact/PostCompact fire mid-turn for automatic context
+        compaction (triggered when the context window fills up during
+        generation), not only for the standalone /compact command between
+        turns — so, like Notification, it must not be treated as proof of
+        turn abandonment.
+        """
+        exported = []
+        monkeypatch.setattr(
+            "thirdeye.otel_export.export_turn",
+            lambda config, sd, sid, platform, cwd, turn: exported.append(turn),
+        )
+        sid = "s1"
+        _stdin(monkeypatch, {"session_id": sid, "cwd": "/p"})
+        hooks.session_start()
+        _stdin(monkeypatch, {"session_id": sid, "cwd": "/p", "prompt": "first prompt"})
+        hooks.user_prompt_submit()
+
+        sd = session_dir(env, "claude", sid)
+
+        _stdin(monkeypatch, {"session_id": sid, "cwd": "/p"})
+        hooks.pre_compact()
+
+        assert exported == [], "pre_compact() must not export the still-running turn"
+        assert hooks._open_turn_path(sd).exists()
+
+        _stdin(monkeypatch, {"session_id": sid, "cwd": "/p", "response": "done"})
+        hooks.stop()
+
+        assert len(exported) == 1
+        assert exported[0]["status"] == "completed"
 
 
 # -- stop() normal completion path -----------------------------------------------

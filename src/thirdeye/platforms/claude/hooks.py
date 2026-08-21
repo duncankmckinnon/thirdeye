@@ -13,7 +13,6 @@ from thirdeye.reader import SessionReader
 from thirdeye.store import Store
 from thirdeye.tags import TagStore, extract_hashtags
 from thirdeye.usage.store import UsageStore
-from thirdeye.writer import utc_iso_ms
 
 _PLATFORM = "claude"
 
@@ -42,41 +41,66 @@ def _strip_payload(payload: dict) -> dict:
     return {k: v for k, v in payload.items() if k not in _STRIP_KEYS}
 
 
+# Event types recorded only while the enclosing turn's own hook chain is
+# still alive: a tool call, its result, a subagent boundary, or a permission
+# prompt can never fire once that turn has been abandoned (Claude Code has no
+# way to resume a killed turn's tool execution), so seeing the open-turn
+# marker at one of these is proof the turn is still legitimately in flight,
+# not that it's stale. Treating it as stale here would truncate every
+# ordinary turn the moment it made its first tool call.
+#
+# "notification" (permission-needed / idle-60s notices) and
+# "compact_start"/"compact_end" (automatic context compaction, which can
+# happen mid-generation, not only via the standalone /compact command
+# between turns) belong here for the same reason: both can legitimately fire
+# while a turn is still running, so treating them as proof of abandonment
+# would export the turn early as "interrupted" and delete its marker,
+# leaving the turn's real `stop()` call with nothing to close later.
+_MID_TURN_EVENT_TYPES = frozenset(
+    {
+        "tool_call",
+        "tool_result",
+        "subagent_start",
+        "subagent_message",
+        "permission_request",
+        "permission_denied",
+        "notification",
+        "compact_start",
+        "compact_end",
+    }
+)
+
+
 def _emit(t: str, payload: dict) -> int | None:
     sid = payload.get("session_id")
     if not sid:
         return None
     cwd = payload.get("cwd") or os.getcwd()
-    return Store(Config.load()).append_event(
+    config = Config.load()
+    seq = Store(config).append_event(
         session_id=sid,
         platform=_PLATFORM,
         cwd=cwd,
         t=t,
         data=_strip_payload(payload),
     )
+    if seq is not None and t not in _MID_TURN_EVENT_TYPES:
+        _close_stale_turn_if_open(config, sid, cwd, seq)
+    return seq
 
 
 def _open_turn_path(session_dir_: Path) -> Path:
     return session_dir_ / "claude-open-turn.json"
 
 
-def _close_stale_turn_if_open(config: Config, session_id: str, cwd: str) -> None:
+def _close_stale_turn_if_open(config: Config, session_id: str, cwd: str, proving_seq: int) -> None:
     """Claude Code's `Stop` hook is documented to never fire on a user
     interrupt, so an interrupted turn's open-turn marker (written by
     `user_prompt_submit`, deleted by `stop`) is the only signal that a turn
-    never reached its normal close. If one is still on disk, this closes it
-    out as `status="interrupted"` and exports whatever was captured up to now.
-
-    Deliberately called only from `user_prompt_submit` and `session_end`, not
-    from the shared `_emit()` that `pre_tool_use`/`post_tool_use`/
-    `permission_request`/`subagent_start`/etc. all funnel through: those fire
-    routinely *during* a still-open, un-interrupted turn, so treating "marker
-    present" as proof of staleness there would export every ongoing turn
-    early as a bogus "interrupted" one — and since `otel_export.export_turn`
-    claims each turn id only once ever, that would permanently suppress the
-    real, complete export `stop()` would otherwise produce for it. Only a
-    hook that cannot legitimately fire while the marker's own turn is still
-    in flight — a new prompt, the session ending — is safe to wire up here.
+    never reached its normal close. `proving_seq` is the just-recorded event
+    that proves this: whichever hook called this is, by construction, not one
+    of `_MID_TURN_EVENT_TYPES`, so its firing means the previous turn is over.
+    Its own seq/ts become the interrupted turn's `stop_seq`/`end_ts`.
     """
     try:
         from thirdeye.otel_export import export_turn
@@ -86,13 +110,14 @@ def _close_stale_turn_if_open(config: Config, session_id: str, cwd: str) -> None
         marker_path = _open_turn_path(sd)
         if not marker_path.exists():
             return
+        proving_ts = str(SessionReader(sd).get_event(proving_seq).get("ts") or "")
         turn = build_turn(
             config=config,
             session_dir_=sd,
             session_id=session_id,
             cwd=cwd,
-            stop_seq=2**62,
-            stop_ts=utc_iso_ms(),
+            stop_seq=proving_seq,
+            stop_ts=proving_ts,
             transcript_path=None,
             final_response="",
         )
@@ -132,11 +157,6 @@ def user_prompt_submit() -> None:
     config = Config.load()
     sd = session_dir(config.root, _PLATFORM, sid)
 
-    # If the previous turn was interrupted, this new prompt is the proof:
-    # close it out and export it as "interrupted" before this turn's own
-    # marker overwrites the file.
-    _close_stale_turn_if_open(config, sid, cwd)
-
     prompt = payload.get("prompt") or ""
     seq = Store(config).append_event(
         session_id=sid,
@@ -145,6 +165,14 @@ def user_prompt_submit() -> None:
         t="user_message",
         data=_strip_payload(payload),
     )
+    if seq is None:
+        return
+
+    # If the previous turn was interrupted, this new prompt is the proof:
+    # close it out and export it as "interrupted", using this event's own
+    # seq/ts, before this turn's own marker overwrites the file.
+    _close_stale_turn_if_open(config, sid, cwd, seq)
+
     try:
         tags = extract_hashtags(prompt)
         if tags:
@@ -266,10 +294,6 @@ def permission_request() -> None:
 
 def session_end() -> None:
     payload = _read_stdin()
-    sid = payload.get("session_id")
-    if sid:
-        cwd = payload.get("cwd") or os.getcwd()
-        _close_stale_turn_if_open(Config.load(), sid, cwd)
     if _emit("session_end", payload) is not None:
         Store(Config.load()).close_session(payload["session_id"], platform=_PLATFORM)
 
