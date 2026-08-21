@@ -1,40 +1,4 @@
-"""Fallback export path for a Codex turn that never gets an
-``agent-turn-complete`` ``notify`` call at all (as opposed to one that gets a
-``notify`` call but whose rollout carries a ``turn_aborted`` frame -- that
-case is handled entirely by ``turn.py``'s own status detection). Whether
-Codex's ``notify`` ever skips firing for an aborted turn could not be
-empirically confirmed here (no live Codex CLI, no persistent log of raw
-``notify`` invocations, no network access) -- a real ``turn_aborted`` frame
-pulled from a genuine rollout on this machine confirmed the *shape* `turn.py`
-parses is right (see its test fixture), but not this module's own necessity.
-Kept because the failure mode of being wrong the other way -- deleting this
-and silently losing every interrupted turn's trace -- is worse than the dead
-code. Isolated in its own module so it can be deleted later without touching
-``turn.py``'s primary path.
-
-Two hook mechanisms touch the marker for one session concurrently:
-``codex/hooks.py``'s argv-invoked ``notify`` (clears it once a turn's real
-completion is known) and ``codex/hooks_json.py``'s JSON-stdin hooks (open it
-at turn start; every other hook call checks it). There's no id shared
-between the two -- ``notify``'s own ``turn-id`` isn't known until the turn is
-already finishing -- so correctness relies on two things instead:
-
-- All reads/writes/clears go through a single, always-open, never-unlinked
-  inode (truncated-and-rewritten in place) under ``fcntl.flock`` for the
-  whole read-decide-write section -- unlink+recreate would let two racing
-  opens land on different inodes and defeat the lock.
-- ``clear_marker_not_after`` only clears a marker opened *at or before* the
-  completing turn's own ``end_ts``, so a delayed ``notify`` for turn A can't
-  clobber a newer marker turn B's ``UserPromptSubmit`` opened while A was
-  still in flight -- B can only have started after A ended.
-
-Hooks that fire *mid-turn* (SubagentStart/Stop, PermissionRequest,
-PreCompact/PostCompact, SessionStart) reap only once a marker is old enough
-to be genuinely abandoned (``_ABANDONED_AFTER_SECONDS``), since an open
-marker at that point is normally just the still-running current turn.
-``UserPromptSubmit``/``SessionEnd`` reap immediately -- either firing means
-the turn that opened the marker is unambiguously over.
-"""
+"""Fallback for interrupted Codex turns that never reach ``notify``."""
 
 from __future__ import annotations
 
@@ -101,20 +65,23 @@ def has_open_marker(session_dir_: Path) -> bool:
         return False
 
 
-def mark_turn_open(session_dir_: Path, *, prompt: str) -> None:
-    marker = {"turn_id": new_ulid(), "start_ts": utc_iso_ms(), "input_message": prompt}
+def mark_turn_open(session_dir_: Path, *, prompt: str, prompt_id: str | None = None) -> None:
+    marker = {
+        "turn_id": new_ulid(),
+        "start_ts": utc_iso_ms(),
+        "input_message": prompt,
+        "prompt_id": prompt_id,
+    }
     try:
         with _locked_marker(session_dir_) as fd:
-            _write_locked(fd, marker)
+            os.lseek(fd, 0, os.SEEK_SET)
+            if not os.read(fd, 1):
+                _write_locked(fd, marker)
     except OSError:
         pass
 
 
 def clear_marker_not_after(session_dir_: Path, *, not_after_ts: str) -> None:
-    """Called by ``notify()`` once a turn's real completion is known. Never
-    raises: marker cleanup must never block the rollout/usage capture that
-    runs after it in the same hook invocation.
-    """
     try:
         with _locked_marker(session_dir_) as fd:
             os.lseek(fd, 0, os.SEEK_SET)
@@ -138,7 +105,14 @@ def clear_marker_not_after(session_dir_: Path, *, not_after_ts: str) -> None:
 
 
 def _reap(
-    config: Config, session_dir_: Path, session_id: str, cwd: str, *, min_age_seconds: float
+    config: Config,
+    session_dir_: Path,
+    session_id: str,
+    cwd: str,
+    *,
+    min_age_seconds: float,
+    prompt_id: str | None = None,
+    replacement: dict[str, Any] | None = None,
 ) -> None:
     turn: TurnSpanDict | None = None
     try:
@@ -146,23 +120,34 @@ def _reap(
             os.lseek(fd, 0, os.SEEK_SET)
             raw = os.read(fd, 1 << 20)
             if not raw:
+                if replacement is not None:
+                    _write_locked(fd, replacement)
                 return
             try:
                 marker = json.loads(raw)
             except json.JSONDecodeError:
-                _write_locked(fd, None)  # corrupt -- quarantine rather than leave it wedged
+                _write_locked(fd, replacement)
                 return
+            if replacement is not None:
+                old_seq = marker.get("turn_seq")
+                new_seq = replacement.get("turn_seq")
+                if isinstance(old_seq, int) and isinstance(new_seq, int) and old_seq > new_seq:
+                    return
             turn_id = marker.get("turn_id")
             start_ts = marker.get("start_ts")
             if not turn_id or not start_ts:
-                _write_locked(fd, None)
+                _write_locked(fd, replacement)
                 return
+            marker_prompt_id = marker.get("prompt_id")
+            different_prompt = bool(
+                prompt_id and marker_prompt_id and prompt_id != marker_prompt_id
+            )
             try:
                 age = (datetime.now(UTC) - _parse_ts(str(start_ts))).total_seconds()
             except ValueError:
-                _write_locked(fd, None)
+                _write_locked(fd, replacement)
                 return
-            if age < min_age_seconds:
+            if not different_prompt and age < min_age_seconds:
                 return
             turn = {
                 "turn_id": str(turn_id),
@@ -176,7 +161,7 @@ def _reap(
                 "subagents": [],
                 "attributes": {},
             }
-            _write_locked(fd, None)
+            _write_locked(fd, replacement)
     except OSError:
         return
 
@@ -199,17 +184,53 @@ def _reap(
 def close_stale_turn_if_open(
     config: Config, session_dir_: Path, session_id: str, cwd: str
 ) -> None:
-    """A new turn is starting (``UserPromptSubmit``) or the session is
-    ending (``SessionEnd``) -- either way, a marker still open at this point
-    unambiguously belongs to a now-finished-one-way-or-another previous
-    turn, so it's closed out immediately, no age threshold needed.
-    """
     _reap(config, session_dir_, session_id, cwd, min_age_seconds=0)
 
 
 def reap_abandoned_marker(config: Config, session_dir_: Path, session_id: str, cwd: str) -> None:
-    """Safety-net check for hooks that legitimately fire *mid-turn*. See the
-    module docstring for why this needs an age threshold and
-    ``close_stale_turn_if_open`` doesn't.
-    """
     _reap(config, session_dir_, session_id, cwd, min_age_seconds=_ABANDONED_AFTER_SECONDS)
+
+
+def reap_marker_for_event(
+    config: Config,
+    session_dir_: Path,
+    session_id: str,
+    cwd: str,
+    *,
+    prompt_id: str | None,
+) -> None:
+    _reap(
+        config,
+        session_dir_,
+        session_id,
+        cwd,
+        min_age_seconds=_ABANDONED_AFTER_SECONDS,
+        prompt_id=prompt_id,
+    )
+
+
+def replace_open_turn(
+    config: Config,
+    session_dir_: Path,
+    session_id: str,
+    cwd: str,
+    *,
+    prompt: str,
+    prompt_id: str | None,
+    turn_seq: int,
+) -> None:
+    replacement = {
+        "turn_id": new_ulid(),
+        "start_ts": utc_iso_ms(),
+        "input_message": prompt,
+        "prompt_id": prompt_id,
+        "turn_seq": turn_seq,
+    }
+    _reap(
+        config,
+        session_dir_,
+        session_id,
+        cwd,
+        min_age_seconds=0,
+        replacement=replacement,
+    )

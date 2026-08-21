@@ -74,14 +74,20 @@ def _emit(t: str, payload: dict) -> int | None:
 
 
 def _reap_mid_turn_marker(payload: dict) -> None:
-    from thirdeye.platforms.codex.interrupt_marker import reap_abandoned_marker
+    from thirdeye.platforms.codex.interrupt_marker import reap_marker_for_event
 
     sid = payload.get("session_id")
     if not sid:
         return
     config = Config.load()
     cwd = payload.get("cwd") or os.getcwd()
-    reap_abandoned_marker(config, session_dir(config.root, _PLATFORM, sid), sid, cwd)
+    reap_marker_for_event(
+        config,
+        session_dir(config.root, _PLATFORM, sid),
+        sid,
+        cwd,
+        prompt_id=payload.get("prompt_id"),
+    )
 
 
 def session_start() -> None:
@@ -105,7 +111,7 @@ def session_start() -> None:
 
 
 def user_prompt_submit() -> None:
-    from thirdeye.platforms.codex.interrupt_marker import close_stale_turn_if_open, mark_turn_open
+    from thirdeye.platforms.codex.interrupt_marker import replace_open_turn
 
     payload = _read_stdin()
     sid = payload.get("session_id")
@@ -114,7 +120,6 @@ def user_prompt_submit() -> None:
     cwd = payload.get("cwd") or os.getcwd()
     config = Config.load()
     sd = session_dir(config.root, _PLATFORM, sid)
-    close_stale_turn_if_open(config, sd, sid, cwd)
     seq = Store(config).append_event(
         session_id=sid,
         platform=_PLATFORM,
@@ -122,7 +127,15 @@ def user_prompt_submit() -> None:
         t="user_message",
         data=_strip_payload(payload),
     )
-    mark_turn_open(sd, prompt=str(payload.get("prompt") or ""))
+    replace_open_turn(
+        config,
+        sd,
+        sid,
+        cwd,
+        prompt=str(payload.get("prompt") or ""),
+        prompt_id=payload.get("prompt_id"),
+        turn_seq=seq,
+    )
     try:
         prompt = payload.get("prompt") or ""
         tags = extract_hashtags(prompt)

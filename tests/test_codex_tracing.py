@@ -470,6 +470,41 @@ class TestInterruptMarker:
 
 
 class TestHooksJsonMarkerWiring:
+    def test_prompt_id_distinguishes_active_from_interrupted_turn(
+        self, monkeypatch, env: Path
+    ):
+        from thirdeye.platforms.codex import hooks_json
+
+        calls: list[Any] = []
+        monkeypatch.setattr("thirdeye.otel_export.export_turn", lambda *a: calls.append(a))
+        _stdin(
+            monkeypatch,
+            {"session_id": "s1", "cwd": "/p", "prompt": "go", "prompt_id": "p1"},
+        )
+        hooks_json.user_prompt_submit()
+
+        _stdin(monkeypatch, {"session_id": "s1", "cwd": "/p", "prompt_id": "p1"})
+        hooks_json.subagent_start()
+        assert calls == []
+
+        _stdin(monkeypatch, {"session_id": "s1", "cwd": "/p", "prompt_id": "p2"})
+        hooks_json.subagent_start()
+        assert len(calls) == 1
+        assert calls[0][-1]["status"] == "interrupted"
+
+    def test_late_prompt_hook_cannot_overwrite_newer_marker(self, monkeypatch, env: Path):
+        from thirdeye.platforms.codex.interrupt_marker import _marker_path, replace_open_turn
+
+        config = Config.load()
+        sd = session_dir(env, "codex", "s1")
+        monkeypatch.setattr("thirdeye.otel_export.export_turn", lambda *a: None)
+        replace_open_turn(config, sd, "s1", "/p", prompt="new", prompt_id="p2", turn_seq=2)
+        replace_open_turn(config, sd, "s1", "/p", prompt="old", prompt_id="p1", turn_seq=1)
+
+        marker = json.loads(_marker_path(sd).read_text())
+        assert marker["prompt_id"] == "p2"
+        assert marker["turn_seq"] == 2
+
     def test_user_prompt_submit_opens_a_marker(self, monkeypatch, env: Path):
         from thirdeye.platforms.codex import hooks_json
         from thirdeye.platforms.codex.interrupt_marker import _marker_path
@@ -558,7 +593,9 @@ class TestMidTurnHooksReapAbandonedMarker:
             self._seed_abandoned_marker(sd)
 
             calls: list[Any] = []
-            monkeypatch.setattr("thirdeye.otel_export.export_turn", lambda *a: calls.append(a))
+            monkeypatch.setattr(
+                "thirdeye.otel_export.export_turn", lambda *a, calls=calls: calls.append(a)
+            )
             _stdin(monkeypatch, {"session_id": sid, "cwd": "/p"})
             fn()
 
