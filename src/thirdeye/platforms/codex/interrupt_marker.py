@@ -181,9 +181,7 @@ def _reap(
         )
 
 
-def close_stale_turn_if_open(
-    config: Config, session_dir_: Path, session_id: str, cwd: str
-) -> None:
+def close_stale_turn_if_open(config: Config, session_dir_: Path, session_id: str, cwd: str) -> None:
     _reap(config, session_dir_, session_id, cwd, min_age_seconds=0)
 
 

@@ -448,9 +448,7 @@ class TestBuildTurn:
 
 
 class TestInterruptionHandling:
-    def test_different_prompt_id_closes_interrupted_turn_on_any_hook(
-        self, monkeypatch, env: Path
-    ):
+    def test_different_prompt_id_closes_interrupted_turn_on_any_hook(self, monkeypatch, env: Path):
         exported = []
         monkeypatch.setattr(
             "thirdeye.otel_export.export_turn",
@@ -562,9 +560,9 @@ class TestInterruptionHandling:
         hooks.notification()
 
         assert exported == [], "notification() must not export the still-running turn"
-        assert hooks._open_turn_path(sd).exists(), (
-            "notification() must not delete the marker of a still-running turn"
-        )
+        assert hooks._open_turn_path(
+            sd
+        ).exists(), "notification() must not delete the marker of a still-running turn"
 
         _stdin(monkeypatch, {"session_id": sid, "cwd": "/p", "response": "done"})
         hooks.stop()
@@ -643,9 +641,9 @@ class TestInterruptionHandling:
         getattr(hooks, hook_name)()
 
         assert exported == [], f"{hook_name}() must not export the still-running turn"
-        assert hooks._open_turn_path(sd).exists(), (
-            f"{hook_name}() must not delete the marker of a still-running turn"
-        )
+        assert hooks._open_turn_path(
+            sd
+        ).exists(), f"{hook_name}() must not delete the marker of a still-running turn"
 
 
 # -- stop() normal completion path -----------------------------------------------

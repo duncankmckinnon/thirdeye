@@ -223,9 +223,7 @@ def stop() -> None:
 
     try:
         stop_ts = SessionReader(sd).get_event(seq).get("ts", "")
-        final_response = str(
-            payload.get("last_assistant_message") or payload.get("response") or ""
-        )
+        final_response = str(payload.get("last_assistant_message") or payload.get("response") or "")
         turn = build_turn(
             config=config,
             session_dir_=sd,

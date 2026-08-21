@@ -92,9 +92,7 @@ def _llm_call_dict(
             if input_parts
             else []
         ),
-        "output_messages": (
-            [{"role": "assistant", "parts": output_parts}] if output_parts else []
-        ),
+        "output_messages": ([{"role": "assistant", "parts": output_parts}] if output_parts else []),
         "usage": _usage_dict(usage),
         "tool_calls": _tool_call_dicts(tools),
     }

@@ -470,9 +470,7 @@ class TestInterruptMarker:
 
 
 class TestHooksJsonMarkerWiring:
-    def test_prompt_id_distinguishes_active_from_interrupted_turn(
-        self, monkeypatch, env: Path
-    ):
+    def test_prompt_id_distinguishes_active_from_interrupted_turn(self, monkeypatch, env: Path):
         from thirdeye.platforms.codex import hooks_json
 
         calls: list[Any] = []

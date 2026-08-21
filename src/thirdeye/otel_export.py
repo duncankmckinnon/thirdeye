@@ -482,9 +482,7 @@ def _export_turn_inner(
                         "thirdeye.cwd": cwd,
                     }
                 )
-                root_span = tracer.start_span(
-                    "session", start_time=root_ns, attributes=root_attrs
-                )
+                root_span = tracer.start_span("session", start_time=root_ns, attributes=root_attrs)
                 root_span.end(end_time=root_ns)
                 root_ctx = root_span.get_span_context()
                 parent = _create_root_atomic(root_path, root_ctx.trace_id, root_ctx.span_id)
