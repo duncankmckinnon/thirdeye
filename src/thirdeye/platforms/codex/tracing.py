@@ -65,9 +65,7 @@ def _permission_requests_in_range(
     return out
 
 
-def _subagent_turn(
-    session_id: str, start: dict[str, Any], stop: dict[str, Any]
-) -> TurnSpanDict:
+def _subagent_turn(session_id: str, start: dict[str, Any], stop: dict[str, Any]) -> TurnSpanDict:
     start_data = start.get("data") or {}
     stop_data = stop.get("data") or {}
     input_message = start_data.get("prompt") or start_data.get("description") or ""
