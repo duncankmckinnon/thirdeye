@@ -237,6 +237,24 @@ class TestExportEventDispatch:
         )
         assert spawned == []
 
+    def test_claude_tool_result_spawns_nothing(
+        self, tmp_path: Path, enabled_config: Config, monkeypatch: pytest.MonkeyPatch
+    ):
+        """Claude tool_results are exported later, from export_llm_calls, once
+        their real parent (the chat span) exists — see
+        TestExportLlmCallsToolSpans.
+        """
+        spawned = []
+        monkeypatch.setattr(otel_export.subprocess, "Popen", lambda *a, **k: spawned.append(a))
+        Store(enabled_config).append_event(
+            session_id="s1",
+            platform="claude",
+            cwd="/p",
+            t="tool_result",
+            data={"tool_use_id": "tu_1", "tool_response": "ok"},
+        )
+        assert spawned == []
+
     def test_enabled_point_event_spawns_a_detached_worker(
         self, tmp_path: Path, enabled_config: Config, monkeypatch: pytest.MonkeyPatch
     ):
@@ -900,6 +918,117 @@ class TestToolCallNestsUnderChatSpan:
         assert tool_span["parent"]["span_id"] == root_span_id
 
 
+class TestExportLlmCallsToolSpans:
+    """Claude tool spans, exported for real: tool_call/tool_result fire live
+    from hooks (in that order, before the turn ends), and only the LLM call
+    export at Stop actually creates the chat span they need to nest under.
+    See `export_event`'s ``platform == "claude"`` skip and `_find_tool_pair`.
+    """
+
+    def test_tool_result_nests_under_the_chat_call_that_requested_it(
+        self,
+        tmp_path: Path,
+        enabled_config: Config,
+        wired_instance,
+        exporter,
+        monkeypatch: pytest.MonkeyPatch,
+    ):
+        spawned = []
+        monkeypatch.setattr(otel_export.subprocess, "Popen", lambda *a, **k: spawned.append(a))
+        sd = tmp_path / "traces" / "claude" / "s1"
+        # Real hook order, both going through Store.append_event (the same
+        # entry point the actual pre_tool_use/post_tool_use hooks use, which
+        # both stores the event locally *and* dispatches it for export): the
+        # tool_call and tool_result land, live, well before the chat span
+        # (exported below, as the Stop hook would) exists.
+        store = Store(enabled_config)
+        store.append_event(
+            session_id="s1",
+            platform="claude",
+            cwd="/proj",
+            t="tool_call",
+            data={"tool_name": "Bash", "tool_use_id": "tu_1", "command": "ls"},
+        )
+        store.append_event(
+            session_id="s1",
+            platform="claude",
+            cwd="/proj",
+            t="tool_result",
+            data={"tool_use_id": "tu_1", "tool_response": "file.txt"},
+        )
+        # The tool_result's own live export must be a no-op: no subprocess
+        # spawned, no span sent to Logfire yet.
+        assert spawned == []
+        assert exporter.exported_spans_as_dict() == []
+
+        call = _call(
+            seq=2,
+            data={
+                "gen_ai.response.model": "claude-sonnet-5",
+                "gen_ai.output.messages": [
+                    {
+                        "role": "assistant",
+                        "parts": [
+                            {"type": "tool_call", "id": "tu_1", "name": "Bash", "arguments": {}}
+                        ],
+                    }
+                ],
+            },
+        )
+        otel_export._export_llm_calls_inner(
+            config=enabled_config,
+            session_dir_=sd,
+            session_id="s1",
+            platform="claude",
+            cwd="/proj",
+            calls=[call],
+        )
+
+        spans = exporter.exported_spans_as_dict()
+        assert len(spans) == 2
+        chat_span, tool_span = spans
+        assert chat_span["name"] == "chat claude-sonnet-5"
+        assert tool_span["name"] == "tool: Bash"
+        assert tool_span["parent"]["span_id"] == chat_span["context"]["span_id"]
+        assert tool_span["attributes"]["command"] == "ls"
+        assert tool_span["attributes"]["tool_response"] == "file.txt"
+
+    def test_no_matching_tool_result_exports_no_tool_span(
+        self, tmp_path: Path, enabled_config: Config, wired_instance, exporter
+    ):
+        sd = tmp_path / "traces" / "claude" / "s1"
+        call = _call(
+            seq=2,
+            data={
+                "gen_ai.response.model": "claude-sonnet-5",
+                "gen_ai.output.messages": [
+                    {
+                        "role": "assistant",
+                        "parts": [
+                            {
+                                "type": "tool_call",
+                                "id": "tu_missing",
+                                "name": "Bash",
+                                "arguments": {},
+                            }
+                        ],
+                    }
+                ],
+            },
+        )
+        otel_export._export_llm_calls_inner(
+            config=enabled_config,
+            session_dir_=sd,
+            session_id="s1",
+            platform="claude",
+            cwd="/proj",
+            calls=[call],
+        )
+        spans = exporter.exported_spans_as_dict()
+        assert len(spans) == 1
+        assert spans[0]["name"] == "chat claude-sonnet-5"
+
+
 def test_claude_first_call_is_ordered_after_preceding_user_message(
     tmp_path: Path, enabled_config: Config, wired_instance, exporter
 ):
@@ -927,6 +1056,43 @@ def test_claude_first_call_is_ordered_after_preceding_user_message(
 
 
 class TestExportCodexTurnInner:
+    def test_calls_nest_under_triggering_agent_turn_span(
+        self, tmp_path: Path, enabled_config: Config, wired_instance, exporter
+    ):
+        sd = tmp_path / "traces" / "codex" / "s1"
+        otel_export._persist_span(otel_export.otel_state_path(sd), 0xAA, 0xBB)
+        otel_export._persist_span(otel_export.otel_span_path(sd, 7), 0xAA, 0xCC)
+
+        otel_export._export_codex_turn_inner(
+            config=enabled_config,
+            session_dir_=sd,
+            session_id="s1",
+            cwd="/proj",
+            seq=7,
+            turn={
+                "turn_id": "t1",
+                "start_ts": "2026-01-01T00:00:00Z",
+                "end_ts": "2026-01-01T00:00:03Z",
+                "model": "gpt-5",
+                "calls": [
+                    {
+                        "start_ts": "2026-01-01T00:00:00Z",
+                        "end_ts": "2026-01-01T00:00:01Z",
+                    },
+                    {
+                        "start_ts": "2026-01-01T00:00:02Z",
+                        "end_ts": "2026-01-01T00:00:03Z",
+                    },
+                ],
+            },
+        )
+
+        first_call, second_call = exporter.exported_spans_as_dict()
+        assert first_call["parent"]["span_id"] == 0xCC
+        assert second_call["parent"]["span_id"] == 0xCC
+        assert first_call["context"]["trace_id"] == 0xAA
+        assert second_call["context"]["trace_id"] == 0xAA
+
     def test_first_call_is_ordered_after_preceding_user_message(
         self, tmp_path: Path, enabled_config: Config, wired_instance, exporter
     ):
