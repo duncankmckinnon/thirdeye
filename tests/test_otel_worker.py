@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+from typing import Any
 
 import pytest
 
@@ -36,17 +37,32 @@ def enabled(home: Path) -> None:
     )
 
 
+def _turn(**overrides: Any) -> dict[str, Any]:
+    defaults: dict[str, Any] = dict(
+        turn_id="turn_1",
+        start_ts="2026-01-01T00:00:00.000Z",
+        end_ts="2026-01-01T00:00:05.000Z",
+        input_message="hi",
+        output_message="hello",
+        status="completed",
+        llm_calls=[],
+        permission_requests=[],
+        subagents=[],
+        attributes={},
+    )
+    defaults.update(overrides)
+    return defaults
+
+
 def _write_job(home: Path, **fields) -> Path:
     job_path = home / "job.json"
     payload = {
+        "kind": "turn",
         "session_dir": str(home / "traces" / "claude" / "s1"),
         "session_id": "s1",
         "platform": "claude",
         "cwd": "/proj",
-        "t": "user_message",
-        "seq": 0,
-        "ts": "2026-01-01T00:00:00.000Z",
-        "data": {"text": "hi"},
+        "turn": _turn(),
         **fields,
     }
     job_path.write_text(json.dumps(payload))
@@ -68,7 +84,7 @@ class TestMainArgHandling:
     def test_job_file_deleted_after_processing(
         self, home: Path, enabled: None, monkeypatch: pytest.MonkeyPatch
     ):
-        # `enabled` means _export_event_inner reaches a real logfire.configure()
+        # `enabled` means _export_turn_inner reaches a real logfire.configure()
         # call; stub it so this test doesn't make a real network request against
         # a fake token (that also spawns a background thread whose eventual
         # warning would leak into whatever test happens to run when it fires).
@@ -85,9 +101,13 @@ class TestMainArgHandling:
         otel_worker.main([str(job_path)])
         assert not job_path.exists()
 
+    def test_unknown_kind_does_nothing(self, home: Path, enabled: None):
+        job_path = _write_job(home, kind="something_else")
+        otel_worker.main([str(job_path)])  # must not raise
+
 
 class TestMainExportsThroughToLogfire:
-    def test_reads_job_and_exports_a_span(
+    def test_reads_job_and_exports_the_turn(
         self, home: Path, enabled: None, monkeypatch: pytest.MonkeyPatch
     ):
         import logfire
@@ -104,16 +124,18 @@ class TestMainExportsThroughToLogfire:
         otel_worker.main([str(job_path)])
 
         spans = exporter.exported_spans_as_dict()
-        assert len(spans) == 1
-        assert spans[0]["name"] == "user_message"
-        assert spans[0]["attributes"]["gen_ai.conversation.id"] == "s1"
+        # root (session) span plus the turn span.
+        assert len(spans) == 2
+        turn_span = spans[-1]
+        assert turn_span["name"] == "agent-turn"
+        assert turn_span["attributes"]["gen_ai.conversation.id"] == "s1"
 
     def test_disabled_config_never_reaches_logfire(
         self, home: Path, monkeypatch: pytest.MonkeyPatch
     ):
         # No `enabled` fixture here: config on disk has logfire off, so
-        # _get_instance's own guard (not export_event's — the worker never
-        # calls export_event) must short-circuit before any real configure().
+        # _get_instance's own guard must short-circuit before any real
+        # configure() call.
         import logfire
 
         calls = []
@@ -123,80 +145,3 @@ class TestMainExportsThroughToLogfire:
         otel_worker.main([str(job_path)])
 
         assert calls == []
-
-    def test_llm_calls_job_dispatches_to_the_batch_exporter(
-        self, home: Path, enabled: None, monkeypatch: pytest.MonkeyPatch
-    ):
-        """A `"kind": "llm_calls"` job must route to `_export_llm_calls_inner`,
-        not the ordinary single-event path.
-        """
-        import logfire
-
-        exporter = TestExporter()
-        instance = logfire.configure(
-            send_to_logfire=False,
-            console=False,
-            additional_span_processors=[SimpleSpanProcessor(exporter)],
-        )
-        monkeypatch.setattr(otel_export, "_get_instance", lambda config, platform: instance)
-
-        job_path = home / "job.json"
-        payload = {
-            "kind": "llm_calls",
-            "session_dir": str(home / "traces" / "claude" / "s1"),
-            "session_id": "s1",
-            "platform": "claude",
-            "cwd": "/proj",
-            "calls": [
-                {
-                    "seq": 5,
-                    "ts": "2026-01-01T00:00:00.000Z",
-                    "call_id": "call_1",
-                    "data": {
-                        "gen_ai.usage.input_tokens": 10,
-                        "gen_ai.usage.output_tokens": 5,
-                        "gen_ai.output.messages": [
-                            {"role": "assistant", "parts": [{"type": "text", "content": "hi"}]}
-                        ],
-                    },
-                }
-            ],
-        }
-        job_path.write_text(json.dumps(payload))
-        otel_worker.main([str(job_path)])
-
-        spans = exporter.exported_spans_as_dict()
-        assert len(spans) == 1
-        assert spans[0]["attributes"]["gen_ai.usage.input_tokens"] == 10
-        assert "gen_ai.output.messages" in spans[0]["attributes"]
-
-    @pytest.mark.parametrize("exported,expected_exists", [(True, True), (False, False)])
-    def test_codex_turn_job_commits_or_releases_state(
-        self,
-        home: Path,
-        enabled: None,
-        monkeypatch: pytest.MonkeyPatch,
-        exported: bool,
-        expected_exists: bool,
-    ):
-        state_path = home / "turn-state"
-        state_path.write_text("pending")
-        monkeypatch.setattr(otel_export, "_export_codex_turn_inner", lambda **kwargs: exported)
-        job_path = home / "job.json"
-        job_path.write_text(
-            json.dumps(
-                {
-                    "kind": "codex_turn",
-                    "session_dir": str(home / "traces" / "codex" / "s1"),
-                    "session_id": "s1",
-                    "cwd": "/proj",
-                    "seq": 1,
-                    "turn": {},
-                    "state_path": str(state_path),
-                }
-            )
-        )
-        otel_worker.main([str(job_path)])
-        assert state_path.exists() is expected_exists
-        if expected_exists:
-            assert state_path.read_text() == "sent"

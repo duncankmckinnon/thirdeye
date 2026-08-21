@@ -162,20 +162,6 @@ class Store:
         finally:
             write_meta(meta_path(sd), w._meta)
             w.flush_and_detach()
-        if self.config.logfire.enabled:
-            from thirdeye.otel_export import export_event
-
-            export_event(
-                config=self.config,
-                session_dir_=sd,
-                session_id=session_id,
-                platform=platform,
-                cwd=cwd,
-                t=t,
-                seq=seq,
-                ts=w._meta.last_ts or utc_iso_ms(),
-                data=data,
-            )
         return seq
 
     def close_session(self, session_id: str, *, platform: str) -> None:

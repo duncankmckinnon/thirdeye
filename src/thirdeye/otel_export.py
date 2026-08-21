@@ -1,51 +1,53 @@
-"""Mirror thirdeye events into Logfire as OpenTelemetry spans, live.
+"""Turn a completed ``thirdeye.tracing.model.TurnSpanDict`` into OTel spans.
 
-Every thirdeye event (tool call, message, notification, ...) funnels through
-one call site, ``Store.append_event`` — including calls made from inside
-Claude Code / Codex hook subprocesses. That makes it the one place to add
-Logfire export and have it cover every platform automatically, with no
-separate sync step.
+thirdeye mirrors coding-agent sessions into Logfire. The previous design
+exported every raw hook event live, one at a time, from whichever short-lived
+hook subprocess happened to fire — which meant a tool span and the LLM call
+that requested it were built by two different, unordered processes, and
+nesting one under the other required persisting span ids to disk and racing/
+polling for them across processes.
 
-Each underlying LLM call within a turn (Claude's transcript / Codex's rollout
-can both hold several — an agentic turn routinely makes multiple model calls
-before it's done) gets its *own* span, populated the way Logfire's own
-GenAI-provider instrumentations populate theirs: ``gen_ai.usage.*`` for that
-call's own tokens (not a turn-wide sum), plus ``gen_ai.input.messages`` /
-``gen_ai.output.messages`` holding the actual conversation content — text,
-tool calls and their results, and (Claude only, for now) reasoning/thinking
-content — as OTel GenAI semantic-convention message parts. See
-``platforms/claude/usage.py``'s ``extract_new_calls_claude`` for how those are
-built from the raw transcript, and ``export_llm_calls`` below for how they
-reach Logfire. This is a second, explicit entry point into export — call
-content is captured by a separate pipeline from ordinary session events
-(straight from the transcript/rollout, never through ``Store.append_event``).
+That's no longer necessary: a platform adapter (Claude's ``Stop`` hook,
+Codex's ``notify`` hook) now assembles an entire turn — every LLM call, tool
+call, permission request, and nested subagent invocation it produced — into
+one ``TurnSpanDict`` *before* calling into this module, and hands the whole
+thing to ``export_turn`` as a single atomic unit. That is what eliminates
+almost all of the cross-process span-resolution machinery this module used to
+need: there is exactly one process, exporting a fully-known tree, so parent
+spans always already exist by the time their children are built.
 
-Each thirdeye session becomes one Logfire trace. The first event exported for
-a session becomes that trace's root span; its real (SDK-generated) trace_id
-and span_id are persisted to ``otel.json`` in the session directory so later
-events — emitted by separate, later hook subprocesses — can reference the same
-trace and parent under it. Every exported event's own span id is *also*
-persisted, individually, to ``otel-spans/<seq>.json`` — this is what lets a
-turn's LLM-call spans parent directly under the specific ``assistant_message``
-/ ``agent_turn`` span for that turn, rather than dangling off the trace root
-as unconnected siblings. A ``tool_call`` is never exported on its own; it is
-folded into the matching ``tool_result`` as one span with an accurate
-start/end duration, found by scanning back through the session's own stored
-events for the nearest event sharing the same tool id (Claude's
-``tool_use_id`` / Codex's ``call_id``).
+The resulting trace shape, per thirdeye session:
 
-The actual Logfire call — including a flush, which is a real network round
-trip — never happens in the hook process itself. ``export_event`` (called
-from the hook process) only ever writes a small job file and spawns a
-detached, unwaited-for child process (``thirdeye.otel_worker``) to do the
-work, so a slow or unreachable Logfire endpoint adds no latency to the tool
-call that triggered it. ``start_new_session=True`` detaches the child from
-the hook's process group so it survives even if Claude Code kills that group
-once the hook returns.
+- **Session** — a root span, no input/output, purely an anchor other spans
+  nest under. Persisted (trace_id, span_id) to ``otel.json`` in the session
+  directory, same as before, since later turns are still separate processes
+  that need to find the same root.
+- **Agent-turn** — one span per user prompt through to its final response (or
+  point of interruption), carrying the turn's own input/output messages and
+  status.
+- Each turn's LLM calls nest under the turn span; each LLM call's tool calls
+  nest under *that specific* LLM call's span, not flatly under the turn.
+  Permission requests nest directly under the turn as point-in-time spans.
+- Subagent invocations nest recursively: structurally a subagent invocation
+  is just another turn one level deeper, so the same recursive exporter
+  (``_export_turn_subtree``) handles them with no special-casing beyond the
+  span name.
 
-Safety: this module runs inside hook subprocesses whose stdout Claude Code
-treats as a hook decision. Every public function here must never raise and
-never write to stdout — a Logfire hiccup must be invisible to the tool call it
+Platform branching does not belong in this module — the harness-specific
+adapters own building the ``TurnSpanDict``; this module's job is only turning
+one into spans.
+
+The actual Logfire call — including a flush, a real network round trip —
+never happens in the hook process itself. ``export_turn`` only ever writes a
+small job file and spawns a detached, unwaited-for child process
+(``thirdeye.otel_worker``) to do the work, so a slow or unreachable Logfire
+endpoint adds no latency to the hook invocation that triggered it.
+``start_new_session=True`` detaches the child from the hook's process group
+so it survives even if the harness kills that group once the hook returns.
+
+Safety: this module runs inside hook subprocesses whose stdout the harness
+may treat as a hook decision. Every public function here must never raise and
+never write to stdout — a Logfire hiccup must be invisible to the turn it
 rode in on. Failures are logged via ``usage.errlog`` (a file), same as every
 other capture-side failure path in thirdeye.
 """
@@ -66,15 +68,15 @@ from typing import Any
 
 from thirdeye.config import Config
 from thirdeye.ids import new_ulid
-from thirdeye.paths import otel_jobs_dir, otel_span_path, otel_state_path
+from thirdeye.paths import otel_jobs_dir, otel_state_path
+from thirdeye.tracing.model import TurnSpanDict
 from thirdeye.usage.errlog import log_capture_error
 
 # Cache across calls *within one process*. Each hook invocation is its own
 # short-lived process, so this only saves repeat configure() calls when a
-# single process exports more than one event (e.g. the eval runner).
+# single process exports more than one turn (e.g. the eval runner).
 _state: dict[str, Any] = {"attempted": False, "instance": None}
 
-_TOOL_ID_KEYS = ("tool_use_id", "call_id")
 _ATTR_PRIMITIVES = (str, bool, int, float)
 # Logfire's own convention for telling its backend which JSON-encoded string
 # attributes to parse back into structured data (objects/arrays) rather than
@@ -84,22 +86,18 @@ _ATTR_PRIMITIVES = (str, bool, int, float)
 # render as a chat view in the UI, just a flat "prompt" text field.
 _LOGFIRE_JSON_SCHEMA_KEY = "logfire.json_schema"
 
-# Keyed by the *end* event type -> the matching *start* event type it pairs
-# with to form one real-duration span. A start-side type with no entry here
-# (tool_call) is never exported on its own.
-_PAIR_START_FOR_END = {"tool_result": "tool_call"}
-
-# How long export_llm_calls waits for the triggering event's own span record
-# to show up before giving up and parenting under the session root instead.
-# Both workers are spawned within moments of each other from the same hook
-# call, and each pays real (if brief) network setup cost before either one
-# gets as far as persisting anything, so a handful of short polls is usually
-# enough to observe the other side land first.
-_CALL_PARENT_RETRIES = 6
-_CALL_PARENT_RETRY_DELAY_S = 0.1
-
-_SCAN_CAP = 500  # bound on how far back to search for a matching start event
 _FLUSH_TIMEOUT_MS = 2000
+
+# Maps a key in an `UsageDict` to the OTel GenAI semantic-convention attribute
+# it becomes. `UsageDict` is `total=False`, so only keys actually present are
+# ever emitted — an absent count means "not reported", not zero.
+_USAGE_KEYS = {
+    "input_tokens": "gen_ai.usage.input_tokens",
+    "output_tokens": "gen_ai.usage.output_tokens",
+    "cache_read_input_tokens": "gen_ai.usage.cache_read.input_tokens",
+    "cache_creation_input_tokens": "gen_ai.usage.cache_creation.input_tokens",
+    "reasoning_output_tokens": "gen_ai.usage.reasoning.output_tokens",
+}
 
 
 def is_available() -> bool:
@@ -178,7 +176,7 @@ def _get_instance(config: Config, platform: str):
     (the tracer name below) already says "thirdeye", so it needn't be
     repeated in the service name too. Each hook invocation is its own
     short-lived, single-platform process, so this only matters for a process
-    that exports more than one platform's events (e.g. the eval runner),
+    that exports more than one platform's turns (e.g. the eval runner),
     where the first platform wins.
     """
     if _state["attempted"]:
@@ -259,14 +257,8 @@ def _merge_raw(*parts: Any) -> dict[str, Any]:
     return merged
 
 
-def _tool_id(data: Any) -> str | None:
-    if not isinstance(data, dict):
-        return None
-    for key in _TOOL_ID_KEYS:
-        v = data.get(key)
-        if v:
-            return str(v)
-    return None
+def _message(role: str, content: str) -> list[dict[str, Any]]:
+    return [{"role": role, "parts": [{"type": "text", "content": content}]}]
 
 
 def _read_root(path: Path) -> tuple[int, int] | None:
@@ -337,18 +329,6 @@ def _create_root_atomic(path: Path, trace_id: int, span_id: int) -> tuple[int, i
     return _read_root(path) or (trace_id, span_id)
 
 
-def _persist_span(path: Path, trace_id: int, span_id: int) -> None:
-    """Best-effort record of one exported event's own span id, keyed by its
-    seq — so a later, separate process (LLM-call export) can parent under
-    this exact span rather than only ever the session root. Every seq is
-    exported at most once, so a collision here would mean something else is
-    wrong; either way this must never raise, so a loss is silently ignored
-    rather than reconciled the way `_create_root_atomic` reconciles a root
-    collision.
-    """
-    _atomic_create(path, _span_payload(trace_id, span_id))
-
-
 def _parent_context(trace_id: int, span_id: int):
     from opentelemetry import trace as otel_trace
 
@@ -359,133 +339,6 @@ def _parent_context(trace_id: int, span_id: int):
         trace_flags=otel_trace.TraceFlags(otel_trace.TraceFlags.SAMPLED),
     )
     return otel_trace.set_span_in_context(otel_trace.NonRecordingSpan(span_context))
-
-
-def _find_matching_start(
-    reader: Any, before_seq: int, start_type: str, tool_id: str | None
-) -> dict[str, Any] | None:
-    """Scan backward from before_seq-1 for the matching start event.
-
-    An id match (Claude's tool_use_id / Codex's call_id) wins immediately.
-    With no id on either side, falls back to the nearest preceding event of
-    start_type — a best-effort pairing for older payload shapes that carry no
-    stable id. Bounded by _SCAN_CAP so a very long session can't turn every
-    tool_result into an O(session length) scan.
-    """
-    fallback = None
-    lo = max(0, before_seq - _SCAN_CAP)
-    for seq in range(before_seq - 1, lo - 1, -1):
-        try:
-            event = reader.get_event(seq)
-        except (IndexError, OSError):
-            continue
-        if event.get("t") != start_type:
-            continue
-        if tool_id is not None and _tool_id(event.get("data")) == tool_id:
-            return event
-        if fallback is None:
-            fallback = event
-    return fallback
-
-
-def _find_tool_pair(
-    reader: Any, before_seq: int, tool_id: str
-) -> tuple[dict[str, Any] | None, dict[str, Any] | None, int | None]:
-    """Scan backward from before_seq for the tool_call/tool_result events
-    matching tool_id, returning (call_event, result_event, result_seq).
-
-    Used by `_export_llm_calls_inner` to export a Claude tool span nested
-    under the LLM call span that requested it: by the time an
-    assistant_message triggers that scan, the turn's tool calls have already
-    run to completion (Claude Code blocks on PostToolUse before Stop fires),
-    so both events are already in the session store even though the
-    tool_result's own export was deferred — see `export_event`'s
-    ``platform == "claude"`` skip.
-    """
-    call_event = None
-    result_event: dict[str, Any] | None = None
-    result_seq: int | None = None
-    lo = max(0, before_seq - _SCAN_CAP)
-    for seq in range(before_seq - 1, lo - 1, -1):
-        try:
-            event = reader.get_event(seq)
-        except (IndexError, OSError):
-            continue
-        etype = event.get("t")
-        if (
-            etype == "tool_result"
-            and result_event is None
-            and _tool_id(event.get("data")) == tool_id
-        ):
-            result_event = event
-            result_seq = seq
-        elif etype == "tool_call" and call_event is None and _tool_id(event.get("data")) == tool_id:
-            call_event = event
-        if call_event is not None and result_event is not None:
-            break
-    return call_event, result_event, result_seq
-
-
-def export_event(
-    *,
-    config: Config,
-    session_dir_: Path,
-    session_id: str,
-    platform: str,
-    cwd: str,
-    t: str,
-    seq: int,
-    ts: str,
-    data: Any,
-) -> None:
-    """Hand this event off for background export. Never raises, never blocks
-    on network I/O — the actual Logfire call happens in a detached child
-    process this spawns and does not wait for. See module docstring.
-    """
-    if not config.logfire.enabled or not config.logfire.token:
-        return
-    # Codex tools are reconstructed as children of the completed turn's
-    # inference span from the rollout JSONL. Exporting their local event-store
-    # representation too would create a second, generic copy elsewhere in the
-    # trace.
-    if (
-        platform == "codex"
-        and t in {"tool_call", "tool_result"}
-        and isinstance(data, dict)
-        and data.get("thirdeye.codex_turn_batched") is True
-    ):
-        return
-    if t == "tool_call":
-        return  # nothing to export yet; folded into the matching tool_result
-    if platform == "claude" and t == "tool_result":
-        # Claude's tool_call/tool_result hooks fire live, mid-turn, well
-        # before Stop fires the assistant_message whose transcript segment
-        # produces this turn's LLM-call ("chat") spans — the span a tool
-        # result should nest under. Exporting live here would always miss
-        # that not-yet-created parent and fall back to the session root.
-        # Instead these are exported from export_llm_calls, alongside the
-        # chat span, once it actually exists — see _export_llm_calls_inner.
-        return
-    try:
-        _spawn_worker(
-            thirdeye_home=config.root,
-            session_dir_=session_dir_,
-            session_id=session_id,
-            platform=platform,
-            cwd=cwd,
-            t=t,
-            seq=seq,
-            ts=ts,
-            data=data,
-        )
-    except Exception as exc:
-        log_capture_error(
-            thirdeye_home=config.root,
-            phase="logfire_export_spawn",
-            error=exc,
-            platform=platform,
-            session_id=session_id,
-        )
 
 
 def _write_job(thirdeye_home: Path, payload: dict[str, Any]) -> Path:
@@ -515,599 +368,206 @@ def _spawn(job_path: Path) -> None:
     )
 
 
-def _spawn_worker(
-    *,
-    thirdeye_home: Path,
+def _turn_claim_path(session_dir_: Path, turn_id: str) -> Path:
+    # Hashed, not the raw turn_id, as a filename: nothing guarantees any
+    # platform's turn id is filesystem- or path-traversal-safe.
+    digest = hashlib.sha256(turn_id.encode()).hexdigest()
+    return session_dir_ / "otel-turns-sent" / f"{digest}.json"
+
+
+def _claim_turn_export(session_dir_: Path, turn_id: str) -> bool:
+    """First-wins claim on exporting this turn_id's span tree, ever, for this
+    session. A replayed/duplicate hook invocation for the same turn (e.g. the
+    open-turn-marker catch-all firing after the turn was already closed out
+    normally) must not export it a second time.
+    """
+    return _atomic_create(_turn_claim_path(session_dir_, turn_id), "1")
+
+
+def export_turn(
+    config: Config,
     session_dir_: Path,
     session_id: str,
     platform: str,
     cwd: str,
-    t: str,
-    seq: int,
-    ts: str,
-    data: Any,
+    turn: TurnSpanDict,
 ) -> None:
-    job_path = _write_job(
-        thirdeye_home,
-        {
-            "session_dir": str(session_dir_),
-            "session_id": session_id,
-            "platform": platform,
-            "cwd": cwd,
-            "t": t,
-            "seq": seq,
-            "ts": ts,
-            "data": data,
-        },
-    )
-    _spawn(job_path)
-
-
-def export_llm_calls(
-    config: Config | None,
-    session_dir_: Path,
-    session_id: str,
-    platform: str,
-    cwd: str | None,
-    calls: list[dict[str, Any]],
-) -> None:
-    """Hand a whole batch of new LLM calls (from one turn's transcript/rollout
-    segment) off for background export as children of the interaction span
-    they belong to (see module docstring). Never raises, never blocks on
-    network I/O — same guarantee as `export_event`, which this deliberately
-    does *not* delegate to: every call in one batch shares the same `seq`
-    (the triggering event's), so they belong in one job and one flush, not
-    one detached subprocess each — a turn with several LLM calls would
-    otherwise fan out into that many concurrent processes all hitting
-    Logfire's ingest endpoint for a single hook invocation.
-
-    Each item in `calls` is `{"seq": int, "ts": str, "call_id": str, "data":
-    dict}`, where `data` is the fully-formed span attributes (gen_ai.usage.*,
-    gen_ai.input.messages, gen_ai.output.messages, ...) — see
-    `platforms/claude/usage.py`'s `extract_new_calls_claude`.
-
-    No-op if `config` or `cwd` is missing (older call sites that predate this
-    integration don't pass them), or no call carries a timestamp. Calls whose
-    `call_id` has already been exported — Codex repeat-reports and
-    same-offset capture races can hand this the same call more than once —
-    are silently dropped rather than exported again as a duplicate span
-    nested under the same interaction.
+    """Hand a completed turn off for background export. Never raises, never
+    blocks on network I/O — the actual Logfire call happens in a detached
+    child process this spawns and does not wait for. See module docstring.
     """
-    if config is None or cwd is None:
-        return
     if not config.logfire.enabled or not config.logfire.token:
-        return
-    claimed = [
-        call
-        for call in calls
-        if call.get("ts") and _claim_call_export(session_dir_, call["call_id"])
-    ]
-    if not claimed:
         return
     try:
         job_path = _write_job(
             config.root,
             {
-                "kind": "llm_calls",
+                "kind": "turn",
                 "session_dir": str(session_dir_),
                 "session_id": session_id,
                 "platform": platform,
                 "cwd": cwd,
-                "calls": claimed,
+                "turn": turn,
             },
         )
         _spawn(job_path)
     except Exception as exc:
         log_capture_error(
             thirdeye_home=config.root,
-            phase="logfire_llm_calls_export_spawn",
+            phase="logfire_turn_export_spawn",
             error=exc,
             platform=platform,
             session_id=session_id,
         )
 
 
-def export_codex_turn(
-    config: Config,
-    session_dir_: Path,
-    session_id: str,
-    cwd: str,
-    seq: int,
-    turn: dict[str, Any],
-) -> bool:
-    """Export one rollout-reconstructed Codex turn and its tool children."""
-    if not config.logfire.enabled or not config.logfire.token:
-        return False
-    turn_id = str(turn.get("turn_id") or "")
-    if not turn_id or not turn.get("start_ts") or not turn.get("end_ts"):
-        return False
-    state_path = _call_claim_path(session_dir_, f"codex-turn:{turn_id}")
-    try:
-        state = state_path.read_text()
-    except OSError:
-        state = ""
-    if state == "pending":
-        try:
-            stale = time.time() - state_path.stat().st_mtime > 30.0
-        except OSError:
-            stale = True
-        if stale:
-            state_path.unlink(missing_ok=True)
-            state = ""
-        else:
-            return True
-    if state in {"sent", "1"}:
-        return True
-    if not _atomic_create(state_path, "pending"):
-        return True
-    try:
-        job_path = _write_job(
-            config.root,
-            {
-                "kind": "codex_turn",
-                "session_dir": str(session_dir_),
-                "session_id": session_id,
-                "cwd": cwd,
-                "seq": seq,
-                "turn": turn,
-                "state_path": str(state_path),
-            },
-        )
-        _spawn(job_path)
-        return True
-    except Exception as exc:
-        state_path.unlink(missing_ok=True)
-        log_capture_error(
-            thirdeye_home=config.root,
-            phase="logfire_codex_turn_export_spawn",
-            error=exc,
-            platform="codex",
-            session_id=session_id,
-        )
-        return False
-
-
-def _message(role: str, content: str) -> list[dict[str, Any]]:
-    return [{"role": role, "parts": [{"type": "text", "content": content}]}]
-
-
-def _preceding_user_message_ns(session_dir_: Path, seq: int) -> int | None:
-    """Return the timestamp of the latest user event before ``seq``.
-
-    Codex's rollout timestamps can precede the hook timestamp which recorded
-    the prompt by a small amount. Logfire sorts by span start time, so without
-    a floor the model call can appear above the user input that initiated it.
-    """
-    from thirdeye.reader import SessionReader
-
-    try:
-        events = list(
-            SessionReader(session_dir_).iter_events(types={"user_message"}, seq_range=(0, seq))
-        )
-    except (OSError, IndexError, ValueError):
-        return None
-    if not events:
-        return None
-    ts = events[-1].get("ts")
-    return _ts_to_ns(ts) if ts else None
-
-
-def _export_codex_turn_inner(
+def _export_turn_inner(
     *,
     config: Config,
     session_dir_: Path,
     session_id: str,
+    platform: str,
     cwd: str,
-    seq: int,
-    turn: dict[str, Any],
-) -> bool:
-    """Emit a semconv inference span with semconv execute-tool children."""
-    from opentelemetry.trace import SpanKind
-
-    instance = _get_instance(config, "codex")
+    turn: TurnSpanDict,
+) -> None:
+    instance = _get_instance(config, platform)
     if instance is None:
-        return False
+        return
+    if not _claim_turn_export(session_dir_, turn["turn_id"]):
+        return
+
     tracer = instance.config.get_tracer_provider().get_tracer("thirdeye")
     root_path = otel_state_path(session_dir_)
-    # The notify hook has already recorded an ``agent_turn`` event at ``seq``
-    # and queued its generic event span. Its detached worker may still be
-    # racing this one, so wait for that span's persisted context before
-    # falling back to the session root. This keeps every model call for the
-    # completed turn under the turn that triggered it instead of flattening
-    # calls directly beneath the whole session.
-    parent = _resolve_call_parent(session_dir_, root_path, seq)
-    root_lock = None
-    if parent is None:
-        parent, root_lock = _root_or_ownership(root_path)
-        if parent is None and root_lock is None:
-            return False
-    model = str(turn.get("model") or "")
-    usage_keys = {
-        "input_tokens": "gen_ai.usage.input_tokens",
-        "output_tokens": "gen_ai.usage.output_tokens",
-        "cached_input_tokens": "gen_ai.usage.cache_read.input_tokens",
-        "cache_write_input_tokens": "gen_ai.usage.cache_creation.input_tokens",
-        "reasoning_output_tokens": "gen_ai.usage.reasoning.output_tokens",
-    }
-    calls = turn.get("calls") or [
-        {
-            "start_ts": turn["start_ts"],
-            "end_ts": turn["end_ts"],
-            "input_messages": (
-                _message("user", str(turn["user_prompt"])) if turn.get("user_prompt") else []
-            ),
-            "output_messages": (
-                _message("assistant", str(turn["assistant_output"]))
-                if turn.get("assistant_output")
-                else []
-            ),
-            "usage": turn.get("usage") or {},
-            "tools": turn.get("tools") or [],
-        }
-    ]
-    context = _parent_context(*parent) if parent else None
-    user_message_ns = _preceding_user_message_ns(session_dir_, seq)
+    parent, root_lock = _root_or_ownership(root_path)
     try:
-        for call_index, call in enumerate(calls):
-            attrs: dict[str, Any] = {
-                "gen_ai.operation.name": "chat",
-                "gen_ai.provider.name": "openai",
-                "gen_ai.conversation.id": session_id,
-                "thirdeye.platform": "codex",
-                "thirdeye.cwd": cwd,
-                "thirdeye.seq": seq,
-                "codex.turn.id": str(turn.get("turn_id") or ""),
-                "codex.call.index": call_index,
-            }
-            if model:
-                attrs["gen_ai.request.model"] = model
-            if call.get("input_messages"):
-                attrs["gen_ai.input.messages"] = call["input_messages"]
-            if call.get("output_messages"):
-                attrs["gen_ai.output.messages"] = call["output_messages"]
-            for source, target in usage_keys.items():
-                value = (call.get("usage") or {}).get(source)
-                if isinstance(value, int):
-                    attrs[target] = value
-
-            start_ns = _ts_to_ns(call.get("start_ts") or turn["start_ts"])
-            if call_index == 0 and user_message_ns is not None:
-                # Preserve rollout timing unless hook/rollout clock skew would
-                # render the initiating prompt after this call.
-                start_ns = max(start_ns, user_message_ns + 1)
-            span = tracer.start_span(
-                f"chat {model}" if model else "chat",
-                context=context,
-                kind=SpanKind.CLIENT,
-                start_time=start_ns,
-                attributes=_flatten_attrs(attrs),
-            )
-            span.end(end_time=_ts_to_ns(call.get("end_ts") or turn["end_ts"]))
-            span_ctx = span.get_span_context()
-            if parent is None and call_index == 0:
-                _create_root_atomic(root_path, span_ctx.trace_id, span_ctx.span_id)
-                # Later calls in a rootless session share the first call's
-                # trace, while remaining siblings rather than nesting calls.
-                context = _parent_context(span_ctx.trace_id, span_ctx.span_id)
-
-            tool_parent = _parent_context(span_ctx.trace_id, span_ctx.span_id)
-            for tool in call.get("tools") or []:
-                name = str(tool.get("name") or "unknown_tool")
-                tool_attrs: dict[str, Any] = {
-                    "gen_ai.operation.name": "execute_tool",
-                    "gen_ai.tool.name": name,
+        if parent is None and root_lock is None:
+            return
+        if parent is None:
+            # First export for this session: the root is purely an anchor,
+            # so it carries none of the turn's own input/output content.
+            root_ns = _ts_to_ns(turn["start_ts"])
+            root_attrs = _flatten_attrs(
+                {
                     "gen_ai.conversation.id": session_id,
-                    "thirdeye.platform": "codex",
+                    "thirdeye.platform": platform,
+                    "thirdeye.cwd": cwd,
                 }
-                if tool.get("call_id"):
-                    tool_attrs["gen_ai.tool.call.id"] = str(tool["call_id"])
-                if tool.get("arguments") not in (None, ""):
-                    tool_attrs["gen_ai.tool.call.arguments"] = tool["arguments"]
-                if tool.get("result") not in (None, ""):
-                    tool_attrs["gen_ai.tool.call.result"] = tool["result"]
-                child = tracer.start_span(
-                    f"execute_tool {name}",
-                    context=tool_parent,
-                    kind=SpanKind.INTERNAL,
-                    start_time=_ts_to_ns(
-                        tool.get("start_ts") or call.get("start_ts") or turn["start_ts"]
-                    ),
-                    attributes=_flatten_attrs(tool_attrs),
-                )
-                child.end(
-                    end_time=_ts_to_ns(
-                        tool.get("end_ts")
-                        or tool.get("start_ts")
-                        or call.get("end_ts")
-                        or turn["end_ts"]
-                    )
-                )
+            )
+            root_span = tracer.start_span("session", start_time=root_ns, attributes=root_attrs)
+            root_span.end(end_time=root_ns)
+            root_ctx = root_span.get_span_context()
+            parent = _create_root_atomic(root_path, root_ctx.trace_id, root_ctx.span_id)
     finally:
         if root_lock is not None:
             root_lock.unlink(missing_ok=True)
 
-    return instance.force_flush(timeout_millis=_FLUSH_TIMEOUT_MS) is not False
-
-
-def _call_claim_path(session_dir_: Path, call_id: str) -> Path:
-    # Hashed, not the raw call_id, as a filename: nothing guarantees any
-    # platform's call_id is filesystem- or path-traversal-safe (Codex's, for
-    # instance, contains a raw colon: `cum:<n>`).
-    digest = hashlib.sha256(call_id.encode()).hexdigest()
-    return session_dir_ / "otel-calls-sent" / f"{digest}.json"
-
-
-def _claim_call_export(session_dir_: Path, call_id: str) -> bool:
-    """First-wins claim on exporting this call_id's span, ever, for this
-    session. Same-offset capture races (two hook invocations independently
-    rediscovering the same not-yet-persisted rows) can otherwise hand the
-    same call to export twice; every duplicate describes the same underlying
-    call identically, so first-wins is correct and needs no reconciliation —
-    it just answers whether THIS call is the one that gets to export.
-    """
-    return _atomic_create(_call_claim_path(session_dir_, call_id), "1")
-
-
-def _export_event_inner(
-    *,
-    config: Config,
-    session_dir_: Path,
-    session_id: str,
-    platform: str,
-    cwd: str,
-    t: str,
-    seq: int,
-    ts: str,
-    data: Any,
-) -> None:
-    if t == "tool_call":
-        return  # folded into the matching tool_result below
-
-    instance = _get_instance(config, platform)
-    if instance is None:
-        return
-
-    tracer = instance.config.get_tracer_provider().get_tracer("thirdeye")
-    end_ns = _ts_to_ns(ts)
-
-    start_type = _PAIR_START_FOR_END.get(t)
-    tool_id: str | None = None
-    if start_type is not None:
-        from thirdeye.reader import SessionReader
-
-        tool_id = _tool_id(data)
-        matched = _find_matching_start(SessionReader(session_dir_), seq, start_type, tool_id)
-        start_ns = _ts_to_ns(matched["ts"]) if matched else end_ns
-        attrs = _flatten_attrs(_merge_raw(matched.get("data") if matched else None, data))
-        tool_name = attrs.get("tool_name")
-        name = f"tool: {tool_name}" if tool_name else t
-    else:
-        start_ns = end_ns
-        raw_attrs = data if isinstance(data, dict) else {}
-        if t == "user_message":
-            # Retain the raw payload while also supplying the GenAI semantic
-            # attribute Logfire uses to recognize and render user messages.
-            prompt = raw_attrs.get("prompt") or raw_attrs.get("message") or raw_attrs.get("content")
-            if isinstance(prompt, str) and prompt:
-                raw_attrs = dict(raw_attrs)
-                raw_attrs["gen_ai.input.messages"] = _message("user", prompt)
-        attrs = _flatten_attrs(raw_attrs)
-        name = t
-
-    # gen_ai.conversation.id, not thirdeye.session_id: Logfire's default
-    # scrubber redacts any attribute whose key or value matches /session/,
-    # which would blank out our own session identifier. This mirrors the
-    # OTel GenAI semconv key thirdeye.usage.types.UsageRow already uses for
-    # the same concept.
-    attrs["gen_ai.conversation.id"] = session_id
-    attrs["thirdeye.platform"] = platform
-    attrs["thirdeye.cwd"] = cwd
-    attrs["thirdeye.seq"] = seq
-
-    root_path = otel_state_path(session_dir_)
-    # A tool span nests under the specific chat call that requested it, so
-    # tool execution reads as a child of the model call that made it rather
-    # than a flat sibling under the whole session; every other event type
-    # (user_message, assistant_message, ...) still nests directly under root.
-    if tool_id is not None:
-        parent = _resolve_tool_parent(session_dir_, root_path, tool_id)
-    else:
-        parent = _read_root(root_path)
-
-    if parent is None:
-        parent, root_lock = _root_or_ownership(root_path)
-        if parent is None and root_lock is None:
-            return
-        if parent is None:
-            try:
-                span = tracer.start_span(name, start_time=start_ns, attributes=attrs)
-                span.end(end_time=end_ns)
-                ctx = span.get_span_context()
-                _create_root_atomic(root_path, ctx.trace_id, ctx.span_id)
-            finally:
-                root_lock.unlink(missing_ok=True)
-        else:
-            span = tracer.start_span(
-                name, context=_parent_context(*parent), start_time=start_ns, attributes=attrs
-            )
-            span.end(end_time=end_ns)
-            ctx = span.get_span_context()
-    else:
-        span = tracer.start_span(
-            name, context=_parent_context(*parent), start_time=start_ns, attributes=attrs
-        )
-        span.end(end_time=end_ns)
-        ctx = span.get_span_context()
-
-    _persist_span(otel_span_path(session_dir_, seq), ctx.trace_id, ctx.span_id)
+    parent_ctx = _parent_context(*parent)
+    _export_turn_subtree(
+        tracer, parent_ctx, turn, session_id=session_id, platform=platform, cwd=cwd
+    )
     instance.force_flush(timeout_millis=_FLUSH_TIMEOUT_MS)
 
 
-def _resolve_parent(specific_path: Path, root_path: Path) -> tuple[int, int] | None:
-    """Poll briefly for a specific span record, falling back to the session
-    root (whatever it is *right now* — possibly still None, if this is
-    racing to be the very first export in a brand-new session too) if it
-    never shows up in time.
-
-    The record is built by a separate worker process racing this one with no
-    ordering guarantee between them, hence the poll rather than a single read.
-    """
-    for attempt in range(_CALL_PARENT_RETRIES):
-        found = _read_root(specific_path)
-        if found is not None:
-            return found
-        if attempt < _CALL_PARENT_RETRIES - 1:
-            time.sleep(_CALL_PARENT_RETRY_DELAY_S)
-    return _read_root(root_path)
-
-
-def _resolve_call_parent(
-    session_dir_: Path, root_path: Path, triggering_seq: int
-) -> tuple[int, int] | None:
-    """Find the span a turn's LLM-call spans should nest under: the specific
-    triggering event's own span (typically its `assistant_message`).
-    """
-    return _resolve_parent(otel_span_path(session_dir_, triggering_seq), root_path)
-
-
-def _tool_call_span_path(session_dir_: Path, tool_use_id: str) -> Path:
-    # Hashed, not the raw tool_use_id, as a filename: nothing guarantees any
-    # platform's tool call id is filesystem- or path-traversal-safe.
-    digest = hashlib.sha256(tool_use_id.encode()).hexdigest()
-    return session_dir_ / "otel-tool-call-spans" / f"{digest}.json"
-
-
-def _resolve_tool_parent(
-    session_dir_: Path, root_path: Path, tool_use_id: str
-) -> tuple[int, int] | None:
-    """Find the span a tool call should nest under: the specific `chat` LLM
-    call whose response requested it, so tool execution spans read as
-    children of the model call that made them rather than flat siblings
-    under the whole session.
-    """
-    return _resolve_parent(_tool_call_span_path(session_dir_, tool_use_id), root_path)
-
-
-def _tool_call_ids(data: dict[str, Any]) -> list[str]:
-    """Extract every tool_call id from a chat call's raw (pre-flatten)
-    gen_ai.output.messages, so each can be recorded as a lookup key for the
-    span that produced it.
-    """
-    ids: list[str] = []
-    for message in data.get("gen_ai.output.messages") or []:
-        if not isinstance(message, dict):
-            continue
-        for part in message.get("parts") or []:
-            if isinstance(part, dict) and part.get("type") == "tool_call" and part.get("id"):
-                ids.append(str(part["id"]))
-    return ids
-
-
-def _export_llm_calls_inner(
+def _export_turn_subtree(
+    tracer: Any,
+    parent_ctx: Any,
+    turn: TurnSpanDict,
     *,
-    config: Config,
-    session_dir_: Path,
     session_id: str,
     platform: str,
     cwd: str,
-    calls: list[dict[str, Any]],
+    span_name: str = "agent-turn",
 ) -> None:
-    """Export a whole batch of LLM-call spans in one process: one shared
-    Logfire instance, one flush — never one subprocess and one network round
-    trip per call (see `export_llm_calls`). Every call shares the same
-    triggering seq, so there's exactly one parent to resolve for the batch.
+    """Export one turn and its whole subtree (LLM calls, their tool calls,
+    permission requests, and recursively any nested subagent turns).
 
-    For Claude, each call's own tool-call spans are exported right here too,
-    as children of the chat span that requested them (see
-    `_find_tool_pair`) — `export_event` defers a Claude `tool_result`
-    specifically so this is the one place it gets exported, once its real
-    parent actually exists instead of racing to find it live.
+    A subagent invocation is structurally just another turn one level deeper,
+    so it is exported by recursing into this same function rather than any
+    dedicated subagent-handling logic.
     """
-    if not calls:
-        return
-    instance = _get_instance(config, platform)
-    if instance is None:
-        return
-
     from opentelemetry.trace import SpanKind
 
-    from thirdeye.reader import SessionReader
+    turn_attrs: dict[str, Any] = {
+        "thirdeye.turn.status": turn["status"],
+        "thirdeye.turn.id": turn["turn_id"],
+        "gen_ai.conversation.id": session_id,
+        "thirdeye.platform": platform,
+        "thirdeye.cwd": cwd,
+    }
+    if turn["input_message"]:
+        turn_attrs["gen_ai.input.messages"] = _message("user", turn["input_message"])
+    if turn["output_message"]:
+        turn_attrs["gen_ai.output.messages"] = _message("assistant", turn["output_message"])
 
-    tracer = instance.config.get_tracer_provider().get_tracer("thirdeye")
-    root_path = otel_state_path(session_dir_)
-    parent = _resolve_call_parent(session_dir_, root_path, calls[0]["seq"])
-    user_message_ns = _preceding_user_message_ns(session_dir_, calls[0]["seq"])
-    reader = SessionReader(session_dir_) if platform == "claude" else None
+    turn_span = tracer.start_span(
+        span_name,
+        context=parent_ctx,
+        start_time=_ts_to_ns(turn["start_ts"]),
+        attributes=_flatten_attrs(_merge_raw(turn_attrs, turn.get("attributes"))),
+    )
+    turn_span.end(end_time=_ts_to_ns(turn["end_ts"]))
+    turn_ctx = turn_span.get_span_context()
+    turn_parent_ctx = _parent_context(turn_ctx.trace_id, turn_ctx.span_id)
 
-    for call_index, call in enumerate(calls):
-        ts_ns = _ts_to_ns(call["ts"])
-        if call_index == 0 and user_message_ns is not None:
-            ts_ns = max(ts_ns, user_message_ns + 1)
-        # gen_ai.input.messages / .output.messages are nested lists of dicts —
-        # raw OTel attributes can only hold a primitive or a homogeneous
-        # sequence of one, so _flatten_attrs JSON-encodes them to a string,
-        # same as it already does for ordinary event data. This is the same
-        # wire format Logfire's own SDK produces from its convenience
-        # `span.set_attribute(OUTPUT_MESSAGES, [...])` API, which does this
-        # encoding internally before anything reaches OTLP.
-        attrs = _flatten_attrs(call["data"])
-        attrs["gen_ai.conversation.id"] = session_id
-        attrs["thirdeye.platform"] = platform
-        attrs["thirdeye.cwd"] = cwd
-        attrs["thirdeye.seq"] = call["seq"]
-        model = attrs.get("gen_ai.response.model")
-        name = f"chat {model}" if model else "chat"
+    for llm_call in turn["llm_calls"]:
+        model = llm_call.get("model") or ""
+        call_attrs: dict[str, Any] = {
+            "gen_ai.input.messages": llm_call["input_messages"],
+            "gen_ai.output.messages": llm_call["output_messages"],
+            "gen_ai.provider.name": llm_call["provider"],
+            "gen_ai.operation.name": "chat",
+            "gen_ai.response.model": model,
+        }
+        usage = llm_call["usage"]
+        for source, target in _USAGE_KEYS.items():
+            if source in usage:
+                call_attrs[target] = usage[source]
 
-        if parent is None:
-            span = tracer.start_span(name, start_time=ts_ns, attributes=attrs)
-            span.end(end_time=ts_ns)
-            ctx = span.get_span_context()
-            parent = _create_root_atomic(root_path, ctx.trace_id, ctx.span_id)
-        else:
-            span = tracer.start_span(
-                name, context=_parent_context(*parent), start_time=ts_ns, attributes=attrs
-            )
-            span.end(end_time=ts_ns)
-            ctx = span.get_span_context()
+        call_span = tracer.start_span(
+            f"chat {model}" if model else "chat",
+            context=turn_parent_ctx,
+            start_time=_ts_to_ns(llm_call["start_ts"]),
+            attributes=_flatten_attrs(call_attrs),
+        )
+        call_span.end(end_time=_ts_to_ns(llm_call["end_ts"]))
+        call_ctx = call_span.get_span_context()
+        call_parent_ctx = _parent_context(call_ctx.trace_id, call_ctx.span_id)
 
-        tool_ids = _tool_call_ids(call["data"])
-        for tool_use_id in tool_ids:
-            _persist_span(
-                _tool_call_span_path(session_dir_, tool_use_id), ctx.trace_id, ctx.span_id
-            )
-
-        if reader is None or not tool_ids:
-            continue
-        tool_parent = _parent_context(ctx.trace_id, ctx.span_id)
-        for tool_use_id in tool_ids:
-            if not _claim_call_export(session_dir_, f"tool:{tool_use_id}"):
-                continue
-            call_event, result_event, result_seq = _find_tool_pair(reader, call["seq"], tool_use_id)
-            if result_event is None or result_seq is None:
-                continue
-            tool_attrs = _flatten_attrs(
-                _merge_raw(call_event.get("data") if call_event else None, result_event.get("data"))
-            )
-            tool_name = tool_attrs.get("tool_name")
-            tool_span_name = f"tool: {tool_name}" if tool_name else "tool_result"
+        for tool_call in llm_call["tool_calls"]:
+            tool_attrs = _flatten_attrs(tool_call["attributes"])
             tool_attrs["gen_ai.conversation.id"] = session_id
             tool_attrs["thirdeye.platform"] = platform
             tool_attrs["thirdeye.cwd"] = cwd
-            tool_attrs["thirdeye.seq"] = result_seq
-            tool_start_ns = (
-                _ts_to_ns(call_event["ts"]) if call_event else _ts_to_ns(result_event["ts"])
-            )
             tool_span = tracer.start_span(
-                tool_span_name,
-                context=tool_parent,
+                f"tool: {tool_call['name']}",
+                context=call_parent_ctx,
                 kind=SpanKind.INTERNAL,
-                start_time=tool_start_ns,
+                start_time=_ts_to_ns(tool_call["start_ts"]),
                 attributes=tool_attrs,
             )
-            tool_span.end(end_time=_ts_to_ns(result_event["ts"]))
-            tool_ctx = tool_span.get_span_context()
-            _persist_span(
-                otel_span_path(session_dir_, result_seq), tool_ctx.trace_id, tool_ctx.span_id
-            )
+            tool_span.end(end_time=_ts_to_ns(tool_call["end_ts"]))
 
-    instance.force_flush(timeout_millis=_FLUSH_TIMEOUT_MS)
+    for permission_request in turn["permission_requests"]:
+        pr_ts = _ts_to_ns(permission_request["ts"])
+        pr_attrs = _flatten_attrs(permission_request["attributes"])
+        pr_attrs["gen_ai.conversation.id"] = session_id
+        pr_attrs["thirdeye.platform"] = platform
+        pr_attrs["thirdeye.cwd"] = cwd
+        pr_span = tracer.start_span(
+            f"permission_request: {permission_request['tool_name']}",
+            context=turn_parent_ctx,
+            start_time=pr_ts,
+            attributes=pr_attrs,
+        )
+        pr_span.end(end_time=pr_ts)
+
+    for subagent in turn["subagents"]:
+        _export_turn_subtree(
+            tracer,
+            turn_parent_ctx,
+            subagent,
+            session_id=session_id,
+            platform=platform,
+            cwd=cwd,
+            span_name="agent-turn (subagent)",
+        )

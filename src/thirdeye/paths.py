@@ -49,10 +49,6 @@ def otel_state_path(session_dir_: Path) -> Path:
     return session_dir_ / "otel.json"
 
 
-def otel_span_path(session_dir_: Path, seq: int) -> Path:
-    return session_dir_ / "otel-spans" / f"{seq}.json"
-
-
 def otel_jobs_dir(thirdeye_home: Path) -> Path:
     return thirdeye_home / "logs" / "otel-jobs"
 
