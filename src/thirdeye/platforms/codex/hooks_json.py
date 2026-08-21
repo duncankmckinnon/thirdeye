@@ -93,12 +93,16 @@ def session_start() -> None:
 
 
 def user_prompt_submit() -> None:
+    from thirdeye.platforms.codex.interrupt_marker import close_stale_turn_if_open, mark_turn_open
+
     payload = _read_stdin()
     sid = payload.get("session_id")
     if not sid:
         return
     cwd = payload.get("cwd") or os.getcwd()
     config = Config.load()
+    sd = session_dir(config.root, _PLATFORM, sid)
+    close_stale_turn_if_open(config, sd, sid, cwd)
     seq = Store(config).append_event(
         session_id=sid,
         platform=_PLATFORM,
@@ -106,12 +110,12 @@ def user_prompt_submit() -> None:
         t="user_message",
         data=_strip_payload(payload),
     )
+    mark_turn_open(sd, prompt=str(payload.get("prompt") or ""))
     try:
         prompt = payload.get("prompt") or ""
         tags = extract_hashtags(prompt)
         if not tags:
             return
-        sd = session_dir(config.root, _PLATFORM, sid)
         tagstore = TagStore(sd)
         for tag in tags:
             tagstore.add(seq, tag, source="auto")
@@ -148,6 +152,17 @@ def post_compact() -> None:
 
 
 def session_end() -> None:
+    from thirdeye.platforms.codex.interrupt_marker import close_stale_turn_if_open
+
     payload = _read_stdin()
+    sid = payload.get("session_id")
+    if sid:
+        config = Config.load()
+        close_stale_turn_if_open(
+            config,
+            session_dir(config.root, _PLATFORM, sid),
+            sid,
+            payload.get("cwd") or os.getcwd(),
+        )
     if _emit("session_end", payload) is not None:
         Store(Config.load()).close_session(payload["session_id"], platform=_PLATFORM)

@@ -88,7 +88,10 @@ def session_start() -> None:
 
 def notify() -> None:
     from thirdeye.platforms.codex.events import capture_events_codex
+    from thirdeye.platforms.codex.interrupt_marker import clear_turn_marker
     from thirdeye.platforms.codex.rollout import resolve_rollout
+    from thirdeye.platforms.codex.tracing import build_turn
+    from thirdeye.platforms.codex.turn import extract_turn_codex
     from thirdeye.platforms.codex.usage import capture_usage_codex
 
     try:
@@ -99,6 +102,7 @@ def notify() -> None:
         if not sid:
             return
         cwd = _flex_get(payload, "cwd", "working-directory", "working_directory") or os.getcwd()
+        turn_id = _flex_get(payload, "turn-id", "turn_id", "turnId") or ""
         config = Config.load()
 
         # The agent_turn event uniquely carries `input-messages` and
@@ -113,6 +117,11 @@ def notify() -> None:
         )
 
         sd = session_dir(config.root, _PLATFORM, sid)
+        # A real completion is happening now, whatever the fallback open-turn
+        # marker (interrupt_marker.py) thinks: this is the definitive result
+        # for the turn it was tracking, so just clear it rather than treating
+        # it as stale.
+        clear_turn_marker(sd)
         usage_store = UsageStore(sd)
         state = usage_store.read_state()
 
@@ -135,8 +144,18 @@ def notify() -> None:
 
         offset = int(state.get("rollout_offset", 0))
 
-        # Turn reconstruction and export via thirdeye.otel_export.export_turn
-        # is wired up by a separate, later change to this module.
+        turn = extract_turn_codex(rollout_path, turn_id)
+        if turn is not None:
+            from thirdeye.otel_export import export_turn
+
+            export_turn(
+                config,
+                sd,
+                sid,
+                _PLATFORM,
+                cwd,
+                build_turn(session_dir_=sd, session_id=sid, seq=seq, turn=turn),
+            )
 
         # One pass over the new rollout range: events first, then usage, then
         # advance the shared bookmark in a single write. Ordering is the one the
