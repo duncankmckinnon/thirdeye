@@ -88,7 +88,7 @@ def session_start() -> None:
 
 def notify() -> None:
     from thirdeye.platforms.codex.events import capture_events_codex
-    from thirdeye.platforms.codex.interrupt_marker import clear_turn_marker
+    from thirdeye.platforms.codex.interrupt_marker import clear_marker_not_after
     from thirdeye.platforms.codex.rollout import resolve_rollout
     from thirdeye.platforms.codex.tracing import build_turn
     from thirdeye.platforms.codex.turn import extract_turn_codex
@@ -117,11 +117,6 @@ def notify() -> None:
         )
 
         sd = session_dir(config.root, _PLATFORM, sid)
-        # A real completion is happening now, whatever the fallback open-turn
-        # marker (interrupt_marker.py) thinks: this is the definitive result
-        # for the turn it was tracking, so just clear it rather than treating
-        # it as stale.
-        clear_turn_marker(sd)
         usage_store = UsageStore(sd)
         state = usage_store.read_state()
 
@@ -148,6 +143,14 @@ def notify() -> None:
         if turn is not None:
             from thirdeye.otel_export import export_turn
 
+            # A real completion is happening now, whatever the fallback
+            # open-turn marker (interrupt_marker.py) thinks: this is the
+            # definitive result for the turn it was tracking. Only clear a
+            # marker opened at or before this turn's own end -- a delayed
+            # notify for an earlier turn must not be able to clobber a
+            # newer marker a later UserPromptSubmit already opened while
+            # this notify was still in flight.
+            clear_marker_not_after(sd, not_after_ts=turn["end_ts"])
             export_turn(
                 config,
                 sd,

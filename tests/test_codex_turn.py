@@ -288,3 +288,48 @@ def test_turn_aborted_marks_interrupted_and_keeps_partial_call(tmp_path: Path) -
     # The in-flight call and its tool call are still captured, not discarded.
     assert len(turn["calls"]) == 1
     assert turn["calls"][0]["tool_calls"][0]["tool_call_id"] == "c1"
+
+
+def test_turn_aborted_real_payload_shape_marks_interrupted(tmp_path: Path) -> None:
+    """The synthetic ``turn_aborted`` frame above only carries ``turn_id``.
+    A genuine frame pulled from a real Codex rollout on this machine
+    (2026-08-20, codex-cli 0.14x) also carries ``reason``, ``started_at``,
+    ``completed_at``, and ``duration_ms`` -- this proves the extra fields a
+    real payload has don't break detection.
+    """
+    path = tmp_path / "rollout.jsonl"
+    path.write_text(
+        "\n".join(
+            [
+                _frame("2026-01-01T00:00:00Z", "turn_context", {"turn_id": "t1", "model": "gpt-5"}),
+                _frame(
+                    "2026-01-01T00:00:01Z", "event_msg", {"type": "task_started", "turn_id": "t1"}
+                ),
+                _frame(
+                    "2026-01-01T00:00:02Z",
+                    "event_msg",
+                    {"type": "user_message", "message": "fix it"},
+                ),
+                json.dumps(
+                    {
+                        "timestamp": "2026-08-20T18:20:40.773Z",
+                        "ordinal": 45,
+                        "type": "event_msg",
+                        "payload": {
+                            "type": "turn_aborted",
+                            "turn_id": "t1",
+                            "reason": "interrupted",
+                            "started_at": 1787250009,
+                            "completed_at": 1787250040,
+                            "duration_ms": 31592,
+                        },
+                    }
+                ),
+            ]
+        )
+        + "\n"
+    )
+    turn = extract_turn_codex(str(path), "t1")
+    assert turn is not None
+    assert turn["status"] == "interrupted"
+    assert turn["end_ts"] == "2026-08-20T18:20:40.773Z"

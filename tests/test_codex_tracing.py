@@ -95,7 +95,7 @@ class TestBuildTurnFromLocalStore:
     ):
         store = Store(Config(root=tmp_path))
         _set_next_timestamps(monkeypatch, ["2026-01-01T00:00:05.000Z"])
-        store.append_event(
+        seq = store.append_event(
             session_id="s1",
             platform="codex",
             cwd="/p",
@@ -107,7 +107,7 @@ class TestBuildTurnFromLocalStore:
         turn = build_turn(
             session_dir_=sd,
             session_id="s1",
-            seq=1,
+            seq=seq + 1,
             turn=_bare_turn(),
         )
         assert len(turn["permission_requests"]) == 1
@@ -131,7 +131,7 @@ class TestBuildTurnFromLocalStore:
             t="permission_request",
             data={"tool_name": "Bash", "command": "ls"},
         )
-        store.append_event(
+        seq = store.append_event(
             session_id="s1",
             platform="codex",
             cwd="/p",
@@ -140,7 +140,7 @@ class TestBuildTurnFromLocalStore:
         )
         sd = session_dir(tmp_path, "codex", "s1")
 
-        turn = build_turn(session_dir_=sd, session_id="s1", seq=1, turn=_bare_turn())
+        turn = build_turn(session_dir_=sd, session_id="s1", seq=seq + 1, turn=_bare_turn())
         assert [pr["tool_name"] for pr in turn["permission_requests"]] == ["Bash"]
 
     def test_subagent_pair_inside_window_becomes_nested_turn(
@@ -158,7 +158,7 @@ class TestBuildTurnFromLocalStore:
             t="subagent_start",
             data={"prompt": "investigate the bug"},
         )
-        store.append_event(
+        seq = store.append_event(
             session_id="s1",
             platform="codex",
             cwd="/p",
@@ -167,7 +167,7 @@ class TestBuildTurnFromLocalStore:
         )
         sd = session_dir(tmp_path, "codex", "s1")
 
-        turn = build_turn(session_dir_=sd, session_id="s1", seq=1, turn=_bare_turn())
+        turn = build_turn(session_dir_=sd, session_id="s1", seq=seq + 1, turn=_bare_turn())
         assert len(turn["subagents"]) == 1
         sub = turn["subagents"][0]
         assert sub["input_message"] == "investigate the bug"
@@ -194,7 +194,7 @@ class TestBuildTurnFromLocalStore:
             t="subagent_start",
             data={"prompt": "off-window"},
         )
-        store.append_event(
+        seq = store.append_event(
             session_id="s1",
             platform="codex",
             cwd="/p",
@@ -203,7 +203,7 @@ class TestBuildTurnFromLocalStore:
         )
         sd = session_dir(tmp_path, "codex", "s1")
 
-        turn = build_turn(session_dir_=sd, session_id="s1", seq=1, turn=_bare_turn())
+        turn = build_turn(session_dir_=sd, session_id="s1", seq=seq + 1, turn=_bare_turn())
         assert turn["subagents"] == []
 
     def test_malformed_event_timestamp_is_excluded_not_raised(
@@ -211,7 +211,7 @@ class TestBuildTurnFromLocalStore:
     ):
         store = Store(Config(root=tmp_path))
         _set_next_timestamps(monkeypatch, ["not-a-timestamp"])
-        store.append_event(
+        seq = store.append_event(
             session_id="s1",
             platform="codex",
             cwd="/p",
@@ -220,7 +220,7 @@ class TestBuildTurnFromLocalStore:
         )
         sd = session_dir(tmp_path, "codex", "s1")
 
-        turn = build_turn(session_dir_=sd, session_id="s1", seq=1, turn=_bare_turn())
+        turn = build_turn(session_dir_=sd, session_id="s1", seq=seq + 1, turn=_bare_turn())
         assert turn["permission_requests"] == []
 
     def test_carries_through_calls_status_and_messages_unchanged(self, tmp_path: Path) -> None:
@@ -315,24 +315,49 @@ class TestNotifyExportsTurn:
 class TestInterruptMarker:
     def test_mark_then_clear_removes_marker(self, tmp_path: Path):
         from thirdeye.platforms.codex.interrupt_marker import (
-            _marker_path,
-            clear_turn_marker,
+            clear_marker_not_after,
+            has_open_marker,
             mark_turn_open,
         )
 
         sd = tmp_path / "s1"
         sd.mkdir()
         mark_turn_open(sd, prompt="hello")
-        assert _marker_path(sd).exists()
-        clear_turn_marker(sd)
-        assert not _marker_path(sd).exists()
+        assert has_open_marker(sd)
+        clear_marker_not_after(sd, not_after_ts="2999-01-01T00:00:00.000Z")
+        assert not has_open_marker(sd)
 
     def test_clear_when_no_marker_is_a_noop(self, tmp_path: Path):
-        from thirdeye.platforms.codex.interrupt_marker import clear_turn_marker
+        from thirdeye.platforms.codex.interrupt_marker import clear_marker_not_after
 
         sd = tmp_path / "s1"
         sd.mkdir()
-        clear_turn_marker(sd)  # must not raise
+        clear_marker_not_after(sd, not_after_ts="2999-01-01T00:00:00.000Z")  # must not raise
+
+    def test_clear_marker_not_after_leaves_newer_marker_untouched(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ):
+        """A delayed ``notify`` for an earlier turn must not clobber a newer
+        marker a later ``UserPromptSubmit`` already opened while it was still
+        in flight -- see the module docstring's race-safety argument.
+        """
+        from thirdeye.platforms.codex.interrupt_marker import (
+            clear_marker_not_after,
+            has_open_marker,
+            mark_turn_open,
+        )
+
+        monkeypatch.setattr(
+            "thirdeye.platforms.codex.interrupt_marker.utc_iso_ms",
+            lambda: "2026-01-02T00:00:00.000Z",
+        )
+        sd = tmp_path / "s1"
+        sd.mkdir()
+        mark_turn_open(sd, prompt="newer turn")
+
+        clear_marker_not_after(sd, not_after_ts="2026-01-01T00:00:00.000Z")
+
+        assert has_open_marker(sd)
 
     def test_close_stale_turn_with_no_marker_exports_nothing(
         self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
@@ -350,8 +375,8 @@ class TestInterruptMarker:
         self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
     ):
         from thirdeye.platforms.codex.interrupt_marker import (
-            _marker_path,
             close_stale_turn_if_open,
+            has_open_marker,
             mark_turn_open,
         )
 
@@ -372,14 +397,19 @@ class TestInterruptMarker:
         assert turn["status"] == "interrupted"
         assert turn["input_message"] == "unfinished business"
         assert turn["output_message"] == ""
-        assert not _marker_path(sd).exists()
+        assert not has_open_marker(sd)
 
-    def test_close_stale_turn_clears_marker_even_if_export_raises(
+    def test_close_stale_turn_swallows_export_errors_and_still_clears_marker(
         self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
     ):
+        """``close_stale_turn_if_open`` runs inside a hook subprocess and must
+        never raise, however ``export_turn`` behaves -- otherwise a Logfire
+        export failure would break a totally unrelated hook invocation
+        (e.g. the next ``UserPromptSubmit``).
+        """
         from thirdeye.platforms.codex.interrupt_marker import (
-            _marker_path,
             close_stale_turn_if_open,
+            has_open_marker,
             mark_turn_open,
         )
 
@@ -391,14 +421,17 @@ class TestInterruptMarker:
         sd.mkdir()
         mark_turn_open(sd, prompt="x")
 
-        with pytest.raises(RuntimeError):
-            close_stale_turn_if_open(Config(root=tmp_path), sd, "s1", "/p")
-        assert not _marker_path(sd).exists()
+        close_stale_turn_if_open(Config(root=tmp_path), sd, "s1", "/p")  # must not raise
+        assert not has_open_marker(sd)
 
     def test_marker_missing_turn_id_is_removed_without_exporting(
         self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
     ):
-        from thirdeye.platforms.codex.interrupt_marker import _marker_path, close_stale_turn_if_open
+        from thirdeye.platforms.codex.interrupt_marker import (
+            _marker_path,
+            close_stale_turn_if_open,
+            has_open_marker,
+        )
 
         calls: list[Any] = []
         monkeypatch.setattr("thirdeye.otel_export.export_turn", lambda *a: calls.append(a))
@@ -408,14 +441,15 @@ class TestInterruptMarker:
 
         close_stale_turn_if_open(Config(root=tmp_path), sd, "s1", "/p")
         assert calls == []
-        assert not _marker_path(sd).exists()
+        assert not has_open_marker(sd)
 
-    def test_corrupt_marker_is_removed_without_exporting(
+    def test_corrupt_marker_is_quarantined_without_exporting(
         self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
     ):
         from thirdeye.platforms.codex.interrupt_marker import (
             _marker_path,
             close_stale_turn_if_open,
+            has_open_marker,
         )
 
         calls: list[Any] = []
@@ -426,11 +460,10 @@ class TestInterruptMarker:
 
         close_stale_turn_if_open(Config(root=tmp_path), sd, "s1", "/p")
         assert calls == []
-        # A malformed marker can't be trusted, but this path only *reads* the
-        # marker; leaving a corrupt file behind risks it wedging every future
-        # hook call, so this documents the current behavior rather than
-        # asserting a should-be.
-        assert _marker_path(sd).exists()
+        # Corrupt content can't be trusted as a real open turn, so it's
+        # truncated in place rather than left to wedge every future hook
+        # call that reads this marker.
+        assert not has_open_marker(sd)
 
 
 # -- hooks_json.py wiring: user_prompt_submit / session_end -------------------
@@ -485,10 +518,123 @@ class TestHooksJsonMarkerWiring:
         assert calls[0][5]["status"] == "interrupted"
 
 
+class TestMidTurnHooksReapAbandonedMarker:
+    """subagent_start/subagent_stop/permission_request/pre_compact/post_compact/
+    session_start all legitimately fire *mid-turn*, so each must check for a
+    stale marker too (a catch-all in case UserPromptSubmit/SessionEnd never
+    come next) -- but must not mistake the current, still-open turn's own
+    fresh marker for an abandoned one.
+    """
+
+    @staticmethod
+    def _seed_abandoned_marker(sd: Path) -> None:
+        from thirdeye.platforms.codex.interrupt_marker import _marker_path
+
+        sd.mkdir(parents=True, exist_ok=True)
+        _marker_path(sd).write_text(
+            json.dumps(
+                {
+                    "turn_id": "old-turn",
+                    "start_ts": "2000-01-01T00:00:00.000Z",
+                    "input_message": "long abandoned",
+                }
+            )
+        )
+
+    def test_each_mid_turn_hook_reaps_an_abandoned_marker(self, monkeypatch, env: Path):
+        from thirdeye.platforms.codex import hooks_json
+
+        hooks_by_name = {
+            "subagent_start": hooks_json.subagent_start,
+            "subagent_stop": hooks_json.subagent_stop,
+            "permission_request": hooks_json.permission_request,
+            "pre_compact": hooks_json.pre_compact,
+            "post_compact": hooks_json.post_compact,
+            "session_start": hooks_json.session_start,
+        }
+        for name, fn in hooks_by_name.items():
+            sid = f"s-{name}"
+            sd = session_dir(env, "codex", sid)
+            self._seed_abandoned_marker(sd)
+
+            calls: list[Any] = []
+            monkeypatch.setattr("thirdeye.otel_export.export_turn", lambda *a: calls.append(a))
+            _stdin(monkeypatch, {"session_id": sid, "cwd": "/p"})
+            fn()
+
+            assert len(calls) == 1, f"{name} did not reap the abandoned marker"
+            assert calls[0][5]["status"] == "interrupted"
+            assert calls[0][5]["input_message"] == "long abandoned"
+
+    def test_mid_turn_hook_does_not_reap_its_own_fresh_marker(self, monkeypatch, env: Path):
+        from thirdeye.platforms.codex import hooks_json
+        from thirdeye.platforms.codex.interrupt_marker import has_open_marker, mark_turn_open
+
+        sd = session_dir(env, "codex", "s1")
+        mark_turn_open(sd, prompt="still running")
+
+        calls: list[Any] = []
+        monkeypatch.setattr("thirdeye.otel_export.export_turn", lambda *a: calls.append(a))
+        _stdin(monkeypatch, {"session_id": "s1", "cwd": "/p"})
+        hooks_json.permission_request()
+
+        assert calls == []
+        assert has_open_marker(sd)
+
+
 class TestNotifyClearsMarker:
     def test_notify_clears_a_marker_left_open_by_the_prior_prompt(self, monkeypatch, env: Path):
         from thirdeye.platforms.codex import hooks, hooks_json
-        from thirdeye.platforms.codex.interrupt_marker import _marker_path
+        from thirdeye.platforms.codex.interrupt_marker import has_open_marker
+
+        marker_calls: list[Any] = []
+        monkeypatch.setattr("thirdeye.otel_export.export_turn", lambda *a: marker_calls.append(a))
+        # The fixture rollout's own timestamps are fixed at 2026-07-31; the
+        # marker's real wall-clock start_ts must predate the turn's end_ts for
+        # clear_marker_not_after to consider it the *same* turn's marker.
+        monkeypatch.setattr(
+            "thirdeye.platforms.codex.interrupt_marker.utc_iso_ms",
+            lambda: "2026-07-31T00:01:00.000Z",
+        )
+
+        _stdin(monkeypatch, {"session_id": FIXTURE_SID, "cwd": "/proj/codex", "prompt": "go"})
+        hooks_json.user_prompt_submit()
+        sd = session_dir(env, "codex", FIXTURE_SID)
+        assert has_open_marker(sd)
+
+        # A rollout resolves and the turn is exported for real -- clear_marker_not_after
+        # sees the just-completed turn's own end_ts, which is always >= the marker's
+        # start_ts (the marker was opened by the UserPromptSubmit that started this
+        # very turn), so it clears it.
+        _plant_rollout(env, sid=FIXTURE_SID)
+        _argv(
+            monkeypatch,
+            {
+                "type": "agent-turn-complete",
+                "thread-id": FIXTURE_SID,
+                "turn-id": FIXTURE_TURN_ID,
+                "cwd": "/proj/codex",
+            },
+        )
+        hooks.notify()
+
+        assert not has_open_marker(sd)
+        assert len(marker_calls) == 1
+        assert marker_calls[0][5]["status"] == "completed"
+
+    def test_notify_with_unresolvable_rollout_leaves_marker_open(self, monkeypatch, env: Path):
+        """Documents a real gap rather than asserting a should-be: if ``notify``
+        fires (proving the turn genuinely completed) but the rollout can't be
+        resolved, ``notify()`` returns before ever reaching
+        ``clear_marker_not_after`` (`hooks.py`'s early ``return`` on unresolved
+        rollout happens before ``extract_turn_codex``/the marker clear). The
+        marker is left open and a later hook will report this turn as
+        "interrupted" even though it actually completed -- ``notify()``
+        returning early on unresolved rollout doesn't distinguish "genuinely
+        interrupted" from "we just couldn't find the rollout file".
+        """
+        from thirdeye.platforms.codex import hooks, hooks_json
+        from thirdeye.platforms.codex.interrupt_marker import has_open_marker
 
         marker_calls: list[Any] = []
         monkeypatch.setattr("thirdeye.otel_export.export_turn", lambda *a: marker_calls.append(a))
@@ -496,17 +642,14 @@ class TestNotifyClearsMarker:
         _stdin(monkeypatch, {"session_id": FIXTURE_SID, "cwd": "/proj/codex", "prompt": "go"})
         hooks_json.user_prompt_submit()
         sd = session_dir(env, "codex", FIXTURE_SID)
-        assert _marker_path(sd).exists()
+        assert has_open_marker(sd)
 
-        # No rollout planted, so extract_turn_codex/build_turn/export_turn are
-        # never reached for the *real* turn — but the marker must still be
-        # cleared, since notify() firing at all means this is a genuine
-        # completion, not a stale open turn.
+        # No rollout planted this time -> resolve_rollout(sid) returns None.
         _argv(
             monkeypatch,
             {"type": "agent-turn-complete", "thread-id": FIXTURE_SID, "cwd": "/proj/codex"},
         )
         hooks.notify()
 
-        assert not _marker_path(sd).exists()
+        assert has_open_marker(sd)
         assert marker_calls == []
