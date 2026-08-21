@@ -92,5 +92,5 @@ class TurnSpanDict(TypedDict):
     status: TurnStatus
     llm_calls: list[LlmCallSpanDict]
     permission_requests: list[PermissionRequestSpanDict]
-    subagents: list["TurnSpanDict"]
+    subagents: list[TurnSpanDict]
     attributes: dict[str, Any]
