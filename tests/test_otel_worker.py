@@ -157,7 +157,9 @@ class TestSpanBatchDispatch:
         self, home: Path, enabled: None, monkeypatch: pytest.MonkeyPatch
     ):
         calls = []
-        monkeypatch.setattr(otel_export, "_export_turn_inner", lambda **kwargs: calls.append("turn"))
+        monkeypatch.setattr(
+            otel_export, "_export_turn_inner", lambda **kwargs: calls.append("turn")
+        )
         monkeypatch.setattr(
             otel_export, "_export_spans_batch", lambda **kwargs: calls.append("spans")
         )

@@ -605,9 +605,10 @@ def test_incremental_resume_emits_growing_group_once_with_full_duration(
     assert [call["call_id"] for call in resumed.calls] == ["msg_growing"]
     assert resumed.calls[0]["start_ts"] == dispatch_ts
     assert resumed.calls[0]["end_ts"] == final_response_ts
-    assert [
-        part["content"] for part in resumed.calls[0]["output_messages"][0]["parts"]
-    ] == ["first", "second"]
+    assert [part["content"] for part in resumed.calls[0]["output_messages"][0]["parts"]] == [
+        "first",
+        "second",
+    ]
     assert resumed.offset == transcript.stat().st_size
 
 

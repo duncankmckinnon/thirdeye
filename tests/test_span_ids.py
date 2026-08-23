@@ -19,9 +19,7 @@ PERSON = b"thirdeye-span"
 
 
 def expected_id(value: str, digest_size: int) -> int:
-    digest = hashlib.blake2b(
-        value.encode("utf-8"), digest_size=digest_size, person=PERSON
-    ).digest()
+    digest = hashlib.blake2b(value.encode("utf-8"), digest_size=digest_size, person=PERSON).digest()
     return int.from_bytes(digest, "big") or 1
 
 
@@ -40,9 +38,7 @@ def test_ids_follow_the_blake2b_derivation_contract(derive, expected_input, dige
 
 
 def test_non_ascii_inputs_are_encoded_as_utf8():
-    assert chat_span_id("sessiøn-👁", "méssage-雪") == expected_id(
-        "sessiøn-👁/call/méssage-雪", 8
-    )
+    assert chat_span_id("sessiøn-👁", "méssage-雪") == expected_id("sessiøn-👁/call/méssage-雪", 8)
 
 
 def test_same_inputs_are_deterministic():
