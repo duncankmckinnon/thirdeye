@@ -411,15 +411,19 @@ def _span_payload(trace_id: int, span_id: int) -> str:
     return json.dumps({"trace_id": f"{trace_id:032x}", "span_id": f"{span_id:016x}"})
 
 
-def _create_root_atomic(path: Path, trace_id: int, span_id: int) -> tuple[int, int]:
+def _create_root_atomic(
+    path: Path, trace_id: int, span_id: int
+) -> tuple[tuple[int, int], bool]:
     """Persist (trace_id, span_id) as the session's root, first writer wins.
 
     A losing writer's own generated ids are simply discarded in favor of the
-    winner's, so every process agrees on one root going forward.
+    winner's, so every process agrees on one root going forward. The boolean
+    records whether this call created the file; comparing ids cannot answer
+    that once every worker derives the same deterministic root.
     """
     if _atomic_create(path, _span_payload(trace_id, span_id)):
-        return trace_id, span_id
-    return _read_root(path) or (trace_id, span_id)
+        return (trace_id, span_id), True
+    return _read_root(path) or (trace_id, span_id), False
 
 
 def _parent_context(trace_id: int, span_id: int):
@@ -583,12 +587,12 @@ def _export_turn_inner(
                     trace_id_for_session(session_id),
                     root_span_id_for_session(session_id),
                 )
-                parent = _create_root_atomic(root_path, *derived)
-                # A losing create means the session was already rooted at ids
-                # somebody else picked (a session started before derivation
-                # landed, reclaimed here through a stale lock). Its root span
-                # exists already; emitting ours would just duplicate it.
-                if parent == derived:
+                parent, created_root = _create_root_atomic(root_path, *derived)
+                # Another writer can win after stale-lock recovery with either
+                # legacy ids or these same deterministic ids. In both cases
+                # its root span exists already; emit only if our atomic create
+                # actually persisted the root file.
+                if created_root:
                     root_span = _start_span_with_id(
                         tracer,
                         "session",

@@ -337,7 +337,7 @@ class TestRootOwnership:
         root, first_lock = otel_export._root_or_ownership(root_path)
         assert root is None
         assert first_lock is not None
-        otel_export._create_root_atomic(root_path, 0xAA, 0xBB)
+        assert otel_export._create_root_atomic(root_path, 0xAA, 0xBB) == ((0xAA, 0xBB), True)
         first_lock.unlink()
         root, second_lock = otel_export._root_or_ownership(root_path)
         assert root == (0xAA, 0xBB)
@@ -528,8 +528,8 @@ class TestExportTurnInner:
         legacy_trace_id = 0x123456789ABCDEF0123456789ABCDEF0
         legacy_span_id = 0x123456789ABCDEF0
         assert otel_export._create_root_atomic(root_path, legacy_trace_id, legacy_span_id) == (
-            legacy_trace_id,
-            legacy_span_id,
+            (legacy_trace_id, legacy_span_id),
+            True,
         )
         original_payload = root_path.read_text()
 
@@ -548,6 +548,46 @@ class TestExportTurnInner:
         assert turn_span["context"]["trace_id"] == legacy_trace_id
         assert turn_span["parent"]["span_id"] == legacy_span_id
         assert root_path.read_text() == original_payload
+
+    def test_same_derived_root_race_does_not_reemit_session_span(
+        self,
+        tmp_path: Path,
+        enabled_config: Config,
+        wired_instance,
+        exporter,
+        monkeypatch: pytest.MonkeyPatch,
+    ):
+        session_id = "session-with-concurrent-derived-root"
+        sd = tmp_path / "traces" / "claude" / session_id
+        root_path = otel_export.otel_state_path(sd)
+        expected = (
+            trace_id_for_session(session_id),
+            root_span_id_for_session(session_id),
+        )
+        real_atomic_create = otel_export._atomic_create
+
+        def _competing_create(path: Path, payload: str) -> bool:
+            if path == root_path:
+                # Simulate another worker winning between our lock recovery
+                # and root persistence with the same deterministic ids.
+                assert real_atomic_create(path, payload) is True
+                return False
+            return real_atomic_create(path, payload)
+
+        monkeypatch.setattr(otel_export, "_atomic_create", _competing_create)
+        otel_export._export_turn_inner(
+            config=enabled_config,
+            session_dir_=sd,
+            session_id=session_id,
+            platform="claude",
+            cwd="/proj",
+            turn=_turn(),
+        )
+
+        spans = exporter.exported_spans_as_dict()
+        assert [span["name"] for span in spans] == ["agent-turn"]
+        assert spans[0]["context"]["trace_id"] == expected[0]
+        assert spans[0]["parent"]["span_id"] == expected[1]
 
     def test_llm_call_and_tool_call_nest_correctly(
         self, tmp_path: Path, enabled_config: Config, wired_instance, exporter
