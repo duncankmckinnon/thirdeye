@@ -646,6 +646,57 @@ def test_parallel_tool_use_blocks_remain_one_call(tmp_path: Path) -> None:
     assert [part["id"] for part in parts] == ["tool-1", "tool-2"]
 
 
+def test_multiple_calls_each_use_their_own_dispatch_and_last_group_frame(
+    tmp_path: Path,
+) -> None:
+    transcript = tmp_path / "multiple-calls.jsonl"
+    first_dispatch_ts = "2026-08-22T10:00:00.000Z"
+    first_end_ts = "2026-08-22T10:00:02.000Z"
+    second_dispatch_ts = "2026-08-22T10:00:03.000Z"
+    second_end_ts = "2026-08-22T10:00:05.000Z"
+    _write_transcript(
+        transcript,
+        {"type": "user", "timestamp": first_dispatch_ts, "message": {"content": "go"}},
+        _assistant_frame("msg_first", "2026-08-22T10:00:01.000Z"),
+        _assistant_frame("msg_first", first_end_ts),
+        {
+            "type": "user",
+            "timestamp": second_dispatch_ts,
+            "message": {
+                "content": [{"type": "tool_result", "tool_use_id": "tool-1", "content": "ok"}]
+            },
+        },
+        _assistant_frame("msg_second", "2026-08-22T10:00:04.000Z"),
+        _assistant_frame("msg_second", second_end_ts),
+    )
+
+    calls, _ = extract_calls_from_transcript(str(transcript), 0)
+
+    assert [(call["start_ts"], call["end_ts"]) for call in calls] == [
+        (first_dispatch_ts, first_end_ts),
+        (second_dispatch_ts, second_end_ts),
+    ]
+
+
+def test_valid_timestamp_on_any_preceding_frame_is_used_as_dispatch(tmp_path: Path) -> None:
+    transcript = tmp_path / "progress-dispatch.jsonl"
+    older_user_ts = "2026-08-22T10:00:00.000Z"
+    progress_ts = "2026-08-22T10:00:01.000Z"
+    response_ts = "2026-08-22T10:00:02.000Z"
+    _write_transcript(
+        transcript,
+        {"type": "user", "timestamp": older_user_ts, "message": {"content": "go"}},
+        {"type": "progress", "timestamp": progress_ts},
+        _assistant_frame("msg_after_progress", response_ts),
+    )
+
+    calls, _ = extract_calls_from_transcript(str(transcript), 0)
+
+    assert len(calls) == 1
+    assert calls[0]["start_ts"] == progress_ts
+    assert calls[0]["end_ts"] == response_ts
+
+
 @pytest.mark.parametrize("bad_ts", [12345, "not-a-timestamp", "", None, {"at": "now"}])
 def test_malformed_timestamp_does_not_replace_previous_frame_timestamp(
     tmp_path: Path, bad_ts: object
