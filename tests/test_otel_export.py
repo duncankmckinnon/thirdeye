@@ -8,6 +8,7 @@ import pytest
 
 from thirdeye import otel_export
 from thirdeye.config import Config, LogfireSettings
+from thirdeye.span_ids import root_span_id_for_session, trace_id_for_session
 
 pytest.importorskip("logfire")
 
@@ -19,9 +20,11 @@ from opentelemetry.sdk.trace.export import SimpleSpanProcessor  # noqa: E402
 def _reset_state():
     otel_export._state["attempted"] = False
     otel_export._state["instance"] = None
+    otel_export._state["id_generator"] = None
     yield
     otel_export._state["attempted"] = False
     otel_export._state["instance"] = None
+    otel_export._state["id_generator"] = None
 
 
 @pytest.fixture
@@ -31,13 +34,20 @@ def exporter():
 
 @pytest.fixture
 def wired_instance(exporter, monkeypatch: pytest.MonkeyPatch):
-    """A real Logfire instance wired to an in-memory exporter, network-free."""
+    """A real Logfire instance wired to an in-memory exporter, network-free.
+
+    Wired to the same generator `_get_instance` would hand a real one, so the
+    ids the export path pre-allocates are actually the ids spans come out
+    with — otherwise every id assertion here would pass against the SDK's own
+    random generator and prove nothing.
+    """
     import logfire
 
     instance = logfire.configure(
         send_to_logfire=False,
         console=False,
         additional_span_processors=[SimpleSpanProcessor(exporter)],
+        advanced=logfire.AdvancedOptions(id_generator=otel_export._id_generator()),
     )
     monkeypatch.setattr(otel_export, "_get_instance", lambda config, platform: instance)
     return instance
@@ -226,13 +236,99 @@ class TestBackgroundNoiseSuppression:
         import logfire
 
         calls = []
+        configured_with = {}
+
+        def _configure(**kwargs):
+            configured_with.update(kwargs)
+            return object()
+
         monkeypatch.setattr(otel_export, "_silence_background_noise", lambda: calls.append(1))
-        monkeypatch.setattr(logfire, "configure", lambda **kwargs: object())
+        monkeypatch.setattr(logfire, "configure", _configure)
         config = Config(
             root=tmp_path, logfire=LogfireSettings(enabled=True, token="bad-token", project=None)
         )
         otel_export._get_instance(config, "claude")
         assert calls == [1]
+        assert configured_with["advanced"].id_generator is otel_export._state["id_generator"]
+        assert configured_with["scrubbing"].callback is otel_export._scrub_callback
+
+
+class TestPreallocatedIdGenerator:
+    """Span ids for this tree are derived rather than minted, so that a span
+    emitted while a turn is still running can name a parent that hasn't been
+    exported yet. `_start_span_with_id` is how a derived id actually reaches
+    the SDK: it sets a one-shot slot on the generator handed to
+    `logfire.configure`, and the next id drawn is the one we chose.
+    """
+
+    def _tracer(self, instance):
+        return instance.config.get_tracer_provider().get_tracer("thirdeye")
+
+    def test_preset_span_id_is_used_verbatim(self, wired_instance):
+        chosen = 0x0123456789ABCDEF
+        span = otel_export._start_span_with_id(
+            self._tracer(wired_instance), "chosen", chosen, start_time=1, attributes={}
+        )
+        span.end(end_time=2)
+        assert span.get_span_context().span_id == chosen
+
+    def test_preset_trace_id_is_used_for_a_parentless_span(self, wired_instance):
+        span = otel_export._start_span_with_id(
+            self._tracer(wired_instance),
+            "chosen",
+            0xAA,
+            trace_id=0xBB,
+            start_time=1,
+            attributes={},
+        )
+        span.end(end_time=2)
+        context = span.get_span_context()
+        assert (context.trace_id, context.span_id) == (0xBB, 0xAA)
+
+    def test_slot_clears_after_one_use(self, wired_instance):
+        tracer = self._tracer(wired_instance)
+        chosen = 0x0123456789ABCDEF
+        first = otel_export._start_span_with_id(tracer, "first", chosen, start_time=1, attributes={})
+        first.end(end_time=2)
+        second = tracer.start_span("second", start_time=3)
+        second.end(end_time=4)
+        second_id = second.get_span_context().span_id
+        assert second_id != chosen  # the slot is consumed, not sticky
+        assert second_id != 0
+
+    def test_unset_slot_yields_valid_random_ids(self):
+        generator = otel_export._id_generator()
+        span_ids = {generator.generate_span_id() for _ in range(5)}
+        trace_ids = {generator.generate_trace_id() for _ in range(5)}
+        assert len(span_ids) == 5
+        assert all(0 < value < 2**64 for value in span_ids)
+        assert len(trace_ids) == 5
+        assert all(0 < value < 2**128 for value in trace_ids)
+
+    def test_configure_draws_no_ids(self, exporter):
+        """A canary on a third-party assumption the whole scheme rests on.
+
+        Slots are set immediately before a `start_span` call, so anything else
+        drawing an id in between would steal one and silently misparent a
+        span. `logfire.configure` is the one thing that runs between our own
+        spans without us asking; today it draws nothing (its configuration
+        span defaults off), but a future release emitting one at configure
+        time would break parenting in a way no other test here would notice.
+        """
+        import logfire
+
+        probe = otel_export._build_id_generator()
+        drawn: list[str] = []
+        probe.generate_span_id = lambda: drawn.append("span") or 1
+        probe.generate_trace_id = lambda: drawn.append("trace") or 1
+
+        logfire.configure(
+            send_to_logfire=False,
+            console=False,
+            additional_span_processors=[SimpleSpanProcessor(exporter)],
+            advanced=logfire.AdvancedOptions(id_generator=probe),
+        )
+        assert drawn == []
 
 
 class TestRootOwnership:
@@ -241,7 +337,7 @@ class TestRootOwnership:
         root, first_lock = otel_export._root_or_ownership(root_path)
         assert root is None
         assert first_lock is not None
-        otel_export._create_root_atomic(root_path, 0xAA, 0xBB)
+        assert otel_export._create_root_atomic(root_path, 0xAA, 0xBB) == ((0xAA, 0xBB), True)
         first_lock.unlink()
         root, second_lock = otel_export._root_or_ownership(root_path)
         assert root == (0xAA, 0xBB)
@@ -392,6 +488,106 @@ class TestExportTurnInner:
         assert root_span["attributes"]["gen_ai.conversation.id"] == "s1"
         assert root_span["attributes"]["thirdeye.platform"] == "claude"
         assert root_span["attributes"]["thirdeye.cwd"] == "/proj"
+
+    def test_new_session_persists_and_emits_derived_root_ids(
+        self, tmp_path: Path, enabled_config: Config, wired_instance, exporter
+    ):
+        session_id = "session-with-derived-root"
+        sd = tmp_path / "traces" / "claude" / session_id
+
+        otel_export._export_turn_inner(
+            config=enabled_config,
+            session_dir_=sd,
+            session_id=session_id,
+            platform="claude",
+            cwd="/proj",
+            turn=_turn(),
+        )
+
+        expected_trace_id = trace_id_for_session(session_id)
+        expected_span_id = root_span_id_for_session(session_id)
+        persisted = json.loads(otel_export.otel_state_path(sd).read_text())
+        assert persisted == {
+            "trace_id": f"{expected_trace_id:032x}",
+            "span_id": f"{expected_span_id:016x}",
+        }
+
+        root_span, turn_span = exporter.exported_spans_as_dict()
+        assert root_span["name"] == "session"
+        assert root_span["context"]["trace_id"] == expected_trace_id
+        assert root_span["context"]["span_id"] == expected_span_id
+        assert turn_span["context"]["trace_id"] == expected_trace_id
+        assert turn_span["parent"]["span_id"] == expected_span_id
+
+    def test_existing_root_ids_take_precedence_and_are_not_reemitted(
+        self, tmp_path: Path, enabled_config: Config, wired_instance, exporter
+    ):
+        session_id = "session-with-legacy-root"
+        sd = tmp_path / "traces" / "claude" / session_id
+        root_path = otel_export.otel_state_path(sd)
+        legacy_trace_id = 0x123456789ABCDEF0123456789ABCDEF0
+        legacy_span_id = 0x123456789ABCDEF0
+        assert otel_export._create_root_atomic(root_path, legacy_trace_id, legacy_span_id) == (
+            (legacy_trace_id, legacy_span_id),
+            True,
+        )
+        original_payload = root_path.read_text()
+
+        otel_export._export_turn_inner(
+            config=enabled_config,
+            session_dir_=sd,
+            session_id=session_id,
+            platform="claude",
+            cwd="/proj",
+            turn=_turn(),
+        )
+
+        spans = exporter.exported_spans_as_dict()
+        assert [span["name"] for span in spans] == ["agent-turn"]
+        turn_span = spans[0]
+        assert turn_span["context"]["trace_id"] == legacy_trace_id
+        assert turn_span["parent"]["span_id"] == legacy_span_id
+        assert root_path.read_text() == original_payload
+
+    def test_same_derived_root_race_does_not_reemit_session_span(
+        self,
+        tmp_path: Path,
+        enabled_config: Config,
+        wired_instance,
+        exporter,
+        monkeypatch: pytest.MonkeyPatch,
+    ):
+        session_id = "session-with-concurrent-derived-root"
+        sd = tmp_path / "traces" / "claude" / session_id
+        root_path = otel_export.otel_state_path(sd)
+        expected = (
+            trace_id_for_session(session_id),
+            root_span_id_for_session(session_id),
+        )
+        real_atomic_create = otel_export._atomic_create
+
+        def _competing_create(path: Path, payload: str) -> bool:
+            if path == root_path:
+                # Simulate another worker winning between our lock recovery
+                # and root persistence with the same deterministic ids.
+                assert real_atomic_create(path, payload) is True
+                return False
+            return real_atomic_create(path, payload)
+
+        monkeypatch.setattr(otel_export, "_atomic_create", _competing_create)
+        otel_export._export_turn_inner(
+            config=enabled_config,
+            session_dir_=sd,
+            session_id=session_id,
+            platform="claude",
+            cwd="/proj",
+            turn=_turn(),
+        )
+
+        spans = exporter.exported_spans_as_dict()
+        assert [span["name"] for span in spans] == ["agent-turn"]
+        assert spans[0]["context"]["trace_id"] == expected[0]
+        assert spans[0]["parent"]["span_id"] == expected[1]
 
     def test_llm_call_and_tool_call_nest_correctly(
         self, tmp_path: Path, enabled_config: Config, wired_instance, exporter
