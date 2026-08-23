@@ -9,6 +9,8 @@ import pytest
 from thirdeye.config import Config
 from thirdeye.paths import session_dir, tags_path
 from thirdeye.platforms.claude import hooks
+from thirdeye.reader import SessionReader
+from thirdeye.span_ids import turn_span_id
 from thirdeye.store import Store
 from thirdeye.usage.store import UsageStore
 
@@ -337,6 +339,66 @@ class TestUserPromptHashtagExtract:
 
 
 # -- user_prompt_submit open-turn marker offset --------------------------------
+
+
+class TestOpenTurnCursor:
+    def test_user_prompt_submit_writes_deterministic_id_and_timestamp(
+        self, monkeypatch, env: Path
+    ):
+        sid = "marker-round-trip"
+        _stdin(monkeypatch, {"session_id": sid, "cwd": "/p", "prompt": "hello"})
+        hooks.user_prompt_submit()
+
+        sd = session_dir(env, "claude", sid)
+        marker = hooks._read_open_turn(sd)
+        assert marker is not None
+        event = SessionReader(sd).get_event(marker["turn_seq"])
+
+        assert marker["turn_span_id"] == str(turn_span_id(sid, marker["turn_seq"]))
+        assert marker["last_frame_ts"] == event["ts"]
+        assert marker["start_ts"] == event["ts"]
+
+    def test_advance_updates_cursor_fields(self, monkeypatch, env: Path):
+        sid = "advance"
+        _stdin(monkeypatch, {"session_id": sid, "cwd": "/p", "prompt": "hello"})
+        hooks.user_prompt_submit()
+        sd = session_dir(env, "claude", sid)
+        original = hooks._read_open_turn(sd)
+        assert original is not None
+
+        advanced = hooks._advance_turn_cursor(
+            sd,
+            expected_turn_seq=original["turn_seq"],
+            offset=9182,
+            last_frame_ts="2026-08-22T12:34:56.789Z",
+        )
+
+        marker = hooks._read_open_turn(sd)
+        assert advanced is True
+        assert marker is not None
+        assert marker["transcript_offset"] == 9182
+        assert marker["last_frame_ts"] == "2026-08-22T12:34:56.789Z"
+        assert marker["turn_span_id"] == original["turn_span_id"]
+
+    def test_advance_rejects_stale_turn_without_mutating_marker(
+        self, monkeypatch, env: Path
+    ):
+        sid = "stale-writer"
+        _stdin(monkeypatch, {"session_id": sid, "cwd": "/p", "prompt": "hello"})
+        hooks.user_prompt_submit()
+        sd = session_dir(env, "claude", sid)
+        before = hooks._read_open_turn(sd)
+        assert before is not None
+
+        advanced = hooks._advance_turn_cursor(
+            sd,
+            expected_turn_seq=before["turn_seq"] - 1,
+            offset=999999,
+            last_frame_ts="2099-01-01T00:00:00Z",
+        )
+
+        assert advanced is False
+        assert hooks._read_open_turn(sd) == before
 
 
 class TestUserPromptSubmitTranscriptOffset:

@@ -9,7 +9,8 @@ import pytest
 from thirdeye.config import Config
 from thirdeye.paths import session_dir
 from thirdeye.platforms.claude import hooks, tracing
-from thirdeye.platforms.claude.usage import extract_calls_from_transcript
+from thirdeye.platforms.claude.usage import ParsedCalls, extract_calls_from_transcript
+from thirdeye.span_ids import turn_span_id
 
 
 @pytest.fixture
@@ -241,6 +242,82 @@ class TestBuildTurn:
             final_response="done",
         )
         assert turn is None
+
+    def test_build_turn_passes_live_cursor_to_transcript_parser(
+        self, monkeypatch, env: Path
+    ):
+        sid = "cursor-reader"
+        _stdin(monkeypatch, {"session_id": sid, "cwd": "/p", "prompt": "hello"})
+        hooks.user_prompt_submit()
+        sd = session_dir(env, "claude", sid)
+        marker = hooks._read_open_turn(sd)
+        assert marker is not None
+        # A distinct valid value proves build_turn carries the marker's id
+        # instead of silently recomputing it on the ordinary marker-present path.
+        marker["turn_span_id"] = "12345"
+        hooks._write_open_turn(sd, marker)
+        assert hooks._advance_turn_cursor(
+            sd,
+            expected_turn_seq=marker["turn_seq"],
+            offset=4321,
+            last_frame_ts="2026-08-22T20:00:00.000Z",
+        )
+        received = {}
+
+        def fake_extract(path, offset, *, initial_prev_ts=None, incremental=False):
+            received.update(
+                path=path,
+                offset=offset,
+                initial_prev_ts=initial_prev_ts,
+                incremental=incremental,
+            )
+            return ParsedCalls([], offset, initial_prev_ts)
+
+        monkeypatch.setattr(tracing, "extract_calls_from_transcript", fake_extract)
+        turn = tracing.build_turn(
+            config=Config.load(),
+            session_dir_=sd,
+            session_id=sid,
+            cwd="/p",
+            stop_seq=marker["turn_seq"] + 1,
+            stop_ts="2026-08-22T20:00:01.000Z",
+            transcript_path="/tmp/live-transcript.jsonl",
+            final_response="done",
+        )
+
+        assert turn is not None
+        assert turn["turn_span_id"] == "12345"
+        assert received == {
+            "path": "/tmp/live-transcript.jsonl",
+            "offset": 4321,
+            "initial_prev_ts": "2026-08-22T20:00:00.000Z",
+            "incremental": False,
+        }
+
+    def test_stop_without_marker_exports_recovered_turn(self, monkeypatch, env: Path):
+        sid = "missing-marker"
+        exported = []
+        monkeypatch.setattr(
+            "thirdeye.otel_export.export_turn",
+            lambda config, sd, session_id, platform, cwd, turn: exported.append(turn),
+        )
+        _stdin(monkeypatch, {"session_id": sid, "cwd": "/p", "prompt": "recover me"})
+        hooks.user_prompt_submit()
+        sd = session_dir(env, "claude", sid)
+        marker = hooks._read_open_turn(sd)
+        assert marker is not None
+        turn_seq = marker["turn_seq"]
+        hooks._open_turn_path(sd).unlink()
+
+        _stdin(monkeypatch, {"session_id": sid, "cwd": "/p", "response": "recovered"})
+        hooks.stop()
+
+        assert len(exported) == 1
+        turn = exported[0]
+        assert turn["turn_id"] == str(turn_seq)
+        assert turn["turn_span_id"] == str(turn_span_id(sid, turn_seq))
+        assert turn["input_message"] == "recover me"
+        assert turn["output_message"] == "recovered"
 
     def test_full_turn_assembly(self, monkeypatch, env: Path, tmp_path: Path):
         sid = "s1"
