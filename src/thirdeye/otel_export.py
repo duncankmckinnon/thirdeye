@@ -411,9 +411,7 @@ def _span_payload(trace_id: int, span_id: int) -> str:
     return json.dumps({"trace_id": f"{trace_id:032x}", "span_id": f"{span_id:016x}"})
 
 
-def _create_root_atomic(
-    path: Path, trace_id: int, span_id: int
-) -> tuple[tuple[int, int], bool]:
+def _create_root_atomic(path: Path, trace_id: int, span_id: int) -> tuple[tuple[int, int], bool]:
     """Persist (trace_id, span_id) as the session's root, first writer wins.
 
     A losing writer's own generated ids are simply discarded in favor of the
@@ -552,16 +550,18 @@ def export_spans(
     cwd: str,
     trace_id: int,
     spans: list[dict[str, Any]],
-) -> None:
+) -> bool:
     """Hand already-built spans off for background export.
 
     IDs are serialized as decimal strings so their full unsigned 64-/128-bit
     values survive the JSON boundary without relying on a consumer's numeric
     precision. As with :func:`export_turn`, this function only performs local
-    file/process work and never lets a capture failure reach its caller.
+    file/process work and never lets a capture failure reach its caller. The
+    return value says whether the job was durably written and dispatched, so a
+    live cursor is never advanced past a failed local write.
     """
     if not config.logfire.enabled or not config.logfire.token:
-        return
+        return False
     try:
         serialized_spans = []
         for span in spans:
@@ -582,6 +582,7 @@ def export_spans(
             },
         )
         _spawn(job_path)
+        return True
     except Exception as exc:
         log_capture_error(
             thirdeye_home=config.root,
@@ -590,6 +591,7 @@ def export_spans(
             platform=platform,
             session_id=session_id,
         )
+        return False
 
 
 def _export_turn_inner(

@@ -5,6 +5,7 @@ import fcntl
 import json
 import os
 import sys
+import threading
 from collections.abc import Iterator
 from pathlib import Path
 from typing import TypedDict, cast
@@ -83,16 +84,34 @@ class OpenTurnMarker(TypedDict):
 
 
 _OPEN_TURN_FIELDS = frozenset(OpenTurnMarker.__required_keys__)
+_OPEN_TURN_LOCK_STATE = threading.local()
 
 
 @contextlib.contextmanager
 def _locked_open_turn(session_dir_: Path, operation: int) -> Iterator[None]:
-    session_dir_.mkdir(parents=True, exist_ok=True)
-    with _open_turn_lock_path(session_dir_).open("a+") as lock:
-        fcntl.flock(lock.fileno(), operation)
+    key = str(session_dir_.absolute())
+    held = getattr(_OPEN_TURN_LOCK_STATE, "held", {})
+    current = held.get(key)
+    if current is not None:
+        current_operation, depth = current
+        if current_operation != fcntl.LOCK_EX and operation == fcntl.LOCK_EX:
+            raise RuntimeError("cannot upgrade a shared open-turn lock")
+        held[key] = (current_operation, depth + 1)
         try:
             yield
         finally:
+            held[key] = (current_operation, depth)
+        return
+
+    session_dir_.mkdir(parents=True, exist_ok=True)
+    with _open_turn_lock_path(session_dir_).open("a+") as lock:
+        fcntl.flock(lock.fileno(), operation)
+        held[key] = (operation, 1)
+        _OPEN_TURN_LOCK_STATE.held = held
+        try:
+            yield
+        finally:
+            held.pop(key, None)
             fcntl.flock(lock.fileno(), fcntl.LOCK_UN)
 
 
@@ -339,7 +358,22 @@ def pre_tool_use() -> None:
 
 
 def post_tool_use() -> None:
-    _emit("tool_result", _read_stdin())
+    payload = _read_stdin()
+    _emit("tool_result", payload)
+
+    try:
+        from thirdeye.platforms.claude.live_spans import emit_live_spans
+
+        sid = payload.get("session_id")
+        tool_use_id = payload.get("tool_use_id")
+        if not sid or not tool_use_id:
+            return
+        cwd = payload.get("cwd") or os.getcwd()
+        config = Config.load()
+        sd = session_dir(config.root, _PLATFORM, sid)
+        emit_live_spans(config, sd, sid, cwd, str(tool_use_id))
+    except Exception:
+        pass
 
 
 def stop() -> None:
