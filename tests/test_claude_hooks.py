@@ -342,9 +342,7 @@ class TestUserPromptHashtagExtract:
 
 
 class TestOpenTurnCursor:
-    def test_user_prompt_submit_writes_deterministic_id_and_timestamp(
-        self, monkeypatch, env: Path
-    ):
+    def test_user_prompt_submit_writes_deterministic_id_and_timestamp(self, monkeypatch, env: Path):
         sid = "marker-round-trip"
         _stdin(monkeypatch, {"session_id": sid, "cwd": "/p", "prompt": "hello"})
         hooks.user_prompt_submit()
@@ -380,9 +378,7 @@ class TestOpenTurnCursor:
         assert marker["last_frame_ts"] == "2026-08-22T12:34:56.789Z"
         assert marker["turn_span_id"] == original["turn_span_id"]
 
-    def test_advance_rejects_stale_turn_without_mutating_marker(
-        self, monkeypatch, env: Path
-    ):
+    def test_advance_rejects_stale_turn_without_mutating_marker(self, monkeypatch, env: Path):
         sid = "stale-writer"
         _stdin(monkeypatch, {"session_id": sid, "cwd": "/p", "prompt": "hello"})
         hooks.user_prompt_submit()
@@ -399,6 +395,44 @@ class TestOpenTurnCursor:
 
         assert advanced is False
         assert hooks._read_open_turn(sd) == before
+
+    @pytest.mark.parametrize(
+        ("field", "value"),
+        [
+            ("turn_seq", -1),
+            ("turn_span_id", "0"),
+            ("turn_span_id", str(2**64)),
+            ("transcript_offset", -1),
+            ("last_frame_ts", 123),
+        ],
+    )
+    def test_reader_rejects_semantically_invalid_marker(
+        self, monkeypatch, env: Path, field: str, value: object
+    ):
+        sid = "invalid-marker"
+        _stdin(monkeypatch, {"session_id": sid, "cwd": "/p", "prompt": "hello"})
+        hooks.user_prompt_submit()
+        sd = session_dir(env, "claude", sid)
+        marker = json.loads(hooks._open_turn_path(sd).read_text())
+        marker[field] = value
+        hooks._open_turn_path(sd).write_text(json.dumps(marker))
+
+        assert hooks._read_open_turn(sd) is None
+
+    def test_compare_and_delete_preserves_newer_marker(self, monkeypatch, env: Path):
+        sid = "compare-delete"
+        _stdin(monkeypatch, {"session_id": sid, "cwd": "/p", "prompt": "hello"})
+        hooks.user_prompt_submit()
+        sd = session_dir(env, "claude", sid)
+        marker = hooks._read_open_turn(sd)
+        assert marker is not None
+        stale_seq = marker["turn_seq"]
+        marker["turn_seq"] += 1
+        marker["turn_span_id"] = str(turn_span_id(sid, marker["turn_seq"]))
+        hooks._write_open_turn(sd, marker)
+
+        assert hooks._delete_open_turn(sd, expected_turn_seq=stale_seq) is False
+        assert hooks._read_open_turn(sd) == marker
 
 
 class TestUserPromptSubmitTranscriptOffset:

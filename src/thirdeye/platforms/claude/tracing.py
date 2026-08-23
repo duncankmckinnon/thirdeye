@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
 
@@ -28,6 +29,21 @@ _CORRELATED_TYPES = frozenset(
 _TOOL_AND_PERMISSION_TYPES = frozenset(
     {"tool_call", "tool_result", "permission_request", "permission_denied"}
 )
+_READ_MARKER = object()
+
+
+def _unmatched_user_message(session_dir_: Path, stop_seq: int) -> dict[str, Any] | None:
+    """Return the open user event immediately before the proving event."""
+    candidate = None
+    for event in SessionReader(session_dir_).iter_events(
+        types={"user_message", "assistant_message", "error"},
+        seq_range=(0, stop_seq),
+    ):
+        if event.get("t") == "user_message":
+            candidate = event
+        else:
+            candidate = None
+    return candidate
 
 
 def _tool_use_id(data: Any) -> str | None:
@@ -228,25 +244,19 @@ def build_turn(
     transcript_path: str | None,
     final_response: str,
     status: TurnStatus = "completed",
+    marker_snapshot: Mapping[str, Any] | None | object = _READ_MARKER,
 ) -> TurnSpanDict | None:
     from thirdeye.platforms.claude.hooks import _read_open_turn
 
-    marker = _read_open_turn(session_dir_)
+    marker = _read_open_turn(session_dir_) if marker_snapshot is _READ_MARKER else marker_snapshot
+    trusted_cursor = marker is not None
     if marker is not None:
-        try:
-            turn_seq = int(marker["turn_seq"])
-        except (ValueError, TypeError, KeyError):
-            marker = None
+        turn_seq = int(marker["turn_seq"])
 
     if marker is None:
-        user_messages = list(
-            SessionReader(session_dir_).iter_events(
-                types={"user_message"}, seq_range=(0, stop_seq)
-            )
-        )
-        if not user_messages:
+        user_message = _unmatched_user_message(session_dir_, stop_seq)
+        if user_message is None:
             return None
-        user_message = user_messages[-1]
         try:
             turn_seq = int(user_message["seq"])
         except (ValueError, TypeError, KeyError):
@@ -258,7 +268,7 @@ def build_turn(
             "start_ts": str(user_message.get("ts") or ""),
             "prompt": str(user_data.get("prompt") or ""),
             "prompt_id": user_data.get("prompt_id"),
-            "transcript_path": transcript_path,
+            "transcript_path": None,
             "transcript_offset": 0,
             "last_frame_ts": None,
         }
@@ -290,17 +300,18 @@ def build_turn(
     tool_calls = _pair_tool_calls(top_level_events)
     permission_requests = _pair_permission_events(top_level_events)
 
-    try:
-        offset = int(marker.get("transcript_offset", 0))
-    except (ValueError, TypeError):
-        offset = 0
-    parsed_calls = extract_calls_from_transcript(
-        transcript_path or marker.get("transcript_path"),
-        offset,
-        initial_prev_ts=marker.get("last_frame_ts"),
-        incremental=False,
-    )
-    llm_calls = parsed_calls.calls
+    if trusted_cursor:
+        parsed_calls = extract_calls_from_transcript(
+            transcript_path or marker.get("transcript_path"),
+            int(marker["transcript_offset"]),
+            initial_prev_ts=marker.get("last_frame_ts"),
+            incremental=False,
+        )
+        llm_calls = parsed_calls.calls
+    else:
+        # A session transcript is append-only across turns. Without the marker's
+        # byte cursor, parsing it would attach all historical calls to this turn.
+        llm_calls = []
     _attach_tool_calls(llm_calls, tool_calls)
 
     # The interruption catch-all has no real final_response and must not

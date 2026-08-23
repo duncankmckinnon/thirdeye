@@ -82,6 +82,9 @@ class OpenTurnMarker(TypedDict):
     last_frame_ts: str | None
 
 
+_OPEN_TURN_FIELDS = frozenset(OpenTurnMarker.__required_keys__)
+
+
 @contextlib.contextmanager
 def _locked_open_turn(session_dir_: Path, operation: int) -> Iterator[None]:
     session_dir_.mkdir(parents=True, exist_ok=True)
@@ -98,7 +101,30 @@ def _read_open_turn_unlocked(session_dir_: Path) -> OpenTurnMarker | None:
         marker = json.loads(_open_turn_path(session_dir_).read_text())
     except (OSError, UnicodeError, json.JSONDecodeError):
         return None
-    if not isinstance(marker, dict):
+    if not isinstance(marker, dict) or not _OPEN_TURN_FIELDS.issubset(marker):
+        return None
+    turn_seq = marker.get("turn_seq")
+    span_id = marker.get("turn_span_id")
+    transcript_offset = marker.get("transcript_offset")
+    if (
+        not isinstance(turn_seq, int)
+        or isinstance(turn_seq, bool)
+        or turn_seq < 0
+        or not isinstance(span_id, str)
+        or not span_id.isascii()
+        or not span_id.isdecimal()
+        or not 0 < int(span_id) < 2**64
+        or not isinstance(marker.get("start_ts"), str)
+        or not isinstance(marker.get("prompt"), str)
+        or not (marker.get("prompt_id") is None or isinstance(marker.get("prompt_id"), str))
+        or not (
+            marker.get("transcript_path") is None or isinstance(marker.get("transcript_path"), str)
+        )
+        or not isinstance(transcript_offset, int)
+        or isinstance(transcript_offset, bool)
+        or transcript_offset < 0
+        or not (marker.get("last_frame_ts") is None or isinstance(marker.get("last_frame_ts"), str))
+    ):
         return None
     return cast(OpenTurnMarker, marker)
 
@@ -125,6 +151,13 @@ def _advance_turn_cursor(
     last_frame_ts: str | None,
 ) -> bool:
     """Advance a marker only if it still belongs to the expected turn."""
+    if (
+        not isinstance(offset, int)
+        or isinstance(offset, bool)
+        or offset < 0
+        or (last_frame_ts is not None and not isinstance(last_frame_ts, str))
+    ):
+        return False
     try:
         with _locked_open_turn(session_dir_, fcntl.LOCK_EX):
             marker = _read_open_turn_unlocked(session_dir_)
@@ -139,6 +172,29 @@ def _advance_turn_cursor(
             marker["transcript_offset"] = offset
             marker["last_frame_ts"] = last_frame_ts
             _open_turn_path(session_dir_).write_text(json.dumps(marker))
+            return True
+    except OSError:
+        return False
+
+
+def _delete_open_turn(session_dir_: Path, *, expected_turn_seq: int) -> bool:
+    """Delete only the marker belonging to ``expected_turn_seq``."""
+    try:
+        with _locked_open_turn(session_dir_, fcntl.LOCK_EX):
+            try:
+                raw = json.loads(_open_turn_path(session_dir_).read_text())
+            except (OSError, UnicodeError, json.JSONDecodeError):
+                return False
+            if not isinstance(raw, dict):
+                return False
+            marker_turn_seq = raw.get("turn_seq")
+            if (
+                not isinstance(marker_turn_seq, int)
+                or isinstance(marker_turn_seq, bool)
+                or marker_turn_seq != expected_turn_seq
+            ):
+                return False
+            _open_turn_path(session_dir_).unlink()
             return True
     except OSError:
         return False
@@ -162,12 +218,15 @@ def _close_stale_turn_if_open(
         from thirdeye.platforms.claude.tracing import build_turn
 
         sd = session_dir(config.root, _PLATFORM, session_id)
-        marker_path = _open_turn_path(sd)
         marker = _read_open_turn(sd)
-        if marker is None:
+        if marker is None and not force:
             return
-        marker_prompt_id = marker.get("prompt_id")
-        if not force and (not prompt_id or not marker_prompt_id or prompt_id == marker_prompt_id):
+        marker_prompt_id = marker.get("prompt_id") if marker is not None else None
+        if (
+            marker is not None
+            and not force
+            and (not prompt_id or not marker_prompt_id or prompt_id == marker_prompt_id)
+        ):
             return
         proving_ts = str(SessionReader(sd).get_event(proving_seq).get("ts") or "")
         turn = build_turn(
@@ -180,10 +239,11 @@ def _close_stale_turn_if_open(
             transcript_path=None,
             final_response="",
             status="interrupted",
+            marker_snapshot=marker,
         )
         if turn is not None:
             export_turn(config, sd, session_id, _PLATFORM, cwd, turn)
-        marker_path.unlink(missing_ok=True)
+            _delete_open_turn(sd, expected_turn_seq=int(turn["turn_id"]))
     except Exception:
         pass
 
@@ -294,6 +354,8 @@ def stop() -> None:
     cwd = payload.get("cwd") or os.getcwd()
     config = Config.load()
     sd = session_dir(config.root, _PLATFORM, sid)
+    marker = _read_open_turn(sd)
+    expected_turn_seq = marker["turn_seq"] if marker is not None else None
     seq = Store(config).append_event(
         session_id=sid,
         platform=_PLATFORM,
@@ -323,13 +385,16 @@ def stop() -> None:
             stop_ts=stop_ts,
             transcript_path=transcript_path,
             final_response=final_response,
+            marker_snapshot=marker,
         )
         if turn is not None:
+            expected_turn_seq = int(turn["turn_id"])
             export_turn(config, sd, sid, _PLATFORM, cwd, turn)
     except Exception:
         pass
     finally:
-        _open_turn_path(sd).unlink(missing_ok=True)
+        if expected_turn_seq is not None:
+            _delete_open_turn(sd, expected_turn_seq=expected_turn_seq)
 
 
 def subagent_stop() -> None:
@@ -361,6 +426,8 @@ def stop_failure() -> None:
     cwd = payload.get("cwd") or os.getcwd()
     config = Config.load()
     sd = session_dir(config.root, _PLATFORM, sid)
+    marker = _read_open_turn(sd)
+    expected_turn_seq = marker["turn_seq"] if marker is not None else None
     seq = Store(config).append_event(
         session_id=sid,
         platform=_PLATFORM,
@@ -382,13 +449,16 @@ def stop_failure() -> None:
             transcript_path=payload.get("transcript_path"),
             final_response="",
             status="errored",
+            marker_snapshot=marker,
         )
         if turn is not None:
+            expected_turn_seq = int(turn["turn_id"])
             export_turn(config, sd, sid, _PLATFORM, cwd, turn)
     except Exception:
         pass
     finally:
-        _open_turn_path(sd).unlink(missing_ok=True)
+        if expected_turn_seq is not None:
+            _delete_open_turn(sd, expected_turn_seq=expected_turn_seq)
 
 
 def notification() -> None:

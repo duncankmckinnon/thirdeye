@@ -11,6 +11,7 @@ from thirdeye.paths import session_dir
 from thirdeye.platforms.claude import hooks, tracing
 from thirdeye.platforms.claude.usage import ParsedCalls, extract_calls_from_transcript
 from thirdeye.span_ids import turn_span_id
+from thirdeye.store import Store
 
 
 @pytest.fixture
@@ -243,9 +244,7 @@ class TestBuildTurn:
         )
         assert turn is None
 
-    def test_build_turn_passes_live_cursor_to_transcript_parser(
-        self, monkeypatch, env: Path
-    ):
+    def test_build_turn_passes_live_cursor_to_transcript_parser(self, monkeypatch, env: Path):
         sid = "cursor-reader"
         _stdin(monkeypatch, {"session_id": sid, "cwd": "/p", "prompt": "hello"})
         hooks.user_prompt_submit()
@@ -318,6 +317,48 @@ class TestBuildTurn:
         assert turn["turn_span_id"] == str(turn_span_id(sid, turn_seq))
         assert turn["input_message"] == "recover me"
         assert turn["output_message"] == "recovered"
+        assert turn["llm_calls"] == []
+
+    def test_missing_marker_does_not_reparse_session_transcript(
+        self, monkeypatch, env: Path, tmp_path: Path
+    ):
+        sid = "missing-cursor-history"
+        exported = []
+        monkeypatch.setattr(
+            "thirdeye.otel_export.export_turn",
+            lambda config, sd, session_id, platform, cwd, turn: exported.append(turn),
+        )
+        transcript = tmp_path / "session.jsonl"
+        transcript.write_text(
+            _assistant_frame("old-call", [{"type": "text", "text": "old"}]) + "\n"
+        )
+        _stdin(
+            monkeypatch,
+            {
+                "session_id": sid,
+                "cwd": "/p",
+                "prompt": "current",
+                "transcript_path": str(transcript),
+            },
+        )
+        hooks.user_prompt_submit()
+        sd = session_dir(env, "claude", sid)
+        hooks._open_turn_path(sd).unlink()
+
+        _stdin(
+            monkeypatch,
+            {
+                "session_id": sid,
+                "cwd": "/p",
+                "response": "done",
+                "transcript_path": str(transcript),
+            },
+        )
+        hooks.stop()
+
+        assert len(exported) == 1
+        assert exported[0]["input_message"] == "current"
+        assert exported[0]["llm_calls"] == []
 
     def test_full_turn_assembly(self, monkeypatch, env: Path, tmp_path: Path):
         sid = "s1"
@@ -531,6 +572,95 @@ class TestBuildTurn:
 
 
 class TestInterruptionHandling:
+    def test_stale_close_uses_snapshot_and_preserves_newer_marker(self, monkeypatch, env: Path):
+        exported = []
+        monkeypatch.setattr(
+            "thirdeye.otel_export.export_turn",
+            lambda config, sd, sid, platform, cwd, turn: exported.append(turn),
+        )
+        sid = "snapshot-race"
+        _stdin(monkeypatch, {"session_id": sid, "cwd": "/p", "prompt": "first"})
+        hooks.user_prompt_submit()
+        sd = session_dir(env, "claude", sid)
+        old_marker = hooks._read_open_turn(sd)
+        assert old_marker is not None
+        proving_seq = Store(Config.load()).append_event(
+            session_id=sid,
+            platform="claude",
+            cwd="/p",
+            t="user_message",
+            data={"prompt": "second"},
+        )
+        assert proving_seq is not None
+        new_marker = {
+            **old_marker,
+            "turn_seq": proving_seq,
+            "turn_span_id": str(turn_span_id(sid, proving_seq)),
+            "prompt": "second",
+        }
+
+        def fake_build_turn(**kwargs):
+            assert kwargs["marker_snapshot"] == old_marker
+            hooks._write_open_turn(sd, new_marker)
+            return {
+                "turn_id": str(old_marker["turn_seq"]),
+                "turn_span_id": old_marker["turn_span_id"],
+                "start_ts": old_marker["start_ts"],
+                "end_ts": kwargs["stop_ts"],
+                "input_message": "first",
+                "output_message": "",
+                "status": "interrupted",
+                "llm_calls": [],
+                "permission_requests": [],
+                "subagents": [],
+                "attributes": {},
+            }
+
+        monkeypatch.setattr(tracing, "build_turn", fake_build_turn)
+        hooks._close_stale_turn_if_open(Config.load(), sid, "/p", proving_seq, force=True)
+
+        assert len(exported) == 1
+        assert hooks._read_open_turn(sd) == new_marker
+
+    @pytest.mark.parametrize("marker_state", ["missing", "corrupt"])
+    @pytest.mark.parametrize("closing_event", ["next_prompt", "session_end"])
+    def test_invalid_or_missing_marker_recovers_interrupted_turn(
+        self,
+        monkeypatch,
+        env: Path,
+        marker_state: str,
+        closing_event: str,
+    ):
+        exported = []
+        monkeypatch.setattr(
+            "thirdeye.otel_export.export_turn",
+            lambda config, sd, sid, platform, cwd, turn: exported.append(turn),
+        )
+        sid = f"recover-{marker_state}-{closing_event}"
+        _stdin(monkeypatch, {"session_id": sid, "cwd": "/p", "prompt": "first"})
+        hooks.user_prompt_submit()
+        sd = session_dir(env, "claude", sid)
+        if marker_state == "missing":
+            hooks._open_turn_path(sd).unlink()
+        else:
+            hooks._open_turn_path(sd).write_text("{not-json")
+
+        if closing_event == "next_prompt":
+            _stdin(monkeypatch, {"session_id": sid, "cwd": "/p", "prompt": "second"})
+            hooks.user_prompt_submit()
+        else:
+            _stdin(monkeypatch, {"session_id": sid, "cwd": "/p"})
+            hooks.session_end()
+
+        assert len(exported) == 1
+        assert exported[0]["status"] == "interrupted"
+        assert exported[0]["input_message"] == "first"
+        assert exported[0]["llm_calls"] == []
+        if closing_event == "next_prompt":
+            marker = hooks._read_open_turn(sd)
+            assert marker is not None
+            assert marker["prompt"] == "second"
+
     def test_different_prompt_id_closes_interrupted_turn_on_any_hook(self, monkeypatch, env: Path):
         exported = []
         monkeypatch.setattr(
@@ -643,9 +773,9 @@ class TestInterruptionHandling:
         hooks.notification()
 
         assert exported == [], "notification() must not export the still-running turn"
-        assert hooks._open_turn_path(
-            sd
-        ).exists(), "notification() must not delete the marker of a still-running turn"
+        assert hooks._open_turn_path(sd).exists(), (
+            "notification() must not delete the marker of a still-running turn"
+        )
 
         _stdin(monkeypatch, {"session_id": sid, "cwd": "/p", "response": "done"})
         hooks.stop()
@@ -724,9 +854,9 @@ class TestInterruptionHandling:
         getattr(hooks, hook_name)()
 
         assert exported == [], f"{hook_name}() must not export the still-running turn"
-        assert hooks._open_turn_path(
-            sd
-        ).exists(), f"{hook_name}() must not delete the marker of a still-running turn"
+        assert hooks._open_turn_path(sd).exists(), (
+            f"{hook_name}() must not delete the marker of a still-running turn"
+        )
 
 
 # -- stop() normal completion path -----------------------------------------------
