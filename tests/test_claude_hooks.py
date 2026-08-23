@@ -10,6 +10,7 @@ from thirdeye.config import Config
 from thirdeye.paths import session_dir, tags_path
 from thirdeye.platforms.claude import hooks
 from thirdeye.store import Store
+from thirdeye.usage.store import UsageStore
 
 
 @pytest.fixture
@@ -333,6 +334,165 @@ class TestUserPromptHashtagExtract:
         monkeypatch.setattr("sys.stdin", io.StringIO("not json"))
         hooks.user_prompt_submit()
         assert list(Store(Config.load()).list_sessions()) == []
+
+
+# -- user_prompt_submit open-turn marker offset --------------------------------
+
+
+class TestUserPromptSubmitTranscriptOffset:
+    """The marker's starting `transcript_offset` is measured fresh from the
+    transcript file, not inherited from the usage bookmark.
+
+    The usage bookmark only advances at `Stop`, so an interrupted turn left it
+    pointing at the *previous* turn's start — and the next turn's marker
+    inherited that staleness, making `build_turn` re-parse and re-emit the
+    previous turn's chat calls as duplicates.
+    """
+
+    def _marker(self, env: Path, sid: str) -> dict:
+        return json.loads((session_dir(env, "claude", sid) / "claude-open-turn.json").read_text())
+
+    def _append_frames(self, transcript: Path, n: int) -> None:
+        with transcript.open("a", encoding="utf-8") as f:
+            for i in range(n):
+                f.write(json.dumps({"type": "assistant", "message": {"id": f"msg_{i}"}}) + "\n")
+
+    def test_interrupted_turn_does_not_replay_previous_frames(
+        self, monkeypatch, env: Path, tmp_path: Path
+    ):
+        transcript = tmp_path / "transcript.jsonl"
+        transcript.write_text("")
+
+        _stdin(monkeypatch, {"session_id": "s1", "cwd": "/p"})
+        hooks.session_start()
+
+        _stdin(
+            monkeypatch,
+            {
+                "session_id": "s1",
+                "cwd": "/p",
+                "prompt": "turn one",
+                "transcript_path": str(transcript),
+            },
+        )
+        hooks.user_prompt_submit()
+        assert self._marker(env, "s1")["transcript_offset"] == 0
+
+        # Turn 1 produces frames, then is interrupted — `stop()` never runs, so
+        # the usage bookmark never advances.
+        self._append_frames(transcript, 3)
+        size_after_turn_1 = transcript.stat().st_size
+
+        _stdin(
+            monkeypatch,
+            {
+                "session_id": "s1",
+                "cwd": "/p",
+                "prompt": "turn two",
+                "transcript_path": str(transcript),
+            },
+        )
+        hooks.user_prompt_submit()
+
+        assert self._marker(env, "s1")["transcript_offset"] == size_after_turn_1
+
+    def test_completed_turn_starts_next_marker_after_its_frames(
+        self, monkeypatch, env: Path, tmp_path: Path
+    ):
+        transcript = tmp_path / "transcript.jsonl"
+        transcript.write_text("")
+
+        _stdin(monkeypatch, {"session_id": "s1", "cwd": "/p"})
+        hooks.session_start()
+
+        _stdin(
+            monkeypatch,
+            {
+                "session_id": "s1",
+                "cwd": "/p",
+                "prompt": "turn one",
+                "transcript_path": str(transcript),
+            },
+        )
+        hooks.user_prompt_submit()
+
+        self._append_frames(transcript, 2)
+        size_after_turn_1 = transcript.stat().st_size
+
+        _stdin(
+            monkeypatch,
+            {"session_id": "s1", "cwd": "/p", "transcript_path": str(transcript)},
+        )
+        hooks.stop()
+
+        _stdin(
+            monkeypatch,
+            {
+                "session_id": "s1",
+                "cwd": "/p",
+                "prompt": "turn two",
+                "transcript_path": str(transcript),
+            },
+        )
+        hooks.user_prompt_submit()
+
+        assert self._marker(env, "s1")["transcript_offset"] == size_after_turn_1
+
+    def test_missing_transcript_path_yields_zero(self, monkeypatch, env: Path):
+        _stdin(monkeypatch, {"session_id": "s1", "cwd": "/p"})
+        hooks.session_start()
+        _stdin(monkeypatch, {"session_id": "s1", "cwd": "/p", "prompt": "hi"})
+        hooks.user_prompt_submit()
+        assert self._marker(env, "s1")["transcript_offset"] == 0
+
+    def test_nonexistent_transcript_yields_zero(self, monkeypatch, env: Path, tmp_path: Path):
+        _stdin(monkeypatch, {"session_id": "s1", "cwd": "/p"})
+        hooks.session_start()
+        _stdin(
+            monkeypatch,
+            {
+                "session_id": "s1",
+                "cwd": "/p",
+                "prompt": "hi",
+                "transcript_path": str(tmp_path / "does-not-exist.jsonl"),
+            },
+        )
+        hooks.user_prompt_submit()
+        assert self._marker(env, "s1")["transcript_offset"] == 0
+
+    def test_directory_as_transcript_path_yields_zero(self, monkeypatch, env: Path, tmp_path: Path):
+        _stdin(monkeypatch, {"session_id": "s1", "cwd": "/p"})
+        hooks.session_start()
+        _stdin(
+            monkeypatch,
+            {"session_id": "s1", "cwd": "/p", "prompt": "hi", "transcript_path": str(tmp_path)},
+        )
+        hooks.user_prompt_submit()
+        assert self._marker(env, "s1")["transcript_offset"] == 0
+
+    def test_usage_bookmark_is_left_untouched(self, monkeypatch, env: Path, tmp_path: Path):
+        transcript = tmp_path / "transcript.jsonl"
+        self._append_frames(transcript, 4)
+
+        _stdin(monkeypatch, {"session_id": "s1", "cwd": "/p"})
+        hooks.session_start()
+
+        usage = UsageStore(session_dir(env, "claude", "s1"))
+        usage.write_state(transcript_offset=17, last_seq=3)
+
+        _stdin(
+            monkeypatch,
+            {
+                "session_id": "s1",
+                "cwd": "/p",
+                "prompt": "hi",
+                "transcript_path": str(transcript),
+            },
+        )
+        hooks.user_prompt_submit()
+
+        assert usage.read_state() == {"transcript_offset": 17, "last_seq": 3}
+        assert self._marker(env, "s1")["transcript_offset"] == transcript.stat().st_size
 
 
 # -- pre_tool_use --------------------------------------------------------------

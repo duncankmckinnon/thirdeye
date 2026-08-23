@@ -12,7 +12,6 @@ from thirdeye.paths import meta_path, session_dir
 from thirdeye.reader import SessionReader
 from thirdeye.store import Store
 from thirdeye.tags import TagStore, extract_hashtags
-from thirdeye.usage.store import UsageStore
 
 _PLATFORM = "claude"
 
@@ -167,7 +166,15 @@ def user_prompt_submit() -> None:
 
     try:
         start_ts = SessionReader(sd).get_event(seq).get("ts", "")
-        offset = int(UsageStore(sd).read_state().get("transcript_offset", 0))
+        # Measure the transcript's current size directly rather than reusing the
+        # usage bookmark: that bookmark only advances inside `stop()`, so an
+        # interrupted turn leaves it pointing at the *previous* turn's start and
+        # this turn would re-parse — and re-emit — the previous turn's LLM calls.
+        # A fresh measurement consults no prior state, so it cannot inherit that
+        # staleness. `st_size` is the byte offset the transcript parser seeks to.
+        transcript_path = payload.get("transcript_path")
+        tp = Path(transcript_path) if transcript_path else None
+        offset = tp.stat().st_size if tp is not None and tp.is_file() else 0
         _open_turn_path(sd).write_text(
             json.dumps(
                 {
@@ -175,7 +182,7 @@ def user_prompt_submit() -> None:
                     "start_ts": start_ts,
                     "prompt": prompt,
                     "prompt_id": payload.get("prompt_id"),
-                    "transcript_path": payload.get("transcript_path"),
+                    "transcript_path": transcript_path,
                     "transcript_offset": offset,
                 }
             )

@@ -243,22 +243,6 @@ class TestBuildTurn:
     def test_full_turn_assembly(self, monkeypatch, env: Path, tmp_path: Path):
         sid = "s1"
         main_transcript = tmp_path / "main.jsonl"
-        main_transcript.write_text(
-            _user_frame("do the thing")
-            + "\n"
-            + _assistant_frame(
-                "msg_1",
-                [{"type": "tool_use", "id": "tu_1", "name": "Bash", "input": {"command": "ls"}}],
-                ts="2026-01-01T00:00:01.000Z",
-            )
-            + "\n"
-            + _user_frame([{"type": "tool_result", "tool_use_id": "tu_1", "content": "out"}])
-            + "\n"
-            + _assistant_frame(
-                "msg_2", [{"type": "text", "text": "done"}], ts="2026-01-01T00:00:02.000Z"
-            )
-            + "\n"
-        )
         sub_transcript = tmp_path / "sub.jsonl"
         sub_transcript.write_text(
             _assistant_frame(
@@ -280,6 +264,26 @@ class TestBuildTurn:
             },
         )
         hooks.user_prompt_submit()
+
+        # Written only now, after the prompt was submitted: the marker records
+        # the transcript's size at submit time, so frames the turn itself
+        # produces have to land after it or they fall behind the cursor.
+        main_transcript.write_text(
+            _user_frame("do the thing")
+            + "\n"
+            + _assistant_frame(
+                "msg_1",
+                [{"type": "tool_use", "id": "tu_1", "name": "Bash", "input": {"command": "ls"}}],
+                ts="2026-01-01T00:00:01.000Z",
+            )
+            + "\n"
+            + _user_frame([{"type": "tool_result", "tool_use_id": "tu_1", "content": "out"}])
+            + "\n"
+            + _assistant_frame(
+                "msg_2", [{"type": "text", "text": "done"}], ts="2026-01-01T00:00:02.000Z"
+            )
+            + "\n"
+        )
 
         _stdin(
             monkeypatch,
