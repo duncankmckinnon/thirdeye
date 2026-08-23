@@ -53,14 +53,14 @@ def _assistant_frame(
 
 class TestExtractCallsFromTranscript:
     def test_no_transcript_path_yields_nothing(self):
-        calls, new_offset = extract_calls_from_transcript(None, 0)
-        assert calls == []
-        assert new_offset == 0
+        parsed = extract_calls_from_transcript(None, 0)
+        assert parsed.calls == []
+        assert parsed.offset == 0
 
     def test_missing_file_yields_nothing(self):
-        calls, new_offset = extract_calls_from_transcript("/nonexistent/path.jsonl", 0)
-        assert calls == []
-        assert new_offset == 0
+        parsed = extract_calls_from_transcript("/nonexistent/path.jsonl", 0)
+        assert parsed.calls == []
+        assert parsed.offset == 0
 
     def test_simple_call_has_llm_call_span_shape(self, tmp_path: Path):
         transcript = tmp_path / "t.jsonl"
@@ -70,7 +70,8 @@ class TestExtractCallsFromTranscript:
             + _assistant_frame("msg_1", [{"type": "text", "text": "hi there"}])
             + "\n"
         )
-        calls, new_offset = extract_calls_from_transcript(str(transcript), 0)
+        parsed = extract_calls_from_transcript(str(transcript), 0)
+        calls, new_offset = parsed.calls, parsed.offset
         assert len(calls) == 1
         call = calls[0]
         assert call["call_id"] == "msg_1"
@@ -98,7 +99,7 @@ class TestExtractCallsFromTranscript:
             )
             + "\n"
         )
-        calls, _new_offset = extract_calls_from_transcript(str(transcript), 0)
+        calls = extract_calls_from_transcript(str(transcript), 0).calls
         usage = calls[0]["usage"]
         assert usage["cache_read_input_tokens"] == 7
         assert usage["cache_creation_input_tokens"] == 3
@@ -116,7 +117,7 @@ class TestExtractCallsFromTranscript:
             )
             + "\n"
         )
-        calls, _new_offset = extract_calls_from_transcript(str(transcript), 0)
+        calls = extract_calls_from_transcript(str(transcript), 0).calls
         assert len(calls) == 1
         # tool_calls is always empty here: timing/results live in the local event
         # store, correlated separately by build_turn.
@@ -141,7 +142,7 @@ class TestExtractCallsFromTranscript:
             + _assistant_frame("msg_2", [{"type": "text", "text": "found file1"}])
             + "\n"
         )
-        calls, _new_offset = extract_calls_from_transcript(str(transcript), 0)
+        calls = extract_calls_from_transcript(str(transcript), 0).calls
         assert len(calls) == 2
         first, second = calls
         assert first["call_id"] == "msg_1"
@@ -163,7 +164,7 @@ class TestExtractCallsFromTranscript:
             + _assistant_frame("msg_2", [{"type": "text", "text": "second"}])
             + "\n"
         )
-        calls, _new_offset = extract_calls_from_transcript(str(transcript), 0)
+        calls = extract_calls_from_transcript(str(transcript), 0).calls
         assert len(calls) == 2
         assert calls[0]["input_messages"] != []
         assert calls[1]["input_messages"] == []
@@ -180,7 +181,7 @@ class TestExtractCallsFromTranscript:
             )
             + "\n"
         )
-        calls, _new_offset = extract_calls_from_transcript(str(transcript), 0)
+        calls = extract_calls_from_transcript(str(transcript), 0).calls
         assert len(calls) == 1
         parts = calls[0]["output_messages"][0]["parts"]
         assert [p["type"] for p in parts] == ["reasoning", "tool_call"]
@@ -190,7 +191,7 @@ class TestExtractCallsFromTranscript:
         transcript.write_text(
             _assistant_frame("msg_1", [{"type": "text", "text": "hi"}], model="<synthetic>") + "\n"
         )
-        calls, _new_offset = extract_calls_from_transcript(str(transcript), 0)
+        calls = extract_calls_from_transcript(str(transcript), 0).calls
         assert calls == []
 
     def test_offset_makes_a_second_call_incremental(self, tmp_path: Path):
@@ -201,12 +202,13 @@ class TestExtractCallsFromTranscript:
             + _assistant_frame("msg_1", [{"type": "text", "text": "hi"}])
             + "\n"
         )
-        first_calls, offset_after = extract_calls_from_transcript(str(transcript), 0)
-        assert len(first_calls) == 1
+        first = extract_calls_from_transcript(str(transcript), 0)
+        offset_after = first.offset
+        assert len(first.calls) == 1
 
         with transcript.open("a") as f:
             f.write(_assistant_frame("msg_2", [{"type": "text", "text": "again"}]) + "\n")
-        second_calls, _offset = extract_calls_from_transcript(str(transcript), offset_after)
+        second_calls = extract_calls_from_transcript(str(transcript), offset_after).calls
         assert len(second_calls) == 1
         assert second_calls[0]["call_id"] == "msg_2"
 
@@ -215,7 +217,7 @@ class TestExtractCallsFromTranscript:
         transcript.write_text(
             _assistant_frame("msg_1", [{"type": "redacted_thinking", "data": "..."}]) + "\n"
         )
-        calls, _new_offset = extract_calls_from_transcript(str(transcript), 0)
+        calls = extract_calls_from_transcript(str(transcript), 0).calls
         assert len(calls) == 1
         assert calls[0]["output_messages"] == []
 
