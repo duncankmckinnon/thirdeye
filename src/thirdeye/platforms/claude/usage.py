@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import dataclasses
 import json
-from datetime import datetime
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
@@ -221,14 +221,16 @@ def extract_calls_from_transcript(
             if current["output_parts"]
             else []
         )
-        # Both ends are `_iso_timestamp` output: ISO-8601 UTC, which sorts
-        # lexicographically, or "" when no frame carried a usable timestamp.
-        # Collapse rather than emit a backwards or half-empty span.
+        # Both ends are `_iso_timestamp` output: a real ISO-8601 timestamp, or
+        # "" when no frame carried a usable one. Collapse rather than emit a
+        # backwards or half-empty span — and compare the parsed instants, since
+        # frames may carry different UTC offsets, under which the string order
+        # is not the chronological one.
         start_ts = current["start_ts"]
         end_ts = current["last_ts"]
         if not end_ts:
             end_ts = start_ts
-        elif not start_ts or start_ts > end_ts:
+        elif not start_ts or _is_after(start_ts, end_ts):
             start_ts = end_ts
         new_calls.append(
             {
@@ -360,14 +362,32 @@ def _iso_timestamp(value: object) -> str:
     timestamp must not become a span boundary or a dispatch point, so it maps
     to "" and leaves the caller's cursor where it was.
     """
-    if not isinstance(value, str) or not value:
-        return ""
+    return value if isinstance(value, str) and _parse_iso(value) is not None else ""
+
+
+def _parse_iso(value: str) -> datetime | None:
+    """Parse an ISO-8601 timestamp to an aware `datetime`, or `None` if it
+    isn't one. A timestamp written without an offset is read as UTC, so that
+    every parse result is comparable with every other."""
+    if not value:
+        return None
     try:
         # `fromisoformat` only learned to accept a trailing "Z" in 3.11.
-        datetime.fromisoformat(value.replace("Z", "+00:00"))
+        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
     except ValueError:
-        return ""
-    return value
+        return None
+    return parsed if parsed.tzinfo is not None else parsed.replace(tzinfo=UTC)
+
+
+def _is_after(start: str, end: str) -> bool:
+    """Whether `start` is a later instant than `end`. Both are `_iso_timestamp`
+    output, so both parse; if one somehow doesn't, say no rather than collapse
+    a span on the strength of an unreadable bound."""
+    start_dt = _parse_iso(start)
+    end_dt = _parse_iso(end)
+    if start_dt is None or end_dt is None:
+        return False
+    return start_dt > end_dt
 
 
 def _map_content_block(block: object) -> dict | None:
