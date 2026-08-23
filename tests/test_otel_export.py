@@ -236,13 +236,21 @@ class TestBackgroundNoiseSuppression:
         import logfire
 
         calls = []
+        configured_with = {}
+
+        def _configure(**kwargs):
+            configured_with.update(kwargs)
+            return object()
+
         monkeypatch.setattr(otel_export, "_silence_background_noise", lambda: calls.append(1))
-        monkeypatch.setattr(logfire, "configure", lambda **kwargs: object())
+        monkeypatch.setattr(logfire, "configure", _configure)
         config = Config(
             root=tmp_path, logfire=LogfireSettings(enabled=True, token="bad-token", project=None)
         )
         otel_export._get_instance(config, "claude")
         assert calls == [1]
+        assert configured_with["advanced"].id_generator is otel_export._state["id_generator"]
+        assert configured_with["scrubbing"].callback is otel_export._scrub_callback
 
 
 class TestPreallocatedIdGenerator:
@@ -480,6 +488,66 @@ class TestExportTurnInner:
         assert root_span["attributes"]["gen_ai.conversation.id"] == "s1"
         assert root_span["attributes"]["thirdeye.platform"] == "claude"
         assert root_span["attributes"]["thirdeye.cwd"] == "/proj"
+
+    def test_new_session_persists_and_emits_derived_root_ids(
+        self, tmp_path: Path, enabled_config: Config, wired_instance, exporter
+    ):
+        session_id = "session-with-derived-root"
+        sd = tmp_path / "traces" / "claude" / session_id
+
+        otel_export._export_turn_inner(
+            config=enabled_config,
+            session_dir_=sd,
+            session_id=session_id,
+            platform="claude",
+            cwd="/proj",
+            turn=_turn(),
+        )
+
+        expected_trace_id = trace_id_for_session(session_id)
+        expected_span_id = root_span_id_for_session(session_id)
+        persisted = json.loads(otel_export.otel_state_path(sd).read_text())
+        assert persisted == {
+            "trace_id": f"{expected_trace_id:032x}",
+            "span_id": f"{expected_span_id:016x}",
+        }
+
+        root_span, turn_span = exporter.exported_spans_as_dict()
+        assert root_span["name"] == "session"
+        assert root_span["context"]["trace_id"] == expected_trace_id
+        assert root_span["context"]["span_id"] == expected_span_id
+        assert turn_span["context"]["trace_id"] == expected_trace_id
+        assert turn_span["parent"]["span_id"] == expected_span_id
+
+    def test_existing_root_ids_take_precedence_and_are_not_reemitted(
+        self, tmp_path: Path, enabled_config: Config, wired_instance, exporter
+    ):
+        session_id = "session-with-legacy-root"
+        sd = tmp_path / "traces" / "claude" / session_id
+        root_path = otel_export.otel_state_path(sd)
+        legacy_trace_id = 0x123456789ABCDEF0123456789ABCDEF0
+        legacy_span_id = 0x123456789ABCDEF0
+        assert otel_export._create_root_atomic(root_path, legacy_trace_id, legacy_span_id) == (
+            legacy_trace_id,
+            legacy_span_id,
+        )
+        original_payload = root_path.read_text()
+
+        otel_export._export_turn_inner(
+            config=enabled_config,
+            session_dir_=sd,
+            session_id=session_id,
+            platform="claude",
+            cwd="/proj",
+            turn=_turn(),
+        )
+
+        spans = exporter.exported_spans_as_dict()
+        assert [span["name"] for span in spans] == ["agent-turn"]
+        turn_span = spans[0]
+        assert turn_span["context"]["trace_id"] == legacy_trace_id
+        assert turn_span["parent"]["span_id"] == legacy_span_id
+        assert root_path.read_text() == original_payload
 
     def test_llm_call_and_tool_call_nest_correctly(
         self, tmp_path: Path, enabled_config: Config, wired_instance, exporter
