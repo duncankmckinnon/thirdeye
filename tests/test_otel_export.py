@@ -8,6 +8,7 @@ import pytest
 
 from thirdeye import otel_export
 from thirdeye.config import Config, LogfireSettings
+from thirdeye.span_ids import root_span_id_for_session, trace_id_for_session
 
 pytest.importorskip("logfire")
 
@@ -19,9 +20,11 @@ from opentelemetry.sdk.trace.export import SimpleSpanProcessor  # noqa: E402
 def _reset_state():
     otel_export._state["attempted"] = False
     otel_export._state["instance"] = None
+    otel_export._state["id_generator"] = None
     yield
     otel_export._state["attempted"] = False
     otel_export._state["instance"] = None
+    otel_export._state["id_generator"] = None
 
 
 @pytest.fixture
@@ -31,13 +34,20 @@ def exporter():
 
 @pytest.fixture
 def wired_instance(exporter, monkeypatch: pytest.MonkeyPatch):
-    """A real Logfire instance wired to an in-memory exporter, network-free."""
+    """A real Logfire instance wired to an in-memory exporter, network-free.
+
+    Wired to the same generator `_get_instance` would hand a real one, so the
+    ids the export path pre-allocates are actually the ids spans come out
+    with — otherwise every id assertion here would pass against the SDK's own
+    random generator and prove nothing.
+    """
     import logfire
 
     instance = logfire.configure(
         send_to_logfire=False,
         console=False,
         additional_span_processors=[SimpleSpanProcessor(exporter)],
+        advanced=logfire.AdvancedOptions(id_generator=otel_export._id_generator()),
     )
     monkeypatch.setattr(otel_export, "_get_instance", lambda config, platform: instance)
     return instance
@@ -233,6 +243,84 @@ class TestBackgroundNoiseSuppression:
         )
         otel_export._get_instance(config, "claude")
         assert calls == [1]
+
+
+class TestPreallocatedIdGenerator:
+    """Span ids for this tree are derived rather than minted, so that a span
+    emitted while a turn is still running can name a parent that hasn't been
+    exported yet. `_start_span_with_id` is how a derived id actually reaches
+    the SDK: it sets a one-shot slot on the generator handed to
+    `logfire.configure`, and the next id drawn is the one we chose.
+    """
+
+    def _tracer(self, instance):
+        return instance.config.get_tracer_provider().get_tracer("thirdeye")
+
+    def test_preset_span_id_is_used_verbatim(self, wired_instance):
+        chosen = 0x0123456789ABCDEF
+        span = otel_export._start_span_with_id(
+            self._tracer(wired_instance), "chosen", chosen, start_time=1, attributes={}
+        )
+        span.end(end_time=2)
+        assert span.get_span_context().span_id == chosen
+
+    def test_preset_trace_id_is_used_for_a_parentless_span(self, wired_instance):
+        span = otel_export._start_span_with_id(
+            self._tracer(wired_instance),
+            "chosen",
+            0xAA,
+            trace_id=0xBB,
+            start_time=1,
+            attributes={},
+        )
+        span.end(end_time=2)
+        context = span.get_span_context()
+        assert (context.trace_id, context.span_id) == (0xBB, 0xAA)
+
+    def test_slot_clears_after_one_use(self, wired_instance):
+        tracer = self._tracer(wired_instance)
+        chosen = 0x0123456789ABCDEF
+        first = otel_export._start_span_with_id(tracer, "first", chosen, start_time=1, attributes={})
+        first.end(end_time=2)
+        second = tracer.start_span("second", start_time=3)
+        second.end(end_time=4)
+        second_id = second.get_span_context().span_id
+        assert second_id != chosen  # the slot is consumed, not sticky
+        assert second_id != 0
+
+    def test_unset_slot_yields_valid_random_ids(self):
+        generator = otel_export._id_generator()
+        span_ids = {generator.generate_span_id() for _ in range(5)}
+        trace_ids = {generator.generate_trace_id() for _ in range(5)}
+        assert len(span_ids) == 5
+        assert all(0 < value < 2**64 for value in span_ids)
+        assert len(trace_ids) == 5
+        assert all(0 < value < 2**128 for value in trace_ids)
+
+    def test_configure_draws_no_ids(self, exporter):
+        """A canary on a third-party assumption the whole scheme rests on.
+
+        Slots are set immediately before a `start_span` call, so anything else
+        drawing an id in between would steal one and silently misparent a
+        span. `logfire.configure` is the one thing that runs between our own
+        spans without us asking; today it draws nothing (its configuration
+        span defaults off), but a future release emitting one at configure
+        time would break parenting in a way no other test here would notice.
+        """
+        import logfire
+
+        probe = otel_export._build_id_generator()
+        drawn: list[str] = []
+        probe.generate_span_id = lambda: drawn.append("span") or 1
+        probe.generate_trace_id = lambda: drawn.append("trace") or 1
+
+        logfire.configure(
+            send_to_logfire=False,
+            console=False,
+            additional_span_processors=[SimpleSpanProcessor(exporter)],
+            advanced=logfire.AdvancedOptions(id_generator=probe),
+        )
+        assert drawn == []
 
 
 class TestRootOwnership:

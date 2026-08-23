@@ -69,13 +69,17 @@ from typing import Any
 from thirdeye.config import Config
 from thirdeye.ids import new_ulid
 from thirdeye.paths import otel_jobs_dir, otel_state_path
+from thirdeye.span_ids import root_span_id_for_session, trace_id_for_session
 from thirdeye.tracing.model import TurnSpanDict
 from thirdeye.usage.errlog import log_capture_error
 
 # Cache across calls *within one process*. Each hook invocation is its own
 # short-lived process, so this only saves repeat configure() calls when a
 # single process exports more than one turn (e.g. the eval runner).
-_state: dict[str, Any] = {"attempted": False, "instance": None}
+# `id_generator` is the one instance handed to `logfire.configure`; the emit
+# path must reach *that* object, since setting a slot on any other one would
+# silently do nothing.
+_state: dict[str, Any] = {"attempted": False, "instance": None, "id_generator": None}
 
 _ATTR_PRIMITIVES = (str, bool, int, float)
 # Logfire's own convention for telling its backend which JSON-encoded string
@@ -166,6 +170,86 @@ def _scrub_callback(match: Any) -> Any:
     return None
 
 
+def _build_id_generator() -> Any:
+    """Build a generator that lets us hand the SDK ids of our own choosing.
+
+    Span ids for this trace tree are *derived*, not minted (see
+    ``thirdeye.span_ids``), because a tool span emitted while a turn is still
+    running has to name the ``chat`` span that requested it as its parent —
+    and that chat span isn't exported until the turn ends. But OTel's
+    ``IdGenerator`` interface is context-free (``generate_span_id()`` takes no
+    arguments), so there is nothing to key an id off of. What can be
+    controlled is the *sequence*: a mutable slot, set immediately before a
+    ``start_span`` call and cleared as it's read, so the next id the SDK draws
+    is the one we just chose. Anything the SDK starts that we didn't
+    pre-allocate for still gets an ordinary random id.
+
+    Worker processes are single-threaded and every span here is started
+    synchronously, so "the next id drawn" is unambiguous. `logfire.configure`
+    itself draws zero ids, so no internal span can consume a pending slot —
+    a third-party assumption that `TestPreallocatedIdGenerator` keeps a canary
+    on, because a regression in it would misparent spans invisibly.
+
+    The class is defined inside this function because its base class lives in
+    ``opentelemetry``, present only with the optional ``logfire`` extra;
+    importing it at module scope would break every hook invocation without it.
+    """
+    from opentelemetry.sdk.trace.id_generator import IdGenerator, RandomIdGenerator
+
+    class PreallocatedIdGenerator(IdGenerator):
+        """Returns a pre-set id if one is pending, else a random one."""
+
+        def __init__(self) -> None:
+            self.next_span_id: int | None = None
+            self.next_trace_id: int | None = None
+            self._random = RandomIdGenerator()
+
+        def generate_span_id(self) -> int:
+            value, self.next_span_id = self.next_span_id, None
+            return value if value is not None else self._random.generate_span_id()
+
+        def generate_trace_id(self) -> int:
+            value, self.next_trace_id = self.next_trace_id, None
+            return value if value is not None else self._random.generate_trace_id()
+
+    return PreallocatedIdGenerator()
+
+
+def _id_generator() -> Any:
+    """This process's generator instance, created on first use and cached."""
+    if _state["id_generator"] is None:
+        _state["id_generator"] = _build_id_generator()
+    return _state["id_generator"]
+
+
+def _start_span_with_id(
+    tracer: Any,
+    name: str,
+    span_id: int,
+    *,
+    parent_ctx: Any = None,
+    start_time: int | None = None,
+    attributes: dict[str, Any] | None = None,
+    trace_id: int | None = None,
+) -> Any:
+    """Start a span carrying a span id we chose rather than one the SDK minted.
+
+    `trace_id` is only honored for a span with no parent — a child always
+    inherits its parent's trace — so it is passed for the session root and
+    nowhere else. It's assigned unconditionally so a value left pending by an
+    earlier call can never leak into a later root span.
+    """
+    generator = _id_generator()
+    generator.next_span_id = span_id
+    generator.next_trace_id = trace_id
+    return tracer.start_span(
+        name,
+        context=parent_ctx,
+        start_time=start_time,
+        attributes=attributes,
+    )
+
+
 def _get_instance(config: Config, platform: str):
     """Return a configured Logfire instance, or None if export is inactive.
 
@@ -196,6 +280,11 @@ def _get_instance(config: Config, platform: str):
             console=False,
             service_name=platform,
             scrubbing=logfire.ScrubbingOptions(callback=_scrub_callback),
+            # Keeping the SDK is what preserves scrubbing, retries and the
+            # OTLP wire format for free; the one thing it doesn't give us is
+            # ids of our own choosing, and this injects those through its
+            # normal path rather than around it.
+            advanced=logfire.AdvancedOptions(id_generator=_id_generator()),
         )
     except Exception as exc:
         log_capture_error(thirdeye_home=config.root, phase="logfire_configure", error=exc)
@@ -288,9 +377,13 @@ def _atomic_create(path: Path, payload: str) -> bool:
 def _root_or_ownership(root_path: Path) -> tuple[tuple[int, int] | None, Path | None]:
     """Return an existing root or exclusive ownership of creating it.
 
-    Span ids are SDK-generated, so the root cannot be reserved directly. A
-    short-lived sibling lock serializes the read/start/persist sequence across
-    detached workers and prevents two first spans from creating split traces.
+    A short-lived sibling lock serializes the read/persist/start sequence
+    across detached workers. Derived root ids mean two concurrent first
+    exports can no longer produce *split* traces — they'd derive the same
+    ids — but without the lock they would each emit their own copy of the
+    session root span, since neither's atomic create would tell it apart from
+    a win. Sessions rooted before derivation landed keep whatever ids
+    ``otel.json`` already holds, so the lock still guards those too.
     """
     lock_path = root_path.with_name(f"{root_path.name}.lock")
     deadline = time.monotonic() + 2.0
@@ -473,7 +566,11 @@ def _export_turn_inner(
             if parent is None:
                 # First export for this session: the root is purely an
                 # anchor, so it carries none of the turn's own input/output
-                # content.
+                # content. Its ids are derived from the session id and
+                # persisted *before* the span is emitted — the reverse of the
+                # old mint-then-record order — so any other process can name
+                # this trace and this parent without having read the file back
+                # first, which is what makes mid-turn emission possible.
                 root_ns = _ts_to_ns(turn["start_ts"])
                 root_attrs = _flatten_attrs(
                     {
@@ -482,10 +579,25 @@ def _export_turn_inner(
                         "thirdeye.cwd": cwd,
                     }
                 )
-                root_span = tracer.start_span("session", start_time=root_ns, attributes=root_attrs)
-                root_span.end(end_time=root_ns)
-                root_ctx = root_span.get_span_context()
-                parent = _create_root_atomic(root_path, root_ctx.trace_id, root_ctx.span_id)
+                derived = (
+                    trace_id_for_session(session_id),
+                    root_span_id_for_session(session_id),
+                )
+                parent = _create_root_atomic(root_path, *derived)
+                # A losing create means the session was already rooted at ids
+                # somebody else picked (a session started before derivation
+                # landed, reclaimed here through a stale lock). Its root span
+                # exists already; emitting ours would just duplicate it.
+                if parent == derived:
+                    root_span = _start_span_with_id(
+                        tracer,
+                        "session",
+                        derived[1],
+                        trace_id=derived[0],
+                        start_time=root_ns,
+                        attributes=root_attrs,
+                    )
+                    root_span.end(end_time=root_ns)
         finally:
             if root_lock is not None:
                 root_lock.unlink(missing_ok=True)
