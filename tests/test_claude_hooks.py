@@ -434,6 +434,19 @@ class TestOpenTurnCursor:
         assert hooks._delete_open_turn(sd, expected_turn_seq=stale_seq) is False
         assert hooks._read_open_turn(sd) == marker
 
+    def test_delete_rejects_marker_that_fails_shared_validation(self, monkeypatch, env: Path):
+        sid = "invalid-delete"
+        _stdin(monkeypatch, {"session_id": sid, "cwd": "/p", "prompt": "hello"})
+        hooks.user_prompt_submit()
+        sd = session_dir(env, "claude", sid)
+        marker_path = hooks._open_turn_path(sd)
+        marker = json.loads(marker_path.read_text())
+        marker["last_frame_ts"] = 123
+        marker_path.write_text(json.dumps(marker))
+
+        assert hooks._delete_open_turn(sd, expected_turn_seq=marker["turn_seq"]) is False
+        assert marker_path.exists()
+
 
 class TestUserPromptSubmitTranscriptOffset:
     """The marker's starting `transcript_offset` is measured fresh from the

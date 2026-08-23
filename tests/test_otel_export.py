@@ -984,9 +984,13 @@ class TestExportTurnInner:
     def test_subagent_nests_under_the_parent_turn_with_its_own_children(
         self, tmp_path: Path, enabled_config: Config, wired_instance, exporter
     ):
+        session_id = "s1"
+        subagent_turn_seq = 7
+        expected_subagent_span_id = turn_span_id(session_id, subagent_turn_seq)
         sd = tmp_path / "traces" / "claude" / "s1"
         subagent = _turn(
-            turn_id="turn_sub",
+            turn_id=str(subagent_turn_seq),
+            turn_span_id=str(expected_subagent_span_id),
             llm_calls=[_llm_call(tool_calls=[_tool_call()])],
         )
         turn = _turn(subagents=[subagent])
@@ -1006,6 +1010,7 @@ class TestExportTurnInner:
         chat_span = spans[3]
         tool_span = spans[4]
         assert subagent_span["name"] == "agent-turn (subagent)"
+        assert subagent_span["context"]["span_id"] == expected_subagent_span_id
         assert subagent_span["parent"]["span_id"] == top_turn_span["context"]["span_id"]
         assert chat_span["parent"]["span_id"] == subagent_span["context"]["span_id"]
         assert tool_span["parent"]["span_id"] == chat_span["context"]["span_id"]

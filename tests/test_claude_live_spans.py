@@ -236,7 +236,11 @@ class TestLiveSpanJob:
         assert after["last_frame_ts"] == before["last_frame_ts"]
 
     def test_raising_job_write_does_not_advance_cursor(
-        self, monkeypatch: pytest.MonkeyPatch, config: Config, tmp_path: Path
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        config: Config,
+        tmp_path: Path,
+        capsys: pytest.CaptureFixture[str],
     ) -> None:
         session_id = "raising-export-cursor"
         transcript = tmp_path / "transcript.jsonl"
@@ -255,13 +259,33 @@ class TestLiveSpanJob:
             lambda *args, **kwargs: (_ for _ in ()).throw(OSError("job write failed")),
         )
 
-        with pytest.raises(OSError, match="job write failed"):
-            live_spans.emit_live_spans(config, session_dir_, session_id, "/project", "tool-raise")
+        live_spans.emit_live_spans(config, session_dir_, session_id, "/project", "tool-raise")
 
         after = hooks._read_open_turn(session_dir_)
+        captured = capsys.readouterr()
         assert after is not None
         assert after["transcript_offset"] == before["transcript_offset"]
         assert after["last_frame_ts"] == before["last_frame_ts"]
+        assert captured.out == ""
+        assert captured.err == ""
+
+    def test_lock_failure_does_not_raise_or_write_output(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        config: Config,
+        tmp_path: Path,
+        capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        def raise_lock_error(*args, **kwargs):
+            raise OSError("lock unavailable")
+
+        monkeypatch.setattr(live_spans, "_locked_open_turn", raise_lock_error)
+
+        live_spans.emit_live_spans(config, tmp_path, "lock-failure", "/project", "tool-1")
+
+        captured = capsys.readouterr()
+        assert captured.out == ""
+        assert captured.err == ""
 
     def test_stale_turn_rejection_is_quiet_and_preserves_marker(
         self, monkeypatch: pytest.MonkeyPatch, config: Config, tmp_path: Path

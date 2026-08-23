@@ -200,18 +200,10 @@ def _delete_open_turn(session_dir_: Path, *, expected_turn_seq: int) -> bool:
     """Delete only the marker belonging to ``expected_turn_seq``."""
     try:
         with _locked_open_turn(session_dir_, fcntl.LOCK_EX):
-            try:
-                raw = json.loads(_open_turn_path(session_dir_).read_text())
-            except (OSError, UnicodeError, json.JSONDecodeError):
+            marker = _read_open_turn_unlocked(session_dir_)
+            if marker is None:
                 return False
-            if not isinstance(raw, dict):
-                return False
-            marker_turn_seq = raw.get("turn_seq")
-            if (
-                not isinstance(marker_turn_seq, int)
-                or isinstance(marker_turn_seq, bool)
-                or marker_turn_seq != expected_turn_seq
-            ):
+            if marker["turn_seq"] != expected_turn_seq:
                 return False
             _open_turn_path(session_dir_).unlink()
             return True

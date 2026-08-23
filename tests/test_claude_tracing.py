@@ -482,6 +482,7 @@ class TestBuildTurn:
 
         events = list(SessionReader(sd).iter_events())
         turn_seq = next(e["seq"] for e in events if e["t"] == "user_message")
+        subagent_turn_seq = next(e["seq"] for e in events if e["t"] == "subagent_start")
         stop_seq = events[-1]["seq"] + 1
 
         turn = tracing.build_turn(
@@ -516,6 +517,7 @@ class TestBuildTurn:
 
         assert len(turn["subagents"]) == 1
         sub = turn["subagents"][0]
+        assert sub["turn_span_id"] == str(turn_span_id(sid, subagent_turn_seq))
         assert sub["input_message"] == "explore code"
         assert sub["output_message"] == "found stuff"
         assert sub["status"] == "completed"

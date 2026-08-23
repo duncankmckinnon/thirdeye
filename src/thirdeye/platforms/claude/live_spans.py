@@ -115,7 +115,7 @@ def _tool_span(
     }
 
 
-def emit_live_spans(
+def _emit_live_spans(
     config: Config,
     session_dir_: Path,
     session_id: str,
@@ -176,3 +176,16 @@ def emit_live_spans(
             offset=parsed.offset,
             last_frame_ts=parsed.last_frame_ts,
         )
+
+
+def emit_live_spans(
+    config: Config,
+    session_dir_: Path,
+    session_id: str,
+    cwd: str,
+    tool_use_id: str,
+) -> None:
+    try:
+        _emit_live_spans(config, session_dir_, session_id, cwd, tool_use_id)
+    except Exception:
+        pass

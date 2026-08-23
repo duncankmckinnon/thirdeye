@@ -203,6 +203,8 @@ def _build_subagent_turn(
     tool_calls: list[ToolCallSpanDict],
     permission_requests: list[PermissionRequestSpanDict],
     task_ev: dict[str, Any] | None,
+    *,
+    session_id: str,
 ) -> TurnSpanDict:
     start_data = start_ev.get("data") or {}
     stop_data = stop_ev.get("data") or {}
@@ -214,6 +216,7 @@ def _build_subagent_turn(
     task_input = task_input if isinstance(task_input, dict) else {}
     return {
         "turn_id": str(start_ev.get("seq")),
+        "turn_span_id": str(turn_span_id(session_id, int(start_ev["seq"]))),
         "start_ts": str(start_ev.get("ts") or ""),
         "end_ts": str(stop_ev.get("ts") or ""),
         # The subagent's own transcript opens with its task prompt as a plain
@@ -293,6 +296,7 @@ def build_turn(
             _pair_tool_calls(owned[w["agent_id"]]),
             _pair_permission_events(owned[w["agent_id"]]),
             w["task_ev"],
+            session_id=session_id,
         )
         for w in windows
     ]
