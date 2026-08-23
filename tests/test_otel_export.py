@@ -655,15 +655,7 @@ class TestExportSpansBatch:
             span for span in exporter.exported_spans_as_dict() if span["name"].startswith("chat")
         )
 
-        live_attributes = {
-            "gen_ai.input.messages": call["input_messages"],
-            "gen_ai.output.messages": call["output_messages"],
-            "gen_ai.provider.name": call["provider"],
-            "gen_ai.operation.name": "chat",
-            "gen_ai.response.model": call["model"],
-            "gen_ai.usage.input_tokens": call["usage"]["input_tokens"],
-            "gen_ai.usage.output_tokens": call["usage"]["output_tokens"],
-        }
+        live_attributes = otel_export._chat_attributes(call)
         self._export(
             tmp_path,
             enabled_config,
@@ -694,6 +686,24 @@ class TestExportSpansBatch:
         assert tool_span["attributes"]["gen_ai.conversation.id"] == "s1"
         assert tool_span["attributes"]["thirdeye.platform"] == "claude"
         assert tool_span["attributes"]["thirdeye.cwd"] == "/proj"
+
+    def test_live_tool_attribute_named_attributes_is_preserved(
+        self, tmp_path: Path, enabled_config: Config, wired_instance, exporter
+    ):
+        self._export(
+            tmp_path,
+            enabled_config,
+            [
+                self._batch_span(
+                    name="tool: Bash",
+                    attributes={"command": "x", "attributes": {"mode": "safe"}},
+                )
+            ],
+        )
+
+        [tool_span] = exporter.exported_spans_as_dict()
+        assert tool_span["attributes"]["command"] == "x"
+        assert json.loads(tool_span["attributes"]["attributes"]) == {"mode": "safe"}
 
 
 class TestExportTurnInner:

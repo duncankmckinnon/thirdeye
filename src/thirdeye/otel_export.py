@@ -695,14 +695,13 @@ def _chat_attributes(call_or_attributes: dict[str, Any]) -> dict[str, Any]:
 
 
 def _tool_attributes(
-    tool_or_attributes: dict[str, Any],
+    attributes: dict[str, Any],
     *,
     session_id: str,
     platform: str,
     cwd: str,
 ) -> dict[str, Any]:
-    """Build flattened attributes for a tool span in either export path."""
-    attributes = tool_or_attributes.get("attributes", tool_or_attributes)
+    """Enrich and flatten a tool span's raw attributes."""
     return _flatten_attrs(
         _merge_raw(
             attributes,
@@ -828,7 +827,7 @@ def _export_turn_subtree(
                 kind=SpanKind.INTERNAL,
                 start_time=_ts_to_ns(tool_call["start_ts"]),
                 attributes=_tool_attributes(
-                    tool_call,
+                    tool_call["attributes"],
                     session_id=session_id,
                     platform=platform,
                     cwd=cwd,
