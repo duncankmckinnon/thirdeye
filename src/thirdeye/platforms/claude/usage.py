@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import dataclasses
 import json
+from datetime import datetime
 from pathlib import Path
 from typing import Any
 
@@ -196,7 +197,7 @@ def extract_calls_from_transcript(
     current: dict[str, Any] | None = None
     # Timestamp of the last frame consumed, whatever its type. A group opening
     # on the next frame takes this as its dispatch point.
-    prev_frame_ts: str | None = initial_prev_ts or None
+    prev_frame_ts: str | None = _iso_timestamp(initial_prev_ts) or None
 
     def flush_current() -> None:
         nonlocal current
@@ -220,11 +221,14 @@ def extract_calls_from_transcript(
             if current["output_parts"]
             else []
         )
-        # ISO-8601 UTC sorts lexicographically, so this catches a clock anomaly
-        # (or a group whose frames carried no usable timestamp) without parsing.
+        # Both ends are `_iso_timestamp` output: ISO-8601 UTC, which sorts
+        # lexicographically, or "" when no frame carried a usable timestamp.
+        # Collapse rather than emit a backwards or half-empty span.
         start_ts = current["start_ts"]
         end_ts = current["last_ts"]
-        if start_ts > end_ts:
+        if not end_ts:
+            end_ts = start_ts
+        elif not start_ts or start_ts > end_ts:
             start_ts = end_ts
         new_calls.append(
             {
@@ -254,7 +258,7 @@ def extract_calls_from_transcript(
             if not isinstance(frame, dict):
                 continue
 
-            frame_ts = str(frame.get("timestamp") or "")
+            frame_ts = _iso_timestamp(frame.get("timestamp"))
             # Every consumed frame becomes the dispatch point for whatever
             # group opens next — hence the finally, since the body below bails
             # out early on most frame types. A frame with a missing or
@@ -346,6 +350,24 @@ def extract_calls_from_transcript(
         new_offset = f.tell()
 
     return new_calls, new_offset
+
+
+def _iso_timestamp(value: object) -> str:
+    """Return `value` unchanged if it is an ISO-8601 timestamp string, else "".
+
+    A frame's `timestamp` is whatever the transcript happens to hold — absent,
+    null, a number, a truncated string — and anything that isn't a real
+    timestamp must not become a span boundary or a dispatch point, so it maps
+    to "" and leaves the caller's cursor where it was.
+    """
+    if not isinstance(value, str) or not value:
+        return ""
+    try:
+        # `fromisoformat` only learned to accept a trailing "Z" in 3.11.
+        datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError:
+        return ""
+    return value
 
 
 def _map_content_block(block: object) -> dict | None:

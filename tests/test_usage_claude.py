@@ -646,14 +646,17 @@ def test_parallel_tool_use_blocks_remain_one_call(tmp_path: Path) -> None:
     assert [part["id"] for part in parts] == ["tool-1", "tool-2"]
 
 
-def test_malformed_timestamp_does_not_replace_previous_frame_timestamp(tmp_path: Path) -> None:
+@pytest.mark.parametrize("bad_ts", [12345, "not-a-timestamp", "", None, {"at": "now"}])
+def test_malformed_timestamp_does_not_replace_previous_frame_timestamp(
+    tmp_path: Path, bad_ts: object
+) -> None:
     transcript = tmp_path / "malformed-timestamp.jsonl"
     valid_dispatch_ts = "2026-08-22T10:00:00.000Z"
     response_ts = "2026-08-22T10:00:02.000Z"
     _write_transcript(
         transcript,
         {"type": "user", "timestamp": valid_dispatch_ts, "message": {"content": "go"}},
-        {"type": "progress", "timestamp": 12345},
+        {"type": "progress", "timestamp": bad_ts},
         _assistant_frame("msg_after_bad_ts", response_ts),
     )
 
@@ -662,6 +665,45 @@ def test_malformed_timestamp_does_not_replace_previous_frame_timestamp(tmp_path:
     assert len(calls) == 1
     assert calls[0]["start_ts"] == valid_dispatch_ts
     assert calls[0]["end_ts"] == response_ts
+
+
+def test_malformed_initial_prev_ts_is_ignored(tmp_path: Path) -> None:
+    transcript = tmp_path / "bad-seed.jsonl"
+    response_ts = "2026-08-22T10:00:02.000Z"
+    _write_transcript(transcript, _assistant_frame("msg_bad_seed", response_ts))
+
+    calls, _ = extract_calls_from_transcript(str(transcript), 0, initial_prev_ts="whenever")
+
+    assert len(calls) == 1
+    assert calls[0]["start_ts"] == response_ts
+    assert calls[0]["end_ts"] == response_ts
+
+
+def test_group_without_any_timestamp_emits_empty_bounds(tmp_path: Path) -> None:
+    transcript = tmp_path / "no-timestamps.jsonl"
+    _write_transcript(transcript, _assistant_frame("msg_no_ts", None))
+
+    calls, _ = extract_calls_from_transcript(str(transcript), 0)
+
+    assert len(calls) == 1
+    assert calls[0]["start_ts"] == ""
+    assert calls[0]["end_ts"] == ""
+
+
+def test_untimestamped_first_frame_takes_end_from_later_group_frame(tmp_path: Path) -> None:
+    transcript = tmp_path / "late-timestamp.jsonl"
+    later_ts = "2026-08-22T10:00:03.000Z"
+    _write_transcript(
+        transcript,
+        _assistant_frame("msg_late", None, [{"type": "text", "text": "first"}]),
+        _assistant_frame("msg_late", later_ts, [{"type": "text", "text": "second"}]),
+    )
+
+    calls, _ = extract_calls_from_transcript(str(transcript), 0)
+
+    assert len(calls) == 1
+    assert calls[0]["start_ts"] == later_ts
+    assert calls[0]["end_ts"] == later_ts
 
 
 def test_missing_group_frame_timestamp_keeps_last_valid_end(tmp_path: Path) -> None:
