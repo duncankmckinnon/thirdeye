@@ -736,6 +736,22 @@ def test_clock_anomaly_collapses_call_to_end_timestamp(tmp_path: Path) -> None:
     assert calls[0]["end_ts"] == response_ts
 
 
+def test_clock_anomaly_with_offsets_collapses_call_to_end_timestamp(tmp_path: Path) -> None:
+    """ISO offsets must be compared chronologically, not lexicographically."""
+    transcript = tmp_path / "clock-anomaly-offsets.jsonl"
+    # 10:30 at UTC+01:00 is 09:30 UTC, before the 10:00 UTC dispatch.
+    response_ts = "2026-08-22T10:30:00+01:00"
+    _write_transcript(transcript, _assistant_frame("msg_clock_offsets", response_ts))
+
+    calls, _ = extract_calls_from_transcript(
+        str(transcript), 0, initial_prev_ts="2026-08-22T10:00:00+00:00"
+    )
+
+    assert len(calls) == 1
+    assert calls[0]["start_ts"] == response_ts
+    assert calls[0]["end_ts"] == response_ts
+
+
 class TestMapContentBlock:
     def test_text(self):
         assert _map_content_block({"type": "text", "text": "hi"}) == {
