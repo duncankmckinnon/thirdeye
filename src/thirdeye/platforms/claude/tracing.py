@@ -192,7 +192,7 @@ def _build_subagent_turn(
     stop_data = stop_ev.get("data") or {}
     # `hooks.subagent_stop` renames the SubagentStop payload's
     # `agent_transcript_path` to `agent_transcript` so it survives `_STRIP_KEYS`.
-    llm_calls, _ = extract_calls_from_transcript(stop_data.get("agent_transcript"), 0)
+    llm_calls = extract_calls_from_transcript(stop_data.get("agent_transcript"), 0).calls
     _attach_tool_calls(llm_calls, tool_calls)
     task_input = (task_ev.get("data") or {}).get("tool_input") if task_ev else None
     task_input = task_input if isinstance(task_input, dict) else {}
@@ -260,9 +260,9 @@ def build_turn(
     permission_requests = _pair_permission_events(top_level_events)
 
     offset = int(marker.get("transcript_offset", 0))
-    llm_calls, _ = extract_calls_from_transcript(
+    llm_calls = extract_calls_from_transcript(
         transcript_path or marker.get("transcript_path"), offset
-    )
+    ).calls
     _attach_tool_calls(llm_calls, tool_calls)
 
     # The interruption catch-all has no real final_response and must not

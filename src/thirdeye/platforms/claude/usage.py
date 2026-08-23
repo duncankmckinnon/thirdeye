@@ -140,12 +140,29 @@ def capture_usage_claude(
     )
 
 
+@dataclasses.dataclass(frozen=True)
+class ParsedCalls:
+    """One `extract_calls_from_transcript` result.
+
+    `offset` and `last_frame_ts` are a matched pair describing where the parse
+    stopped: `offset` is the byte position of the first frame *not* consumed,
+    and `last_frame_ts` the timestamp of the last frame before it. Feeding both
+    back into the next call resumes exactly where this one left off, with the
+    dispatch point for the first group intact.
+    """
+
+    calls: list[LlmCallSpanDict]
+    offset: int
+    last_frame_ts: str | None
+
+
 def extract_calls_from_transcript(
     transcript_path: str | None,
     offset: int,
     *,
     initial_prev_ts: str | None = None,
-) -> tuple[list[LlmCallSpanDict], int]:
+    incremental: bool = False,
+) -> ParsedCalls:
     """Tail-parse the Claude transcript for new LLM calls since `offset`,
     building `LlmCallSpanDict` records for `thirdeye.platforms.claude.tracing
     .build_turn` to assemble into a `TurnSpanDict` for `otel_export
@@ -180,25 +197,50 @@ def extract_calls_from_transcript(
     Without it that group falls back to its own first frame's timestamp — a
     zero-width span, but never a nonsensical one.
 
-    Returns `(new_calls, new_offset)`. Never raises: any error here should
-    not be able to block the ordinary usage/event capture paths that already
-    run in the same hook call, so unlike the other functions in this module
-    this one is not `@safe_capture`-wrapped by itself — call it inside a
-    broader try/except, same as the rest of a hook's body.
+    `incremental` makes the call safe to repeat while the turn it is reading is
+    still running. A `message.id` group at the very end of the file may still be
+    receiving frames, so committing it would emit a half-built call — and
+    advancing past it would let its remaining frames open a *second* call
+    carrying the same id. Under `incremental=True` that trailing group is
+    abandoned instead of flushed, and the returned offset points back at its
+    first frame so the next parse rebuilds it whole. A group is known to be
+    complete once a frame with a different `message.id`, or any `user` frame,
+    follows it — exactly the two conditions the loop already flushes on — so
+    everything returned is committed and the offset only ever advances across
+    committed calls. `incremental=False` (the default) is the one-shot parse at
+    Stop: the trailing group is flushed and the offset is EOF.
+
+    An incremental cursor lands on the trailing group's first *assistant* frame
+    (or EOF, when no group is open), so the non-assistant frames feeding that
+    group its input sit behind it: the call the next parse rebuilds carries the
+    right timestamps and output, but an empty `input_messages`. Stopping instead
+    at the last committed call would keep them, at the cost of re-reading those
+    frames on every parse.
+
+    Returns a `ParsedCalls`. Never raises: any error here should not be able to
+    block the ordinary usage/event capture paths that already run in the same
+    hook call, so unlike the other functions in this module this one is not
+    `@safe_capture`-wrapped by itself — call it inside a broader try/except,
+    same as the rest of a hook's body.
     """
+    # Timestamp of the last frame consumed, whatever its type. A group opening
+    # on the next frame takes this as its dispatch point.
+    prev_frame_ts: str | None = _iso_timestamp(initial_prev_ts) or None
+
     if not transcript_path:
-        return [], offset
+        return ParsedCalls([], offset, prev_frame_ts)
     tp = Path(transcript_path)
     if not tp.is_file():
-        return [], offset
+        return ParsedCalls([], offset, prev_frame_ts)
 
     new_calls: list[LlmCallSpanDict] = []
     pending_input_parts: list[dict] = []
     pending_input_role = "user"
     current: dict[str, Any] | None = None
-    # Timestamp of the last frame consumed, whatever its type. A group opening
-    # on the next frame takes this as its dispatch point.
-    prev_frame_ts: str | None = _iso_timestamp(initial_prev_ts) or None
+    # Byte position of the open group's first frame, so `incremental` can rewind
+    # to it rather than commit a group that may still be growing.
+    current_group_offset = offset
+    current_group_prev_ts = prev_frame_ts
 
     def flush_current() -> None:
         nonlocal current
@@ -250,7 +292,14 @@ def extract_calls_from_transcript(
 
     with tp.open("rb") as f:
         f.seek(offset)
-        for raw in f:
+        while True:
+            # Read line by line rather than iterate the handle, so this position
+            # is the exact start of the frame about to be consumed — a group
+            # opening below records it as its own.
+            line_offset = f.tell()
+            raw = f.readline()
+            if not raw:
+                break
             line = raw.decode("utf-8", errors="replace").strip()
             if not line:
                 continue
@@ -314,6 +363,8 @@ def extract_calls_from_transcript(
                     flush_current()
 
                 if current is None:
+                    current_group_offset = line_offset
+                    current_group_prev_ts = prev_frame_ts
                     raw_input = int(usage.get("input_tokens") or 0)
                     cache_read = usage.get("cache_read_input_tokens")
                     cache_crea = usage.get("cache_creation_input_tokens")
@@ -349,10 +400,18 @@ def extract_calls_from_transcript(
                 if frame_ts:
                     prev_frame_ts = frame_ts
 
-        flush_current()
-        new_offset = f.tell()
+        if incremental and current is not None:
+            # The trailing group may still be growing: leave it uncommitted and
+            # rewind to its first frame. Its dispatch point goes back out as
+            # `last_frame_ts` — the last frame before the returned offset — so
+            # the next parse rebuilds the whole group with the same `start_ts`.
+            new_offset = current_group_offset
+            prev_frame_ts = current_group_prev_ts
+        else:
+            flush_current()
+            new_offset = f.tell()
 
-    return new_calls, new_offset
+    return ParsedCalls(new_calls, new_offset, prev_frame_ts)
 
 
 def _iso_timestamp(value: object) -> str:
