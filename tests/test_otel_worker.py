@@ -105,6 +105,69 @@ class TestMainArgHandling:
         job_path = _write_job(home, kind="something_else")
         otel_worker.main([str(job_path)])  # must not raise
 
+    def test_malformed_spans_job_is_ignored_and_deleted(self, home: Path, enabled: None):
+        job_path = _write_job(home, kind="spans", turn=None)
+        otel_worker.main([str(job_path)])  # missing batch fields must not raise
+        assert not job_path.exists()
+
+
+class TestSpanBatchDispatch:
+    def test_spans_job_is_routed_with_deserialized_envelope(
+        self, home: Path, enabled: None, monkeypatch: pytest.MonkeyPatch
+    ):
+        calls = []
+        spans = [
+            {
+                "name": "chat claude-sonnet-5",
+                "span_id": "22",
+                "parent_span_id": "11",
+                "start_ts": "2026-01-01T00:00:01.000Z",
+                "end_ts": "2026-01-01T00:00:02.000Z",
+                "attributes": {},
+            }
+        ]
+        monkeypatch.setattr(
+            otel_export,
+            "_export_spans_batch",
+            lambda **kwargs: calls.append(kwargs),
+        )
+        job_path = _write_job(
+            home,
+            kind="spans",
+            trace_id="340282366920938463463374607431768211455",
+            spans=spans,
+        )
+
+        otel_worker.main([str(job_path)])
+
+        assert calls == [
+            {
+                "config": Config.load(),
+                "session_dir_": home / "traces" / "claude" / "s1",
+                "session_id": "s1",
+                "platform": "claude",
+                "cwd": "/proj",
+                "trace_id": "340282366920938463463374607431768211455",
+                "spans": spans,
+            }
+        ]
+        assert not job_path.exists()
+
+    def test_unknown_kind_calls_neither_export_handler(
+        self, home: Path, enabled: None, monkeypatch: pytest.MonkeyPatch
+    ):
+        calls = []
+        monkeypatch.setattr(otel_export, "_export_turn_inner", lambda **kwargs: calls.append("turn"))
+        monkeypatch.setattr(
+            otel_export, "_export_spans_batch", lambda **kwargs: calls.append("spans")
+        )
+        job_path = _write_job(home, kind="future-kind")
+
+        otel_worker.main([str(job_path)])
+
+        assert calls == []
+        assert not job_path.exists()
+
 
 class TestMainExportsThroughToLogfire:
     def test_reads_job_and_exports_the_turn(
