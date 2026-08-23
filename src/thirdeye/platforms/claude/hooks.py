@@ -1,15 +1,20 @@
 from __future__ import annotations
 
+import contextlib
+import fcntl
 import json
 import os
 import sys
+from collections.abc import Iterator
 from pathlib import Path
+from typing import TypedDict, cast
 
 from thirdeye.config import Config
 from thirdeye.env_capture import capture_env, env_to_tag
 from thirdeye.meta import read_meta, write_meta
 from thirdeye.paths import meta_path, session_dir
 from thirdeye.reader import SessionReader
+from thirdeye.span_ids import turn_span_id
 from thirdeye.store import Store
 from thirdeye.tags import TagStore, extract_hashtags
 
@@ -62,6 +67,83 @@ def _open_turn_path(session_dir_: Path) -> Path:
     return session_dir_ / "claude-open-turn.json"
 
 
+def _open_turn_lock_path(session_dir_: Path) -> Path:
+    return session_dir_ / "claude-open-turn.lock"
+
+
+class OpenTurnMarker(TypedDict):
+    turn_seq: int
+    turn_span_id: str
+    start_ts: str
+    prompt: str
+    prompt_id: str | None
+    transcript_path: str | None
+    transcript_offset: int
+    last_frame_ts: str | None
+
+
+@contextlib.contextmanager
+def _locked_open_turn(session_dir_: Path, operation: int) -> Iterator[None]:
+    session_dir_.mkdir(parents=True, exist_ok=True)
+    with _open_turn_lock_path(session_dir_).open("a+") as lock:
+        fcntl.flock(lock.fileno(), operation)
+        try:
+            yield
+        finally:
+            fcntl.flock(lock.fileno(), fcntl.LOCK_UN)
+
+
+def _read_open_turn_unlocked(session_dir_: Path) -> OpenTurnMarker | None:
+    try:
+        marker = json.loads(_open_turn_path(session_dir_).read_text())
+    except (OSError, UnicodeError, json.JSONDecodeError):
+        return None
+    if not isinstance(marker, dict):
+        return None
+    return cast(OpenTurnMarker, marker)
+
+
+def _read_open_turn(session_dir_: Path) -> OpenTurnMarker | None:
+    """Read the current marker without observing a cursor write in progress."""
+    try:
+        with _locked_open_turn(session_dir_, fcntl.LOCK_SH):
+            return _read_open_turn_unlocked(session_dir_)
+    except OSError:
+        return None
+
+
+def _write_open_turn(session_dir_: Path, marker: OpenTurnMarker) -> None:
+    with _locked_open_turn(session_dir_, fcntl.LOCK_EX):
+        _open_turn_path(session_dir_).write_text(json.dumps(marker))
+
+
+def _advance_turn_cursor(
+    session_dir_: Path,
+    *,
+    expected_turn_seq: int,
+    offset: int,
+    last_frame_ts: str | None,
+) -> bool:
+    """Advance a marker only if it still belongs to the expected turn."""
+    try:
+        with _locked_open_turn(session_dir_, fcntl.LOCK_EX):
+            marker = _read_open_turn_unlocked(session_dir_)
+            if marker is None:
+                return False
+            try:
+                marker_turn_seq = int(marker["turn_seq"])
+            except (KeyError, TypeError, ValueError):
+                return False
+            if marker_turn_seq != expected_turn_seq:
+                return False
+            marker["transcript_offset"] = offset
+            marker["last_frame_ts"] = last_frame_ts
+            _open_turn_path(session_dir_).write_text(json.dumps(marker))
+            return True
+    except OSError:
+        return False
+
+
 def _close_stale_turn_if_open(
     config: Config,
     session_id: str,
@@ -81,9 +163,9 @@ def _close_stale_turn_if_open(
 
         sd = session_dir(config.root, _PLATFORM, session_id)
         marker_path = _open_turn_path(sd)
-        if not marker_path.exists():
+        marker = _read_open_turn(sd)
+        if marker is None:
             return
-        marker = json.loads(marker_path.read_text())
         marker_prompt_id = marker.get("prompt_id")
         if not force and (not prompt_id or not marker_prompt_id or prompt_id == marker_prompt_id):
             return
@@ -175,17 +257,18 @@ def user_prompt_submit() -> None:
         transcript_path = payload.get("transcript_path")
         tp = Path(transcript_path) if transcript_path else None
         offset = tp.stat().st_size if tp is not None and tp.is_file() else 0
-        _open_turn_path(sd).write_text(
-            json.dumps(
-                {
-                    "turn_seq": seq,
-                    "start_ts": start_ts,
-                    "prompt": prompt,
-                    "prompt_id": payload.get("prompt_id"),
-                    "transcript_path": transcript_path,
-                    "transcript_offset": offset,
-                }
-            )
+        _write_open_turn(
+            sd,
+            {
+                "turn_seq": seq,
+                "turn_span_id": str(turn_span_id(sid, seq)),
+                "start_ts": start_ts,
+                "prompt": prompt,
+                "prompt_id": payload.get("prompt_id"),
+                "transcript_path": transcript_path,
+                "transcript_offset": offset,
+                "last_frame_ts": start_ts,
+            },
         )
     except Exception:
         pass

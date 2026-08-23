@@ -1,12 +1,12 @@
 from __future__ import annotations
 
-import json
 from pathlib import Path
 from typing import Any
 
 from thirdeye.config import Config
 from thirdeye.platforms.claude.usage import extract_calls_from_transcript
 from thirdeye.reader import SessionReader
+from thirdeye.span_ids import turn_span_id
 from thirdeye.tracing.model import (
     LlmCallSpanDict,
     PermissionRequestSpanDict,
@@ -229,13 +229,44 @@ def build_turn(
     final_response: str,
     status: TurnStatus = "completed",
 ) -> TurnSpanDict | None:
-    from thirdeye.platforms.claude.hooks import _open_turn_path
+    from thirdeye.platforms.claude.hooks import _read_open_turn
+
+    marker = _read_open_turn(session_dir_)
+    if marker is not None:
+        try:
+            turn_seq = int(marker["turn_seq"])
+        except (ValueError, TypeError, KeyError):
+            marker = None
+
+    if marker is None:
+        user_messages = list(
+            SessionReader(session_dir_).iter_events(
+                types={"user_message"}, seq_range=(0, stop_seq)
+            )
+        )
+        if not user_messages:
+            return None
+        user_message = user_messages[-1]
+        try:
+            turn_seq = int(user_message["seq"])
+        except (ValueError, TypeError, KeyError):
+            return None
+        user_data = user_message.get("data") or {}
+        marker = {
+            "turn_seq": turn_seq,
+            "turn_span_id": str(turn_span_id(session_id, turn_seq)),
+            "start_ts": str(user_message.get("ts") or ""),
+            "prompt": str(user_data.get("prompt") or ""),
+            "prompt_id": user_data.get("prompt_id"),
+            "transcript_path": transcript_path,
+            "transcript_offset": 0,
+            "last_frame_ts": None,
+        }
 
     try:
-        marker = json.loads(_open_turn_path(session_dir_).read_text())
-        turn_seq = int(marker["turn_seq"])
-    except (OSError, ValueError, TypeError, KeyError, json.JSONDecodeError):
-        return None
+        derived_turn_span_id = str(int(marker["turn_span_id"]))
+    except (ValueError, TypeError, KeyError):
+        derived_turn_span_id = str(turn_span_id(session_id, turn_seq))
 
     events = list(
         SessionReader(session_dir_).iter_events(
@@ -259,10 +290,17 @@ def build_turn(
     tool_calls = _pair_tool_calls(top_level_events)
     permission_requests = _pair_permission_events(top_level_events)
 
-    offset = int(marker.get("transcript_offset", 0))
-    llm_calls = extract_calls_from_transcript(
-        transcript_path or marker.get("transcript_path"), offset
-    ).calls
+    try:
+        offset = int(marker.get("transcript_offset", 0))
+    except (ValueError, TypeError):
+        offset = 0
+    parsed_calls = extract_calls_from_transcript(
+        transcript_path or marker.get("transcript_path"),
+        offset,
+        initial_prev_ts=marker.get("last_frame_ts"),
+        incremental=False,
+    )
+    llm_calls = parsed_calls.calls
     _attach_tool_calls(llm_calls, tool_calls)
 
     # The interruption catch-all has no real final_response and must not
@@ -274,6 +312,7 @@ def build_turn(
 
     return {
         "turn_id": str(turn_seq),
+        "turn_span_id": derived_turn_span_id,
         "start_ts": str(marker.get("start_ts") or ""),
         "end_ts": stop_ts,
         "input_message": str(marker.get("prompt") or ""),
