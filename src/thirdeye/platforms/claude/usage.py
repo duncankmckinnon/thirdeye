@@ -380,8 +380,12 @@ def _iso_timestamp(value: object) -> str:
 
 # A date-time, not merely something `fromisoformat` accepts: it also takes a
 # bare "2026-08-22" (as midnight) and an hour-only "2026-08-22T10", neither of
-# which is a timestamp a frame would legitimately carry.
-_DATETIME_RE = re.compile(r"\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}")
+# which is a timestamp a frame would legitimately carry. The separators are
+# optional because basic format ("20260822T100000") is a date-time too, and
+# `fromisoformat` — which every candidate must also satisfy — is the judge of
+# which combinations of them are well-formed; all this asks for is a date
+# followed by a time of day resolved at least to the minute.
+_DATETIME_RE = re.compile(r"\d{4}-?\d{2}-?\d{2}[T ]\d{2}:?\d{2}")
 
 
 def _parse_iso(value: str) -> datetime | None:

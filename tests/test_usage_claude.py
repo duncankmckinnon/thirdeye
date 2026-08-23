@@ -711,7 +711,8 @@ def test_valid_timestamp_on_any_preceding_frame_is_used_as_dispatch(tmp_path: Pa
         # time of day is not a timestamp and must not become a span bound.
         "2026-08-22",
         "2026-08-22T10",
-        "20260822T100000",
+        "20260822",
+        "20260822T10",
     ],
 )
 def test_malformed_timestamp_does_not_replace_previous_frame_timestamp(
@@ -734,7 +735,44 @@ def test_malformed_timestamp_does_not_replace_previous_frame_timestamp(
     assert calls[0]["end_ts"] == response_ts
 
 
-@pytest.mark.parametrize("bad_seed", ["whenever", "2026-08-22", "2026-08-22T10"])
+@pytest.mark.parametrize(
+    ("dispatch_ts", "response_ts", "expected_start", "expected_end"),
+    [
+        # Basic format, and the mixed basic/extended spellings `fromisoformat`
+        # also accepts: all real date-times, all usable as span bounds.
+        ("20260822T100000Z", "20260822T100002Z", "20260822T100000Z", "20260822T100002Z"),
+        ("20260822T1000", "20260822T1002", "20260822T1000+00:00", "20260822T1002+00:00"),
+        (
+            "2026-08-22T1000",
+            "20260822T10:00:02",
+            "2026-08-22T1000+00:00",
+            "20260822T10:00:02+00:00",
+        ),
+    ],
+)
+def test_basic_format_timestamps_are_valid_span_bounds(
+    tmp_path: Path,
+    dispatch_ts: str,
+    response_ts: str,
+    expected_start: str,
+    expected_end: str,
+) -> None:
+    transcript = tmp_path / "basic-format.jsonl"
+    _write_transcript(
+        transcript,
+        {"type": "user", "timestamp": dispatch_ts, "message": {"content": "go"}},
+        _assistant_frame("msg_basic_format", response_ts),
+    )
+
+    calls, _ = extract_calls_from_transcript(str(transcript), 0)
+
+    assert len(calls) == 1
+    assert calls[0]["start_ts"] == expected_start
+    assert calls[0]["end_ts"] == expected_end
+    assert _ts_to_ns(calls[0]["start_ts"]) < _ts_to_ns(calls[0]["end_ts"])
+
+
+@pytest.mark.parametrize("bad_seed", ["whenever", "2026-08-22", "2026-08-22T10", "20260822T10"])
 def test_malformed_initial_prev_ts_is_ignored(tmp_path: Path, bad_seed: str) -> None:
     transcript = tmp_path / "bad-seed.jsonl"
     response_ts = "2026-08-22T10:00:02.000Z"
