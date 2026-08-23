@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import dataclasses
 import json
+import re
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -355,39 +356,56 @@ def extract_calls_from_transcript(
 
 
 def _iso_timestamp(value: object) -> str:
-    """Return `value` unchanged if it is an ISO-8601 timestamp string, else "".
+    """Return `value` as an offset-carrying ISO-8601 timestamp, else "".
 
     A frame's `timestamp` is whatever the transcript happens to hold — absent,
-    null, a number, a truncated string — and anything that isn't a real
-    timestamp must not become a span boundary or a dispatch point, so it maps
-    to "" and leaves the caller's cursor where it was.
+    null, a number, a truncated string, a bare date — and anything that isn't
+    a real timestamp must not become a span boundary or a dispatch point, so
+    it maps to "" and leaves the caller's cursor where it was.
+
+    A value that *is* a timestamp but carries no UTC offset is returned with
+    an explicit `+00:00` appended. The exporter's `_ts_to_ns` reads a naive
+    timestamp in the worker's local timezone while the comparison below reads
+    it as UTC, so an un-pinned bound could pass `_is_after` here and still
+    come out backwards after export; pinning the offset makes both readings
+    the same instant.
     """
-    return value if isinstance(value, str) and _parse_iso(value) is not None else ""
+    if not isinstance(value, str):
+        return ""
+    parsed = _parse_iso(value)
+    if parsed is None:
+        return ""
+    return value if parsed.tzinfo is not None else value + "+00:00"
+
+
+# A date-time, not merely something `fromisoformat` accepts: it also takes a
+# bare "2026-08-22" (as midnight) and an hour-only "2026-08-22T10", neither of
+# which is a timestamp a frame would legitimately carry.
+_DATETIME_RE = re.compile(r"\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}")
 
 
 def _parse_iso(value: str) -> datetime | None:
-    """Parse an ISO-8601 timestamp to an aware `datetime`, or `None` if it
-    isn't one. A timestamp written without an offset is read as UTC, so that
-    every parse result is comparable with every other."""
-    if not value:
+    """Parse an ISO-8601 date-time to a `datetime`, or `None` if `value` isn't
+    one. The result is aware only if `value` carried an offset."""
+    if not _DATETIME_RE.match(value):
         return None
     try:
         # `fromisoformat` only learned to accept a trailing "Z" in 3.11.
-        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+        return datetime.fromisoformat(value.replace("Z", "+00:00"))
     except ValueError:
         return None
-    return parsed if parsed.tzinfo is not None else parsed.replace(tzinfo=UTC)
 
 
 def _is_after(start: str, end: str) -> bool:
     """Whether `start` is a later instant than `end`. Both are `_iso_timestamp`
-    output, so both parse; if one somehow doesn't, say no rather than collapse
-    a span on the strength of an unreadable bound."""
+    output, so both parse and both carry an offset; if one somehow doesn't, say
+    no rather than collapse a span on the strength of an unreadable bound, and
+    read any naive value the way the exporter would — as local time."""
     start_dt = _parse_iso(start)
     end_dt = _parse_iso(end)
     if start_dt is None or end_dt is None:
         return False
-    return start_dt > end_dt
+    return start_dt.astimezone(UTC) > end_dt.astimezone(UTC)
 
 
 def _map_content_block(block: object) -> dict | None:

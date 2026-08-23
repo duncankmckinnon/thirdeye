@@ -1,10 +1,12 @@
 from __future__ import annotations
 
 import json
+import time
 from pathlib import Path
 
 import pytest
 
+from thirdeye.otel_export import _ts_to_ns
 from thirdeye.paths import (
     session_dir,
     usage_jsonl_path,
@@ -697,7 +699,21 @@ def test_valid_timestamp_on_any_preceding_frame_is_used_as_dispatch(tmp_path: Pa
     assert calls[0]["end_ts"] == response_ts
 
 
-@pytest.mark.parametrize("bad_ts", [12345, "not-a-timestamp", "", None, {"at": "now"}])
+@pytest.mark.parametrize(
+    "bad_ts",
+    [
+        12345,
+        "not-a-timestamp",
+        "",
+        None,
+        {"at": "now"},
+        # `datetime.fromisoformat` takes all of these, but a date without a
+        # time of day is not a timestamp and must not become a span bound.
+        "2026-08-22",
+        "2026-08-22T10",
+        "20260822T100000",
+    ],
+)
 def test_malformed_timestamp_does_not_replace_previous_frame_timestamp(
     tmp_path: Path, bad_ts: object
 ) -> None:
@@ -718,12 +734,13 @@ def test_malformed_timestamp_does_not_replace_previous_frame_timestamp(
     assert calls[0]["end_ts"] == response_ts
 
 
-def test_malformed_initial_prev_ts_is_ignored(tmp_path: Path) -> None:
+@pytest.mark.parametrize("bad_seed", ["whenever", "2026-08-22", "2026-08-22T10"])
+def test_malformed_initial_prev_ts_is_ignored(tmp_path: Path, bad_seed: str) -> None:
     transcript = tmp_path / "bad-seed.jsonl"
     response_ts = "2026-08-22T10:00:02.000Z"
     _write_transcript(transcript, _assistant_frame("msg_bad_seed", response_ts))
 
-    calls, _ = extract_calls_from_transcript(str(transcript), 0, initial_prev_ts="whenever")
+    calls, _ = extract_calls_from_transcript(str(transcript), 0, initial_prev_ts=bad_seed)
 
     assert len(calls) == 1
     assert calls[0]["start_ts"] == response_ts
@@ -801,6 +818,57 @@ def test_clock_anomaly_with_offsets_collapses_call_to_end_timestamp(tmp_path: Pa
     assert len(calls) == 1
     assert calls[0]["start_ts"] == response_ts
     assert calls[0]["end_ts"] == response_ts
+
+
+def test_naive_timestamps_are_pinned_to_utc(tmp_path: Path) -> None:
+    transcript = tmp_path / "naive-timestamps.jsonl"
+    _write_transcript(
+        transcript,
+        {
+            "type": "user",
+            "timestamp": "2026-08-22T10:00:00.000",
+            "message": {"content": "go"},
+        },
+        _assistant_frame("msg_naive", "2026-08-22T10:00:02.000"),
+    )
+
+    calls, _ = extract_calls_from_transcript(str(transcript), 0)
+
+    assert len(calls) == 1
+    assert calls[0]["start_ts"] == "2026-08-22T10:00:00.000+00:00"
+    assert calls[0]["end_ts"] == "2026-08-22T10:00:02.000+00:00"
+
+
+def test_mixed_naive_and_offset_bounds_stay_ordered_after_export(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A naive bound must mean the same instant here and in the exporter.
+
+    `_ts_to_ns` reads a naive timestamp in the worker's local timezone, so in
+    a zone behind UTC a naive start that this module accepted as earlier than
+    an offset-aware end used to export as later than it — a backwards span.
+    """
+    transcript = tmp_path / "mixed-timestamps.jsonl"
+    _write_transcript(
+        transcript,
+        {
+            "type": "user",
+            "timestamp": "2026-08-22T10:00:00.000",
+            "message": {"content": "go"},
+        },
+        _assistant_frame("msg_mixed", "2026-08-22T12:00:00.000+00:00"),
+    )
+
+    calls, _ = extract_calls_from_transcript(str(transcript), 0)
+
+    assert len(calls) == 1
+    monkeypatch.setenv("TZ", "America/New_York")
+    time.tzset()
+    try:
+        assert _ts_to_ns(calls[0]["start_ts"]) < _ts_to_ns(calls[0]["end_ts"])
+    finally:
+        monkeypatch.undo()
+        time.tzset()
 
 
 class TestMapContentBlock:
