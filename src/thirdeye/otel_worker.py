@@ -1,7 +1,7 @@
 """Detached worker process for `thirdeye.otel_export`.
 
-`otel_export.export_turn` writes a small job file describing one completed
-turn (tagged ``"kind": "turn"``) and spawns this module
+`otel_export.export_turn` and `otel_export.export_spans` write small job files
+describing completed turns or live span batches and spawn this module
 (``python -m thirdeye.otel_worker <job_path>``) as a detached, unwaited-for
 child. All the actual Logfire work — configuring the SDK, building the turn's
 whole span subtree, and flushing (a real network round trip) — happens here,
@@ -46,6 +46,18 @@ def main(argv: list[str] | None = None) -> None:
                 platform=payload["platform"],
                 cwd=payload["cwd"],
                 turn=payload["turn"],
+            )
+        elif payload.get("kind") == "spans":
+            from thirdeye.otel_export import _export_spans_batch
+
+            _export_spans_batch(
+                config=config,
+                session_dir_=Path(payload["session_dir"]),
+                session_id=payload["session_id"],
+                platform=payload["platform"],
+                cwd=payload["cwd"],
+                trace_id=payload["trace_id"],
+                spans=payload["spans"],
             )
     except Exception:
         pass

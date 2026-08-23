@@ -544,6 +544,54 @@ def export_turn(
         )
 
 
+def export_spans(
+    config: Config,
+    session_dir_: Path,
+    session_id: str,
+    platform: str,
+    cwd: str,
+    trace_id: int,
+    spans: list[dict[str, Any]],
+) -> None:
+    """Hand already-built spans off for background export.
+
+    IDs are serialized as decimal strings so their full unsigned 64-/128-bit
+    values survive the JSON boundary without relying on a consumer's numeric
+    precision. As with :func:`export_turn`, this function only performs local
+    file/process work and never lets a capture failure reach its caller.
+    """
+    if not config.logfire.enabled or not config.logfire.token:
+        return
+    try:
+        serialized_spans = []
+        for span in spans:
+            serialized = dict(span)
+            serialized["span_id"] = str(int(span["span_id"]))
+            serialized["parent_span_id"] = str(int(span["parent_span_id"]))
+            serialized_spans.append(serialized)
+        job_path = _write_job(
+            config.root,
+            {
+                "kind": "spans",
+                "session_dir": str(session_dir_),
+                "session_id": session_id,
+                "platform": platform,
+                "cwd": cwd,
+                "trace_id": str(int(trace_id)),
+                "spans": serialized_spans,
+            },
+        )
+        _spawn(job_path)
+    except Exception as exc:
+        log_capture_error(
+            thirdeye_home=config.root,
+            phase="logfire_spans_export_spawn",
+            error=exc,
+            platform=platform,
+            session_id=session_id,
+        )
+
+
 def _export_turn_inner(
     *,
     config: Config,
@@ -618,6 +666,107 @@ def _export_turn_inner(
     claim_path.write_text("sent")
 
 
+def _chat_attributes(call_or_attributes: dict[str, Any]) -> dict[str, Any]:
+    """Build flattened attributes for a chat span.
+
+    Completed-turn export passes an LLM-call record, while live batch export
+    passes the already-built semantic attributes from its job. Accepting both
+    forms keeps the vocabulary and JSON handling in one place.
+    """
+    if all(
+        key in call_or_attributes
+        for key in ("input_messages", "output_messages", "provider", "usage")
+    ):
+        model = call_or_attributes.get("model") or ""
+        attributes: dict[str, Any] = {
+            "gen_ai.input.messages": call_or_attributes["input_messages"],
+            "gen_ai.output.messages": call_or_attributes["output_messages"],
+            "gen_ai.provider.name": call_or_attributes["provider"],
+            "gen_ai.operation.name": "chat",
+            "gen_ai.response.model": model,
+        }
+        usage = call_or_attributes["usage"]
+        for source, target in _USAGE_KEYS.items():
+            if source in usage:
+                attributes[target] = usage[source]
+    else:
+        attributes = call_or_attributes
+    return _flatten_attrs(attributes)
+
+
+def _tool_attributes(
+    attributes: dict[str, Any],
+    *,
+    session_id: str,
+    platform: str,
+    cwd: str,
+) -> dict[str, Any]:
+    """Enrich and flatten a tool span's raw attributes."""
+    return _flatten_attrs(
+        _merge_raw(
+            attributes,
+            {
+                "gen_ai.conversation.id": session_id,
+                "thirdeye.platform": platform,
+                "thirdeye.cwd": cwd,
+            },
+        )
+    )
+
+
+def _export_spans_batch(
+    *,
+    config: Config,
+    session_dir_: Path,
+    session_id: str,
+    platform: str,
+    cwd: str,
+    trace_id: int | str,
+    spans: list[dict[str, Any]],
+) -> None:
+    """Emit a batch of independently-parented spans and flush exactly once.
+
+    A parent need not be present in this batch. The remote parent context is
+    sufficient for Logfire to reconstruct the tree when the parent arrives.
+    ``session_dir_`` is part of the common job envelope and intentionally
+    unused here; unlike turn export, live spans have no turn-level claim.
+    """
+    del session_dir_
+    instance = _get_instance(config, platform)
+    if instance is None:
+        return
+
+    tracer = instance.config.get_tracer_provider().get_tracer("thirdeye")
+    trace_id_int = int(trace_id)
+    for span_data in spans:
+        name = span_data["name"]
+        raw_attributes = span_data.get("attributes", {})
+        if name == "chat" or name.startswith("chat "):
+            attributes = _chat_attributes(raw_attributes)
+        elif name.startswith("tool:"):
+            attributes = _tool_attributes(
+                raw_attributes,
+                session_id=session_id,
+                platform=platform,
+                cwd=cwd,
+            )
+        else:
+            attributes = _flatten_attrs(raw_attributes)
+        parent_ctx = _parent_context(trace_id_int, int(span_data["parent_span_id"]))
+        span = _start_span_with_id(
+            tracer,
+            name,
+            int(span_data["span_id"]),
+            parent_ctx=parent_ctx,
+            start_time=_ts_to_ns(span_data["start_ts"]),
+            attributes=attributes,
+        )
+        span.end(end_time=_ts_to_ns(span_data["end_ts"]))
+
+    if instance.force_flush(timeout_millis=_FLUSH_TIMEOUT_MS) is False:
+        raise RuntimeError("span batch was not flushed")
+
+
 def _export_turn_subtree(
     tracer: Any,
     parent_ctx: Any,
@@ -661,39 +810,28 @@ def _export_turn_subtree(
 
     for llm_call in turn["llm_calls"]:
         model = llm_call.get("model") or ""
-        call_attrs: dict[str, Any] = {
-            "gen_ai.input.messages": llm_call["input_messages"],
-            "gen_ai.output.messages": llm_call["output_messages"],
-            "gen_ai.provider.name": llm_call["provider"],
-            "gen_ai.operation.name": "chat",
-            "gen_ai.response.model": model,
-        }
-        usage = llm_call["usage"]
-        for source, target in _USAGE_KEYS.items():
-            if source in usage:
-                call_attrs[target] = usage[source]
-
         call_span = tracer.start_span(
             f"chat {model}" if model else "chat",
             context=turn_parent_ctx,
             start_time=_ts_to_ns(llm_call["start_ts"]),
-            attributes=_flatten_attrs(call_attrs),
+            attributes=_chat_attributes(llm_call),
         )
         call_span.end(end_time=_ts_to_ns(llm_call["end_ts"]))
         call_ctx = call_span.get_span_context()
         call_parent_ctx = _parent_context(call_ctx.trace_id, call_ctx.span_id)
 
         for tool_call in llm_call["tool_calls"]:
-            tool_attrs = _flatten_attrs(tool_call["attributes"])
-            tool_attrs["gen_ai.conversation.id"] = session_id
-            tool_attrs["thirdeye.platform"] = platform
-            tool_attrs["thirdeye.cwd"] = cwd
             tool_span = tracer.start_span(
                 f"tool: {tool_call['name']}",
                 context=call_parent_ctx,
                 kind=SpanKind.INTERNAL,
                 start_time=_ts_to_ns(tool_call["start_ts"]),
-                attributes=tool_attrs,
+                attributes=_tool_attributes(
+                    tool_call["attributes"],
+                    session_id=session_id,
+                    platform=platform,
+                    cwd=cwd,
+                ),
             )
             tool_span.end(end_time=_ts_to_ns(tool_call["end_ts"]))
 
