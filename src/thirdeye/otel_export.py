@@ -69,7 +69,12 @@ from typing import Any
 from thirdeye.config import Config
 from thirdeye.ids import new_ulid
 from thirdeye.paths import otel_jobs_dir, otel_state_path
-from thirdeye.span_ids import root_span_id_for_session, trace_id_for_session
+from thirdeye.span_ids import (
+    chat_span_id,
+    root_span_id_for_session,
+    tool_span_id,
+    trace_id_for_session,
+)
 from thirdeye.tracing.model import TurnSpanDict
 from thirdeye.usage.errlog import log_capture_error
 
@@ -231,6 +236,7 @@ def _start_span_with_id(
     start_time: int | None = None,
     attributes: dict[str, Any] | None = None,
     trace_id: int | None = None,
+    kind: Any = None,
 ) -> Any:
     """Start a span carrying a span id we chose rather than one the SDK minted.
 
@@ -242,12 +248,14 @@ def _start_span_with_id(
     generator = _id_generator()
     generator.next_span_id = span_id
     generator.next_trace_id = trace_id
-    return tracer.start_span(
-        name,
-        context=parent_ctx,
-        start_time=start_time,
-        attributes=attributes,
-    )
+    kwargs = {
+        "context": parent_ctx,
+        "start_time": start_time,
+        "attributes": attributes,
+    }
+    if kind is not None:
+        kwargs["kind"] = kind
+    return tracer.start_span(name, **kwargs)
 
 
 def _get_instance(config: Config, platform: str):
@@ -800,21 +808,34 @@ def _export_turn_subtree(
     if turn["output_message"]:
         turn_attrs["gen_ai.output.messages"] = _message("assistant", turn["output_message"])
 
-    turn_span = tracer.start_span(
-        span_name,
-        context=parent_ctx,
-        start_time=_ts_to_ns(turn["start_ts"]),
-        attributes=_flatten_attrs(_merge_raw(turn_attrs, turn.get("attributes"))),
-    )
+    turn_id = turn.get("turn_span_id")
+    if turn_id is None:
+        turn_span = tracer.start_span(
+            span_name,
+            context=parent_ctx,
+            start_time=_ts_to_ns(turn["start_ts"]),
+            attributes=_flatten_attrs(_merge_raw(turn_attrs, turn.get("attributes"))),
+        )
+    else:
+        turn_span = _start_span_with_id(
+            tracer,
+            span_name,
+            int(turn_id),
+            parent_ctx=parent_ctx,
+            start_time=_ts_to_ns(turn["start_ts"]),
+            attributes=_flatten_attrs(_merge_raw(turn_attrs, turn.get("attributes"))),
+        )
     turn_span.end(end_time=_ts_to_ns(turn["end_ts"]))
     turn_ctx = turn_span.get_span_context()
     turn_parent_ctx = _parent_context(turn_ctx.trace_id, turn_ctx.span_id)
 
     for llm_call in turn["llm_calls"]:
         model = llm_call.get("model") or ""
-        call_span = tracer.start_span(
+        call_span = _start_span_with_id(
+            tracer,
             f"chat {model}" if model else "chat",
-            context=turn_parent_ctx,
+            chat_span_id(session_id, llm_call["call_id"]),
+            parent_ctx=turn_parent_ctx,
             start_time=_ts_to_ns(llm_call["start_ts"]),
             attributes=_chat_attributes(llm_call),
         )
@@ -823,9 +844,11 @@ def _export_turn_subtree(
         call_parent_ctx = _parent_context(call_ctx.trace_id, call_ctx.span_id)
 
         for tool_call in llm_call["tool_calls"]:
-            tool_span = tracer.start_span(
+            tool_span = _start_span_with_id(
+                tracer,
                 f"tool: {tool_call['name']}",
-                context=call_parent_ctx,
+                tool_span_id(session_id, tool_call["tool_call_id"]),
+                parent_ctx=call_parent_ctx,
                 kind=SpanKind.INTERNAL,
                 start_time=_ts_to_ns(tool_call["start_ts"]),
                 attributes=_tool_attributes(

@@ -235,6 +235,34 @@ class TestLiveSpanJob:
         assert after["transcript_offset"] == before["transcript_offset"]
         assert after["last_frame_ts"] == before["last_frame_ts"]
 
+    def test_raising_job_write_does_not_advance_cursor(
+        self, monkeypatch: pytest.MonkeyPatch, config: Config, tmp_path: Path
+    ) -> None:
+        session_id = "raising-export-cursor"
+        transcript = tmp_path / "transcript.jsonl"
+        session_dir_ = _start_turn(monkeypatch, config, transcript, session_id=session_id)
+        before = hooks._read_open_turn(session_dir_)
+        assert before is not None
+        _append_frames(
+            transcript,
+            _assistant_frame("msg-raise", "2026-08-22T10:00:01.000Z", "tool-raise"),
+            _user_tool_results("2026-08-22T10:00:02.000Z", "tool-raise"),
+        )
+        _append_tool_pair(config, session_id, "tool-raise")
+        monkeypatch.setattr(
+            live_spans,
+            "export_spans",
+            lambda *args, **kwargs: (_ for _ in ()).throw(OSError("job write failed")),
+        )
+
+        with pytest.raises(OSError, match="job write failed"):
+            live_spans.emit_live_spans(config, session_dir_, session_id, "/project", "tool-raise")
+
+        after = hooks._read_open_turn(session_dir_)
+        assert after is not None
+        assert after["transcript_offset"] == before["transcript_offset"]
+        assert after["last_frame_ts"] == before["last_frame_ts"]
+
     def test_stale_turn_rejection_is_quiet_and_preserves_marker(
         self, monkeypatch: pytest.MonkeyPatch, config: Config, tmp_path: Path
     ) -> None:

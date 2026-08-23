@@ -8,7 +8,13 @@ import pytest
 
 from thirdeye import otel_export
 from thirdeye.config import Config, LogfireSettings
-from thirdeye.span_ids import root_span_id_for_session, trace_id_for_session
+from thirdeye.span_ids import (
+    chat_span_id,
+    root_span_id_for_session,
+    tool_span_id,
+    trace_id_for_session,
+    turn_span_id,
+)
 
 pytest.importorskip("logfire")
 
@@ -288,7 +294,9 @@ class TestPreallocatedIdGenerator:
     def test_slot_clears_after_one_use(self, wired_instance):
         tracer = self._tracer(wired_instance)
         chosen = 0x0123456789ABCDEF
-        first = otel_export._start_span_with_id(tracer, "first", chosen, start_time=1, attributes={})
+        first = otel_export._start_span_with_id(
+            tracer, "first", chosen, start_time=1, attributes={}
+        )
         first.end(end_time=2)
         second = tracer.start_span("second", start_time=3)
         second.end(end_time=4)
@@ -734,6 +742,47 @@ class TestExportTurnInner:
         assert turn_span["attributes"]["thirdeye.turn.status"] == "completed"
         assert turn_span["attributes"]["thirdeye.turn.id"] == "turn_1"
 
+    def test_live_chat_parent_matches_completed_turn_span_id(
+        self, tmp_path: Path, enabled_config: Config, wired_instance, exporter
+    ):
+        session_id = "live-parent-session"
+        expected_turn_id = turn_span_id(session_id, 1)
+        live_chat_id = chat_span_id(session_id, "call_live")
+        session_dir = tmp_path / "traces" / "claude" / session_id
+
+        otel_export._export_spans_batch(
+            config=enabled_config,
+            session_dir_=session_dir,
+            session_id=session_id,
+            platform="claude",
+            cwd="/proj",
+            trace_id=trace_id_for_session(session_id),
+            spans=[
+                {
+                    "name": "chat claude-sonnet-5",
+                    "span_id": str(live_chat_id),
+                    "parent_span_id": str(expected_turn_id),
+                    "start_ts": "2026-01-01T00:00:01.000Z",
+                    "end_ts": "2026-01-01T00:00:02.000Z",
+                    "attributes": _llm_call(call_id="call_live"),
+                }
+            ],
+        )
+        otel_export._export_turn_inner(
+            config=enabled_config,
+            session_dir_=session_dir,
+            session_id=session_id,
+            platform="claude",
+            cwd="/proj",
+            turn=_turn(turn_span_id=str(expected_turn_id)),
+        )
+
+        spans = exporter.exported_spans_as_dict()
+        live_chat = next(span for span in spans if span["context"]["span_id"] == live_chat_id)
+        completed_turn = next(span for span in spans if span["name"] == "agent-turn")
+        assert live_chat["parent"]["span_id"] == completed_turn["context"]["span_id"]
+        assert completed_turn["context"]["span_id"] == expected_turn_id
+
     def test_turn_with_messages_carries_them(
         self, tmp_path: Path, enabled_config: Config, wired_instance, exporter
     ):
@@ -894,6 +943,8 @@ class TestExportTurnInner:
         assert turn_span["name"] == "agent-turn"
         assert chat_span["name"] == "chat claude-sonnet-5"
         assert tool_span["name"] == "tool: Bash"
+        assert chat_span["context"]["span_id"] == chat_span_id("s1", "call_1")
+        assert tool_span["context"]["span_id"] == tool_span_id("s1", "tu_1")
         assert chat_span["parent"]["span_id"] == turn_span["context"]["span_id"]
         assert tool_span["parent"]["span_id"] == chat_span["context"]["span_id"]
         assert chat_span["attributes"]["gen_ai.usage.input_tokens"] == 100
