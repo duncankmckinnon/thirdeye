@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import threading
 from dataclasses import asdict
 from pathlib import Path
 
@@ -114,6 +115,43 @@ class TestAtomicWrite:
         got = read_meta(p)
         assert got.status == "closed"
         assert got.ended_at == "2026-04-30T18:00:00.000Z"
+
+
+# -- Concurrent writers ----------------------------------------------------------
+
+
+class TestConcurrentWrites:
+    def test_concurrent_writers_do_not_crash(self, tmp_path: Path):
+        """Multiple hook processes for the same session (e.g. concurrent
+        subagents) call write_meta for the same path at once. The tmp file
+        must be unique per write attempt, or one writer's `os.replace` can
+        consume the tmp file another writer is still using, raising
+        FileNotFoundError and crashing that writer's hook process entirely --
+        silently dropping whatever event it was recording.
+        """
+        p = tmp_path / "meta.yaml"
+        write_meta(p, _sample())
+
+        errors: list[str] = []
+        errors_lock = threading.Lock()
+
+        def worker(tag: str) -> None:
+            for i in range(200):
+                try:
+                    write_meta(p, _sample(event_count=i, last_seq=i - 1, extra={"w": tag}))
+                except Exception as e:
+                    with errors_lock:
+                        errors.append(f"{tag}: {type(e).__name__}: {e}")
+                    return
+
+        threads = [threading.Thread(target=worker, args=(tag,)) for tag in "ABCD"]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
+
+        assert errors == []
+        assert read_meta(p) is not None
 
 
 # -- read_meta edge cases ------------------------------------------------------
