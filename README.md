@@ -178,7 +178,7 @@ so you can filter them with `thirdeye list --tag thirdeye-agent`.
 
 ## Agent skills
 
-Four bundled skills are injected into every `thirdeye agent` run by default:
+Five bundled skills are injected into every `thirdeye agent` run by default:
 
 - **`use-thirdeye`** — basic CLI fluency: enable tracing, search sessions,
   debug tool calls, analyze token usage.
@@ -191,6 +191,9 @@ Four bundled skills are injected into every `thirdeye agent` run by default:
 - **`thirdeye-filter`** — directive used by the browser UI's Ask panel
   to translate natural-language queries into filter JSON. Installed
   alongside the others; not invoked directly by agents.
+- **`setup-logfire`** — enable, verify, disable, and troubleshoot thirdeye's
+  live Pydantic Logfire export and connect its hosted MCP server to Claude
+  Code or Codex without exposing credentials.
 
 Pass `--skill path/to/skill.md` to inject additional skills from local files
 alongside the defaults. Run `thirdeye agent --skills` to see the built-in list.

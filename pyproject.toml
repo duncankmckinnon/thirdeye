@@ -81,6 +81,8 @@ thirdeye = [
     "skills/thirdeye-filter/SKILL.md",
     "skills/thirdeye-review/SKILL.md",
     "skills/thirdeye-review/references/*.md",
+    "skills/setup-logfire/SKILL.md",
+    "skills/setup-logfire/references/*.md",
     "eval/defs/*.yaml",
     "web/templates/*.html",
     "web/templates/**/*.html",

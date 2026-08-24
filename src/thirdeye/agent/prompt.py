@@ -8,7 +8,7 @@ from pathlib import Path
 _FRONTMATTER_RE = re.compile(r"\A---\r?\n.*?\r?\n---\r?\n", re.DOTALL)
 
 VALID_SKILLS: frozenset[str] = frozenset(
-    ["use-thirdeye", "thirdeye-review", "thirdeye-evals", "thirdeye-filter"]
+    ["use-thirdeye", "thirdeye-review", "thirdeye-evals", "thirdeye-filter", "setup-logfire"]
 )
 DEFAULT_SKILLS: list[str] = sorted(VALID_SKILLS)
 
