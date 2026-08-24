@@ -191,9 +191,18 @@ class TestLiveSpanJob:
         assert marker is not None
         assert marker["transcript_offset"] == transcript.stat().st_size
 
-    def test_parent_chat_already_emitted_is_still_found_in_transcript(
+    def test_sibling_tool_in_same_group_is_swept_eagerly(
         self, monkeypatch: pytest.MonkeyPatch, config: Config, tmp_path: Path
     ) -> None:
+        """A parallel tool-dispatch message can fragment across multiple
+        transcript lines sharing one call_id, and each tool's own
+        PostToolUse fires independently. Whichever hook call is the one
+        that commits that call_id as a fresh chat span is this group's
+        only chance to also resolve any sibling tool_use_id it can find a
+        local pair for -- the transcript cursor never revisits bytes once
+        advanced past them, so tool-2's own (separate, later) hook call is
+        not guaranteed to still see this group as fresh.
+        """
         session_id = "prior-parent"
         transcript = tmp_path / "transcript.jsonl"
         session_dir_ = _start_turn(monkeypatch, config, transcript, session_id=session_id)
@@ -205,19 +214,26 @@ class TestLiveSpanJob:
         _append_tool_pair(config, session_id, "tool-1")
         _append_tool_pair(config, session_id, "tool-2")
 
+        # Only tool-1's own hook ever runs live for tool-2 to depend on.
         live_spans.emit_live_spans(config, session_dir_, session_id, "/project", "tool-1")
-        live_spans.emit_live_spans(config, session_dir_, session_id, "/project", "tool-2")
 
-        tool_2_span_id = str(tool_span_id(session_id, "tool-2"))
-        second_job = next(
-            job
-            for job in _jobs(config)
-            if any(span["span_id"] == tool_2_span_id for span in job["spans"])
-        )
-        assert [span["name"] for span in second_job["spans"]] == ["tool: Read"]
-        assert second_job["spans"][0]["parent_span_id"] == str(
-            chat_span_id(session_id, "msg-parallel")
-        )
+        jobs = _jobs(config)
+        assert len(jobs) == 1
+        span_names = sorted(span["name"] for span in jobs[0]["spans"])
+        assert span_names == ["chat claude-sonnet-5", "tool: Read", "tool: Read"]
+        by_id = {span["span_id"]: span for span in jobs[0]["spans"]}
+        tool_1_span = by_id[str(tool_span_id(session_id, "tool-1"))]
+        tool_2_span = by_id[str(tool_span_id(session_id, "tool-2"))]
+        assert tool_1_span["parent_span_id"] == str(chat_span_id(session_id, "msg-parallel"))
+        assert tool_2_span["parent_span_id"] == str(chat_span_id(session_id, "msg-parallel"))
+
+        marker = hooks._read_open_turn(session_dir_)
+        assert marker is not None
+        assert set(marker["committed_tool_use_ids"]) == {"tool-1", "tool-2"}
+
+        # tool-2's own later hook call now has nothing new to do.
+        live_spans.emit_live_spans(config, session_dir_, session_id, "/project", "tool-2")
+        assert len(_jobs(config)) == 1
 
     def test_tool_span_not_reexported_when_hook_fires_twice_for_same_tool_use_id(
         self, monkeypatch: pytest.MonkeyPatch, config: Config, tmp_path: Path
