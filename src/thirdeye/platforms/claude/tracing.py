@@ -30,6 +30,11 @@ _TOOL_AND_PERMISSION_TYPES = frozenset(
     {"tool_call", "tool_result", "permission_request", "permission_denied"}
 )
 _READ_MARKER = object()
+# The subagent-dispatch tool is named "Task" by the Claude Code CLI and
+# "Agent" by this SDK/VSCode-harness surface; both are observed in the wild,
+# so both must be recognized or Task-to-SubagentStart correlation silently
+# never matches on the latter.
+_SUBAGENT_DISPATCH_TOOL_NAMES = frozenset({"Task", "Agent"})
 
 
 def _unmatched_user_message(session_dir_: Path, stop_seq: int) -> dict[str, Any] | None:
@@ -136,7 +141,7 @@ def _subagent_windows(events: list[dict[str, Any]]) -> list[dict[str, Any]]:
     windows: list[dict[str, Any]] = []
     for ev in events:
         data = ev.get("data") or {}
-        if ev.get("t") == "tool_call" and data.get("tool_name") == "Task":
+        if ev.get("t") == "tool_call" and data.get("tool_name") in _SUBAGENT_DISPATCH_TOOL_NAMES:
             pending_tasks.append(ev)
             continue
         agent_id = data.get("agent_id")
@@ -165,12 +170,18 @@ def _subagent_windows(events: list[dict[str, Any]]) -> list[dict[str, Any]]:
     return windows
 
 
-def _owning_agent(seq: int, windows: list[dict[str, Any]]) -> str | None:
-    # Claude Code doesn't tag a subagent's own tool/permission hook events
-    # with its agent_id, so the smallest seq-range window containing the
-    # event is the best available proxy. This is exact for sequential or
-    # properly-nested subagents; genuinely interleaved concurrent subagents
-    # sharing overlapping windows can still be misattributed to a sibling.
+def _owning_agent(ev: dict[str, Any], windows: list[dict[str, Any]]) -> str | None:
+    # Newer Claude Code builds tag a subagent's own tool/permission hook
+    # events with its agent_id directly -- ground truth, and exact even for
+    # genuinely interleaved concurrent subagents. Older builds don't, so the
+    # smallest seq-range window containing the event remains the fallback
+    # proxy for those (exact for sequential or properly-nested subagents;
+    # interleaved concurrent ones sharing overlapping windows can still be
+    # misattributed to a sibling).
+    tagged = (ev.get("data") or {}).get("agent_id")
+    if tagged:
+        return str(tagged)
+    seq = int(ev["seq"])
     owner = None
     owner_width = None
     for w in windows:
@@ -189,8 +200,8 @@ def _partition_events(
     for ev in events:
         if ev.get("t") not in _TOOL_AND_PERMISSION_TYPES:
             continue
-        owner = _owning_agent(int(ev["seq"]), windows)
-        if owner is None:
+        owner = _owning_agent(ev, windows)
+        if owner is None or owner not in owned:
             top_level.append(ev)
         else:
             owned[owner].append(ev)
@@ -234,6 +245,66 @@ def _build_subagent_turn(
         "subagents": [],
         "attributes": {k: v for k, v in start_data.items() if k != "agent_id"},
     }
+
+
+def _already_exported_as_subagent(session_dir_: Path, turn_id: str) -> bool:
+    """Whether `resolve_subagent_export`'s own export already claimed this
+    subagent turn. Read-only: a stale/pending claim doesn't count here, only
+    a confirmed send does, so a failed independent export still falls back
+    to being embedded by the caller below."""
+    from thirdeye.otel_export import _turn_claim_path
+
+    try:
+        return _turn_claim_path(session_dir_, f"subagent:{turn_id}").read_text() == "sent"
+    except OSError:
+        return False
+
+
+def resolve_subagent_export(
+    session_dir_: Path, session_id: str, stop_ev: dict[str, Any]
+) -> tuple[TurnSpanDict, str] | None:
+    """Build a just-finished subagent's own turn plus the tool_use_id that
+    dispatched it, or ``None`` if either can't be resolved.
+
+    A subagent can run in the background well past its dispatching turn's
+    own Stop -- in one observed session by well over two minutes, with the
+    subagent's own tool calls still landing in the same session log long
+    after that turn's `[turn_seq, stop_seq)` window had already closed and
+    exported without it. `build_turn`'s per-turn window can't see any of
+    that; this searches the whole session instead, so SubagentStart/Stop and
+    the tool calls between them are found regardless of which turn (if any)
+    happens to be open when SubagentStop actually fires.
+    """
+    data = stop_ev.get("data") or {}
+    agent_id = data.get("agent_id")
+    if not agent_id:
+        return None
+    agent_id = str(agent_id)
+    stop_seq = int(stop_ev["seq"])
+
+    events = list(
+        SessionReader(session_dir_).iter_events(
+            types=_CORRELATED_TYPES, seq_range=(0, stop_seq + 1)
+        )
+    )
+    windows = _subagent_windows(events)
+    window = next((w for w in windows if w["agent_id"] == agent_id), None)
+    if window is None or window["task_ev"] is None:
+        return None
+    tool_use_id = (window["task_ev"].get("data") or {}).get("tool_use_id")
+    if not tool_use_id:
+        return None
+
+    owned = [ev for ev in events if _owning_agent(ev, windows) == agent_id]
+    turn = _build_subagent_turn(
+        window["start_ev"],
+        window["stop_ev"],
+        _pair_tool_calls(owned),
+        _pair_permission_events(owned),
+        window["task_ev"],
+        session_id=session_id,
+    )
+    return turn, str(tool_use_id)
 
 
 def build_turn(
@@ -289,6 +360,13 @@ def build_turn(
     windows = _subagent_windows(events)
     top_level_events, owned = _partition_events(events, windows)
 
+    # A subagent whose SubagentStop already fired was independently exported
+    # from `hooks.subagent_stop` via `resolve_subagent_export`, nested under
+    # its dispatching tool span rather than this turn -- embedding it here
+    # too would export it twice. This only ever matters for a subagent that
+    # both started and stopped inside this turn's own window; one still
+    # running when this turn's Stop fires was never a candidate for this list
+    # in the first place (its SubagentStop event doesn't exist yet).
     subagents = [
         _build_subagent_turn(
             w["start_ev"],
@@ -299,6 +377,7 @@ def build_turn(
             session_id=session_id,
         )
         for w in windows
+        if not _already_exported_as_subagent(session_dir_, str(w["start_ev"]["seq"]))
     ]
 
     tool_calls = _pair_tool_calls(top_level_events)

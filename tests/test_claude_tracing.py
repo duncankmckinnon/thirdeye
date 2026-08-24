@@ -360,7 +360,10 @@ class TestBuildTurn:
         assert exported[0]["input_message"] == "current"
         assert exported[0]["llm_calls"] == []
 
-    def test_full_turn_assembly(self, monkeypatch, env: Path, tmp_path: Path):
+    @pytest.mark.parametrize("spawn_tool_name", ["Task", "Agent"])
+    def test_full_turn_assembly(
+        self, monkeypatch, env: Path, tmp_path: Path, spawn_tool_name: str
+    ):
         sid = "s1"
         main_transcript = tmp_path / "main.jsonl"
         sub_transcript = tmp_path / "sub.jsonl"
@@ -440,7 +443,7 @@ class TestBuildTurn:
             {
                 "session_id": sid,
                 "cwd": "/p",
-                "tool_name": "Task",
+                "tool_name": spawn_tool_name,
                 "tool_use_id": "tu_task1",
                 "tool_input": {"description": "explore", "prompt": "explore code"},
             },
@@ -470,7 +473,7 @@ class TestBuildTurn:
             {
                 "session_id": sid,
                 "cwd": "/p",
-                "tool_name": "Task",
+                "tool_name": spawn_tool_name,
                 "tool_use_id": "tu_task1",
                 "tool_response": "found stuff",
             },
@@ -568,6 +571,199 @@ class TestBuildTurn:
         assert turn["llm_calls"] == []
         assert turn["permission_requests"] == []
         assert turn["subagents"] == []
+
+
+# -- async subagent export (resolve_subagent_export) ----------------------------
+
+
+class TestAsyncSubagentExport:
+    """A subagent dispatched via the "Agent" tool can keep running well past
+    its dispatching turn's own Stop -- confirmed against a real session where
+    the subagent's own tool calls kept landing in the session log for over
+    two minutes after the parent turn had already closed and exported without
+    it. `build_turn`'s per-turn `[turn_seq, stop_seq)` window can't see any of
+    that; `resolve_subagent_export` searches the whole session instead, so it
+    still finds the subagent's start event and dispatching tool call
+    regardless of which (if any) turn is open by the time SubagentStop fires.
+    """
+
+    def test_resolves_subagent_that_outlives_its_dispatching_turn(
+        self, monkeypatch, env: Path, tmp_path: Path
+    ):
+        sid = "s1"
+        main_transcript = tmp_path / "main.jsonl"
+        sub_transcript = tmp_path / "sub.jsonl"
+        sub_transcript.write_text(
+            _user_frame("explore code")
+            + "\n"
+            + _assistant_frame(
+                "sub_msg_1",
+                [
+                    {
+                        "type": "tool_use",
+                        "id": "tu_sub_1",
+                        "name": "Bash",
+                        "input": {"command": "grep -r foo"},
+                    }
+                ],
+                ts="2026-01-01T00:00:20.000Z",
+            )
+            + "\n"
+            + _user_frame(
+                [{"type": "tool_result", "tool_use_id": "tu_sub_1", "content": "found it"}]
+            )
+            + "\n"
+            + _assistant_frame(
+                "sub_msg_2",
+                [{"type": "text", "text": "found stuff"}],
+                ts="2026-01-01T00:00:21.000Z",
+            )
+            + "\n"
+        )
+        main_transcript.write_text(
+            _assistant_frame("msg_1", [{"type": "text", "text": "on it"}]) + "\n"
+        )
+
+        _stdin(monkeypatch, {"session_id": sid, "cwd": "/p"})
+        hooks.session_start()
+
+        _stdin(
+            monkeypatch,
+            {
+                "session_id": sid,
+                "cwd": "/p",
+                "prompt": "go explore",
+                "transcript_path": str(main_transcript),
+            },
+        )
+        hooks.user_prompt_submit()
+
+        # Dispatch via the "Agent" tool, not "Task" -- this SDK/VSCode
+        # harness surface names the subagent-dispatch tool "Agent".
+        _stdin(
+            monkeypatch,
+            {
+                "session_id": sid,
+                "cwd": "/p",
+                "tool_name": "Agent",
+                "tool_use_id": "tu_agent1",
+                "tool_input": {"description": "explore", "prompt": "explore code"},
+            },
+        )
+        hooks.pre_tool_use()
+        _stdin(
+            monkeypatch,
+            {
+                "session_id": sid,
+                "cwd": "/p",
+                "tool_name": "Agent",
+                "tool_use_id": "tu_agent1",
+                "tool_response": "launched",
+            },
+        )
+        hooks.post_tool_use()
+
+        _stdin(
+            monkeypatch,
+            {"session_id": sid, "cwd": "/p", "agent_id": "agent_1", "agent_type": "Explore"},
+        )
+        hooks.subagent_start()
+
+        # The dispatching turn's own Stop fires -- and closes the marker --
+        # before the subagent has done any of its own work.
+        _stdin(
+            monkeypatch,
+            {
+                "session_id": sid,
+                "cwd": "/p",
+                "transcript_path": str(main_transcript),
+                "response": "on it",
+            },
+        )
+        hooks.stop()
+
+        sd = session_dir(env, "claude", sid)
+        assert not hooks._open_turn_path(sd).exists()
+
+        # The subagent's own tool call, tagged with its agent_id the way this
+        # environment actually tags it -- landing well after the turn above
+        # already closed and exported without it.
+        _stdin(
+            monkeypatch,
+            {
+                "session_id": sid,
+                "cwd": "/p",
+                "tool_name": "Bash",
+                "tool_use_id": "tu_sub_1",
+                "tool_input": {"command": "grep -r foo"},
+                "agent_id": "agent_1",
+                "agent_type": "Explore",
+            },
+        )
+        hooks.pre_tool_use()
+        _stdin(
+            monkeypatch,
+            {
+                "session_id": sid,
+                "cwd": "/p",
+                "tool_name": "Bash",
+                "tool_use_id": "tu_sub_1",
+                "tool_response": "found it",
+                "agent_id": "agent_1",
+                "agent_type": "Explore",
+            },
+        )
+        hooks.post_tool_use()
+
+        exported = []
+        monkeypatch.setattr(
+            "thirdeye.otel_export.export_subagent_turn",
+            lambda config, sd_, sid_, platform, cwd, turn, tool_use_id: exported.append(
+                (turn, tool_use_id)
+            ),
+        )
+
+        _stdin(
+            monkeypatch,
+            {
+                "session_id": sid,
+                "cwd": "/p",
+                "agent_id": "agent_1",
+                "agent_transcript_path": str(sub_transcript),
+                "last_assistant_message": "found stuff",
+            },
+        )
+        hooks.subagent_stop()
+
+        assert len(exported) == 1
+        turn, tool_use_id = exported[0]
+        # Correlated back to the dispatching "Agent" tool call despite it
+        # belonging to an already-closed turn -- this is what "Task"-only
+        # matching, and a per-turn window, both fail to do.
+        assert tool_use_id == "tu_agent1"
+        assert turn["input_message"] == "explore code"
+        assert turn["output_message"] == "found stuff"
+        assert turn["status"] == "completed"
+        assert len(turn["llm_calls"]) == 2
+        assert turn["llm_calls"][0]["tool_calls"][0]["tool_call_id"] == "tu_sub_1"
+
+    def test_returns_none_without_a_matching_subagent_start(self, env: Path):
+        sid = "s1"
+        from thirdeye.reader import SessionReader
+
+        sd = session_dir(env, "claude", sid)
+        Store(Config.load()).append_event(
+            session_id=sid, platform="claude", cwd="/p", t="session_start", data={}
+        )
+        seq = Store(Config.load()).append_event(
+            session_id=sid,
+            platform="claude",
+            cwd="/p",
+            t="subagent_message",
+            data={"agent_id": "ghost", "last_assistant_message": "?"},
+        )
+        stop_ev = SessionReader(sd).get_event(seq)
+        assert tracing.resolve_subagent_export(sd, sid, stop_ev) is None
 
 
 # -- interruption handling (_close_stale_turn_if_open) ---------------------------
