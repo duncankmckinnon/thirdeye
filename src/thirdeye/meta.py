@@ -35,9 +35,7 @@ def write_meta(path: Path, meta: SessionMeta) -> None:
     # FileNotFoundError and crashing that writer's hook process outright,
     # losing whatever event it was recording. `mkstemp` guarantees each
     # writer renames only a file it created itself.
-    fd, tmp_name = tempfile.mkstemp(
-        dir=path.parent, prefix=f"{path.name}.", suffix=".tmp"
-    )
+    fd, tmp_name = tempfile.mkstemp(dir=path.parent, prefix=f"{path.name}.", suffix=".tmp")
     try:
         with os.fdopen(fd, "w") as f:
             yaml.safe_dump(payload, f, sort_keys=False)
