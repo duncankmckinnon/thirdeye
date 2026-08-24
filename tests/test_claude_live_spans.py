@@ -308,6 +308,54 @@ class TestLiveSpanJob:
         assert hooks._read_open_turn(session_dir_) == before
         assert len(_jobs(config)) == 1
 
+    def test_stop_does_not_reexport_a_call_already_committed_live(
+        self, monkeypatch: pytest.MonkeyPatch, config: Config, tmp_path: Path
+    ) -> None:
+        """The trailing fragment of a `message.id` split across a `user` frame
+        can arrive after the last PostToolUse, leaving Stop to parse it. Its
+        chat span was already exported live, so Stop must not export it again.
+        """
+        session_id = "stop-committed"
+        transcript = tmp_path / "transcript.jsonl"
+        session_dir_ = _start_turn(monkeypatch, config, transcript, session_id=session_id)
+        _append_frames(
+            transcript,
+            _assistant_frame("msg-split", "2026-08-22T10:00:01.000Z", "tool-a"),
+            _user_tool_results("2026-08-22T10:00:02.000Z", "tool-a"),
+        )
+        _append_tool_pair(config, session_id, "tool-a")
+        live_spans.emit_live_spans(config, session_dir_, session_id, "/project", "tool-a")
+
+        # Same message.id reopening after the user frame, with no further
+        # PostToolUse to consume it.
+        _append_frames(
+            transcript,
+            {
+                "type": "assistant",
+                "timestamp": "2026-08-22T10:00:03.000Z",
+                "message": {
+                    "id": "msg-split",
+                    "model": "claude-sonnet-5",
+                    "usage": {"input_tokens": 10, "output_tokens": 5},
+                    "content": [{"type": "text", "text": "done"}],
+                },
+            },
+        )
+        _stdin(
+            monkeypatch,
+            {
+                "session_id": session_id,
+                "cwd": "/project",
+                "transcript_path": str(transcript),
+                "last_assistant_message": "done",
+            },
+        )
+
+        hooks.stop()
+
+        turn_job = next(job for job in _jobs(config) if job["kind"] == "turn")
+        assert [call["call_id"] for call in turn_job["turn"]["llm_calls"]] == []
+
     def test_stop_exports_only_remaining_final_call_and_completes_turn(
         self, monkeypatch: pytest.MonkeyPatch, config: Config, tmp_path: Path
     ) -> None:
@@ -354,6 +402,66 @@ class TestLiveSpanJob:
         assert [event["t"] for event in SessionReader(session_dir_).iter_events()][-1] == (
             "assistant_message"
         )
+
+    def test_message_split_by_tool_result_emits_one_chat_span(
+        self, monkeypatch: pytest.MonkeyPatch, config: Config, tmp_path: Path
+    ) -> None:
+        """Claude writes a parallel tool batch as separate assistant frames and
+        interleaves each tool_result between them, so one `message.id` arrives
+        either side of a `user` frame. Both fragments describe the same LLM
+        call, so only one chat span may be emitted for it."""
+        session_id = "split-group"
+        transcript = tmp_path / "transcript.jsonl"
+        session_dir_ = _start_turn(monkeypatch, config, transcript, session_id=session_id)
+
+        _append_frames(
+            transcript,
+            _assistant_frame("msg-split", "2026-08-22T10:00:01.000Z", "tool-a"),
+            _user_tool_results("2026-08-22T10:00:02.000Z", "tool-a"),
+        )
+        _append_tool_pair(config, session_id, "tool-a")
+        live_spans.emit_live_spans(config, session_dir_, session_id, "/project", "tool-a")
+
+        _append_frames(
+            transcript,
+            _assistant_frame("msg-split", "2026-08-22T10:00:03.000Z", "tool-b"),
+            _user_tool_results("2026-08-22T10:00:04.000Z", "tool-b"),
+        )
+        _append_tool_pair(config, session_id, "tool-b")
+        live_spans.emit_live_spans(config, session_dir_, session_id, "/project", "tool-b")
+
+        chat_ids = [
+            span["span_id"]
+            for job in _jobs(config)
+            for span in job["spans"]
+            if span["name"].startswith("chat")
+        ]
+        assert chat_ids == [str(chat_span_id(session_id, "msg-split"))]
+
+    def test_live_spans_carry_session_and_turn_identity(
+        self, monkeypatch: pytest.MonkeyPatch, config: Config, tmp_path: Path
+    ) -> None:
+        """A live span's `agent-turn` parent does not exist until Stop, so the
+        span must name its session and turn itself to be attributable."""
+        session_id = "identity"
+        transcript = tmp_path / "transcript.jsonl"
+        session_dir_ = _start_turn(monkeypatch, config, transcript, session_id=session_id)
+        _append_frames(
+            transcript,
+            _assistant_frame("msg-ident", "2026-08-22T10:00:01.000Z", "tool-ident"),
+            _user_tool_results("2026-08-22T10:00:02.000Z", "tool-ident"),
+        )
+        _append_tool_pair(config, session_id, "tool-ident")
+
+        live_spans.emit_live_spans(config, session_dir_, session_id, "/project", "tool-ident")
+
+        marker = hooks._read_open_turn(session_dir_)
+        assert marker is not None
+        job = _jobs(config)[0]
+        assert [span["name"] for span in job["spans"]] == ["chat claude-sonnet-5", "tool: Read"]
+        for span in job["spans"]:
+            assert span["turn_seq"] == marker["turn_seq"]
+            assert span["turn_span_id"] == marker["turn_span_id"]
 
 
 class TestPostToolUseIsolation:

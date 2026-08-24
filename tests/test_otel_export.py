@@ -646,10 +646,74 @@ class TestExportSpansBatch:
         assert len(exporter.exported_spans_as_dict()) == 2
         assert calls == [((), {"timeout_millis": otel_export._FLUSH_TIMEOUT_MS})]
 
+    def test_live_span_names_the_turn_it_belongs_to(
+        self, tmp_path: Path, enabled_config: Config, wired_instance, exporter
+    ):
+        """A live span outruns its `agent-turn` parent, so until the turn ends
+        there is no parent row to attribute it by. It has to say so itself."""
+        self._export(
+            tmp_path,
+            enabled_config,
+            [
+                self._batch_span(name=name, span_id=str(span_id), turn_seq=7, turn_span_id="4242")
+                for name, span_id in (("chat claude-sonnet-5", 111), ("tool: Read", 222))
+            ],
+        )
+
+        exported = exporter.exported_spans_as_dict()
+        assert len(exported) == 2
+        for span in exported:
+            assert span["attributes"]["thirdeye.turn.id"] == "7"
+            assert span["attributes"]["thirdeye.turn.span_id"] == "4242"
+            assert span["attributes"]["gen_ai.conversation.id"] == "s1"
+
+    def test_chat_span_prices_cached_tokens_into_operation_cost(
+        self, tmp_path: Path, enabled_config: Config, wired_instance, exporter
+    ):
+        """Logfire reads cost off `operation.cost`; with it absent the UI prices
+        `gen_ai.usage.input_tokens` at the full input rate. That count is
+        cache-inclusive, so a cache-heavy call would be billed ~9x over. These
+        are real numbers from one claude-opus-5 call: 238,321 input of which
+        237,889 was a cache read and 2 genuinely fresh.
+        """
+        pytest.importorskip("genai_prices")
+
+        call = _llm_call(
+            model="claude-opus-5",
+            usage={
+                "input_tokens": 238321,
+                "output_tokens": 722,
+                "cache_read_input_tokens": 237889,
+                "cache_creation_input_tokens": 430,
+            },
+        )
+        attributes = otel_export._chat_attributes(
+            call, session_id="s1", platform="claude", cwd="/proj"
+        )
+
+        # $5/MTok input, $25/MTok output, cache read 0.1x, cache write 1.25x.
+        assert attributes["operation.cost"] == pytest.approx(0.139692, abs=5e-7)
+        # Priced without the cache discount this call reads as ~$1.21.
+        assert attributes["gen_ai.usage.input_tokens"] == 238321
+
+    def test_chat_attributes_survive_an_unpriceable_model(
+        self, tmp_path: Path, enabled_config: Config, wired_instance, exporter
+    ):
+        """Cost is best-effort: an unknown model must not cost us the span."""
+        call = _llm_call(model="not-a-real-model-9", usage={"input_tokens": 10, "output_tokens": 5})
+
+        attributes = otel_export._chat_attributes(
+            call, session_id="s1", platform="claude", cwd="/proj"
+        )
+
+        assert "operation.cost" not in attributes
+        assert attributes["gen_ai.usage.input_tokens"] == 10
+
     def test_chat_attribute_keys_match_completed_turn_export(
         self, tmp_path: Path, enabled_config: Config, wired_instance, exporter
     ):
         call = _llm_call()
+        turn = _turn(llm_calls=[call])
         session_dir = tmp_path / "traces" / "claude" / "s1"
         otel_export._export_turn_inner(
             config=enabled_config,
@@ -657,13 +721,20 @@ class TestExportSpansBatch:
             session_id="s1",
             platform="claude",
             cwd="/proj",
-            turn=_turn(llm_calls=[call]),
+            turn=turn,
         )
         completed_chat = next(
             span for span in exporter.exported_spans_as_dict() if span["name"].startswith("chat")
         )
 
-        live_attributes = otel_export._chat_attributes(call)
+        live_attributes = otel_export._chat_attributes(
+            call,
+            session_id="s1",
+            platform="claude",
+            cwd="/proj",
+            turn_id=turn["turn_id"],
+            turn_span_id=turn.get("turn_span_id"),
+        )
         self._export(
             tmp_path,
             enabled_config,
