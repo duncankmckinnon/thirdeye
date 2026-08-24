@@ -125,6 +125,18 @@ class _OptionalOpenTurnFields(TypedDict, total=False):
     # deterministic `tool_span_id` and would otherwise export it twice.
     committed_tool_use_ids: list[str]
 
+    # `transcript_offset`'s value at turn start, before any live advancement.
+    # `transcript_offset` itself only ever moves forward as live spans commit,
+    # so once it has advanced past a parallel tool-dispatch message's transcript
+    # lines, nothing live-side can ever see those bytes again -- even a
+    # tool_use_id whose own span was never resolved. Stop-time reconstruction
+    # uses this fixed start point instead, so it can still find and attach a
+    # tool call the live path left behind. Absent on a marker written before
+    # this field existed; `turn_start_offset()` falls back to the current
+    # (possibly already-advanced) `transcript_offset` in that case, same as
+    # the field always behaved before it existed.
+    turn_start_offset: int
+
 
 class OpenTurnMarker(_OptionalOpenTurnFields):
     turn_seq: int
@@ -235,6 +247,7 @@ def _read_open_turn_unlocked(session_dir_: Path) -> OpenTurnMarker | None:
         or not (marker.get("last_frame_ts") is None or isinstance(marker.get("last_frame_ts"), str))
         or not _valid_committed_call_ids(marker.get("committed_call_ids"))
         or not _valid_committed_call_ids(marker.get("committed_tool_use_ids"))
+        or not _valid_turn_start_offset(marker.get("turn_start_offset"))
     ):
         return None
     return cast(OpenTurnMarker, marker)
@@ -247,6 +260,11 @@ def _valid_committed_call_ids(value: object) -> bool:
     )
 
 
+def _valid_turn_start_offset(value: object) -> bool:
+    """Absent is valid: the field postdates the marker format."""
+    return value is None or (isinstance(value, int) and not isinstance(value, bool) and value >= 0)
+
+
 def committed_call_ids(marker: OpenTurnMarker) -> list[str]:
     """Call ids this turn has already exported a chat span for."""
     return list(marker.get("committed_call_ids") or [])
@@ -255,6 +273,22 @@ def committed_call_ids(marker: OpenTurnMarker) -> list[str]:
 def committed_tool_use_ids(marker: OpenTurnMarker) -> list[str]:
     """Tool use ids this turn has already exported a tool span for."""
     return list(marker.get("committed_tool_use_ids") or [])
+
+
+def turn_start_offset(marker: OpenTurnMarker) -> int:
+    """The transcript offset at turn start, before any live advancement.
+
+    Falls back to the current `transcript_offset` for a marker written
+    before this field existed -- the same starting point Stop-time
+    reconstruction always used before this field existed, so an in-flight
+    turn spanning an upgrade degrades to old behavior rather than breaking.
+    """
+    value = marker.get("turn_start_offset")
+    return (
+        value
+        if isinstance(value, int) and not isinstance(value, bool)
+        else marker["transcript_offset"]
+    )
 
 
 def _read_open_turn(session_dir_: Path) -> OpenTurnMarker | None:
@@ -464,6 +498,7 @@ def user_prompt_submit() -> None:
                 "prompt_id": payload.get("prompt_id"),
                 "transcript_path": transcript_path,
                 "transcript_offset": offset,
+                "turn_start_offset": offset,
                 "last_frame_ts": start_ts,
             },
         )

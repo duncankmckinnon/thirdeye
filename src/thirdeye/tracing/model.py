@@ -48,6 +48,20 @@ class LlmCallSpanDict(TypedDict):
     tool_calls: list[ToolCallSpanDict]
 
 
+class OrphanToolCallDict(TypedDict):
+    """A tool call whose requesting LLM call's chat span was already
+    exported earlier (live, or in an earlier Stop) and so must not be
+    rebuilt here -- re-sending it would double-count that call's tokens --
+    but whose own tool span was never resolved at the time. Parented purely
+    by id (the same pattern live spans already use to nest under a parent
+    exported in an entirely separate, earlier process), since the actual
+    parent chat span is not, and must not be, part of this export.
+    """
+
+    parent_call_id: str
+    tool_call: ToolCallSpanDict
+
+
 class PermissionRequestSpanDict(TypedDict):
     """A permission prompt surfaced to the user during a turn."""
 
@@ -94,6 +108,10 @@ class TurnSpanDict(TypedDict):
     output_message: str
     status: TurnStatus
     llm_calls: list[LlmCallSpanDict]
+    # Optional: populated only by the Claude Stop-time reconstruction path
+    # that can attach a tool call to an already-committed parent. Absent or
+    # empty for every other producer.
+    orphan_tool_calls: NotRequired[list[OrphanToolCallDict]]
     permission_requests: list[PermissionRequestSpanDict]
     subagents: list[TurnSpanDict]
     attributes: dict[str, Any]
