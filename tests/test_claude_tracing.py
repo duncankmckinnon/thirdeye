@@ -361,9 +361,7 @@ class TestBuildTurn:
         assert exported[0]["llm_calls"] == []
 
     @pytest.mark.parametrize("spawn_tool_name", ["Task", "Agent"])
-    def test_full_turn_assembly(
-        self, monkeypatch, env: Path, tmp_path: Path, spawn_tool_name: str
-    ):
+    def test_full_turn_assembly(self, monkeypatch, env: Path, tmp_path: Path, spawn_tool_name: str):
         sid = "s1"
         main_transcript = tmp_path / "main.jsonl"
         sub_transcript = tmp_path / "sub.jsonl"
