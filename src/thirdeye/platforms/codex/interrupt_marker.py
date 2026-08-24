@@ -6,6 +6,7 @@ import contextlib
 import fcntl
 import json
 import os
+import time
 from collections.abc import Iterator
 from datetime import UTC, datetime
 from pathlib import Path
@@ -35,12 +36,44 @@ def _parse_ts(ts: str) -> datetime:
     return datetime.fromisoformat(ts[:-1] + "+00:00" if ts.endswith("Z") else ts)
 
 
+# Concurrently dispatched Codex subagent hook processes can contend for this
+# marker's lock at the same time. Every caller already wraps its
+# `_locked_marker` use in `except OSError` and tolerates the no-op that
+# results, so giving up after a bounded wait -- comfortably under any
+# realistic hook timeout -- is strictly safer than blocking forever. This
+# lock's critical sections do only local JSON marker reads/writes (no
+# transcript parsing, no span building -- `export_turn` always runs after
+# the `with _locked_marker(...)` block exits), so they're smaller than the
+# Claude `claude-open-turn.lock` critical sections this budget was measured
+# against; the same budget is generous here too.
+_LOCK_RETRY_BUDGET_S = 0.3
+_LOCK_RETRY_INITIAL_DELAY_S = 0.005
+_LOCK_RETRY_MAX_DELAY_S = 0.025
+
+
+def _acquire_with_bounded_retry(fd: int) -> None:
+    deadline = time.monotonic() + _LOCK_RETRY_BUDGET_S
+    delay = _LOCK_RETRY_INITIAL_DELAY_S
+    while True:
+        try:
+            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            return
+        except BlockingIOError:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise TimeoutError(
+                    f"timed out after {_LOCK_RETRY_BUDGET_S}s waiting for codex-open-turn.json"
+                ) from None
+            time.sleep(max(0.0, min(delay, remaining)))
+            delay = min(delay * 2, _LOCK_RETRY_MAX_DELAY_S)
+
+
 @contextlib.contextmanager
 def _locked_marker(session_dir_: Path) -> Iterator[int]:
     session_dir_.mkdir(parents=True, exist_ok=True)
     fd = os.open(_marker_path(session_dir_), os.O_RDWR | os.O_CREAT, 0o644)
     try:
-        fcntl.flock(fd, fcntl.LOCK_EX)
+        _acquire_with_bounded_retry(fd)
         try:
             yield fd
         finally:
