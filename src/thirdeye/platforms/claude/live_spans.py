@@ -13,6 +13,7 @@ from thirdeye.platforms.claude.hooks import (
     _locked_open_turn,
     _read_open_turn_unlocked,
     committed_call_ids,
+    committed_tool_use_ids,
 )
 from thirdeye.platforms.claude.tracing import _pair_tool_calls
 from thirdeye.platforms.claude.usage import extract_calls_from_transcript
@@ -171,16 +172,24 @@ def _emit_live_spans(
         already_committed = set(committed_call_ids(marker))
         fresh_calls = [call for call in parsed.calls if call["call_id"] not in already_committed]
         spans = [_chat_span(session_id, turn_id, turn_seq, call) for call in fresh_calls]
-        spans.append(
-            _tool_span(
-                session_id,
-                tool_use_id,
-                chat_span_id(session_id, requesting_call_id),
-                turn_id,
-                turn_seq,
-                tool_call,
+        # A hook process can invoke this more than once for the same
+        # tool_use_id (e.g. `post_tool_use` firing twice for one tool call);
+        # both derive the same deterministic `tool_span_id`, so re-exporting
+        # would double-count it the same way an uncommitted chat span would.
+        tool_already_committed = tool_use_id in set(committed_tool_use_ids(marker))
+        if not tool_already_committed:
+            spans.append(
+                _tool_span(
+                    session_id,
+                    tool_use_id,
+                    chat_span_id(session_id, requesting_call_id),
+                    turn_id,
+                    turn_seq,
+                    tool_call,
+                )
             )
-        )
+        if not spans:
+            return
         exported = export_spans(
             config,
             session_dir_,
@@ -198,6 +207,7 @@ def _emit_live_spans(
             offset=parsed.offset,
             last_frame_ts=parsed.last_frame_ts,
             newly_committed_call_ids=[call["call_id"] for call in fresh_calls],
+            newly_committed_tool_use_ids=None if tool_already_committed else [tool_use_id],
         )
 
 

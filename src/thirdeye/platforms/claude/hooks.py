@@ -89,6 +89,13 @@ class _OptionalOpenTurnFields(TypedDict, total=False):
     # twice and its tokens counted twice.
     committed_call_ids: list[str]
 
+    # `tool_use_id`s this turn has already exported a tool span for. Unlike a
+    # chat span's `message.id`, a `tool_use_id` has no reopening/reparse path
+    # to guard against -- this instead guards against `post_tool_use` itself
+    # firing more than once for the same tool call, which derives the same
+    # deterministic `tool_span_id` and would otherwise export it twice.
+    committed_tool_use_ids: list[str]
+
 
 class OpenTurnMarker(_OptionalOpenTurnFields):
     turn_seq: int
@@ -167,6 +174,7 @@ def _read_open_turn_unlocked(session_dir_: Path) -> OpenTurnMarker | None:
         or transcript_offset < 0
         or not (marker.get("last_frame_ts") is None or isinstance(marker.get("last_frame_ts"), str))
         or not _valid_committed_call_ids(marker.get("committed_call_ids"))
+        or not _valid_committed_call_ids(marker.get("committed_tool_use_ids"))
     ):
         return None
     return cast(OpenTurnMarker, marker)
@@ -182,6 +190,11 @@ def _valid_committed_call_ids(value: object) -> bool:
 def committed_call_ids(marker: OpenTurnMarker) -> list[str]:
     """Call ids this turn has already exported a chat span for."""
     return list(marker.get("committed_call_ids") or [])
+
+
+def committed_tool_use_ids(marker: OpenTurnMarker) -> list[str]:
+    """Tool use ids this turn has already exported a tool span for."""
+    return list(marker.get("committed_tool_use_ids") or [])
 
 
 def _read_open_turn(session_dir_: Path) -> OpenTurnMarker | None:
@@ -205,6 +218,7 @@ def _advance_turn_cursor(
     offset: int,
     last_frame_ts: str | None,
     newly_committed_call_ids: list[str] | None = None,
+    newly_committed_tool_use_ids: list[str] | None = None,
 ) -> bool:
     """Advance a marker only if it still belongs to the expected turn."""
     if (
@@ -213,6 +227,7 @@ def _advance_turn_cursor(
         or offset < 0
         or (last_frame_ts is not None and not isinstance(last_frame_ts, str))
         or not _valid_committed_call_ids(newly_committed_call_ids)
+        or not _valid_committed_call_ids(newly_committed_tool_use_ids)
     ):
         return False
     try:
@@ -235,6 +250,12 @@ def _advance_turn_cursor(
                 merged = committed_call_ids(marker)
                 merged.extend(i for i in newly_committed_call_ids if i not in merged)
                 marker["committed_call_ids"] = merged[-_COMMITTED_CALL_ID_LIMIT:]
+            if newly_committed_tool_use_ids:
+                merged_tools = committed_tool_use_ids(marker)
+                merged_tools.extend(
+                    i for i in newly_committed_tool_use_ids if i not in merged_tools
+                )
+                marker["committed_tool_use_ids"] = merged_tools[-_COMMITTED_CALL_ID_LIMIT:]
             _open_turn_path(session_dir_).write_text(json.dumps(marker))
             return True
     except OSError:

@@ -212,6 +212,30 @@ class TestLiveSpanJob:
             chat_span_id(session_id, "msg-parallel")
         )
 
+    def test_tool_span_not_reexported_when_hook_fires_twice_for_same_tool_use_id(
+        self, monkeypatch: pytest.MonkeyPatch, config: Config, tmp_path: Path
+    ) -> None:
+        session_id = "double-post-tool-use"
+        transcript = tmp_path / "transcript.jsonl"
+        session_dir_ = _start_turn(monkeypatch, config, transcript, session_id=session_id)
+        _append_frames(
+            transcript,
+            _assistant_frame("msg-dup", "2026-08-22T10:00:01.000Z", "tool-dup"),
+            _user_tool_results("2026-08-22T10:00:02.000Z", "tool-dup"),
+        )
+        _append_tool_pair(config, session_id, "tool-dup")
+
+        live_spans.emit_live_spans(config, session_dir_, session_id, "/project", "tool-dup")
+        live_spans.emit_live_spans(config, session_dir_, session_id, "/project", "tool-dup")
+
+        tool_ids = [
+            span["span_id"]
+            for job in _jobs(config)
+            for span in job["spans"]
+            if span["name"] == "tool: Read"
+        ]
+        assert tool_ids == [str(tool_span_id(session_id, "tool-dup"))]
+
     def test_failed_job_write_does_not_advance_cursor(
         self, monkeypatch: pytest.MonkeyPatch, config: Config, tmp_path: Path
     ) -> None:
