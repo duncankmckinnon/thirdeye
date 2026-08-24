@@ -1079,6 +1079,30 @@ def _export_turn_subtree(
             )
             tool_span.end(end_time=_ts_to_ns(tool_call["end_ts"]))
 
+    for orphan in turn.get("orphan_tool_calls") or []:
+        parent_call_id = orphan["parent_call_id"]
+        tool_call = orphan["tool_call"]
+        orphan_parent_ctx = _parent_context(
+            turn_ctx.trace_id, int(chat_span_id(session_id, parent_call_id))
+        )
+        orphan_span = _start_span_with_id(
+            tracer,
+            f"tool: {tool_call['name']}",
+            tool_span_id(session_id, tool_call["tool_call_id"]),
+            parent_ctx=orphan_parent_ctx,
+            kind=SpanKind.INTERNAL,
+            start_time=_ts_to_ns(tool_call["start_ts"]),
+            attributes=_tool_attributes(
+                tool_call["attributes"],
+                session_id=session_id,
+                platform=platform,
+                cwd=cwd,
+                turn_id=turn["turn_id"],
+                turn_span_id=turn.get("turn_span_id"),
+            ),
+        )
+        orphan_span.end(end_time=_ts_to_ns(tool_call["end_ts"]))
+
     for permission_request in turn["permission_requests"]:
         pr_ts = _ts_to_ns(permission_request["ts"])
         pr_attrs = _flatten_attrs(permission_request["attributes"])

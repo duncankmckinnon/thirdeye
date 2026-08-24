@@ -293,6 +293,166 @@ class TestBuildTurn:
             "incremental": False,
         }
 
+    def test_orphan_tool_call_from_already_committed_group_is_recovered(
+        self, monkeypatch, env: Path, tmp_path: Path
+    ) -> None:
+        """A parallel tool-dispatch message can fragment across multiple
+        transcript lines sharing one call_id, closed and reopened by a
+        `user` frame landing between two of them (a background dispatch's
+        own tool_result acknowledgement, in the wild). If a live hook
+        already committed that call_id's chat span before a sibling
+        tool_use_id's own raw tool_call/tool_result was even recorded
+        locally, live_spans.py's own sweep can't resolve it either -- its
+        `_paired_tool_call` lookup comes up empty at that exact moment.
+        This is that sibling's last remaining chance: `turn_start_offset`
+        lets Stop-time look further back than the (already-advanced)
+        live cursor to find the group and attach it, without rebuilding
+        the chat span itself (which would double-count its tokens).
+        """
+        sid = "orphan-recovery"
+        transcript = tmp_path / "transcript.jsonl"
+
+        _stdin(
+            monkeypatch,
+            {
+                "session_id": sid,
+                "cwd": "/p",
+                "prompt": "dispatch two",
+                "transcript_path": str(transcript),
+            },
+        )
+        hooks.user_prompt_submit()
+        sd = session_dir(env, "claude", sid)
+        marker = hooks._read_open_turn(sd)
+        assert marker is not None
+        assert marker["turn_start_offset"] == 0
+
+        transcript.write_text(
+            _user_frame("dispatch two")
+            + "\n"
+            + _assistant_frame(
+                "msg_parallel",
+                [{"type": "tool_use", "id": "tu_1", "name": "Read", "input": {}}],
+                ts="2026-01-01T00:00:01.000Z",
+            )
+            + "\n"
+            + _user_frame([{"type": "tool_result", "tool_use_id": "tu_1", "content": "ok"}])
+            + "\n"
+            + _assistant_frame(
+                "msg_parallel",
+                [{"type": "tool_use", "id": "tu_2", "name": "Read", "input": {}}],
+                ts="2026-01-01T00:00:02.000Z",
+            )
+            + "\n"
+            + _user_frame([{"type": "tool_result", "tool_use_id": "tu_2", "content": "ok"}])
+            + "\n"
+        )
+
+        # tu_1's own raw pair is recorded, and its (simulated) live hook
+        # successfully commits the group's chat span plus its own tool span.
+        _stdin(
+            monkeypatch,
+            {"session_id": sid, "cwd": "/p", "tool_name": "Read", "tool_use_id": "tu_1"},
+        )
+        hooks.pre_tool_use()
+        _stdin(
+            monkeypatch,
+            {
+                "session_id": sid,
+                "cwd": "/p",
+                "tool_name": "Read",
+                "tool_use_id": "tu_1",
+                "tool_response": "ok",
+            },
+        )
+        hooks.post_tool_use()
+        assert hooks._advance_turn_cursor(
+            sd,
+            expected_turn_seq=marker["turn_seq"],
+            offset=transcript.stat().st_size,
+            last_frame_ts="2026-01-01T00:00:02.000Z",
+            newly_committed_call_ids=["msg_parallel"],
+            newly_committed_tool_use_ids=["tu_1"],
+        )
+
+        # tu_2's own raw pair is only recorded after that commit -- its own
+        # live hook never independently succeeds (the observed
+        # one-shot-per-tool_use_id failure mode this whole fallback exists
+        # for), so nothing here advances committed_tool_use_ids for it.
+        _stdin(
+            monkeypatch,
+            {"session_id": sid, "cwd": "/p", "tool_name": "Read", "tool_use_id": "tu_2"},
+        )
+        hooks.pre_tool_use()
+        _stdin(
+            monkeypatch,
+            {
+                "session_id": sid,
+                "cwd": "/p",
+                "tool_name": "Read",
+                "tool_use_id": "tu_2",
+                "tool_response": "ok",
+            },
+        )
+        hooks.post_tool_use()
+
+        turn = tracing.build_turn(
+            config=Config.load(),
+            session_dir_=sd,
+            session_id=sid,
+            cwd="/p",
+            stop_seq=999999,
+            stop_ts="2026-01-01T00:00:03.000Z",
+            transcript_path=str(transcript),
+            final_response="done",
+        )
+
+        assert turn is not None
+        # The already-committed group must not be rebuilt as a fresh chat
+        # span -- that would double-count "msg_parallel"'s tokens.
+        assert all(call["call_id"] != "msg_parallel" for call in turn["llm_calls"])
+        orphans = turn.get("orphan_tool_calls") or []
+        assert len(orphans) == 1
+        assert orphans[0]["parent_call_id"] == "msg_parallel"
+        assert orphans[0]["tool_call"]["tool_call_id"] == "tu_2"
+
+    def test_no_orphan_tool_calls_key_when_nothing_is_orphaned(
+        self, monkeypatch, env: Path, tmp_path: Path
+    ) -> None:
+        sid = "no-orphans"
+        transcript = tmp_path / "transcript.jsonl"
+        _stdin(
+            monkeypatch,
+            {
+                "session_id": sid,
+                "cwd": "/p",
+                "prompt": "hello",
+                "transcript_path": str(transcript),
+            },
+        )
+        hooks.user_prompt_submit()
+        sd = session_dir(env, "claude", sid)
+        transcript.write_text(
+            _user_frame("hello")
+            + "\n"
+            + _assistant_frame("msg_1", [{"type": "text", "text": "hi"}])
+            + "\n"
+        )
+
+        turn = tracing.build_turn(
+            config=Config.load(),
+            session_dir_=sd,
+            session_id=sid,
+            cwd="/p",
+            stop_seq=999999,
+            stop_ts="2026-01-01T00:00:01.000Z",
+            transcript_path=str(transcript),
+            final_response="hi",
+        )
+
+        assert turn is not None
+        assert "orphan_tool_calls" not in turn
+
     def test_stop_without_marker_exports_recovered_turn(self, monkeypatch, env: Path):
         sid = "missing-marker"
         exported = []

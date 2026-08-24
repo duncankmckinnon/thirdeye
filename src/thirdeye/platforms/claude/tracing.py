@@ -10,6 +10,7 @@ from thirdeye.reader import SessionReader
 from thirdeye.span_ids import turn_span_id
 from thirdeye.tracing.model import (
     LlmCallSpanDict,
+    OrphanToolCallDict,
     PermissionRequestSpanDict,
     ToolCallSpanDict,
     TurnSpanDict,
@@ -383,6 +384,7 @@ def build_turn(
     tool_calls = _pair_tool_calls(top_level_events)
     permission_requests = _pair_permission_events(top_level_events)
 
+    orphan_tool_calls: list[OrphanToolCallDict] = []
     if trusted_cursor:
         parsed_calls = extract_calls_from_transcript(
             transcript_path or marker.get("transcript_path"),
@@ -403,11 +405,64 @@ def build_turn(
             if isinstance(call_id, str)
         }
         llm_calls = [call for call in parsed_calls.calls if call["call_id"] not in committed]
+        _attach_tool_calls(llm_calls, tool_calls)
+
+        # A parallel tool-dispatch message can fragment across multiple
+        # transcript lines sharing one call_id (Claude Code writes each
+        # tool_use block as its own frame, and a dispatch acknowledgement
+        # between two of them closes and reopens the group). If a live hook
+        # committed one fragment's call_id as a chat span before a sibling
+        # fragment's own tool_use_id ever got resolved, that sibling's raw
+        # tool_call/tool_result is correctly recorded locally but can never
+        # be reattached through the path above: `committed` deliberately
+        # excludes the whole group above to avoid re-exporting its chat
+        # span, which also throws away every tool_use part living in it.
+        # Re-derive that group from `turn_start_offset` -- fixed at turn
+        # start, unlike `transcript_offset`, which only moves forward as
+        # live spans commit and so cannot see bytes it has already advanced
+        # past -- purely to recover those tool_use ids, never to rebuild or
+        # re-export the chat span itself.
+        already_attached = {tc["tool_call_id"] for call in llm_calls for tc in call["tool_calls"]}
+        committed_tools = {
+            tool_use_id
+            for tool_use_id in (marker.get("committed_tool_use_ids") or [])
+            if isinstance(tool_use_id, str)
+        }
+        pending_tool_use_ids = (
+            {tc["tool_call_id"] for tc in tool_calls} - already_attached - committed_tools
+        )
+        if pending_tool_use_ids:
+            from thirdeye.platforms.claude.hooks import turn_start_offset as _turn_start_offset
+
+            full_calls = extract_calls_from_transcript(
+                transcript_path or marker.get("transcript_path"),
+                _turn_start_offset(marker),
+                initial_prev_ts=None,
+                incremental=False,
+            ).calls
+            tool_calls_by_id = {tc["tool_call_id"]: tc for tc in tool_calls}
+            for call in full_calls:
+                if call["call_id"] not in committed:
+                    continue  # not one of the groups a live commit orphaned
+                for message in call["output_messages"]:
+                    for part in message.get("parts", []):
+                        if part.get("type") != "tool_call":
+                            continue
+                        candidate_id = str(part.get("id") or "")
+                        if candidate_id not in pending_tool_use_ids:
+                            continue
+                        tc = tool_calls_by_id.get(candidate_id)
+                        if tc is None:
+                            continue
+                        orphan_tool_calls.append(
+                            {"parent_call_id": call["call_id"], "tool_call": tc}
+                        )
+                        pending_tool_use_ids.discard(candidate_id)
     else:
         # A session transcript is append-only across turns. Without the marker's
         # byte cursor, parsing it would attach all historical calls to this turn.
         llm_calls = []
-    _attach_tool_calls(llm_calls, tool_calls)
+        _attach_tool_calls(llm_calls, tool_calls)
 
     # The interruption catch-all has no real final_response and must not
     # backfill one from the transcript — an empty output is the correct,
@@ -416,7 +471,7 @@ def build_turn(
     if status == "completed" and not output_message:
         output_message = _fallback_output_message(llm_calls)
 
-    return {
+    turn: TurnSpanDict = {
         "turn_id": str(turn_seq),
         "turn_span_id": derived_turn_span_id,
         "start_ts": str(marker.get("start_ts") or ""),
@@ -429,3 +484,6 @@ def build_turn(
         "subagents": subagents,
         "attributes": {},
     }
+    if orphan_tool_calls:
+        turn["orphan_tool_calls"] = orphan_tool_calls
+    return turn

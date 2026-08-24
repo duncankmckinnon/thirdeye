@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import re
+import threading
 from pathlib import Path
 
 import pytest
@@ -9,6 +10,7 @@ from thirdeye.codec import decode_event
 from thirdeye.index import IndexReader
 from thirdeye.meta import SessionMeta, read_meta, write_meta
 from thirdeye.paths import events_path, index_path, meta_path
+from thirdeye.reader import SessionReader
 from thirdeye.writer import SessionWriter, _utc_iso_ms
 
 # -- helpers -------------------------------------------------------------------
@@ -566,6 +568,114 @@ class TestFlushAndDetach:
         event = decode_event(frame)
         assert event["t"] == "user_message"
         assert event["data"] == "hello"
+
+
+# -- Concurrent writers ----------------------------------------------------------
+
+
+class TestConcurrentWriters:
+    def test_concurrent_writers_produce_unique_contiguous_seqs(self, tmp_path: Path):
+        """Every hook invocation is a fresh process, so a fresh SessionWriter
+        for the same session. If two are constructed around the same moment
+        and each derives its `seq` from a stale pre-lock snapshot, they can
+        claim the same seq for different events, and their unsynchronized
+        index appends can land out of step with the log -- corrupting the
+        index enough that reading the session back can fail outright.
+        """
+        sid = "01J9G7XK4P"
+        sd = tmp_path / sid
+        n_threads = 5
+        n_per_thread = 40
+        total = n_threads * n_per_thread
+
+        errors: list[str] = []
+        written_pairs: set[tuple[str, int]] = set()
+        results_lock = threading.Lock()
+
+        def worker(tag: str) -> None:
+            for i in range(n_per_thread):
+                try:
+                    w = SessionWriter.open(sd, session_id=sid, platform="claude", cwd="/proj")
+                    try:
+                        w.append("tool_call", {"worker": tag, "i": i})
+                    finally:
+                        w.flush_and_detach()
+                    with results_lock:
+                        written_pairs.add((tag, i))
+                except Exception as e:  # noqa: BLE001 -- must record, not swallow
+                    with results_lock:
+                        errors.append(f"{tag}: {type(e).__name__}: {e}")
+                    return
+
+        threads = [threading.Thread(target=worker, args=(tag,)) for tag in "ABCDE"[:n_threads]]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
+
+        assert errors == []
+        assert len(written_pairs) == total
+
+        idx = IndexReader(index_path(sd))
+        assert idx.count() == total
+        offsets = idx.all_offsets()
+        assert offsets == sorted(offsets), "index offsets must stay monotonically increasing"
+
+        events = list(SessionReader(sd).iter_events())
+        assert len(events) == total
+        seqs = [e["seq"] for e in events]
+        assert sorted(seqs) == list(range(total)), "seqs must be unique and contiguous"
+
+        read_pairs = {(e["data"]["worker"], e["data"]["i"]) for e in events}
+        assert read_pairs == written_pairs, "every written event must read back with its own data"
+
+    def test_concurrent_construction_with_missing_index_repairs_cleanly(self, tmp_path: Path):
+        """SessionWriter.open() rebuilds the index from the log if the index
+        is empty but the log has data (e.g. a crash wiped the index after an
+        earlier write). If two processes hit that repair path at once, the
+        repair itself must not corrupt the index it's trying to fix.
+        """
+        sid = "01J9G7XK4P"
+        sd = tmp_path / sid
+        seed = SessionWriter.open(sd, session_id=sid, platform="claude", cwd="/proj")
+        seed.append("user_message", {"n": 0})
+        seed.append("user_message", {"n": 1})
+        seed.flush_and_detach()
+
+        # Simulate a crash that wiped the index but left the log intact.
+        index_path(sd).write_bytes(b"")
+
+        errors: list[str] = []
+        errors_lock = threading.Lock()
+        start = threading.Barrier(5)
+
+        def worker() -> None:
+            start.wait(timeout=5)
+            try:
+                w = SessionWriter.open(sd, session_id=sid, platform="claude", cwd="/proj")
+                try:
+                    w.append("user_message", {"n": 2})
+                finally:
+                    w.flush_and_detach()
+            except Exception as e:  # noqa: BLE001
+                with errors_lock:
+                    errors.append(f"{type(e).__name__}: {e}")
+
+        threads = [threading.Thread(target=worker) for _ in range(5)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
+
+        assert errors == []
+        idx = IndexReader(index_path(sd))
+        assert idx.count() == 7  # 2 seeded + 5 concurrent
+        offsets = idx.all_offsets()
+        assert offsets == sorted(offsets)
+
+        events = list(SessionReader(sd).iter_events())
+        assert len(events) == 7
+        assert {e["seq"] for e in events} == set(range(7))
 
 
 # -- utc_iso_ms public alias ---------------------------------------------------

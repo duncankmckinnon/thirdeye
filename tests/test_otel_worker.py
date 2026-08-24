@@ -54,6 +54,13 @@ def _turn(**overrides: Any) -> dict[str, Any]:
     return defaults
 
 
+def _error_log_entries(home: Path) -> list[dict]:
+    log = home / "logs" / "usage-errors.jsonl"
+    if not log.exists():
+        return []
+    return [json.loads(line) for line in log.read_text().splitlines() if line]
+
+
 def _write_job(home: Path, **fields) -> Path:
     job_path = home / "job.json"
     payload = {
@@ -210,3 +217,97 @@ class TestMainExportsThroughToLogfire:
         otel_worker.main([str(job_path)])
 
         assert calls == []
+
+
+class TestWorkerFailureLogging:
+    """`otel_worker` must never raise, by design -- see the module docstring.
+    But swallowing a failure with zero record of it is exactly what made
+    subagent A's missing tool span undiagnosable: a dropped export and a
+    never-attempted one look identical. These confirm a failure inside the
+    detached worker leaves a breadcrumb instead of vanishing silently.
+    """
+
+    def test_turn_export_failure_is_logged_and_does_not_raise(
+        self, home: Path, enabled: None, monkeypatch: pytest.MonkeyPatch
+    ):
+        def _boom(**kwargs):
+            raise RuntimeError("logfire flush failed")
+
+        monkeypatch.setattr(otel_export, "_export_turn_inner", _boom)
+        job_path = _write_job(home)
+
+        otel_worker.main([str(job_path)])  # must not raise
+
+        entries = _error_log_entries(home)
+        matches = [e for e in entries if e["phase"] == "otel_worker_export_failed"]
+        assert len(matches) == 1
+        assert matches[0]["session_id"] == "s1"
+        assert matches[0]["platform"] == "claude"
+        assert matches[0]["error_class"] == "RuntimeError"
+        assert "kind=turn" in matches[0]["message"]
+        assert "logfire flush failed" in matches[0]["traceback"]
+
+    def test_spans_export_failure_is_logged_and_does_not_raise(
+        self, home: Path, enabled: None, monkeypatch: pytest.MonkeyPatch
+    ):
+        def _boom(**kwargs):
+            raise ConnectionError("network unreachable")
+
+        monkeypatch.setattr(otel_export, "_export_spans_batch", _boom)
+        job_path = _write_job(
+            home,
+            kind="spans",
+            trace_id="1",
+            spans=[],
+        )
+
+        otel_worker.main([str(job_path)])  # must not raise
+
+        entries = _error_log_entries(home)
+        matches = [e for e in entries if e["phase"] == "otel_worker_export_failed"]
+        assert len(matches) == 1
+        assert matches[0]["error_class"] == "ConnectionError"
+        assert "kind=spans" in matches[0]["message"]
+
+    def test_subagent_turn_export_failure_is_logged_and_does_not_raise(
+        self, home: Path, enabled: None, monkeypatch: pytest.MonkeyPatch
+    ):
+        def _boom(**kwargs):
+            raise RuntimeError("boom")
+
+        monkeypatch.setattr(otel_export, "_export_subagent_turn_inner", _boom)
+        job_path = _write_job(
+            home,
+            kind="subagent_turn",
+            trace_id="1",
+            parent_span_id="2",
+        )
+
+        otel_worker.main([str(job_path)])  # must not raise
+
+        entries = _error_log_entries(home)
+        matches = [e for e in entries if e["phase"] == "otel_worker_export_failed"]
+        assert len(matches) == 1
+        assert "kind=subagent_turn" in matches[0]["message"]
+
+    def test_successful_export_logs_nothing(
+        self, home: Path, enabled: None, monkeypatch: pytest.MonkeyPatch
+    ):
+        monkeypatch.setattr(otel_export, "_export_turn_inner", lambda **kwargs: None)
+        job_path = _write_job(home)
+
+        otel_worker.main([str(job_path)])
+
+        entries = _error_log_entries(home)
+        assert [e for e in entries if e["phase"] == "otel_worker_export_failed"] == []
+
+    def test_malformed_job_file_is_logged(self, home: Path):
+        job_path = home / "job.json"
+        job_path.write_text("not json")
+
+        otel_worker.main([str(job_path)])  # must not raise
+
+        entries = _error_log_entries(home)
+        matches = [e for e in entries if e["phase"] == "otel_worker_export_failed"]
+        assert len(matches) == 1
+        assert "kind=job_read" in matches[0]["message"]

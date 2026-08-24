@@ -120,6 +120,13 @@ def _jobs(config: Config) -> list[dict]:
     return [json.loads(path.read_text()) for path in sorted(jobs_dir.glob("*.json"))]
 
 
+def _error_log_entries(config: Config) -> list[dict]:
+    log = config.root / "logs" / "usage-errors.jsonl"
+    if not log.exists():
+        return []
+    return [json.loads(line) for line in log.read_text().splitlines() if line]
+
+
 class TestLiveSpanJob:
     def test_tool_parents_to_chat_and_uses_event_timing(
         self, monkeypatch: pytest.MonkeyPatch, config: Config, tmp_path: Path
@@ -184,9 +191,18 @@ class TestLiveSpanJob:
         assert marker is not None
         assert marker["transcript_offset"] == transcript.stat().st_size
 
-    def test_parent_chat_already_emitted_is_still_found_in_transcript(
+    def test_sibling_tool_in_same_group_is_swept_eagerly(
         self, monkeypatch: pytest.MonkeyPatch, config: Config, tmp_path: Path
     ) -> None:
+        """A parallel tool-dispatch message can fragment across multiple
+        transcript lines sharing one call_id, and each tool's own
+        PostToolUse fires independently. Whichever hook call is the one
+        that commits that call_id as a fresh chat span is this group's
+        only chance to also resolve any sibling tool_use_id it can find a
+        local pair for -- the transcript cursor never revisits bytes once
+        advanced past them, so tool-2's own (separate, later) hook call is
+        not guaranteed to still see this group as fresh.
+        """
         session_id = "prior-parent"
         transcript = tmp_path / "transcript.jsonl"
         session_dir_ = _start_turn(monkeypatch, config, transcript, session_id=session_id)
@@ -198,19 +214,26 @@ class TestLiveSpanJob:
         _append_tool_pair(config, session_id, "tool-1")
         _append_tool_pair(config, session_id, "tool-2")
 
+        # Only tool-1's own hook ever runs live for tool-2 to depend on.
         live_spans.emit_live_spans(config, session_dir_, session_id, "/project", "tool-1")
-        live_spans.emit_live_spans(config, session_dir_, session_id, "/project", "tool-2")
 
-        tool_2_span_id = str(tool_span_id(session_id, "tool-2"))
-        second_job = next(
-            job
-            for job in _jobs(config)
-            if any(span["span_id"] == tool_2_span_id for span in job["spans"])
-        )
-        assert [span["name"] for span in second_job["spans"]] == ["tool: Read"]
-        assert second_job["spans"][0]["parent_span_id"] == str(
-            chat_span_id(session_id, "msg-parallel")
-        )
+        jobs = _jobs(config)
+        assert len(jobs) == 1
+        span_names = sorted(span["name"] for span in jobs[0]["spans"])
+        assert span_names == ["chat claude-sonnet-5", "tool: Read", "tool: Read"]
+        by_id = {span["span_id"]: span for span in jobs[0]["spans"]}
+        tool_1_span = by_id[str(tool_span_id(session_id, "tool-1"))]
+        tool_2_span = by_id[str(tool_span_id(session_id, "tool-2"))]
+        assert tool_1_span["parent_span_id"] == str(chat_span_id(session_id, "msg-parallel"))
+        assert tool_2_span["parent_span_id"] == str(chat_span_id(session_id, "msg-parallel"))
+
+        marker = hooks._read_open_turn(session_dir_)
+        assert marker is not None
+        assert set(marker["committed_tool_use_ids"]) == {"tool-1", "tool-2"}
+
+        # tool-2's own later hook call now has nothing new to do.
+        live_spans.emit_live_spans(config, session_dir_, session_id, "/project", "tool-2")
+        assert len(_jobs(config)) == 1
 
     def test_tool_span_not_reexported_when_hook_fires_twice_for_same_tool_use_id(
         self, monkeypatch: pytest.MonkeyPatch, config: Config, tmp_path: Path
@@ -258,6 +281,8 @@ class TestLiveSpanJob:
         assert after is not None
         assert after["transcript_offset"] == before["transcript_offset"]
         assert after["last_frame_ts"] == before["last_frame_ts"]
+        skips = [e for e in _error_log_entries(config) if e["phase"] == "emit_live_spans_skipped"]
+        assert any("reason=export_spans_failed" in e["message"] for e in skips)
 
     def test_raising_job_write_does_not_advance_cursor(
         self,
@@ -292,6 +317,11 @@ class TestLiveSpanJob:
         assert after["last_frame_ts"] == before["last_frame_ts"]
         assert captured.out == ""
         assert captured.err == ""
+        failures = [e for e in _error_log_entries(config) if e["phase"] == "emit_live_spans_failed"]
+        assert len(failures) == 1
+        assert failures[0]["error_class"] == "OSError"
+        assert failures[0]["session_id"] == session_id
+        assert "tool-raise" in failures[0]["message"]
 
     def test_lock_failure_does_not_raise_or_write_output(
         self,
@@ -310,6 +340,34 @@ class TestLiveSpanJob:
         captured = capsys.readouterr()
         assert captured.out == ""
         assert captured.err == ""
+        failures = [e for e in _error_log_entries(config) if e["phase"] == "emit_live_spans_failed"]
+        assert len(failures) == 1
+        assert failures[0]["error_class"] == "OSError"
+        assert failures[0]["session_id"] == "lock-failure"
+
+    def test_timeout_error_from_bounded_lock_retry_is_logged(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        config: Config,
+        tmp_path: Path,
+    ) -> None:
+        """The specific exception a contended claude-open-turn.lock now
+        raises (bounded LOCK_NB retry giving up) instead of blocking
+        forever -- confirms this exact failure mode is now diagnosable
+        instead of indistinguishable from silence.
+        """
+
+        def raise_timeout(*args, **kwargs):
+            raise TimeoutError("timed out after 0.3s waiting for claude-open-turn.lock")
+
+        monkeypatch.setattr(live_spans, "_locked_open_turn", raise_timeout)
+
+        live_spans.emit_live_spans(config, tmp_path, "timeout-session", "/project", "tool-1")
+
+        failures = [e for e in _error_log_entries(config) if e["phase"] == "emit_live_spans_failed"]
+        assert len(failures) == 1
+        assert failures[0]["error_class"] == "TimeoutError"
+        assert failures[0]["session_id"] == "timeout-session"
 
     def test_stale_turn_rejection_is_quiet_and_preserves_marker(
         self, monkeypatch: pytest.MonkeyPatch, config: Config, tmp_path: Path
@@ -486,6 +544,89 @@ class TestLiveSpanJob:
         for span in job["spans"]:
             assert span["turn_seq"] == marker["turn_seq"]
             assert span["turn_span_id"] == marker["turn_span_id"]
+
+
+class TestEmitLiveSpansSkipBreadcrumbs:
+    """Every early return in `_emit_live_spans` assumes Stop-time
+    reconstruction recovers the span later. Confirmed in practice (twice,
+    against a live install) that assumption doesn't always hold -- a span
+    that's actually lost looked identical to one correctly deferred, with
+    nothing recorded at the skip site to tell them apart. These pin down
+    exactly which reason gets logged for each path.
+    """
+
+    def test_no_open_turn_marker_is_logged(
+        self, monkeypatch: pytest.MonkeyPatch, config: Config, tmp_path: Path
+    ) -> None:
+        session_id = "no-marker"
+        session_dir_ = session_dir(config.root, "claude", session_id)
+
+        live_spans.emit_live_spans(config, session_dir_, session_id, "/project", "tool-1")
+
+        skips = [e for e in _error_log_entries(config) if e["phase"] == "emit_live_spans_skipped"]
+        assert any(
+            "reason=no_open_turn_marker" in e["message"] and e["session_id"] == session_id
+            for e in skips
+        )
+        assert _jobs(config) == []
+
+    def test_requesting_call_id_not_found_is_logged(
+        self, monkeypatch: pytest.MonkeyPatch, config: Config, tmp_path: Path
+    ) -> None:
+        session_id = "no-requester"
+        transcript = tmp_path / "transcript.jsonl"
+        session_dir_ = _start_turn(monkeypatch, config, transcript, session_id=session_id)
+        # No assistant frame anywhere mentions this tool_use_id, and no
+        # local tool_call/tool_result pair exists for it either.
+
+        live_spans.emit_live_spans(config, session_dir_, session_id, "/project", "unclaimed-tool")
+
+        skips = [e for e in _error_log_entries(config) if e["phase"] == "emit_live_spans_skipped"]
+        assert any("reason=requesting_call_id_not_found" in e["message"] for e in skips)
+        assert _jobs(config) == []
+
+    def test_tool_call_not_paired_is_logged(
+        self, monkeypatch: pytest.MonkeyPatch, config: Config, tmp_path: Path
+    ) -> None:
+        session_id = "no-pair"
+        transcript = tmp_path / "transcript.jsonl"
+        session_dir_ = _start_turn(monkeypatch, config, transcript, session_id=session_id)
+        # The transcript proves a requesting call exists for this
+        # tool_use_id, but PreToolUse/PostToolUse never recorded the
+        # matching tool_call/tool_result events locally.
+        _append_frames(
+            transcript,
+            _assistant_frame("msg-orphan", "2026-08-22T10:00:01.000Z", "tool-orphan"),
+            _user_tool_results("2026-08-22T10:00:02.000Z", "tool-orphan"),
+        )
+
+        live_spans.emit_live_spans(config, session_dir_, session_id, "/project", "tool-orphan")
+
+        skips = [e for e in _error_log_entries(config) if e["phase"] == "emit_live_spans_skipped"]
+        assert any("reason=tool_call_not_paired" in e["message"] for e in skips)
+        assert _jobs(config) == []
+
+    def test_no_new_spans_already_committed_is_logged(
+        self, monkeypatch: pytest.MonkeyPatch, config: Config, tmp_path: Path
+    ) -> None:
+        session_id = "already-committed"
+        transcript = tmp_path / "transcript.jsonl"
+        session_dir_ = _start_turn(monkeypatch, config, transcript, session_id=session_id)
+        _append_frames(
+            transcript,
+            _assistant_frame("msg-dup", "2026-08-22T10:00:01.000Z", "tool-dup"),
+            _user_tool_results("2026-08-22T10:00:02.000Z", "tool-dup"),
+        )
+        _append_tool_pair(config, session_id, "tool-dup")
+        # First call commits both the chat and tool spans.
+        live_spans.emit_live_spans(config, session_dir_, session_id, "/project", "tool-dup")
+
+        # Second call for the same tool_use_id has nothing fresh to export.
+        live_spans.emit_live_spans(config, session_dir_, session_id, "/project", "tool-dup")
+
+        skips = [e for e in _error_log_entries(config) if e["phase"] == "emit_live_spans_skipped"]
+        assert any("reason=no_new_spans_already_committed" in e["message"] for e in skips)
+        assert len(_jobs(config)) == 1
 
 
 class TestPostToolUseIsolation:

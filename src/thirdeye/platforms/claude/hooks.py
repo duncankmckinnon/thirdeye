@@ -6,6 +6,7 @@ import json
 import os
 import sys
 import threading
+import time
 from collections.abc import Iterator
 from pathlib import Path
 from typing import TypedDict, cast
@@ -124,6 +125,18 @@ class _OptionalOpenTurnFields(TypedDict, total=False):
     # deterministic `tool_span_id` and would otherwise export it twice.
     committed_tool_use_ids: list[str]
 
+    # `transcript_offset`'s value at turn start, before any live advancement.
+    # `transcript_offset` itself only ever moves forward as live spans commit,
+    # so once it has advanced past a parallel tool-dispatch message's transcript
+    # lines, nothing live-side can ever see those bytes again -- even a
+    # tool_use_id whose own span was never resolved. Stop-time reconstruction
+    # uses this fixed start point instead, so it can still find and attach a
+    # tool call the live path left behind. Absent on a marker written before
+    # this field existed; `turn_start_offset()` falls back to the current
+    # (possibly already-advanced) `transcript_offset` in that case, same as
+    # the field always behaved before it existed.
+    turn_start_offset: int
+
 
 class OpenTurnMarker(_OptionalOpenTurnFields):
     turn_seq: int
@@ -144,6 +157,37 @@ _COMMITTED_CALL_ID_LIMIT = 64
 _OPEN_TURN_FIELDS = frozenset(OpenTurnMarker.__required_keys__)
 _OPEN_TURN_LOCK_STATE = threading.local()
 
+# A background subagent's dispatching PostToolUse and its own SubagentStart
+# can fire concurrently, both wanting this lock -- see `_log_hook_invocation`.
+# Blocking indefinitely risks the harness's own hook timeout killing this
+# process with zero signal; every caller already tolerates a raised error
+# (each wraps its `_locked_open_turn` use in `except OSError`/`except
+# Exception`) and falls back to Stop-time reconstruction, so giving up after
+# a bounded wait -- comfortably under any realistic hook timeout -- is
+# strictly safer than blocking. Measured critical sections under this lock
+# are sub-millisecond local disk I/O even under 5-way contention, so this
+# budget is generous, not tight.
+_LOCK_RETRY_BUDGET_S = 0.3
+_LOCK_RETRY_INITIAL_DELAY_S = 0.005
+_LOCK_RETRY_MAX_DELAY_S = 0.025
+
+
+def _acquire_with_bounded_retry(fd: int, operation: int) -> None:
+    deadline = time.monotonic() + _LOCK_RETRY_BUDGET_S
+    delay = _LOCK_RETRY_INITIAL_DELAY_S
+    while True:
+        try:
+            fcntl.flock(fd, operation | fcntl.LOCK_NB)
+            return
+        except BlockingIOError:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise TimeoutError(
+                    f"timed out after {_LOCK_RETRY_BUDGET_S}s waiting for claude-open-turn.lock"
+                ) from None
+            time.sleep(max(0.0, min(delay, remaining)))
+            delay = min(delay * 2, _LOCK_RETRY_MAX_DELAY_S)
+
 
 @contextlib.contextmanager
 def _locked_open_turn(session_dir_: Path, operation: int) -> Iterator[None]:
@@ -163,7 +207,7 @@ def _locked_open_turn(session_dir_: Path, operation: int) -> Iterator[None]:
 
     session_dir_.mkdir(parents=True, exist_ok=True)
     with _open_turn_lock_path(session_dir_).open("a+") as lock:
-        fcntl.flock(lock.fileno(), operation)
+        _acquire_with_bounded_retry(lock.fileno(), operation)
         held[key] = (operation, 1)
         _OPEN_TURN_LOCK_STATE.held = held
         try:
@@ -203,6 +247,7 @@ def _read_open_turn_unlocked(session_dir_: Path) -> OpenTurnMarker | None:
         or not (marker.get("last_frame_ts") is None or isinstance(marker.get("last_frame_ts"), str))
         or not _valid_committed_call_ids(marker.get("committed_call_ids"))
         or not _valid_committed_call_ids(marker.get("committed_tool_use_ids"))
+        or not _valid_turn_start_offset(marker.get("turn_start_offset"))
     ):
         return None
     return cast(OpenTurnMarker, marker)
@@ -215,6 +260,11 @@ def _valid_committed_call_ids(value: object) -> bool:
     )
 
 
+def _valid_turn_start_offset(value: object) -> bool:
+    """Absent is valid: the field postdates the marker format."""
+    return value is None or (isinstance(value, int) and not isinstance(value, bool) and value >= 0)
+
+
 def committed_call_ids(marker: OpenTurnMarker) -> list[str]:
     """Call ids this turn has already exported a chat span for."""
     return list(marker.get("committed_call_ids") or [])
@@ -223,6 +273,22 @@ def committed_call_ids(marker: OpenTurnMarker) -> list[str]:
 def committed_tool_use_ids(marker: OpenTurnMarker) -> list[str]:
     """Tool use ids this turn has already exported a tool span for."""
     return list(marker.get("committed_tool_use_ids") or [])
+
+
+def turn_start_offset(marker: OpenTurnMarker) -> int:
+    """The transcript offset at turn start, before any live advancement.
+
+    Falls back to the current `transcript_offset` for a marker written
+    before this field existed -- the same starting point Stop-time
+    reconstruction always used before this field existed, so an in-flight
+    turn spanning an upgrade degrades to old behavior rather than breaking.
+    """
+    value = marker.get("turn_start_offset")
+    return (
+        value
+        if isinstance(value, int) and not isinstance(value, bool)
+        else marker["transcript_offset"]
+    )
 
 
 def _read_open_turn(session_dir_: Path) -> OpenTurnMarker | None:
@@ -432,6 +498,7 @@ def user_prompt_submit() -> None:
                 "prompt_id": payload.get("prompt_id"),
                 "transcript_path": transcript_path,
                 "transcript_offset": offset,
+                "turn_start_offset": offset,
                 "last_frame_ts": start_ts,
             },
         )

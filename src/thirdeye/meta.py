@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import tempfile
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any
@@ -28,12 +29,22 @@ class SessionMeta:
 def write_meta(path: Path, meta: SessionMeta) -> None:
     payload = {"schema_version": SCHEMA_VERSION, **asdict(meta)}
     path.parent.mkdir(parents=True, exist_ok=True)
-    tmp = path.with_suffix(path.suffix + ".tmp")
-    with open(tmp, "w") as f:
-        yaml.safe_dump(payload, f, sort_keys=False)
-        f.flush()
-        os.fsync(f.fileno())
-    os.replace(tmp, path)
+    # A fixed tmp name would let two concurrent writers for the same session
+    # (e.g. overlapping subagent hook processes) collide: one's `os.replace`
+    # can rename the other's tmp file away before it gets there, raising
+    # FileNotFoundError and crashing that writer's hook process outright,
+    # losing whatever event it was recording. `mkstemp` guarantees each
+    # writer renames only a file it created itself.
+    fd, tmp_name = tempfile.mkstemp(dir=path.parent, prefix=f"{path.name}.", suffix=".tmp")
+    try:
+        with os.fdopen(fd, "w") as f:
+            yaml.safe_dump(payload, f, sort_keys=False)
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(tmp_name, path)
+    except BaseException:
+        os.unlink(tmp_name)
+        raise
 
 
 def read_meta(path: Path) -> SessionMeta | None:

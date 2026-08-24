@@ -854,6 +854,63 @@ class TestExportTurnInner:
         assert live_chat["parent"]["span_id"] == completed_turn["context"]["span_id"]
         assert completed_turn["context"]["span_id"] == expected_turn_id
 
+    def test_orphan_tool_call_parents_to_call_id_without_rebuilding_its_chat_span(
+        self, tmp_path: Path, enabled_config: Config, wired_instance, exporter
+    ):
+        """Stop-time reconstruction can recover a tool_use_id whose parent
+        chat call was already committed live, without re-exporting that
+        chat span (which would double-count its tokens). It's parented
+        purely by the deterministic id, same as a live tool span parenting
+        to a chat span exported in an earlier, separate call.
+        """
+        session_id = "orphan-session"
+        sd = tmp_path / "traces" / "claude" / session_id
+        live_chat_id = chat_span_id(session_id, "msg_parallel")
+
+        # The group's chat span, exported earlier and separately -- exactly
+        # as live_spans.py already does for any chat span.
+        otel_export._export_spans_batch(
+            config=enabled_config,
+            session_dir_=sd,
+            session_id=session_id,
+            platform="claude",
+            cwd="/proj",
+            trace_id=trace_id_for_session(session_id),
+            spans=[
+                {
+                    "name": "chat claude-sonnet-5",
+                    "span_id": str(live_chat_id),
+                    "parent_span_id": str(turn_span_id(session_id, 1)),
+                    "start_ts": "2026-01-01T00:00:01.000Z",
+                    "end_ts": "2026-01-01T00:00:02.000Z",
+                    "attributes": _llm_call(call_id="msg_parallel"),
+                }
+            ],
+        )
+        exporter.clear()
+
+        otel_export._export_turn_inner(
+            config=enabled_config,
+            session_dir_=sd,
+            session_id=session_id,
+            platform="claude",
+            cwd="/proj",
+            turn=_turn(
+                turn_span_id=str(turn_span_id(session_id, 1)),
+                orphan_tool_calls=[
+                    {"parent_call_id": "msg_parallel", "tool_call": _tool_call(tool_call_id="tu_2")}
+                ],
+            ),
+        )
+
+        spans = exporter.exported_spans_as_dict()
+        # No second "chat" span for msg_parallel in this export -- only the
+        # turn span and the orphaned tool span.
+        assert [s["name"] for s in spans if s["name"].startswith("chat")] == []
+        tool_span = next(s for s in spans if s["name"] == "tool: Bash")
+        assert tool_span["context"]["span_id"] == tool_span_id(session_id, "tu_2")
+        assert tool_span["parent"]["span_id"] == live_chat_id
+
     def test_turn_with_messages_carries_them(
         self, tmp_path: Path, enabled_config: Config, wired_instance, exporter
     ):
