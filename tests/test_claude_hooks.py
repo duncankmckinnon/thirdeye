@@ -9,7 +9,10 @@ import pytest
 from thirdeye.config import Config
 from thirdeye.paths import session_dir, tags_path
 from thirdeye.platforms.claude import hooks
+from thirdeye.reader import SessionReader
+from thirdeye.span_ids import turn_span_id
 from thirdeye.store import Store
+from thirdeye.usage.store import UsageStore
 
 
 @pytest.fixture
@@ -335,6 +338,272 @@ class TestUserPromptHashtagExtract:
         assert list(Store(Config.load()).list_sessions()) == []
 
 
+# -- user_prompt_submit open-turn marker offset --------------------------------
+
+
+class TestOpenTurnCursor:
+    def test_user_prompt_submit_writes_deterministic_id_and_timestamp(self, monkeypatch, env: Path):
+        sid = "marker-round-trip"
+        _stdin(monkeypatch, {"session_id": sid, "cwd": "/p", "prompt": "hello"})
+        hooks.user_prompt_submit()
+
+        sd = session_dir(env, "claude", sid)
+        marker = hooks._read_open_turn(sd)
+        assert marker is not None
+        event = SessionReader(sd).get_event(marker["turn_seq"])
+
+        assert marker["turn_span_id"] == str(turn_span_id(sid, marker["turn_seq"]))
+        assert marker["last_frame_ts"] == event["ts"]
+        assert marker["start_ts"] == event["ts"]
+
+    def test_advance_updates_cursor_fields(self, monkeypatch, env: Path):
+        sid = "advance"
+        _stdin(monkeypatch, {"session_id": sid, "cwd": "/p", "prompt": "hello"})
+        hooks.user_prompt_submit()
+        sd = session_dir(env, "claude", sid)
+        original = hooks._read_open_turn(sd)
+        assert original is not None
+
+        advanced = hooks._advance_turn_cursor(
+            sd,
+            expected_turn_seq=original["turn_seq"],
+            offset=9182,
+            last_frame_ts="2026-08-22T12:34:56.789Z",
+        )
+
+        marker = hooks._read_open_turn(sd)
+        assert advanced is True
+        assert marker is not None
+        assert marker["transcript_offset"] == 9182
+        assert marker["last_frame_ts"] == "2026-08-22T12:34:56.789Z"
+        assert marker["turn_span_id"] == original["turn_span_id"]
+
+    def test_advance_rejects_stale_turn_without_mutating_marker(self, monkeypatch, env: Path):
+        sid = "stale-writer"
+        _stdin(monkeypatch, {"session_id": sid, "cwd": "/p", "prompt": "hello"})
+        hooks.user_prompt_submit()
+        sd = session_dir(env, "claude", sid)
+        before = hooks._read_open_turn(sd)
+        assert before is not None
+
+        advanced = hooks._advance_turn_cursor(
+            sd,
+            expected_turn_seq=before["turn_seq"] - 1,
+            offset=999999,
+            last_frame_ts="2099-01-01T00:00:00Z",
+        )
+
+        assert advanced is False
+        assert hooks._read_open_turn(sd) == before
+
+    @pytest.mark.parametrize(
+        ("field", "value"),
+        [
+            ("turn_seq", -1),
+            ("turn_span_id", "0"),
+            ("turn_span_id", str(2**64)),
+            ("transcript_offset", -1),
+            ("last_frame_ts", 123),
+        ],
+    )
+    def test_reader_rejects_semantically_invalid_marker(
+        self, monkeypatch, env: Path, field: str, value: object
+    ):
+        sid = "invalid-marker"
+        _stdin(monkeypatch, {"session_id": sid, "cwd": "/p", "prompt": "hello"})
+        hooks.user_prompt_submit()
+        sd = session_dir(env, "claude", sid)
+        marker = json.loads(hooks._open_turn_path(sd).read_text())
+        marker[field] = value
+        hooks._open_turn_path(sd).write_text(json.dumps(marker))
+
+        assert hooks._read_open_turn(sd) is None
+
+    def test_compare_and_delete_preserves_newer_marker(self, monkeypatch, env: Path):
+        sid = "compare-delete"
+        _stdin(monkeypatch, {"session_id": sid, "cwd": "/p", "prompt": "hello"})
+        hooks.user_prompt_submit()
+        sd = session_dir(env, "claude", sid)
+        marker = hooks._read_open_turn(sd)
+        assert marker is not None
+        stale_seq = marker["turn_seq"]
+        marker["turn_seq"] += 1
+        marker["turn_span_id"] = str(turn_span_id(sid, marker["turn_seq"]))
+        hooks._write_open_turn(sd, marker)
+
+        assert hooks._delete_open_turn(sd, expected_turn_seq=stale_seq) is False
+        assert hooks._read_open_turn(sd) == marker
+
+    def test_delete_rejects_marker_that_fails_shared_validation(self, monkeypatch, env: Path):
+        sid = "invalid-delete"
+        _stdin(monkeypatch, {"session_id": sid, "cwd": "/p", "prompt": "hello"})
+        hooks.user_prompt_submit()
+        sd = session_dir(env, "claude", sid)
+        marker_path = hooks._open_turn_path(sd)
+        marker = json.loads(marker_path.read_text())
+        marker["last_frame_ts"] = 123
+        marker_path.write_text(json.dumps(marker))
+
+        assert hooks._delete_open_turn(sd, expected_turn_seq=marker["turn_seq"]) is False
+        assert marker_path.exists()
+
+
+class TestUserPromptSubmitTranscriptOffset:
+    """The marker's starting `transcript_offset` is measured fresh from the
+    transcript file, not inherited from the usage bookmark.
+
+    The usage bookmark only advances at `Stop`, so an interrupted turn left it
+    pointing at the *previous* turn's start — and the next turn's marker
+    inherited that staleness, making `build_turn` re-parse and re-emit the
+    previous turn's chat calls as duplicates.
+    """
+
+    def _marker(self, env: Path, sid: str) -> dict:
+        return json.loads((session_dir(env, "claude", sid) / "claude-open-turn.json").read_text())
+
+    def _append_frames(self, transcript: Path, n: int) -> None:
+        with transcript.open("a", encoding="utf-8") as f:
+            for i in range(n):
+                f.write(json.dumps({"type": "assistant", "message": {"id": f"msg_{i}"}}) + "\n")
+
+    def test_interrupted_turn_does_not_replay_previous_frames(
+        self, monkeypatch, env: Path, tmp_path: Path
+    ):
+        transcript = tmp_path / "transcript.jsonl"
+        transcript.write_text("")
+
+        _stdin(monkeypatch, {"session_id": "s1", "cwd": "/p"})
+        hooks.session_start()
+
+        _stdin(
+            monkeypatch,
+            {
+                "session_id": "s1",
+                "cwd": "/p",
+                "prompt": "turn one",
+                "transcript_path": str(transcript),
+            },
+        )
+        hooks.user_prompt_submit()
+        assert self._marker(env, "s1")["transcript_offset"] == 0
+
+        # Turn 1 produces frames, then is interrupted — `stop()` never runs, so
+        # the usage bookmark never advances.
+        self._append_frames(transcript, 3)
+        size_after_turn_1 = transcript.stat().st_size
+
+        _stdin(
+            monkeypatch,
+            {
+                "session_id": "s1",
+                "cwd": "/p",
+                "prompt": "turn two",
+                "transcript_path": str(transcript),
+            },
+        )
+        hooks.user_prompt_submit()
+
+        assert self._marker(env, "s1")["transcript_offset"] == size_after_turn_1
+
+    def test_completed_turn_starts_next_marker_after_its_frames(
+        self, monkeypatch, env: Path, tmp_path: Path
+    ):
+        transcript = tmp_path / "transcript.jsonl"
+        transcript.write_text("")
+
+        _stdin(monkeypatch, {"session_id": "s1", "cwd": "/p"})
+        hooks.session_start()
+
+        _stdin(
+            monkeypatch,
+            {
+                "session_id": "s1",
+                "cwd": "/p",
+                "prompt": "turn one",
+                "transcript_path": str(transcript),
+            },
+        )
+        hooks.user_prompt_submit()
+
+        self._append_frames(transcript, 2)
+        size_after_turn_1 = transcript.stat().st_size
+
+        _stdin(
+            monkeypatch,
+            {"session_id": "s1", "cwd": "/p", "transcript_path": str(transcript)},
+        )
+        hooks.stop()
+
+        _stdin(
+            monkeypatch,
+            {
+                "session_id": "s1",
+                "cwd": "/p",
+                "prompt": "turn two",
+                "transcript_path": str(transcript),
+            },
+        )
+        hooks.user_prompt_submit()
+
+        assert self._marker(env, "s1")["transcript_offset"] == size_after_turn_1
+
+    def test_missing_transcript_path_yields_zero(self, monkeypatch, env: Path):
+        _stdin(monkeypatch, {"session_id": "s1", "cwd": "/p"})
+        hooks.session_start()
+        _stdin(monkeypatch, {"session_id": "s1", "cwd": "/p", "prompt": "hi"})
+        hooks.user_prompt_submit()
+        assert self._marker(env, "s1")["transcript_offset"] == 0
+
+    def test_nonexistent_transcript_yields_zero(self, monkeypatch, env: Path, tmp_path: Path):
+        _stdin(monkeypatch, {"session_id": "s1", "cwd": "/p"})
+        hooks.session_start()
+        _stdin(
+            monkeypatch,
+            {
+                "session_id": "s1",
+                "cwd": "/p",
+                "prompt": "hi",
+                "transcript_path": str(tmp_path / "does-not-exist.jsonl"),
+            },
+        )
+        hooks.user_prompt_submit()
+        assert self._marker(env, "s1")["transcript_offset"] == 0
+
+    def test_directory_as_transcript_path_yields_zero(self, monkeypatch, env: Path, tmp_path: Path):
+        _stdin(monkeypatch, {"session_id": "s1", "cwd": "/p"})
+        hooks.session_start()
+        _stdin(
+            monkeypatch,
+            {"session_id": "s1", "cwd": "/p", "prompt": "hi", "transcript_path": str(tmp_path)},
+        )
+        hooks.user_prompt_submit()
+        assert self._marker(env, "s1")["transcript_offset"] == 0
+
+    def test_usage_bookmark_is_left_untouched(self, monkeypatch, env: Path, tmp_path: Path):
+        transcript = tmp_path / "transcript.jsonl"
+        self._append_frames(transcript, 4)
+
+        _stdin(monkeypatch, {"session_id": "s1", "cwd": "/p"})
+        hooks.session_start()
+
+        usage = UsageStore(session_dir(env, "claude", "s1"))
+        usage.write_state(transcript_offset=17, last_seq=3)
+
+        _stdin(
+            monkeypatch,
+            {
+                "session_id": "s1",
+                "cwd": "/p",
+                "prompt": "hi",
+                "transcript_path": str(transcript),
+            },
+        )
+        hooks.user_prompt_submit()
+
+        assert usage.read_state() == {"transcript_offset": 17, "last_seq": 3}
+        assert self._marker(env, "s1")["transcript_offset"] == transcript.stat().st_size
+
+
 # -- pre_tool_use --------------------------------------------------------------
 
 
@@ -430,6 +699,47 @@ class TestSubagentStop:
         events = list(Store(Config.load()).reader("s1").iter_events())
         assert events[1]["t"] == "subagent_message"
         assert events[1]["data"]["agent"] == "explore"
+
+
+# -- hook invocation breadcrumbs ------------------------------------------------
+
+
+def _error_log_entries(home: Path) -> list[dict]:
+    log = home / "logs" / "usage-errors.jsonl"
+    if not log.exists():
+        return []
+    return [json.loads(line) for line in log.read_text().splitlines() if line]
+
+
+class TestHookInvocationBreadcrumbs:
+    def test_post_tool_use_logs_breadcrumb_even_without_session_id(self, monkeypatch, env: Path):
+        _stdin(monkeypatch, {"cwd": "/p", "tool_use_id": "tu_missing_session"})
+
+        hooks.post_tool_use()
+
+        entries = _error_log_entries(env)
+        assert any(
+            e["phase"] == "hook_invoked" and "tu_missing_session" in e["message"] for e in entries
+        )
+
+    def test_subagent_start_logs_breadcrumb_with_agent_id(self, monkeypatch, env: Path):
+        _stdin(monkeypatch, {"session_id": "s1", "cwd": "/p", "agent_id": "agent-123"})
+
+        hooks.subagent_start()
+
+        entries = _error_log_entries(env)
+        assert any(
+            e["phase"] == "hook_invoked" and e["session_id"] == "s1" and "agent-123" in e["message"]
+            for e in entries
+        )
+
+    def test_subagent_stop_logs_breadcrumb_even_without_session_id(self, monkeypatch, env: Path):
+        _stdin(monkeypatch, {"cwd": "/p", "agent_id": "agent-456"})
+
+        hooks.subagent_stop()
+
+        entries = _error_log_entries(env)
+        assert any(e["phase"] == "hook_invoked" and "agent-456" in e["message"] for e in entries)
 
 
 # -- stop_failure --------------------------------------------------------------

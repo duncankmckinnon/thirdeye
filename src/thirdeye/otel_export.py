@@ -69,13 +69,22 @@ from typing import Any
 from thirdeye.config import Config
 from thirdeye.ids import new_ulid
 from thirdeye.paths import otel_jobs_dir, otel_state_path
+from thirdeye.span_ids import (
+    chat_span_id,
+    root_span_id_for_session,
+    tool_span_id,
+    trace_id_for_session,
+)
 from thirdeye.tracing.model import TurnSpanDict
 from thirdeye.usage.errlog import log_capture_error
 
 # Cache across calls *within one process*. Each hook invocation is its own
 # short-lived process, so this only saves repeat configure() calls when a
 # single process exports more than one turn (e.g. the eval runner).
-_state: dict[str, Any] = {"attempted": False, "instance": None}
+# `id_generator` is the one instance handed to `logfire.configure`; the emit
+# path must reach *that* object, since setting a slot on any other one would
+# silently do nothing.
+_state: dict[str, Any] = {"attempted": False, "instance": None, "id_generator": None}
 
 _ATTR_PRIMITIVES = (str, bool, int, float)
 # Logfire's own convention for telling its backend which JSON-encoded string
@@ -166,6 +175,89 @@ def _scrub_callback(match: Any) -> Any:
     return None
 
 
+def _build_id_generator() -> Any:
+    """Build a generator that lets us hand the SDK ids of our own choosing.
+
+    Span ids for this trace tree are *derived*, not minted (see
+    ``thirdeye.span_ids``), because a tool span emitted while a turn is still
+    running has to name the ``chat`` span that requested it as its parent —
+    and that chat span isn't exported until the turn ends. But OTel's
+    ``IdGenerator`` interface is context-free (``generate_span_id()`` takes no
+    arguments), so there is nothing to key an id off of. What can be
+    controlled is the *sequence*: a mutable slot, set immediately before a
+    ``start_span`` call and cleared as it's read, so the next id the SDK draws
+    is the one we just chose. Anything the SDK starts that we didn't
+    pre-allocate for still gets an ordinary random id.
+
+    Worker processes are single-threaded and every span here is started
+    synchronously, so "the next id drawn" is unambiguous. `logfire.configure`
+    itself draws zero ids, so no internal span can consume a pending slot —
+    a third-party assumption that `TestPreallocatedIdGenerator` keeps a canary
+    on, because a regression in it would misparent spans invisibly.
+
+    The class is defined inside this function because its base class lives in
+    ``opentelemetry``, present only with the optional ``logfire`` extra;
+    importing it at module scope would break every hook invocation without it.
+    """
+    from opentelemetry.sdk.trace.id_generator import IdGenerator, RandomIdGenerator
+
+    class PreallocatedIdGenerator(IdGenerator):
+        """Returns a pre-set id if one is pending, else a random one."""
+
+        def __init__(self) -> None:
+            self.next_span_id: int | None = None
+            self.next_trace_id: int | None = None
+            self._random = RandomIdGenerator()
+
+        def generate_span_id(self) -> int:
+            value, self.next_span_id = self.next_span_id, None
+            return value if value is not None else self._random.generate_span_id()
+
+        def generate_trace_id(self) -> int:
+            value, self.next_trace_id = self.next_trace_id, None
+            return value if value is not None else self._random.generate_trace_id()
+
+    return PreallocatedIdGenerator()
+
+
+def _id_generator() -> Any:
+    """This process's generator instance, created on first use and cached."""
+    if _state["id_generator"] is None:
+        _state["id_generator"] = _build_id_generator()
+    return _state["id_generator"]
+
+
+def _start_span_with_id(
+    tracer: Any,
+    name: str,
+    span_id: int,
+    *,
+    parent_ctx: Any = None,
+    start_time: int | None = None,
+    attributes: dict[str, Any] | None = None,
+    trace_id: int | None = None,
+    kind: Any = None,
+) -> Any:
+    """Start a span carrying a span id we chose rather than one the SDK minted.
+
+    `trace_id` is only honored for a span with no parent — a child always
+    inherits its parent's trace — so it is passed for the session root and
+    nowhere else. It's assigned unconditionally so a value left pending by an
+    earlier call can never leak into a later root span.
+    """
+    generator = _id_generator()
+    generator.next_span_id = span_id
+    generator.next_trace_id = trace_id
+    kwargs = {
+        "context": parent_ctx,
+        "start_time": start_time,
+        "attributes": attributes,
+    }
+    if kind is not None:
+        kwargs["kind"] = kind
+    return tracer.start_span(name, **kwargs)
+
+
 def _get_instance(config: Config, platform: str):
     """Return a configured Logfire instance, or None if export is inactive.
 
@@ -196,6 +288,11 @@ def _get_instance(config: Config, platform: str):
             console=False,
             service_name=platform,
             scrubbing=logfire.ScrubbingOptions(callback=_scrub_callback),
+            # Keeping the SDK is what preserves scrubbing, retries and the
+            # OTLP wire format for free; the one thing it doesn't give us is
+            # ids of our own choosing, and this injects those through its
+            # normal path rather than around it.
+            advanced=logfire.AdvancedOptions(id_generator=_id_generator()),
         )
     except Exception as exc:
         log_capture_error(thirdeye_home=config.root, phase="logfire_configure", error=exc)
@@ -288,9 +385,13 @@ def _atomic_create(path: Path, payload: str) -> bool:
 def _root_or_ownership(root_path: Path) -> tuple[tuple[int, int] | None, Path | None]:
     """Return an existing root or exclusive ownership of creating it.
 
-    Span ids are SDK-generated, so the root cannot be reserved directly. A
-    short-lived sibling lock serializes the read/start/persist sequence across
-    detached workers and prevents two first spans from creating split traces.
+    A short-lived sibling lock serializes the read/persist/start sequence
+    across detached workers. Derived root ids mean two concurrent first
+    exports can no longer produce *split* traces — they'd derive the same
+    ids — but without the lock they would each emit their own copy of the
+    session root span, since neither's atomic create would tell it apart from
+    a win. Sessions rooted before derivation landed keep whatever ids
+    ``otel.json`` already holds, so the lock still guards those too.
     """
     lock_path = root_path.with_name(f"{root_path.name}.lock")
     deadline = time.monotonic() + 2.0
@@ -318,15 +419,17 @@ def _span_payload(trace_id: int, span_id: int) -> str:
     return json.dumps({"trace_id": f"{trace_id:032x}", "span_id": f"{span_id:016x}"})
 
 
-def _create_root_atomic(path: Path, trace_id: int, span_id: int) -> tuple[int, int]:
+def _create_root_atomic(path: Path, trace_id: int, span_id: int) -> tuple[tuple[int, int], bool]:
     """Persist (trace_id, span_id) as the session's root, first writer wins.
 
     A losing writer's own generated ids are simply discarded in favor of the
-    winner's, so every process agrees on one root going forward.
+    winner's, so every process agrees on one root going forward. The boolean
+    records whether this call created the file; comparing ids cannot answer
+    that once every worker derives the same deterministic root.
     """
     if _atomic_create(path, _span_payload(trace_id, span_id)):
-        return trace_id, span_id
-    return _read_root(path) or (trace_id, span_id)
+        return (trace_id, span_id), True
+    return _read_root(path) or (trace_id, span_id), False
 
 
 def _parent_context(trace_id: int, span_id: int):
@@ -447,6 +550,114 @@ def export_turn(
         )
 
 
+def export_spans(
+    config: Config,
+    session_dir_: Path,
+    session_id: str,
+    platform: str,
+    cwd: str,
+    trace_id: int,
+    spans: list[dict[str, Any]],
+) -> bool:
+    """Hand already-built spans off for background export.
+
+    IDs are serialized as decimal strings so their full unsigned 64-/128-bit
+    values survive the JSON boundary without relying on a consumer's numeric
+    precision. As with :func:`export_turn`, this function only performs local
+    file/process work and never lets a capture failure reach its caller. The
+    return value says whether the job was durably written and dispatched, so a
+    live cursor is never advanced past a failed local write.
+    """
+    if not config.logfire.enabled or not config.logfire.token:
+        return False
+    try:
+        serialized_spans = []
+        for span in spans:
+            serialized = dict(span)
+            serialized["span_id"] = str(int(span["span_id"]))
+            serialized["parent_span_id"] = str(int(span["parent_span_id"]))
+            serialized_spans.append(serialized)
+        job_path = _write_job(
+            config.root,
+            {
+                "kind": "spans",
+                "session_dir": str(session_dir_),
+                "session_id": session_id,
+                "platform": platform,
+                "cwd": cwd,
+                "trace_id": str(int(trace_id)),
+                "spans": serialized_spans,
+            },
+        )
+        _spawn(job_path)
+        return True
+    except Exception as exc:
+        log_capture_error(
+            thirdeye_home=config.root,
+            phase="logfire_spans_export_spawn",
+            error=exc,
+            platform=platform,
+            session_id=session_id,
+        )
+        return False
+
+
+def export_subagent_turn(
+    config: Config,
+    session_dir_: Path,
+    session_id: str,
+    platform: str,
+    cwd: str,
+    turn: TurnSpanDict,
+    tool_use_id: str,
+) -> None:
+    """Hand a completed subagent turn off for background export, nested
+    under the tool span (already exported, live, when the dispatching tool
+    call itself completed) that dispatched it -- not under whichever turn
+    happens to be open in this session when the subagent's own Stop fires.
+
+    A subagent can run well past its dispatching turn's own Stop, so by the
+    time this is called that turn's span tree may already be exported (with
+    no way to graft a child onto it after the fact) or a wholly unrelated
+    later turn may be in progress. Parenting is independent of turn export
+    for exactly the same reason a live tool/chat span's is: the deterministic
+    `tool_span_id` gives Logfire everything it needs to place this in the
+    tree without its parent needing to still be open, or even in this
+    process. Never raises, never blocks on network I/O -- same contract as
+    `export_turn`.
+    """
+    if not config.logfire.enabled or not config.logfire.token:
+        return
+    try:
+        try:
+            state = json.loads(otel_state_path(session_dir_).read_text())
+            trace_id = int(state["trace_id"], 16)
+        except (OSError, TypeError, ValueError, KeyError, json.JSONDecodeError):
+            trace_id = trace_id_for_session(session_id)
+        job_path = _write_job(
+            config.root,
+            {
+                "kind": "subagent_turn",
+                "session_dir": str(session_dir_),
+                "session_id": session_id,
+                "platform": platform,
+                "cwd": cwd,
+                "trace_id": str(trace_id),
+                "parent_span_id": str(int(tool_span_id(session_id, tool_use_id))),
+                "turn": turn,
+            },
+        )
+        _spawn(job_path)
+    except Exception as exc:
+        log_capture_error(
+            thirdeye_home=config.root,
+            phase="logfire_subagent_turn_export_spawn",
+            error=exc,
+            platform=platform,
+            session_id=session_id,
+        )
+
+
 def _export_turn_inner(
     *,
     config: Config,
@@ -473,7 +684,11 @@ def _export_turn_inner(
             if parent is None:
                 # First export for this session: the root is purely an
                 # anchor, so it carries none of the turn's own input/output
-                # content.
+                # content. Its ids are derived from the session id and
+                # persisted *before* the span is emitted — the reverse of the
+                # old mint-then-record order — so any other process can name
+                # this trace and this parent without having read the file back
+                # first, which is what makes mid-turn emission possible.
                 root_ns = _ts_to_ns(turn["start_ts"])
                 root_attrs = _flatten_attrs(
                     {
@@ -482,10 +697,25 @@ def _export_turn_inner(
                         "thirdeye.cwd": cwd,
                     }
                 )
-                root_span = tracer.start_span("session", start_time=root_ns, attributes=root_attrs)
-                root_span.end(end_time=root_ns)
-                root_ctx = root_span.get_span_context()
-                parent = _create_root_atomic(root_path, root_ctx.trace_id, root_ctx.span_id)
+                derived = (
+                    trace_id_for_session(session_id),
+                    root_span_id_for_session(session_id),
+                )
+                parent, created_root = _create_root_atomic(root_path, *derived)
+                # Another writer can win after stale-lock recovery with either
+                # legacy ids or these same deterministic ids. In both cases
+                # its root span exists already; emit only if our atomic create
+                # actually persisted the root file.
+                if created_root:
+                    root_span = _start_span_with_id(
+                        tracer,
+                        "session",
+                        derived[1],
+                        trace_id=derived[0],
+                        start_time=root_ns,
+                        attributes=root_attrs,
+                    )
+                    root_span.end(end_time=root_ns)
         finally:
             if root_lock is not None:
                 root_lock.unlink(missing_ok=True)
@@ -500,6 +730,261 @@ def _export_turn_inner(
         claim_path.unlink(missing_ok=True)
         raise
     claim_path.write_text("sent")
+
+
+def _export_subagent_turn_inner(
+    *,
+    config: Config,
+    session_dir_: Path,
+    session_id: str,
+    platform: str,
+    cwd: str,
+    trace_id: int | str,
+    parent_span_id: int | str,
+    turn: TurnSpanDict,
+) -> None:
+    """Export one subagent's turn under an already-known parent span id.
+
+    Uses the same first-wins claim as `_export_turn_inner`, keyed separately
+    (`subagent:<turn_id>`) so this and a same-session `build_turn` embedding
+    that also happens to see this subagent (the fast, fully-synchronous case)
+    can't both export it -- whichever claims first wins, the other is a no-op.
+    Unlike a top-level turn, there is no session-root bootstrapping here: the
+    parent (the dispatching tool's span) was already exported live by the
+    time the subagent even started, so this only ever attaches to an existing
+    remote parent context, never creates one.
+    """
+    instance = _get_instance(config, platform)
+    if instance is None:
+        return
+    claim_id = f"subagent:{turn['turn_id']}"
+    if not _claim_turn_export(session_dir_, claim_id):
+        return
+    claim_path = _turn_claim_path(session_dir_, claim_id)
+
+    try:
+        tracer = instance.config.get_tracer_provider().get_tracer("thirdeye")
+        parent_ctx = _parent_context(int(trace_id), int(parent_span_id))
+        _export_turn_subtree(
+            tracer,
+            parent_ctx,
+            turn,
+            session_id=session_id,
+            platform=platform,
+            cwd=cwd,
+            span_name="agent-turn (subagent)",
+        )
+        if instance.force_flush(timeout_millis=_FLUSH_TIMEOUT_MS) is False:
+            raise RuntimeError("subagent turn export was not flushed")
+    except Exception:
+        claim_path.unlink(missing_ok=True)
+        raise
+    claim_path.write_text("sent")
+
+
+def _identity_attributes(
+    *,
+    session_id: str,
+    platform: str,
+    cwd: str,
+    turn_id: Any = None,
+    turn_span_id: Any = None,
+) -> dict[str, Any]:
+    """Attributes naming the session and turn a span belongs to.
+
+    A live span is exported while its `agent-turn` parent is still open, so it
+    has no parent row to inherit this from and cannot otherwise be attributed
+    to a turn until the turn ends. Applied on the completed-turn path too, so
+    the two paths keep one vocabulary.
+    """
+    attributes: dict[str, Any] = {
+        "gen_ai.conversation.id": session_id,
+        "thirdeye.platform": platform,
+        "thirdeye.cwd": cwd,
+    }
+    if turn_id is not None:
+        attributes["thirdeye.turn.id"] = str(turn_id)
+    if turn_span_id is not None:
+        attributes["thirdeye.turn.span_id"] = str(turn_span_id)
+    return attributes
+
+
+def _cost_attributes(attributes: dict[str, Any]) -> dict[str, Any]:
+    """Price a chat span's token usage into `operation.cost`, or `{}`.
+
+    Logfire surfaces cost from this attribute; when it is missing the UI falls
+    back to pricing `gen_ai.usage.input_tokens` at the model's full input rate.
+    That count is cache-inclusive (the convention Logfire's own Anthropic
+    instrumentation uses), so on a cache-heavy session — where nearly every
+    input token is a cache read billed at a tenth of the rate — the fallback
+    overstates cost by roughly 9x.
+
+    `genai_prices` is the same library Logfire's instrumentation prices with,
+    so the two agree by construction. It also requires the cache-inclusive
+    convention: it rejects a `cache_read_tokens` larger than `input_tokens`.
+
+    Best-effort by design, matching Logfire's own handling — an unpriceable
+    model or a missing dependency costs the span its cost attribute, never the
+    span itself.
+    """
+    model = attributes.get("gen_ai.response.model")
+    input_tokens = attributes.get("gen_ai.usage.input_tokens")
+    if not model or not isinstance(input_tokens, int):
+        return {}
+    try:
+        from genai_prices import calc_price
+        from genai_prices.types import Usage
+
+        usage = Usage(
+            input_tokens=input_tokens,
+            output_tokens=attributes.get("gen_ai.usage.output_tokens"),
+            cache_read_tokens=attributes.get("gen_ai.usage.cache_read.input_tokens"),
+            cache_write_tokens=attributes.get("gen_ai.usage.cache_creation.input_tokens"),
+        )
+        price = calc_price(
+            usage,
+            model_ref=str(model),
+            provider_id=attributes.get("gen_ai.provider.name"),
+        )
+        return {"operation.cost": float(price.total_price)}
+    except Exception:
+        return {}
+
+
+def _chat_attributes(
+    call_or_attributes: dict[str, Any],
+    *,
+    session_id: str,
+    platform: str,
+    cwd: str,
+    turn_id: Any = None,
+    turn_span_id: Any = None,
+) -> dict[str, Any]:
+    """Build flattened attributes for a chat span.
+
+    Completed-turn export passes an LLM-call record, while live batch export
+    passes the already-built semantic attributes from its job. Accepting both
+    forms keeps the vocabulary and JSON handling in one place.
+    """
+    if all(
+        key in call_or_attributes
+        for key in ("input_messages", "output_messages", "provider", "usage")
+    ):
+        model = call_or_attributes.get("model") or ""
+        attributes: dict[str, Any] = {
+            "gen_ai.input.messages": call_or_attributes["input_messages"],
+            "gen_ai.output.messages": call_or_attributes["output_messages"],
+            "gen_ai.provider.name": call_or_attributes["provider"],
+            "gen_ai.operation.name": "chat",
+            "gen_ai.response.model": model,
+        }
+        usage = call_or_attributes["usage"]
+        for source, target in _USAGE_KEYS.items():
+            if source in usage:
+                attributes[target] = usage[source]
+    else:
+        attributes = call_or_attributes
+    return _flatten_attrs(
+        _merge_raw(
+            attributes,
+            _identity_attributes(
+                session_id=session_id,
+                platform=platform,
+                cwd=cwd,
+                turn_id=turn_id,
+                turn_span_id=turn_span_id,
+            ),
+            _cost_attributes(attributes),
+        )
+    )
+
+
+def _tool_attributes(
+    attributes: dict[str, Any],
+    *,
+    session_id: str,
+    platform: str,
+    cwd: str,
+    turn_id: Any = None,
+    turn_span_id: Any = None,
+) -> dict[str, Any]:
+    """Enrich and flatten a tool span's raw attributes."""
+    return _flatten_attrs(
+        _merge_raw(
+            attributes,
+            _identity_attributes(
+                session_id=session_id,
+                platform=platform,
+                cwd=cwd,
+                turn_id=turn_id,
+                turn_span_id=turn_span_id,
+            ),
+        )
+    )
+
+
+def _export_spans_batch(
+    *,
+    config: Config,
+    session_dir_: Path,
+    session_id: str,
+    platform: str,
+    cwd: str,
+    trace_id: int | str,
+    spans: list[dict[str, Any]],
+) -> None:
+    """Emit a batch of independently-parented spans and flush exactly once.
+
+    A parent need not be present in this batch. The remote parent context is
+    sufficient for Logfire to reconstruct the tree when the parent arrives.
+    ``session_dir_`` is part of the common job envelope and intentionally
+    unused here; unlike turn export, live spans have no turn-level claim.
+    """
+    del session_dir_
+    instance = _get_instance(config, platform)
+    if instance is None:
+        return
+
+    tracer = instance.config.get_tracer_provider().get_tracer("thirdeye")
+    trace_id_int = int(trace_id)
+    for span_data in spans:
+        name = span_data["name"]
+        raw_attributes = span_data.get("attributes", {})
+        turn_id = span_data.get("turn_seq")
+        turn_span_id_ = span_data.get("turn_span_id")
+        if name == "chat" or name.startswith("chat "):
+            attributes = _chat_attributes(
+                raw_attributes,
+                session_id=session_id,
+                platform=platform,
+                cwd=cwd,
+                turn_id=turn_id,
+                turn_span_id=turn_span_id_,
+            )
+        elif name.startswith("tool:"):
+            attributes = _tool_attributes(
+                raw_attributes,
+                session_id=session_id,
+                platform=platform,
+                cwd=cwd,
+                turn_id=turn_id,
+                turn_span_id=turn_span_id_,
+            )
+        else:
+            attributes = _flatten_attrs(raw_attributes)
+        parent_ctx = _parent_context(trace_id_int, int(span_data["parent_span_id"]))
+        span = _start_span_with_id(
+            tracer,
+            name,
+            int(span_data["span_id"]),
+            parent_ctx=parent_ctx,
+            start_time=_ts_to_ns(span_data["start_ts"]),
+            attributes=attributes,
+        )
+        span.end(end_time=_ts_to_ns(span_data["end_ts"]))
+
+    if instance.force_flush(timeout_millis=_FLUSH_TIMEOUT_MS) is False:
+        raise RuntimeError("span batch was not flushed")
 
 
 def _export_turn_subtree(
@@ -533,51 +1018,64 @@ def _export_turn_subtree(
     if turn["output_message"]:
         turn_attrs["gen_ai.output.messages"] = _message("assistant", turn["output_message"])
 
-    turn_span = tracer.start_span(
-        span_name,
-        context=parent_ctx,
-        start_time=_ts_to_ns(turn["start_ts"]),
-        attributes=_flatten_attrs(_merge_raw(turn_attrs, turn.get("attributes"))),
-    )
+    turn_id = turn.get("turn_span_id")
+    if turn_id is None:
+        turn_span = tracer.start_span(
+            span_name,
+            context=parent_ctx,
+            start_time=_ts_to_ns(turn["start_ts"]),
+            attributes=_flatten_attrs(_merge_raw(turn_attrs, turn.get("attributes"))),
+        )
+    else:
+        turn_span = _start_span_with_id(
+            tracer,
+            span_name,
+            int(turn_id),
+            parent_ctx=parent_ctx,
+            start_time=_ts_to_ns(turn["start_ts"]),
+            attributes=_flatten_attrs(_merge_raw(turn_attrs, turn.get("attributes"))),
+        )
     turn_span.end(end_time=_ts_to_ns(turn["end_ts"]))
     turn_ctx = turn_span.get_span_context()
     turn_parent_ctx = _parent_context(turn_ctx.trace_id, turn_ctx.span_id)
 
     for llm_call in turn["llm_calls"]:
         model = llm_call.get("model") or ""
-        call_attrs: dict[str, Any] = {
-            "gen_ai.input.messages": llm_call["input_messages"],
-            "gen_ai.output.messages": llm_call["output_messages"],
-            "gen_ai.provider.name": llm_call["provider"],
-            "gen_ai.operation.name": "chat",
-            "gen_ai.response.model": model,
-        }
-        usage = llm_call["usage"]
-        for source, target in _USAGE_KEYS.items():
-            if source in usage:
-                call_attrs[target] = usage[source]
-
-        call_span = tracer.start_span(
+        call_span = _start_span_with_id(
+            tracer,
             f"chat {model}" if model else "chat",
-            context=turn_parent_ctx,
+            chat_span_id(session_id, llm_call["call_id"]),
+            parent_ctx=turn_parent_ctx,
             start_time=_ts_to_ns(llm_call["start_ts"]),
-            attributes=_flatten_attrs(call_attrs),
+            attributes=_chat_attributes(
+                llm_call,
+                session_id=session_id,
+                platform=platform,
+                cwd=cwd,
+                turn_id=turn["turn_id"],
+                turn_span_id=turn.get("turn_span_id"),
+            ),
         )
         call_span.end(end_time=_ts_to_ns(llm_call["end_ts"]))
         call_ctx = call_span.get_span_context()
         call_parent_ctx = _parent_context(call_ctx.trace_id, call_ctx.span_id)
 
         for tool_call in llm_call["tool_calls"]:
-            tool_attrs = _flatten_attrs(tool_call["attributes"])
-            tool_attrs["gen_ai.conversation.id"] = session_id
-            tool_attrs["thirdeye.platform"] = platform
-            tool_attrs["thirdeye.cwd"] = cwd
-            tool_span = tracer.start_span(
+            tool_span = _start_span_with_id(
+                tracer,
                 f"tool: {tool_call['name']}",
-                context=call_parent_ctx,
+                tool_span_id(session_id, tool_call["tool_call_id"]),
+                parent_ctx=call_parent_ctx,
                 kind=SpanKind.INTERNAL,
                 start_time=_ts_to_ns(tool_call["start_ts"]),
-                attributes=tool_attrs,
+                attributes=_tool_attributes(
+                    tool_call["attributes"],
+                    session_id=session_id,
+                    platform=platform,
+                    cwd=cwd,
+                    turn_id=turn["turn_id"],
+                    turn_span_id=turn.get("turn_span_id"),
+                ),
             )
             tool_span.end(end_time=_ts_to_ns(tool_call["end_ts"]))
 

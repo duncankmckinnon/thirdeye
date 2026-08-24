@@ -1,10 +1,12 @@
 from __future__ import annotations
 
 import json
+import time
 from pathlib import Path
 
 import pytest
 
+from thirdeye.otel_export import _ts_to_ns
 from thirdeye.paths import (
     session_dir,
     usage_jsonl_path,
@@ -15,6 +17,7 @@ from thirdeye.platforms.claude.usage import (
     _extract_row,
     _map_content_block,
     capture_usage_claude,
+    extract_calls_from_transcript,
     parse_new_usage_rows_claude,
     persist_usage_rows_claude,
 )
@@ -508,6 +511,557 @@ def test_parse_then_persist_matches_capture_usage_claude(tmp_path: Path) -> None
     combined_rows = usage_jsonl_path(session_dir(combined_home, "claude", "abc")).read_text()
     split_rows = usage_jsonl_path(session_dir(split_home, "claude", "abc")).read_text()
     assert combined_rows == split_rows
+
+
+# --- LLM call span duration derivation -----------------------------------
+
+
+def _write_transcript(path: Path, *frames: object) -> None:
+    path.write_text("".join(json.dumps(frame) + "\n" for frame in frames))
+
+
+def _assistant_frame(
+    call_id: str,
+    timestamp: object,
+    content: list[dict] | None = None,
+) -> dict:
+    return {
+        "type": "assistant",
+        "timestamp": timestamp,
+        "message": {
+            "id": call_id,
+            "model": "claude-sonnet-5",
+            "usage": {"input_tokens": 10, "output_tokens": 5},
+            "content": content or [],
+        },
+    }
+
+
+def test_incremental_parse_withholds_trailing_group_at_its_first_frame(
+    tmp_path: Path,
+) -> None:
+    transcript = tmp_path / "withheld-tail.jsonl"
+    user_frame = {
+        "type": "user",
+        "timestamp": "2026-08-22T10:00:00.000Z",
+        "message": {"content": "go"},
+    }
+    first_group = [
+        _assistant_frame("msg_complete", "2026-08-22T10:00:01.000Z"),
+        _assistant_frame("msg_complete", "2026-08-22T10:00:02.000Z"),
+    ]
+    trailing_group = [
+        _assistant_frame("msg_open", "2026-08-22T10:00:03.000Z"),
+        _assistant_frame("msg_open", "2026-08-22T10:00:04.000Z"),
+    ]
+    _write_transcript(transcript, user_frame, *first_group, *trailing_group)
+    expected_offset = len(
+        "".join(json.dumps(frame) + "\n" for frame in (user_frame, *first_group)).encode()
+    )
+
+    parsed = extract_calls_from_transcript(str(transcript), 0, incremental=True)
+
+    assert [call["call_id"] for call in parsed.calls] == ["msg_complete"]
+    assert parsed.offset == expected_offset
+    assert parsed.offset < transcript.stat().st_size
+    assert parsed.last_frame_ts == "2026-08-22T10:00:02.000Z"
+
+
+def test_incremental_resume_emits_growing_group_once_with_full_duration(
+    tmp_path: Path,
+) -> None:
+    transcript = tmp_path / "resume.jsonl"
+    dispatch_ts = "2026-08-22T10:00:00.000Z"
+    first_response_ts = "2026-08-22T10:00:01.000Z"
+    final_response_ts = "2026-08-22T10:00:03.000Z"
+    user_frame = {"type": "user", "timestamp": dispatch_ts, "message": {"content": "go"}}
+    first_part = _assistant_frame(
+        "msg_growing", first_response_ts, [{"type": "text", "text": "first"}]
+    )
+    _write_transcript(transcript, user_frame, first_part)
+
+    first_parse = extract_calls_from_transcript(str(transcript), 0, incremental=True)
+    assert first_parse.calls == []
+
+    final_part = _assistant_frame(
+        "msg_growing", final_response_ts, [{"type": "text", "text": "second"}]
+    )
+    completing_user_frame = {
+        "type": "user",
+        "timestamp": "2026-08-22T10:00:04.000Z",
+        "message": {"content": "next input"},
+    }
+    with transcript.open("a") as f:
+        f.write(json.dumps(final_part) + "\n")
+        f.write(json.dumps(completing_user_frame) + "\n")
+
+    resumed = extract_calls_from_transcript(
+        str(transcript),
+        first_parse.offset,
+        initial_prev_ts=first_parse.last_frame_ts,
+        incremental=True,
+    )
+
+    assert [call["call_id"] for call in resumed.calls] == ["msg_growing"]
+    assert resumed.calls[0]["start_ts"] == dispatch_ts
+    assert resumed.calls[0]["end_ts"] == final_response_ts
+    assert [part["content"] for part in resumed.calls[0]["output_messages"][0]["parts"]] == [
+        "first",
+        "second",
+    ]
+    assert resumed.offset == transcript.stat().st_size
+
+
+def test_incremental_last_frame_ts_round_trip_matches_whole_file_parse(
+    tmp_path: Path,
+) -> None:
+    transcript = tmp_path / "round-trip.jsonl"
+    dispatch_ts = "2026-08-22T10:00:00.000Z"
+    first_end_ts = "2026-08-22T10:00:02.000Z"
+    second_end_ts = "2026-08-22T10:00:04.000Z"
+    frames = [
+        {"type": "user", "timestamp": dispatch_ts, "message": {"content": "go"}},
+        _assistant_frame("msg_first", "2026-08-22T10:00:01.000Z"),
+        _assistant_frame("msg_first", first_end_ts),
+        _assistant_frame("msg_second", "2026-08-22T10:00:03.000Z"),
+    ]
+    _write_transcript(transcript, *frames)
+
+    first_parse = extract_calls_from_transcript(str(transcript), 0, incremental=True)
+    assert [call["call_id"] for call in first_parse.calls] == ["msg_first"]
+    assert first_parse.last_frame_ts == first_end_ts
+
+    completing_frame = _assistant_frame("msg_second", second_end_ts)
+    following_user = {
+        "type": "user",
+        "timestamp": "2026-08-22T10:00:05.000Z",
+        "message": {"content": "done"},
+    }
+    with transcript.open("a") as f:
+        f.write(json.dumps(completing_frame) + "\n")
+        f.write(json.dumps(following_user) + "\n")
+
+    second_parse = extract_calls_from_transcript(
+        str(transcript),
+        first_parse.offset,
+        initial_prev_ts=first_parse.last_frame_ts,
+        incremental=True,
+    )
+    whole_file = extract_calls_from_transcript(str(transcript), 0)
+
+    incremental_bounds = [
+        (call["call_id"], call["start_ts"], call["end_ts"])
+        for call in first_parse.calls + second_parse.calls
+    ]
+    whole_file_bounds = [
+        (call["call_id"], call["start_ts"], call["end_ts"]) for call in whole_file.calls
+    ]
+    assert incremental_bounds == whole_file_bounds
+
+
+def test_incremental_parse_ending_on_user_frame_returns_eof(tmp_path: Path) -> None:
+    transcript = tmp_path / "user-at-eof.jsonl"
+    final_user_ts = "2026-08-22T10:00:02.000Z"
+    _write_transcript(
+        transcript,
+        _assistant_frame("msg_complete", "2026-08-22T10:00:01.000Z"),
+        {"type": "user", "timestamp": final_user_ts, "message": {"content": "next"}},
+    )
+
+    parsed = extract_calls_from_transcript(str(transcript), 0, incremental=True)
+
+    assert [call["call_id"] for call in parsed.calls] == ["msg_complete"]
+    assert parsed.offset == transcript.stat().st_size
+    assert parsed.last_frame_ts == final_user_ts
+
+
+def test_non_incremental_parse_flushes_trailing_group_and_returns_eof(
+    tmp_path: Path,
+) -> None:
+    transcript = tmp_path / "one-shot.jsonl"
+    response_ts = "2026-08-22T10:00:01.000Z"
+    _write_transcript(transcript, _assistant_frame("msg_trailing", response_ts))
+
+    parsed = extract_calls_from_transcript(str(transcript), 0, incremental=False)
+
+    assert [call["call_id"] for call in parsed.calls] == ["msg_trailing"]
+    assert parsed.offset == transcript.stat().st_size
+    assert parsed.last_frame_ts == response_ts
+
+
+def test_call_duration_spans_preceding_frame_to_last_group_frame(tmp_path: Path) -> None:
+    transcript = tmp_path / "multi-frame.jsonl"
+    dispatch_ts = "2026-08-22T10:00:00.000Z"
+    group_timestamps = [
+        "2026-08-22T10:00:01.000Z",
+        "2026-08-22T10:00:02.000Z",
+        "2026-08-22T10:00:03.000Z",
+        "2026-08-22T10:00:04.000Z",
+    ]
+    _write_transcript(
+        transcript,
+        {"type": "user", "timestamp": dispatch_ts, "message": {"content": "go"}},
+        *[
+            _assistant_frame("msg_multi", timestamp, [{"type": "text", "text": f"part-{index}"}])
+            for index, timestamp in enumerate(group_timestamps)
+        ],
+    )
+
+    parsed = extract_calls_from_transcript(str(transcript), 0)
+    calls, new_offset = parsed.calls, parsed.offset
+
+    assert len(calls) == 1
+    assert calls[0]["start_ts"] == dispatch_ts
+    assert calls[0]["end_ts"] == group_timestamps[-1]
+    assert len(calls[0]["output_messages"][0]["parts"]) == 4
+    assert new_offset == transcript.stat().st_size
+
+
+def test_single_frame_call_uses_preceding_tool_result_as_start(tmp_path: Path) -> None:
+    transcript = tmp_path / "single-frame.jsonl"
+    dispatch_ts = "2026-08-22T10:00:05.000Z"
+    response_ts = "2026-08-22T10:00:08.000Z"
+    _write_transcript(
+        transcript,
+        {
+            "type": "user",
+            "timestamp": dispatch_ts,
+            "message": {
+                "content": [{"type": "tool_result", "tool_use_id": "tool-1", "content": "done"}]
+            },
+        },
+        _assistant_frame("msg_single", response_ts, [{"type": "text", "text": "finished"}]),
+    )
+
+    calls = extract_calls_from_transcript(str(transcript), 0).calls
+
+    assert len(calls) == 1
+    assert calls[0]["start_ts"] == dispatch_ts
+    assert calls[0]["end_ts"] == response_ts
+    assert calls[0]["start_ts"] != calls[0]["end_ts"]
+    assert calls[0]["input_messages"][0]["role"] == "tool"
+
+
+def test_first_group_without_preceding_frame_is_zero_width(tmp_path: Path) -> None:
+    transcript = tmp_path / "first-group.jsonl"
+    response_ts = "2026-08-22T10:00:08.000Z"
+    _write_transcript(transcript, _assistant_frame("msg_first", response_ts))
+
+    calls = extract_calls_from_transcript(str(transcript), 0).calls
+
+    assert len(calls) == 1
+    assert calls[0]["start_ts"] == response_ts
+    assert calls[0]["end_ts"] == response_ts
+
+
+def test_initial_prev_ts_starts_first_group(tmp_path: Path) -> None:
+    transcript = tmp_path / "seeded-group.jsonl"
+    dispatch_ts = "2026-08-22T10:00:00.000Z"
+    response_ts = "2026-08-22T10:00:08.000Z"
+    preceding_frame = {
+        "type": "user",
+        "timestamp": dispatch_ts,
+        "message": {"content": "behind the cursor"},
+    }
+    _write_transcript(
+        transcript,
+        preceding_frame,
+        _assistant_frame("msg_seeded", response_ts),
+    )
+    offset = len((json.dumps(preceding_frame) + "\n").encode())
+
+    calls = extract_calls_from_transcript(
+        str(transcript), offset, initial_prev_ts=dispatch_ts
+    ).calls
+
+    assert len(calls) == 1
+    assert calls[0]["start_ts"] == dispatch_ts
+    assert calls[0]["end_ts"] == response_ts
+
+
+def test_parallel_tool_use_blocks_remain_one_call(tmp_path: Path) -> None:
+    transcript = tmp_path / "parallel-tools.jsonl"
+    _write_transcript(
+        transcript,
+        {"type": "user", "timestamp": "2026-08-22T10:00:00.000Z", "message": {}},
+        _assistant_frame(
+            "msg_tools",
+            "2026-08-22T10:00:01.000Z",
+            [{"type": "tool_use", "id": "tool-1", "name": "Read", "input": {}}],
+        ),
+        _assistant_frame(
+            "msg_tools",
+            "2026-08-22T10:00:02.000Z",
+            [{"type": "tool_use", "id": "tool-2", "name": "Bash", "input": {}}],
+        ),
+    )
+
+    calls = extract_calls_from_transcript(str(transcript), 0).calls
+
+    assert len(calls) == 1
+    parts = calls[0]["output_messages"][0]["parts"]
+    assert [part["id"] for part in parts] == ["tool-1", "tool-2"]
+
+
+def test_multiple_calls_each_use_their_own_dispatch_and_last_group_frame(
+    tmp_path: Path,
+) -> None:
+    transcript = tmp_path / "multiple-calls.jsonl"
+    first_dispatch_ts = "2026-08-22T10:00:00.000Z"
+    first_end_ts = "2026-08-22T10:00:02.000Z"
+    second_dispatch_ts = "2026-08-22T10:00:03.000Z"
+    second_end_ts = "2026-08-22T10:00:05.000Z"
+    _write_transcript(
+        transcript,
+        {"type": "user", "timestamp": first_dispatch_ts, "message": {"content": "go"}},
+        _assistant_frame("msg_first", "2026-08-22T10:00:01.000Z"),
+        _assistant_frame("msg_first", first_end_ts),
+        {
+            "type": "user",
+            "timestamp": second_dispatch_ts,
+            "message": {
+                "content": [{"type": "tool_result", "tool_use_id": "tool-1", "content": "ok"}]
+            },
+        },
+        _assistant_frame("msg_second", "2026-08-22T10:00:04.000Z"),
+        _assistant_frame("msg_second", second_end_ts),
+    )
+
+    calls = extract_calls_from_transcript(str(transcript), 0).calls
+
+    assert [(call["start_ts"], call["end_ts"]) for call in calls] == [
+        (first_dispatch_ts, first_end_ts),
+        (second_dispatch_ts, second_end_ts),
+    ]
+
+
+def test_valid_timestamp_on_any_preceding_frame_is_used_as_dispatch(tmp_path: Path) -> None:
+    transcript = tmp_path / "progress-dispatch.jsonl"
+    older_user_ts = "2026-08-22T10:00:00.000Z"
+    progress_ts = "2026-08-22T10:00:01.000Z"
+    response_ts = "2026-08-22T10:00:02.000Z"
+    _write_transcript(
+        transcript,
+        {"type": "user", "timestamp": older_user_ts, "message": {"content": "go"}},
+        {"type": "progress", "timestamp": progress_ts},
+        _assistant_frame("msg_after_progress", response_ts),
+    )
+
+    calls = extract_calls_from_transcript(str(transcript), 0).calls
+
+    assert len(calls) == 1
+    assert calls[0]["start_ts"] == progress_ts
+    assert calls[0]["end_ts"] == response_ts
+
+
+@pytest.mark.parametrize(
+    "bad_ts",
+    [
+        12345,
+        "not-a-timestamp",
+        "",
+        None,
+        {"at": "now"},
+        # `datetime.fromisoformat` takes all of these, but a date without a
+        # time of day is not a timestamp and must not become a span bound.
+        "2026-08-22",
+        "2026-08-22T10",
+        "20260822",
+        "20260822T10",
+    ],
+)
+def test_malformed_timestamp_does_not_replace_previous_frame_timestamp(
+    tmp_path: Path, bad_ts: object
+) -> None:
+    transcript = tmp_path / "malformed-timestamp.jsonl"
+    valid_dispatch_ts = "2026-08-22T10:00:00.000Z"
+    response_ts = "2026-08-22T10:00:02.000Z"
+    _write_transcript(
+        transcript,
+        {"type": "user", "timestamp": valid_dispatch_ts, "message": {"content": "go"}},
+        {"type": "progress", "timestamp": bad_ts},
+        _assistant_frame("msg_after_bad_ts", response_ts),
+    )
+
+    calls = extract_calls_from_transcript(str(transcript), 0).calls
+
+    assert len(calls) == 1
+    assert calls[0]["start_ts"] == valid_dispatch_ts
+    assert calls[0]["end_ts"] == response_ts
+
+
+@pytest.mark.parametrize(
+    ("dispatch_ts", "response_ts", "expected_start", "expected_end"),
+    [
+        # Basic format, and the mixed basic/extended spellings `fromisoformat`
+        # also accepts: all real date-times, all usable as span bounds.
+        ("20260822T100000Z", "20260822T100002Z", "20260822T100000Z", "20260822T100002Z"),
+        ("20260822T1000", "20260822T1002", "20260822T1000+00:00", "20260822T1002+00:00"),
+        (
+            "2026-08-22T1000",
+            "20260822T10:00:02",
+            "2026-08-22T1000+00:00",
+            "20260822T10:00:02+00:00",
+        ),
+    ],
+)
+def test_basic_format_timestamps_are_valid_span_bounds(
+    tmp_path: Path,
+    dispatch_ts: str,
+    response_ts: str,
+    expected_start: str,
+    expected_end: str,
+) -> None:
+    transcript = tmp_path / "basic-format.jsonl"
+    _write_transcript(
+        transcript,
+        {"type": "user", "timestamp": dispatch_ts, "message": {"content": "go"}},
+        _assistant_frame("msg_basic_format", response_ts),
+    )
+
+    calls = extract_calls_from_transcript(str(transcript), 0).calls
+
+    assert len(calls) == 1
+    assert calls[0]["start_ts"] == expected_start
+    assert calls[0]["end_ts"] == expected_end
+    assert _ts_to_ns(calls[0]["start_ts"]) < _ts_to_ns(calls[0]["end_ts"])
+
+
+@pytest.mark.parametrize("bad_seed", ["whenever", "2026-08-22", "2026-08-22T10", "20260822T10"])
+def test_malformed_initial_prev_ts_is_ignored(tmp_path: Path, bad_seed: str) -> None:
+    transcript = tmp_path / "bad-seed.jsonl"
+    response_ts = "2026-08-22T10:00:02.000Z"
+    _write_transcript(transcript, _assistant_frame("msg_bad_seed", response_ts))
+
+    calls = extract_calls_from_transcript(str(transcript), 0, initial_prev_ts=bad_seed).calls
+
+    assert len(calls) == 1
+    assert calls[0]["start_ts"] == response_ts
+    assert calls[0]["end_ts"] == response_ts
+
+
+def test_group_without_any_timestamp_emits_empty_bounds(tmp_path: Path) -> None:
+    transcript = tmp_path / "no-timestamps.jsonl"
+    _write_transcript(transcript, _assistant_frame("msg_no_ts", None))
+
+    calls = extract_calls_from_transcript(str(transcript), 0).calls
+
+    assert len(calls) == 1
+    assert calls[0]["start_ts"] == ""
+    assert calls[0]["end_ts"] == ""
+
+
+def test_untimestamped_first_frame_takes_end_from_later_group_frame(tmp_path: Path) -> None:
+    transcript = tmp_path / "late-timestamp.jsonl"
+    later_ts = "2026-08-22T10:00:03.000Z"
+    _write_transcript(
+        transcript,
+        _assistant_frame("msg_late", None, [{"type": "text", "text": "first"}]),
+        _assistant_frame("msg_late", later_ts, [{"type": "text", "text": "second"}]),
+    )
+
+    calls = extract_calls_from_transcript(str(transcript), 0).calls
+
+    assert len(calls) == 1
+    assert calls[0]["start_ts"] == later_ts
+    assert calls[0]["end_ts"] == later_ts
+
+
+def test_missing_group_frame_timestamp_keeps_last_valid_end(tmp_path: Path) -> None:
+    transcript = tmp_path / "missing-group-timestamp.jsonl"
+    first_ts = "2026-08-22T10:00:01.000Z"
+    _write_transcript(
+        transcript,
+        _assistant_frame("msg_missing", first_ts, [{"type": "text", "text": "first"}]),
+        _assistant_frame("msg_missing", None, [{"type": "text", "text": "second"}]),
+    )
+
+    calls = extract_calls_from_transcript(str(transcript), 0).calls
+
+    assert len(calls) == 1
+    assert calls[0]["start_ts"] == first_ts
+    assert calls[0]["end_ts"] == first_ts
+
+
+def test_clock_anomaly_collapses_call_to_end_timestamp(tmp_path: Path) -> None:
+    transcript = tmp_path / "clock-anomaly.jsonl"
+    response_ts = "2026-08-22T10:00:01.000Z"
+    _write_transcript(transcript, _assistant_frame("msg_clock", response_ts))
+
+    calls = extract_calls_from_transcript(
+        str(transcript), 0, initial_prev_ts="2026-08-22T10:00:02.000Z"
+    ).calls
+
+    assert len(calls) == 1
+    assert calls[0]["start_ts"] == response_ts
+    assert calls[0]["end_ts"] == response_ts
+
+
+def test_clock_anomaly_with_offsets_collapses_call_to_end_timestamp(tmp_path: Path) -> None:
+    """ISO offsets must be compared chronologically, not lexicographically."""
+    transcript = tmp_path / "clock-anomaly-offsets.jsonl"
+    # 10:30 at UTC+01:00 is 09:30 UTC, before the 10:00 UTC dispatch.
+    response_ts = "2026-08-22T10:30:00+01:00"
+    _write_transcript(transcript, _assistant_frame("msg_clock_offsets", response_ts))
+
+    calls = extract_calls_from_transcript(
+        str(transcript), 0, initial_prev_ts="2026-08-22T10:00:00+00:00"
+    ).calls
+
+    assert len(calls) == 1
+    assert calls[0]["start_ts"] == response_ts
+    assert calls[0]["end_ts"] == response_ts
+
+
+def test_naive_timestamps_are_pinned_to_utc(tmp_path: Path) -> None:
+    transcript = tmp_path / "naive-timestamps.jsonl"
+    _write_transcript(
+        transcript,
+        {
+            "type": "user",
+            "timestamp": "2026-08-22T10:00:00.000",
+            "message": {"content": "go"},
+        },
+        _assistant_frame("msg_naive", "2026-08-22T10:00:02.000"),
+    )
+
+    calls = extract_calls_from_transcript(str(transcript), 0).calls
+
+    assert len(calls) == 1
+    assert calls[0]["start_ts"] == "2026-08-22T10:00:00.000+00:00"
+    assert calls[0]["end_ts"] == "2026-08-22T10:00:02.000+00:00"
+
+
+def test_mixed_naive_and_offset_bounds_stay_ordered_after_export(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A naive bound must mean the same instant here and in the exporter.
+
+    `_ts_to_ns` reads a naive timestamp in the worker's local timezone, so in
+    a zone behind UTC a naive start that this module accepted as earlier than
+    an offset-aware end used to export as later than it — a backwards span.
+    """
+    transcript = tmp_path / "mixed-timestamps.jsonl"
+    _write_transcript(
+        transcript,
+        {
+            "type": "user",
+            "timestamp": "2026-08-22T10:00:00.000",
+            "message": {"content": "go"},
+        },
+        _assistant_frame("msg_mixed", "2026-08-22T12:00:00.000+00:00"),
+    )
+
+    calls = extract_calls_from_transcript(str(transcript), 0).calls
+
+    assert len(calls) == 1
+    monkeypatch.setenv("TZ", "America/New_York")
+    time.tzset()
+    try:
+        assert _ts_to_ns(calls[0]["start_ts"]) < _ts_to_ns(calls[0]["end_ts"])
+    finally:
+        monkeypatch.undo()
+        time.tzset()
 
 
 class TestMapContentBlock:

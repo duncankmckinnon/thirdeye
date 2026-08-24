@@ -8,6 +8,13 @@ import pytest
 
 from thirdeye import otel_export
 from thirdeye.config import Config, LogfireSettings
+from thirdeye.span_ids import (
+    chat_span_id,
+    root_span_id_for_session,
+    tool_span_id,
+    trace_id_for_session,
+    turn_span_id,
+)
 
 pytest.importorskip("logfire")
 
@@ -19,9 +26,11 @@ from opentelemetry.sdk.trace.export import SimpleSpanProcessor  # noqa: E402
 def _reset_state():
     otel_export._state["attempted"] = False
     otel_export._state["instance"] = None
+    otel_export._state["id_generator"] = None
     yield
     otel_export._state["attempted"] = False
     otel_export._state["instance"] = None
+    otel_export._state["id_generator"] = None
 
 
 @pytest.fixture
@@ -31,13 +40,20 @@ def exporter():
 
 @pytest.fixture
 def wired_instance(exporter, monkeypatch: pytest.MonkeyPatch):
-    """A real Logfire instance wired to an in-memory exporter, network-free."""
+    """A real Logfire instance wired to an in-memory exporter, network-free.
+
+    Wired to the same generator `_get_instance` would hand a real one, so the
+    ids the export path pre-allocates are actually the ids spans come out
+    with — otherwise every id assertion here would pass against the SDK's own
+    random generator and prove nothing.
+    """
     import logfire
 
     instance = logfire.configure(
         send_to_logfire=False,
         console=False,
         additional_span_processors=[SimpleSpanProcessor(exporter)],
+        advanced=logfire.AdvancedOptions(id_generator=otel_export._id_generator()),
     )
     monkeypatch.setattr(otel_export, "_get_instance", lambda config, platform: instance)
     return instance
@@ -226,13 +242,101 @@ class TestBackgroundNoiseSuppression:
         import logfire
 
         calls = []
+        configured_with = {}
+
+        def _configure(**kwargs):
+            configured_with.update(kwargs)
+            return object()
+
         monkeypatch.setattr(otel_export, "_silence_background_noise", lambda: calls.append(1))
-        monkeypatch.setattr(logfire, "configure", lambda **kwargs: object())
+        monkeypatch.setattr(logfire, "configure", _configure)
         config = Config(
             root=tmp_path, logfire=LogfireSettings(enabled=True, token="bad-token", project=None)
         )
         otel_export._get_instance(config, "claude")
         assert calls == [1]
+        assert configured_with["advanced"].id_generator is otel_export._state["id_generator"]
+        assert configured_with["scrubbing"].callback is otel_export._scrub_callback
+
+
+class TestPreallocatedIdGenerator:
+    """Span ids for this tree are derived rather than minted, so that a span
+    emitted while a turn is still running can name a parent that hasn't been
+    exported yet. `_start_span_with_id` is how a derived id actually reaches
+    the SDK: it sets a one-shot slot on the generator handed to
+    `logfire.configure`, and the next id drawn is the one we chose.
+    """
+
+    def _tracer(self, instance):
+        return instance.config.get_tracer_provider().get_tracer("thirdeye")
+
+    def test_preset_span_id_is_used_verbatim(self, wired_instance):
+        chosen = 0x0123456789ABCDEF
+        span = otel_export._start_span_with_id(
+            self._tracer(wired_instance), "chosen", chosen, start_time=1, attributes={}
+        )
+        span.end(end_time=2)
+        assert span.get_span_context().span_id == chosen
+
+    def test_preset_trace_id_is_used_for_a_parentless_span(self, wired_instance):
+        span = otel_export._start_span_with_id(
+            self._tracer(wired_instance),
+            "chosen",
+            0xAA,
+            trace_id=0xBB,
+            start_time=1,
+            attributes={},
+        )
+        span.end(end_time=2)
+        context = span.get_span_context()
+        assert (context.trace_id, context.span_id) == (0xBB, 0xAA)
+
+    def test_slot_clears_after_one_use(self, wired_instance):
+        tracer = self._tracer(wired_instance)
+        chosen = 0x0123456789ABCDEF
+        first = otel_export._start_span_with_id(
+            tracer, "first", chosen, start_time=1, attributes={}
+        )
+        first.end(end_time=2)
+        second = tracer.start_span("second", start_time=3)
+        second.end(end_time=4)
+        second_id = second.get_span_context().span_id
+        assert second_id != chosen  # the slot is consumed, not sticky
+        assert second_id != 0
+
+    def test_unset_slot_yields_valid_random_ids(self):
+        generator = otel_export._id_generator()
+        span_ids = {generator.generate_span_id() for _ in range(5)}
+        trace_ids = {generator.generate_trace_id() for _ in range(5)}
+        assert len(span_ids) == 5
+        assert all(0 < value < 2**64 for value in span_ids)
+        assert len(trace_ids) == 5
+        assert all(0 < value < 2**128 for value in trace_ids)
+
+    def test_configure_draws_no_ids(self, exporter):
+        """A canary on a third-party assumption the whole scheme rests on.
+
+        Slots are set immediately before a `start_span` call, so anything else
+        drawing an id in between would steal one and silently misparent a
+        span. `logfire.configure` is the one thing that runs between our own
+        spans without us asking; today it draws nothing (its configuration
+        span defaults off), but a future release emitting one at configure
+        time would break parenting in a way no other test here would notice.
+        """
+        import logfire
+
+        probe = otel_export._build_id_generator()
+        drawn: list[str] = []
+        probe.generate_span_id = lambda: drawn.append("span") or 1
+        probe.generate_trace_id = lambda: drawn.append("trace") or 1
+
+        logfire.configure(
+            send_to_logfire=False,
+            console=False,
+            additional_span_processors=[SimpleSpanProcessor(exporter)],
+            advanced=logfire.AdvancedOptions(id_generator=probe),
+        )
+        assert drawn == []
 
 
 class TestRootOwnership:
@@ -241,7 +345,7 @@ class TestRootOwnership:
         root, first_lock = otel_export._root_or_ownership(root_path)
         assert root is None
         assert first_lock is not None
-        otel_export._create_root_atomic(root_path, 0xAA, 0xBB)
+        assert otel_export._create_root_atomic(root_path, 0xAA, 0xBB) == ((0xAA, 0xBB), True)
         first_lock.unlink()
         root, second_lock = otel_export._root_or_ownership(root_path)
         assert root == (0xAA, 0xBB)
@@ -327,6 +431,360 @@ class TestExportTurnDispatch:
         otel_export.export_turn(enabled_config, tmp_path, "s1", "claude", "/p", _turn())
 
 
+class TestExportSpansDispatch:
+    """Live spans use the same detached job transport as completed turns."""
+
+    @staticmethod
+    def _span(**overrides: Any) -> dict[str, Any]:
+        defaults: dict[str, Any] = {
+            "name": "chat claude-sonnet-5",
+            "span_id": 2**64 - 1,
+            "parent_span_id": 2**63 + 17,
+            "start_ts": "2026-01-01T00:00:01.000Z",
+            "end_ts": "2026-01-01T00:00:02.000Z",
+            "attributes": {"gen_ai.operation.name": "chat"},
+        }
+        defaults.update(overrides)
+        return defaults
+
+    @pytest.mark.parametrize(
+        "settings",
+        [
+            LogfireSettings(enabled=False, token="fake-token"),
+            LogfireSettings(enabled=True, token=None),
+        ],
+    )
+    def test_disabled_or_tokenless_config_spawns_nothing(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        settings: LogfireSettings,
+    ):
+        spawned = []
+        monkeypatch.setattr(otel_export.subprocess, "Popen", lambda *a, **k: spawned.append(a))
+        config = Config(root=tmp_path, logfire=settings)
+
+        otel_export.export_spans(
+            config, tmp_path / "session", "s1", "claude", "/proj", 1, [self._span()]
+        )
+
+        assert spawned == []
+
+    def test_writes_decimal_id_job_and_spawns_once(
+        self, tmp_path: Path, enabled_config: Config, monkeypatch: pytest.MonkeyPatch
+    ):
+        calls = []
+        monkeypatch.setattr(
+            otel_export.subprocess,
+            "Popen",
+            lambda argv, **kwargs: calls.append((argv, kwargs)),
+        )
+        trace_id = 2**128 - 1
+        source_span = self._span(attributes={"nested": {"safe": True}})
+
+        otel_export.export_spans(
+            enabled_config,
+            tmp_path / "traces" / "claude" / "s1",
+            "s1",
+            "claude",
+            "/proj",
+            trace_id,
+            [source_span],
+        )
+
+        assert len(calls) == 1
+        argv, kwargs = calls[0]
+        assert argv[:3] == [otel_export.sys.executable, "-m", "thirdeye.otel_worker"]
+        assert kwargs["start_new_session"] is True
+        job_path = Path(argv[3])
+        payload = json.loads(job_path.read_text())
+        assert payload == {
+            "kind": "spans",
+            "session_dir": str(tmp_path / "traces" / "claude" / "s1"),
+            "session_id": "s1",
+            "platform": "claude",
+            "cwd": "/proj",
+            "trace_id": str(trace_id),
+            "spans": [
+                {
+                    **source_span,
+                    "span_id": str(source_span["span_id"]),
+                    "parent_span_id": str(source_span["parent_span_id"]),
+                }
+            ],
+        }
+        # Serialization must not mutate the caller's already-built span.
+        assert isinstance(source_span["span_id"], int)
+        assert isinstance(source_span["parent_span_id"], int)
+
+    def test_malformed_span_is_swallowed_before_spawn(
+        self, tmp_path: Path, enabled_config: Config, monkeypatch: pytest.MonkeyPatch
+    ):
+        spawned = []
+        monkeypatch.setattr(otel_export.subprocess, "Popen", lambda *a, **k: spawned.append(a))
+
+        otel_export.export_spans(
+            enabled_config,
+            tmp_path / "session",
+            "s1",
+            "claude",
+            "/proj",
+            1,
+            [{"name": "missing ids"}],
+        )
+
+        assert spawned == []
+
+    def test_unwritable_jobs_directory_is_swallowed(
+        self, tmp_path: Path, enabled_config: Config, monkeypatch: pytest.MonkeyPatch
+    ):
+        def _permission_denied(*args, **kwargs):
+            raise PermissionError("jobs directory is read-only")
+
+        spawned = []
+        monkeypatch.setattr(otel_export, "_write_job", _permission_denied)
+        monkeypatch.setattr(otel_export.subprocess, "Popen", lambda *a, **k: spawned.append(a))
+
+        otel_export.export_spans(
+            enabled_config, tmp_path / "session", "s1", "claude", "/proj", 1, [self._span()]
+        )
+
+        assert spawned == []
+
+
+class TestExportSpansBatch:
+    @staticmethod
+    def _batch_span(**overrides: Any) -> dict[str, Any]:
+        defaults: dict[str, Any] = {
+            "name": "chat claude-sonnet-5",
+            "span_id": str(0xFEDCBA9876543210),
+            "parent_span_id": str(0x123456789ABCDEF0),
+            "start_ts": "2026-01-01T00:00:01.000Z",
+            "end_ts": "2026-01-01T00:00:02.000Z",
+            "attributes": {"gen_ai.operation.name": "chat"},
+        }
+        defaults.update(overrides)
+        return defaults
+
+    def _export(self, tmp_path: Path, enabled_config: Config, spans, *, trace_id=0xABCDEF):
+        otel_export._export_spans_batch(
+            config=enabled_config,
+            session_dir_=tmp_path / "traces" / "claude" / "s1",
+            session_id="s1",
+            platform="claude",
+            cwd="/proj",
+            trace_id=str(trace_id),
+            spans=spans,
+        )
+
+    def test_honours_trace_span_and_parent_ids(
+        self, tmp_path: Path, enabled_config: Config, wired_instance, exporter
+    ):
+        trace_id = 0xABCDEF0123456789ABCDEF0123456789
+        span_id = 0xFEDCBA9876543210
+        parent_span_id = 0x123456789ABCDEF0
+
+        self._export(
+            tmp_path,
+            enabled_config,
+            [
+                self._batch_span(
+                    span_id=str(span_id),
+                    parent_span_id=str(parent_span_id),
+                )
+            ],
+            trace_id=trace_id,
+        )
+
+        [span] = exporter.exported_spans_as_dict()
+        assert span["context"]["trace_id"] == trace_id
+        assert span["context"]["span_id"] == span_id
+        assert span["parent"]["trace_id"] == trace_id
+        assert span["parent"]["span_id"] == parent_span_id
+
+    def test_child_is_emitted_when_parent_is_absent_from_batch(
+        self, tmp_path: Path, enabled_config: Config, wired_instance, exporter
+    ):
+        absent_parent_id = 0x1111222233334444
+
+        self._export(
+            tmp_path,
+            enabled_config,
+            [self._batch_span(name="tool: Bash", parent_span_id=str(absent_parent_id))],
+        )
+
+        [child] = exporter.exported_spans_as_dict()
+        assert child["name"] == "tool: Bash"
+        assert child["parent"]["span_id"] == absent_parent_id
+        assert all(span["context"]["span_id"] != absent_parent_id for span in [child])
+
+    def test_force_flushes_exactly_once_after_multiple_spans(
+        self,
+        tmp_path: Path,
+        enabled_config: Config,
+        wired_instance,
+        exporter,
+        monkeypatch: pytest.MonkeyPatch,
+    ):
+        calls = []
+        real_force_flush = wired_instance.force_flush
+
+        def _force_flush(*args, **kwargs):
+            calls.append((args, kwargs))
+            return real_force_flush(*args, **kwargs)
+
+        monkeypatch.setattr(wired_instance, "force_flush", _force_flush)
+        self._export(
+            tmp_path,
+            enabled_config,
+            [
+                self._batch_span(span_id="101"),
+                self._batch_span(name="tool: Read", span_id="102", parent_span_id="101"),
+            ],
+        )
+
+        assert len(exporter.exported_spans_as_dict()) == 2
+        assert calls == [((), {"timeout_millis": otel_export._FLUSH_TIMEOUT_MS})]
+
+    def test_live_span_names_the_turn_it_belongs_to(
+        self, tmp_path: Path, enabled_config: Config, wired_instance, exporter
+    ):
+        """A live span outruns its `agent-turn` parent, so until the turn ends
+        there is no parent row to attribute it by. It has to say so itself."""
+        self._export(
+            tmp_path,
+            enabled_config,
+            [
+                self._batch_span(name=name, span_id=str(span_id), turn_seq=7, turn_span_id="4242")
+                for name, span_id in (("chat claude-sonnet-5", 111), ("tool: Read", 222))
+            ],
+        )
+
+        exported = exporter.exported_spans_as_dict()
+        assert len(exported) == 2
+        for span in exported:
+            assert span["attributes"]["thirdeye.turn.id"] == "7"
+            assert span["attributes"]["thirdeye.turn.span_id"] == "4242"
+            assert span["attributes"]["gen_ai.conversation.id"] == "s1"
+
+    def test_chat_span_prices_cached_tokens_into_operation_cost(
+        self, tmp_path: Path, enabled_config: Config, wired_instance, exporter
+    ):
+        """Logfire reads cost off `operation.cost`; with it absent the UI prices
+        `gen_ai.usage.input_tokens` at the full input rate. That count is
+        cache-inclusive, so a cache-heavy call would be billed ~9x over. These
+        are real numbers from one claude-opus-5 call: 238,321 input of which
+        237,889 was a cache read and 2 genuinely fresh.
+        """
+        pytest.importorskip("genai_prices")
+
+        call = _llm_call(
+            model="claude-opus-5",
+            usage={
+                "input_tokens": 238321,
+                "output_tokens": 722,
+                "cache_read_input_tokens": 237889,
+                "cache_creation_input_tokens": 430,
+            },
+        )
+        attributes = otel_export._chat_attributes(
+            call, session_id="s1", platform="claude", cwd="/proj"
+        )
+
+        # $5/MTok input, $25/MTok output, cache read 0.1x, cache write 1.25x.
+        assert attributes["operation.cost"] == pytest.approx(0.139692, abs=5e-7)
+        # Priced without the cache discount this call reads as ~$1.21.
+        assert attributes["gen_ai.usage.input_tokens"] == 238321
+
+    def test_chat_attributes_survive_an_unpriceable_model(
+        self, tmp_path: Path, enabled_config: Config, wired_instance, exporter
+    ):
+        """Cost is best-effort: an unknown model must not cost us the span."""
+        call = _llm_call(model="not-a-real-model-9", usage={"input_tokens": 10, "output_tokens": 5})
+
+        attributes = otel_export._chat_attributes(
+            call, session_id="s1", platform="claude", cwd="/proj"
+        )
+
+        assert "operation.cost" not in attributes
+        assert attributes["gen_ai.usage.input_tokens"] == 10
+
+    def test_chat_attribute_keys_match_completed_turn_export(
+        self, tmp_path: Path, enabled_config: Config, wired_instance, exporter
+    ):
+        call = _llm_call()
+        turn = _turn(llm_calls=[call])
+        session_dir = tmp_path / "traces" / "claude" / "s1"
+        otel_export._export_turn_inner(
+            config=enabled_config,
+            session_dir_=session_dir,
+            session_id="s1",
+            platform="claude",
+            cwd="/proj",
+            turn=turn,
+        )
+        completed_chat = next(
+            span for span in exporter.exported_spans_as_dict() if span["name"].startswith("chat")
+        )
+
+        live_attributes = otel_export._chat_attributes(
+            call,
+            session_id="s1",
+            platform="claude",
+            cwd="/proj",
+            turn_id=turn["turn_id"],
+            turn_span_id=turn.get("turn_span_id"),
+        )
+        self._export(
+            tmp_path,
+            enabled_config,
+            [self._batch_span(span_id="999", attributes=live_attributes)],
+        )
+        live_chat = next(
+            span for span in exporter.exported_spans_as_dict() if span["context"]["span_id"] == 999
+        )
+
+        assert set(live_chat["attributes"]) == set(completed_chat["attributes"])
+
+    def test_tool_attributes_include_common_thirdeye_vocabulary(
+        self, tmp_path: Path, enabled_config: Config, wired_instance, exporter
+    ):
+        self._export(
+            tmp_path,
+            enabled_config,
+            [
+                self._batch_span(
+                    name="tool: Bash",
+                    attributes={"command": "pwd"},
+                )
+            ],
+        )
+
+        [tool_span] = exporter.exported_spans_as_dict()
+        assert tool_span["attributes"]["command"] == "pwd"
+        assert tool_span["attributes"]["gen_ai.conversation.id"] == "s1"
+        assert tool_span["attributes"]["thirdeye.platform"] == "claude"
+        assert tool_span["attributes"]["thirdeye.cwd"] == "/proj"
+
+    def test_live_tool_attribute_named_attributes_is_preserved(
+        self, tmp_path: Path, enabled_config: Config, wired_instance, exporter
+    ):
+        self._export(
+            tmp_path,
+            enabled_config,
+            [
+                self._batch_span(
+                    name="tool: Bash",
+                    attributes={"command": "x", "attributes": {"mode": "safe"}},
+                )
+            ],
+        )
+
+        [tool_span] = exporter.exported_spans_as_dict()
+        assert tool_span["attributes"]["command"] == "x"
+        assert json.loads(tool_span["attributes"]["attributes"]) == {"mode": "safe"}
+
+
 class TestExportTurnInner:
     """The actual span-building logic, exercised directly and synchronously —
     this is what `thirdeye.otel_worker` calls once it's read a job file back
@@ -354,6 +812,47 @@ class TestExportTurnInner:
         assert "gen_ai.output.messages" not in turn_span["attributes"]
         assert turn_span["attributes"]["thirdeye.turn.status"] == "completed"
         assert turn_span["attributes"]["thirdeye.turn.id"] == "turn_1"
+
+    def test_live_chat_parent_matches_completed_turn_span_id(
+        self, tmp_path: Path, enabled_config: Config, wired_instance, exporter
+    ):
+        session_id = "live-parent-session"
+        expected_turn_id = turn_span_id(session_id, 1)
+        live_chat_id = chat_span_id(session_id, "call_live")
+        session_dir = tmp_path / "traces" / "claude" / session_id
+
+        otel_export._export_spans_batch(
+            config=enabled_config,
+            session_dir_=session_dir,
+            session_id=session_id,
+            platform="claude",
+            cwd="/proj",
+            trace_id=trace_id_for_session(session_id),
+            spans=[
+                {
+                    "name": "chat claude-sonnet-5",
+                    "span_id": str(live_chat_id),
+                    "parent_span_id": str(expected_turn_id),
+                    "start_ts": "2026-01-01T00:00:01.000Z",
+                    "end_ts": "2026-01-01T00:00:02.000Z",
+                    "attributes": _llm_call(call_id="call_live"),
+                }
+            ],
+        )
+        otel_export._export_turn_inner(
+            config=enabled_config,
+            session_dir_=session_dir,
+            session_id=session_id,
+            platform="claude",
+            cwd="/proj",
+            turn=_turn(turn_span_id=str(expected_turn_id)),
+        )
+
+        spans = exporter.exported_spans_as_dict()
+        live_chat = next(span for span in spans if span["context"]["span_id"] == live_chat_id)
+        completed_turn = next(span for span in spans if span["name"] == "agent-turn")
+        assert live_chat["parent"]["span_id"] == completed_turn["context"]["span_id"]
+        assert completed_turn["context"]["span_id"] == expected_turn_id
 
     def test_turn_with_messages_carries_them(
         self, tmp_path: Path, enabled_config: Config, wired_instance, exporter
@@ -393,6 +892,106 @@ class TestExportTurnInner:
         assert root_span["attributes"]["thirdeye.platform"] == "claude"
         assert root_span["attributes"]["thirdeye.cwd"] == "/proj"
 
+    def test_new_session_persists_and_emits_derived_root_ids(
+        self, tmp_path: Path, enabled_config: Config, wired_instance, exporter
+    ):
+        session_id = "session-with-derived-root"
+        sd = tmp_path / "traces" / "claude" / session_id
+
+        otel_export._export_turn_inner(
+            config=enabled_config,
+            session_dir_=sd,
+            session_id=session_id,
+            platform="claude",
+            cwd="/proj",
+            turn=_turn(),
+        )
+
+        expected_trace_id = trace_id_for_session(session_id)
+        expected_span_id = root_span_id_for_session(session_id)
+        persisted = json.loads(otel_export.otel_state_path(sd).read_text())
+        assert persisted == {
+            "trace_id": f"{expected_trace_id:032x}",
+            "span_id": f"{expected_span_id:016x}",
+        }
+
+        root_span, turn_span = exporter.exported_spans_as_dict()
+        assert root_span["name"] == "session"
+        assert root_span["context"]["trace_id"] == expected_trace_id
+        assert root_span["context"]["span_id"] == expected_span_id
+        assert turn_span["context"]["trace_id"] == expected_trace_id
+        assert turn_span["parent"]["span_id"] == expected_span_id
+
+    def test_existing_root_ids_take_precedence_and_are_not_reemitted(
+        self, tmp_path: Path, enabled_config: Config, wired_instance, exporter
+    ):
+        session_id = "session-with-legacy-root"
+        sd = tmp_path / "traces" / "claude" / session_id
+        root_path = otel_export.otel_state_path(sd)
+        legacy_trace_id = 0x123456789ABCDEF0123456789ABCDEF0
+        legacy_span_id = 0x123456789ABCDEF0
+        assert otel_export._create_root_atomic(root_path, legacy_trace_id, legacy_span_id) == (
+            (legacy_trace_id, legacy_span_id),
+            True,
+        )
+        original_payload = root_path.read_text()
+
+        otel_export._export_turn_inner(
+            config=enabled_config,
+            session_dir_=sd,
+            session_id=session_id,
+            platform="claude",
+            cwd="/proj",
+            turn=_turn(),
+        )
+
+        spans = exporter.exported_spans_as_dict()
+        assert [span["name"] for span in spans] == ["agent-turn"]
+        turn_span = spans[0]
+        assert turn_span["context"]["trace_id"] == legacy_trace_id
+        assert turn_span["parent"]["span_id"] == legacy_span_id
+        assert root_path.read_text() == original_payload
+
+    def test_same_derived_root_race_does_not_reemit_session_span(
+        self,
+        tmp_path: Path,
+        enabled_config: Config,
+        wired_instance,
+        exporter,
+        monkeypatch: pytest.MonkeyPatch,
+    ):
+        session_id = "session-with-concurrent-derived-root"
+        sd = tmp_path / "traces" / "claude" / session_id
+        root_path = otel_export.otel_state_path(sd)
+        expected = (
+            trace_id_for_session(session_id),
+            root_span_id_for_session(session_id),
+        )
+        real_atomic_create = otel_export._atomic_create
+
+        def _competing_create(path: Path, payload: str) -> bool:
+            if path == root_path:
+                # Simulate another worker winning between our lock recovery
+                # and root persistence with the same deterministic ids.
+                assert real_atomic_create(path, payload) is True
+                return False
+            return real_atomic_create(path, payload)
+
+        monkeypatch.setattr(otel_export, "_atomic_create", _competing_create)
+        otel_export._export_turn_inner(
+            config=enabled_config,
+            session_dir_=sd,
+            session_id=session_id,
+            platform="claude",
+            cwd="/proj",
+            turn=_turn(),
+        )
+
+        spans = exporter.exported_spans_as_dict()
+        assert [span["name"] for span in spans] == ["agent-turn"]
+        assert spans[0]["context"]["trace_id"] == expected[0]
+        assert spans[0]["parent"]["span_id"] == expected[1]
+
     def test_llm_call_and_tool_call_nest_correctly(
         self, tmp_path: Path, enabled_config: Config, wired_instance, exporter
     ):
@@ -415,6 +1014,8 @@ class TestExportTurnInner:
         assert turn_span["name"] == "agent-turn"
         assert chat_span["name"] == "chat claude-sonnet-5"
         assert tool_span["name"] == "tool: Bash"
+        assert chat_span["context"]["span_id"] == chat_span_id("s1", "call_1")
+        assert tool_span["context"]["span_id"] == tool_span_id("s1", "tu_1")
         assert chat_span["parent"]["span_id"] == turn_span["context"]["span_id"]
         assert tool_span["parent"]["span_id"] == chat_span["context"]["span_id"]
         assert chat_span["attributes"]["gen_ai.usage.input_tokens"] == 100
@@ -454,9 +1055,13 @@ class TestExportTurnInner:
     def test_subagent_nests_under_the_parent_turn_with_its_own_children(
         self, tmp_path: Path, enabled_config: Config, wired_instance, exporter
     ):
+        session_id = "s1"
+        subagent_turn_seq = 7
+        expected_subagent_span_id = turn_span_id(session_id, subagent_turn_seq)
         sd = tmp_path / "traces" / "claude" / "s1"
         subagent = _turn(
-            turn_id="turn_sub",
+            turn_id=str(subagent_turn_seq),
+            turn_span_id=str(expected_subagent_span_id),
             llm_calls=[_llm_call(tool_calls=[_tool_call()])],
         )
         turn = _turn(subagents=[subagent])
@@ -476,6 +1081,7 @@ class TestExportTurnInner:
         chat_span = spans[3]
         tool_span = spans[4]
         assert subagent_span["name"] == "agent-turn (subagent)"
+        assert subagent_span["context"]["span_id"] == expected_subagent_span_id
         assert subagent_span["parent"]["span_id"] == top_turn_span["context"]["span_id"]
         assert chat_span["parent"]["span_id"] == subagent_span["context"]["span_id"]
         assert tool_span["parent"]["span_id"] == chat_span["context"]["span_id"]

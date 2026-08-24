@@ -11,7 +11,7 @@ to_dict/from_dict machinery.
 
 from __future__ import annotations
 
-from typing import Any, Literal, TypedDict
+from typing import Any, Literal, NotRequired, TypedDict
 
 
 class UsageDict(TypedDict, total=False):
@@ -85,6 +85,9 @@ class TurnSpanDict(TypedDict):
     """
 
     turn_id: str
+    # Present on top-level turns once their deterministic OTel id is known.
+    # Optional while Codex and nested-subagent producers migrate independently.
+    turn_span_id: NotRequired[str]
     start_ts: str
     end_ts: str
     input_message: str

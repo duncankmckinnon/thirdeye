@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import dataclasses
 import json
+import re
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
@@ -138,10 +140,29 @@ def capture_usage_claude(
     )
 
 
+@dataclasses.dataclass(frozen=True)
+class ParsedCalls:
+    """One `extract_calls_from_transcript` result.
+
+    `offset` and `last_frame_ts` are a matched pair describing where the parse
+    stopped: `offset` is the byte position of the first frame *not* consumed,
+    and `last_frame_ts` the timestamp of the last frame before it. Feeding both
+    back into the next call resumes exactly where this one left off, with the
+    dispatch point for the first group intact.
+    """
+
+    calls: list[LlmCallSpanDict]
+    offset: int
+    last_frame_ts: str | None
+
+
 def extract_calls_from_transcript(
     transcript_path: str | None,
     offset: int,
-) -> tuple[list[LlmCallSpanDict], int]:
+    *,
+    initial_prev_ts: str | None = None,
+    incremental: bool = False,
+) -> ParsedCalls:
     """Tail-parse the Claude transcript for new LLM calls since `offset`,
     building `LlmCallSpanDict` records for `thirdeye.platforms.claude.tracing
     .build_turn` to assemble into a `TurnSpanDict` for `otel_export
@@ -160,27 +181,66 @@ def extract_calls_from_transcript(
     `tool_result` events instead — pairing those in against the local event
     store is `build_turn`'s job, not this function's.
 
+    A call's span runs from the frame immediately *preceding* the group — the
+    dispatch point, i.e. the user's prompt frame for a turn's first call and
+    the `tool_result` frame for every later one — to the *last* frame folded
+    into the group, where the response finished arriving. That window includes
+    time-to-first-token, usually the dominant term.
+
     `offset` is the caller's responsibility, not read from state here — see
     `build_turn`, which sources it from the open-turn marker it already reads
     for `turn_seq`/`prompt`, independently of `parse_new_usage_rows_claude`'s
     own `UsageStore` bookmark.
 
-    Returns `(new_calls, new_offset)`. Never raises: any error here should
-    not be able to block the ordinary usage/event capture paths that already
-    run in the same hook call, so unlike the other functions in this module
-    this one is not `@safe_capture`-wrapped by itself — call it inside a
-    broader try/except, same as the rest of a hook's body.
+    `initial_prev_ts` supplies the dispatch point for the first group of this
+    parse, whose preceding frame sits behind `offset` and so is never read.
+    Without it that group falls back to its own first frame's timestamp — a
+    zero-width span, but never a nonsensical one.
+
+    `incremental` makes the call safe to repeat while the turn it is reading is
+    still running. A `message.id` group at the very end of the file may still be
+    receiving frames, so committing it would emit a half-built call — and
+    advancing past it would let its remaining frames open a *second* call
+    carrying the same id. Under `incremental=True` that trailing group is
+    abandoned instead of flushed, and the returned offset points back at its
+    first frame so the next parse rebuilds it whole. A group is known to be
+    complete once a frame with a different `message.id`, or any `user` frame,
+    follows it — exactly the two conditions the loop already flushes on — so
+    everything returned is committed and the offset only ever advances across
+    committed calls. `incremental=False` (the default) is the one-shot parse at
+    Stop: the trailing group is flushed and the offset is EOF.
+
+    An incremental cursor lands on the trailing group's first *assistant* frame
+    (or EOF, when no group is open), so the non-assistant frames feeding that
+    group its input sit behind it: the call the next parse rebuilds carries the
+    right timestamps and output, but an empty `input_messages`. Stopping instead
+    at the last committed call would keep them, at the cost of re-reading those
+    frames on every parse.
+
+    Returns a `ParsedCalls`. Never raises: any error here should not be able to
+    block the ordinary usage/event capture paths that already run in the same
+    hook call, so unlike the other functions in this module this one is not
+    `@safe_capture`-wrapped by itself — call it inside a broader try/except,
+    same as the rest of a hook's body.
     """
+    # Timestamp of the last frame consumed, whatever its type. A group opening
+    # on the next frame takes this as its dispatch point.
+    prev_frame_ts: str | None = _iso_timestamp(initial_prev_ts) or None
+
     if not transcript_path:
-        return [], offset
+        return ParsedCalls([], offset, prev_frame_ts)
     tp = Path(transcript_path)
     if not tp.is_file():
-        return [], offset
+        return ParsedCalls([], offset, prev_frame_ts)
 
     new_calls: list[LlmCallSpanDict] = []
     pending_input_parts: list[dict] = []
     pending_input_role = "user"
     current: dict[str, Any] | None = None
+    # Byte position of the open group's first frame, so `incremental` can rewind
+    # to it rather than commit a group that may still be growing.
+    current_group_offset = offset
+    current_group_prev_ts = prev_frame_ts
 
     def flush_current() -> None:
         nonlocal current
@@ -204,13 +264,24 @@ def extract_calls_from_transcript(
             if current["output_parts"]
             else []
         )
+        # Both ends are `_iso_timestamp` output: a real ISO-8601 timestamp, or
+        # "" when no frame carried a usable one. Collapse rather than emit a
+        # backwards or half-empty span — and compare the parsed instants, since
+        # frames may carry different UTC offsets, under which the string order
+        # is not the chronological one.
+        start_ts = current["start_ts"]
+        end_ts = current["last_ts"]
+        if not end_ts:
+            end_ts = start_ts
+        elif not start_ts or _is_after(start_ts, end_ts):
+            start_ts = end_ts
         new_calls.append(
             {
                 "call_id": current["call_id"],
                 "provider": "anthropic",
                 "model": current["model"],
-                "start_ts": current["ts"],
-                "end_ts": current["ts"],
+                "start_ts": start_ts,
+                "end_ts": end_ts,
                 "input_messages": input_messages,
                 "output_messages": output_messages,
                 "usage": usage,
@@ -221,7 +292,14 @@ def extract_calls_from_transcript(
 
     with tp.open("rb") as f:
         f.seek(offset)
-        for raw in f:
+        while True:
+            # Read line by line rather than iterate the handle, so this position
+            # is the exact start of the frame about to be consumed — a group
+            # opening below records it as its own.
+            line_offset = f.tell()
+            raw = f.readline()
+            if not raw:
+                break
             line = raw.decode("utf-8", errors="replace").strip()
             if not line:
                 continue
@@ -232,81 +310,165 @@ def extract_calls_from_transcript(
             if not isinstance(frame, dict):
                 continue
 
-            message = frame.get("message")
+            frame_ts = _iso_timestamp(frame.get("timestamp"))
+            # Every consumed frame becomes the dispatch point for whatever
+            # group opens next — hence the finally, since the body below bails
+            # out early on most frame types. A frame with a missing or
+            # malformed timestamp leaves the cursor where it was.
+            try:
+                message = frame.get("message")
 
-            if frame.get("type") == "user" and isinstance(message, dict):
-                # A user turn (real text, or a tool result feeding back) always
-                # ends whatever call was accumulating — it can't contribute
-                # more output after this.
-                flush_current()
+                if frame.get("type") == "user" and isinstance(message, dict):
+                    # A user turn (real text, or a tool result feeding back)
+                    # always ends whatever call was accumulating — it can't
+                    # contribute more output after this.
+                    flush_current()
+                    content = message.get("content")
+                    if isinstance(content, str):
+                        if content:
+                            pending_input_parts.append({"type": "text", "content": content})
+                        pending_input_role = "user"
+                    elif isinstance(content, list):
+                        has_tool_result = False
+                        for block in content:
+                            part = _map_content_block(block)
+                            if part is not None:
+                                pending_input_parts.append(part)
+                                has_tool_result = (
+                                    has_tool_result or part["type"] == "tool_call_response"
+                                )
+                        pending_input_role = "tool" if has_tool_result else "user"
+                    continue
+
+                if frame.get("type") != "assistant" or not isinstance(message, dict):
+                    continue
+                model = message.get("model")
+                if not model or model == "<synthetic>":
+                    continue
+                call_id = message.get("id") or frame.get("requestId") or frame.get("uuid")
+                if not call_id:
+                    continue
+                usage = message.get("usage")
+                if not isinstance(usage, dict) or (
+                    usage.get("input_tokens") is None and usage.get("output_tokens") is None
+                ):
+                    continue
+                call_id = str(call_id)
+
+                if current is not None and current["call_id"] != call_id:
+                    # A new message.id with no intervening user frame: Claude
+                    # Code re-invoked the model with no new visible input (e.g.
+                    # a continuation) — the new call legitimately has nothing
+                    # to report as input.
+                    flush_current()
+
+                if current is None:
+                    current_group_offset = line_offset
+                    current_group_prev_ts = prev_frame_ts
+                    raw_input = int(usage.get("input_tokens") or 0)
+                    cache_read = usage.get("cache_read_input_tokens")
+                    cache_crea = usage.get("cache_creation_input_tokens")
+                    current = {
+                        "call_id": call_id,
+                        # No preceding frame to dispatch from (start of the
+                        # transcript, or an unseeded incremental parse) leaves
+                        # the span zero-width rather than inventing a start.
+                        "start_ts": frame_ts if prev_frame_ts is None else prev_frame_ts,
+                        "last_ts": frame_ts,
+                        "model": str(model),
+                        "input_tokens": raw_input + int(cache_read or 0) + int(cache_crea or 0),
+                        "output_tokens": int(usage.get("output_tokens") or 0),
+                        "cache_read": int(cache_read) if cache_read is not None else None,
+                        "cache_creation": (int(cache_crea) if cache_crea is not None else None),
+                        "input_parts": pending_input_parts,
+                        "input_role": pending_input_role,
+                        "output_parts": [],
+                    }
+                    pending_input_parts = []
+                elif frame_ts:
+                    # Frames sharing a message.id arrive over the life of the
+                    # response, so the group's end follows the last of them.
+                    current["last_ts"] = frame_ts
+
                 content = message.get("content")
-                if isinstance(content, str):
-                    if content:
-                        pending_input_parts.append({"type": "text", "content": content})
-                    pending_input_role = "user"
-                elif isinstance(content, list):
-                    has_tool_result = False
+                if isinstance(content, list):
                     for block in content:
                         part = _map_content_block(block)
                         if part is not None:
-                            pending_input_parts.append(part)
-                            has_tool_result = (
-                                has_tool_result or part["type"] == "tool_call_response"
-                            )
-                    pending_input_role = "tool" if has_tool_result else "user"
-                continue
+                            current["output_parts"].append(part)  # type: ignore[union-attr]
+            finally:
+                if frame_ts:
+                    prev_frame_ts = frame_ts
 
-            if frame.get("type") != "assistant" or not isinstance(message, dict):
-                continue
-            model = message.get("model")
-            if not model or model == "<synthetic>":
-                continue
-            call_id = message.get("id") or frame.get("requestId") or frame.get("uuid")
-            if not call_id:
-                continue
-            usage = message.get("usage")
-            if not isinstance(usage, dict) or (
-                usage.get("input_tokens") is None and usage.get("output_tokens") is None
-            ):
-                continue
-            call_id = str(call_id)
+        if incremental and current is not None:
+            # The trailing group may still be growing: leave it uncommitted and
+            # rewind to its first frame. Its dispatch point goes back out as
+            # `last_frame_ts` — the last frame before the returned offset — so
+            # the next parse rebuilds the whole group with the same `start_ts`.
+            new_offset = current_group_offset
+            prev_frame_ts = current_group_prev_ts
+        else:
+            flush_current()
+            new_offset = f.tell()
 
-            if current is not None and current["call_id"] != call_id:
-                # A new message.id with no intervening user frame: Claude Code
-                # re-invoked the model with no new visible input (e.g. a
-                # continuation) — the new call legitimately has nothing to
-                # report as input.
-                flush_current()
+    return ParsedCalls(new_calls, new_offset, prev_frame_ts)
 
-            if current is None:
-                raw_input = int(usage.get("input_tokens") or 0)
-                cache_read = usage.get("cache_read_input_tokens")
-                cache_crea = usage.get("cache_creation_input_tokens")
-                current = {
-                    "call_id": call_id,
-                    "ts": str(frame.get("timestamp") or ""),
-                    "model": str(model),
-                    "input_tokens": raw_input + int(cache_read or 0) + int(cache_crea or 0),
-                    "output_tokens": int(usage.get("output_tokens") or 0),
-                    "cache_read": int(cache_read) if cache_read is not None else None,
-                    "cache_creation": int(cache_crea) if cache_crea is not None else None,
-                    "input_parts": pending_input_parts,
-                    "input_role": pending_input_role,
-                    "output_parts": [],
-                }
-                pending_input_parts = []
 
-            content = message.get("content")
-            if isinstance(content, list):
-                for block in content:
-                    part = _map_content_block(block)
-                    if part is not None:
-                        current["output_parts"].append(part)  # type: ignore[union-attr]
+def _iso_timestamp(value: object) -> str:
+    """Return `value` as an offset-carrying ISO-8601 timestamp, else "".
 
-        flush_current()
-        new_offset = f.tell()
+    A frame's `timestamp` is whatever the transcript happens to hold — absent,
+    null, a number, a truncated string, a bare date — and anything that isn't
+    a real timestamp must not become a span boundary or a dispatch point, so
+    it maps to "" and leaves the caller's cursor where it was.
 
-    return new_calls, new_offset
+    A value that *is* a timestamp but carries no UTC offset is returned with
+    an explicit `+00:00` appended. The exporter's `_ts_to_ns` reads a naive
+    timestamp in the worker's local timezone while the comparison below reads
+    it as UTC, so an un-pinned bound could pass `_is_after` here and still
+    come out backwards after export; pinning the offset makes both readings
+    the same instant.
+    """
+    if not isinstance(value, str):
+        return ""
+    parsed = _parse_iso(value)
+    if parsed is None:
+        return ""
+    return value if parsed.tzinfo is not None else value + "+00:00"
+
+
+# A date-time, not merely something `fromisoformat` accepts: it also takes a
+# bare "2026-08-22" (as midnight) and an hour-only "2026-08-22T10", neither of
+# which is a timestamp a frame would legitimately carry. The separators are
+# optional because basic format ("20260822T100000") is a date-time too, and
+# `fromisoformat` — which every candidate must also satisfy — is the judge of
+# which combinations of them are well-formed; all this asks for is a date
+# followed by a time of day resolved at least to the minute.
+_DATETIME_RE = re.compile(r"\d{4}-?\d{2}-?\d{2}[T ]\d{2}:?\d{2}")
+
+
+def _parse_iso(value: str) -> datetime | None:
+    """Parse an ISO-8601 date-time to a `datetime`, or `None` if `value` isn't
+    one. The result is aware only if `value` carried an offset."""
+    if not _DATETIME_RE.match(value):
+        return None
+    try:
+        # `fromisoformat` only learned to accept a trailing "Z" in 3.11.
+        return datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+
+
+def _is_after(start: str, end: str) -> bool:
+    """Whether `start` is a later instant than `end`. Both are `_iso_timestamp`
+    output, so both parse and both carry an offset; if one somehow doesn't, say
+    no rather than collapse a span on the strength of an unreadable bound, and
+    read any naive value the way the exporter would — as local time."""
+    start_dt = _parse_iso(start)
+    end_dt = _parse_iso(end)
+    if start_dt is None or end_dt is None:
+        return False
+    return start_dt.astimezone(UTC) > end_dt.astimezone(UTC)
 
 
 def _map_content_block(block: object) -> dict | None:

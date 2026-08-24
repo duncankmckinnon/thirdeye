@@ -9,7 +9,9 @@ import pytest
 from thirdeye.config import Config
 from thirdeye.paths import session_dir
 from thirdeye.platforms.claude import hooks, tracing
-from thirdeye.platforms.claude.usage import extract_calls_from_transcript
+from thirdeye.platforms.claude.usage import ParsedCalls, extract_calls_from_transcript
+from thirdeye.span_ids import turn_span_id
+from thirdeye.store import Store
 
 
 @pytest.fixture
@@ -53,14 +55,14 @@ def _assistant_frame(
 
 class TestExtractCallsFromTranscript:
     def test_no_transcript_path_yields_nothing(self):
-        calls, new_offset = extract_calls_from_transcript(None, 0)
-        assert calls == []
-        assert new_offset == 0
+        parsed = extract_calls_from_transcript(None, 0)
+        assert parsed.calls == []
+        assert parsed.offset == 0
 
     def test_missing_file_yields_nothing(self):
-        calls, new_offset = extract_calls_from_transcript("/nonexistent/path.jsonl", 0)
-        assert calls == []
-        assert new_offset == 0
+        parsed = extract_calls_from_transcript("/nonexistent/path.jsonl", 0)
+        assert parsed.calls == []
+        assert parsed.offset == 0
 
     def test_simple_call_has_llm_call_span_shape(self, tmp_path: Path):
         transcript = tmp_path / "t.jsonl"
@@ -70,7 +72,8 @@ class TestExtractCallsFromTranscript:
             + _assistant_frame("msg_1", [{"type": "text", "text": "hi there"}])
             + "\n"
         )
-        calls, new_offset = extract_calls_from_transcript(str(transcript), 0)
+        parsed = extract_calls_from_transcript(str(transcript), 0)
+        calls, new_offset = parsed.calls, parsed.offset
         assert len(calls) == 1
         call = calls[0]
         assert call["call_id"] == "msg_1"
@@ -98,7 +101,7 @@ class TestExtractCallsFromTranscript:
             )
             + "\n"
         )
-        calls, _new_offset = extract_calls_from_transcript(str(transcript), 0)
+        calls = extract_calls_from_transcript(str(transcript), 0).calls
         usage = calls[0]["usage"]
         assert usage["cache_read_input_tokens"] == 7
         assert usage["cache_creation_input_tokens"] == 3
@@ -116,7 +119,7 @@ class TestExtractCallsFromTranscript:
             )
             + "\n"
         )
-        calls, _new_offset = extract_calls_from_transcript(str(transcript), 0)
+        calls = extract_calls_from_transcript(str(transcript), 0).calls
         assert len(calls) == 1
         # tool_calls is always empty here: timing/results live in the local event
         # store, correlated separately by build_turn.
@@ -141,7 +144,7 @@ class TestExtractCallsFromTranscript:
             + _assistant_frame("msg_2", [{"type": "text", "text": "found file1"}])
             + "\n"
         )
-        calls, _new_offset = extract_calls_from_transcript(str(transcript), 0)
+        calls = extract_calls_from_transcript(str(transcript), 0).calls
         assert len(calls) == 2
         first, second = calls
         assert first["call_id"] == "msg_1"
@@ -163,7 +166,7 @@ class TestExtractCallsFromTranscript:
             + _assistant_frame("msg_2", [{"type": "text", "text": "second"}])
             + "\n"
         )
-        calls, _new_offset = extract_calls_from_transcript(str(transcript), 0)
+        calls = extract_calls_from_transcript(str(transcript), 0).calls
         assert len(calls) == 2
         assert calls[0]["input_messages"] != []
         assert calls[1]["input_messages"] == []
@@ -180,7 +183,7 @@ class TestExtractCallsFromTranscript:
             )
             + "\n"
         )
-        calls, _new_offset = extract_calls_from_transcript(str(transcript), 0)
+        calls = extract_calls_from_transcript(str(transcript), 0).calls
         assert len(calls) == 1
         parts = calls[0]["output_messages"][0]["parts"]
         assert [p["type"] for p in parts] == ["reasoning", "tool_call"]
@@ -190,7 +193,7 @@ class TestExtractCallsFromTranscript:
         transcript.write_text(
             _assistant_frame("msg_1", [{"type": "text", "text": "hi"}], model="<synthetic>") + "\n"
         )
-        calls, _new_offset = extract_calls_from_transcript(str(transcript), 0)
+        calls = extract_calls_from_transcript(str(transcript), 0).calls
         assert calls == []
 
     def test_offset_makes_a_second_call_incremental(self, tmp_path: Path):
@@ -201,12 +204,13 @@ class TestExtractCallsFromTranscript:
             + _assistant_frame("msg_1", [{"type": "text", "text": "hi"}])
             + "\n"
         )
-        first_calls, offset_after = extract_calls_from_transcript(str(transcript), 0)
-        assert len(first_calls) == 1
+        first = extract_calls_from_transcript(str(transcript), 0)
+        offset_after = first.offset
+        assert len(first.calls) == 1
 
         with transcript.open("a") as f:
             f.write(_assistant_frame("msg_2", [{"type": "text", "text": "again"}]) + "\n")
-        second_calls, _offset = extract_calls_from_transcript(str(transcript), offset_after)
+        second_calls = extract_calls_from_transcript(str(transcript), offset_after).calls
         assert len(second_calls) == 1
         assert second_calls[0]["call_id"] == "msg_2"
 
@@ -215,7 +219,7 @@ class TestExtractCallsFromTranscript:
         transcript.write_text(
             _assistant_frame("msg_1", [{"type": "redacted_thinking", "data": "..."}]) + "\n"
         )
-        calls, _new_offset = extract_calls_from_transcript(str(transcript), 0)
+        calls = extract_calls_from_transcript(str(transcript), 0).calls
         assert len(calls) == 1
         assert calls[0]["output_messages"] == []
 
@@ -240,25 +244,126 @@ class TestBuildTurn:
         )
         assert turn is None
 
-    def test_full_turn_assembly(self, monkeypatch, env: Path, tmp_path: Path):
+    def test_build_turn_passes_live_cursor_to_transcript_parser(self, monkeypatch, env: Path):
+        sid = "cursor-reader"
+        _stdin(monkeypatch, {"session_id": sid, "cwd": "/p", "prompt": "hello"})
+        hooks.user_prompt_submit()
+        sd = session_dir(env, "claude", sid)
+        marker = hooks._read_open_turn(sd)
+        assert marker is not None
+        # A distinct valid value proves build_turn carries the marker's id
+        # instead of silently recomputing it on the ordinary marker-present path.
+        marker["turn_span_id"] = "12345"
+        hooks._write_open_turn(sd, marker)
+        assert hooks._advance_turn_cursor(
+            sd,
+            expected_turn_seq=marker["turn_seq"],
+            offset=4321,
+            last_frame_ts="2026-08-22T20:00:00.000Z",
+        )
+        received = {}
+
+        def fake_extract(path, offset, *, initial_prev_ts=None, incremental=False):
+            received.update(
+                path=path,
+                offset=offset,
+                initial_prev_ts=initial_prev_ts,
+                incremental=incremental,
+            )
+            return ParsedCalls([], offset, initial_prev_ts)
+
+        monkeypatch.setattr(tracing, "extract_calls_from_transcript", fake_extract)
+        turn = tracing.build_turn(
+            config=Config.load(),
+            session_dir_=sd,
+            session_id=sid,
+            cwd="/p",
+            stop_seq=marker["turn_seq"] + 1,
+            stop_ts="2026-08-22T20:00:01.000Z",
+            transcript_path="/tmp/live-transcript.jsonl",
+            final_response="done",
+        )
+
+        assert turn is not None
+        assert turn["turn_span_id"] == "12345"
+        assert received == {
+            "path": "/tmp/live-transcript.jsonl",
+            "offset": 4321,
+            "initial_prev_ts": "2026-08-22T20:00:00.000Z",
+            "incremental": False,
+        }
+
+    def test_stop_without_marker_exports_recovered_turn(self, monkeypatch, env: Path):
+        sid = "missing-marker"
+        exported = []
+        monkeypatch.setattr(
+            "thirdeye.otel_export.export_turn",
+            lambda config, sd, session_id, platform, cwd, turn: exported.append(turn),
+        )
+        _stdin(monkeypatch, {"session_id": sid, "cwd": "/p", "prompt": "recover me"})
+        hooks.user_prompt_submit()
+        sd = session_dir(env, "claude", sid)
+        marker = hooks._read_open_turn(sd)
+        assert marker is not None
+        turn_seq = marker["turn_seq"]
+        hooks._open_turn_path(sd).unlink()
+
+        _stdin(monkeypatch, {"session_id": sid, "cwd": "/p", "response": "recovered"})
+        hooks.stop()
+
+        assert len(exported) == 1
+        turn = exported[0]
+        assert turn["turn_id"] == str(turn_seq)
+        assert turn["turn_span_id"] == str(turn_span_id(sid, turn_seq))
+        assert turn["input_message"] == "recover me"
+        assert turn["output_message"] == "recovered"
+        assert turn["llm_calls"] == []
+
+    def test_missing_marker_does_not_reparse_session_transcript(
+        self, monkeypatch, env: Path, tmp_path: Path
+    ):
+        sid = "missing-cursor-history"
+        exported = []
+        monkeypatch.setattr(
+            "thirdeye.otel_export.export_turn",
+            lambda config, sd, session_id, platform, cwd, turn: exported.append(turn),
+        )
+        transcript = tmp_path / "session.jsonl"
+        transcript.write_text(
+            _assistant_frame("old-call", [{"type": "text", "text": "old"}]) + "\n"
+        )
+        _stdin(
+            monkeypatch,
+            {
+                "session_id": sid,
+                "cwd": "/p",
+                "prompt": "current",
+                "transcript_path": str(transcript),
+            },
+        )
+        hooks.user_prompt_submit()
+        sd = session_dir(env, "claude", sid)
+        hooks._open_turn_path(sd).unlink()
+
+        _stdin(
+            monkeypatch,
+            {
+                "session_id": sid,
+                "cwd": "/p",
+                "response": "done",
+                "transcript_path": str(transcript),
+            },
+        )
+        hooks.stop()
+
+        assert len(exported) == 1
+        assert exported[0]["input_message"] == "current"
+        assert exported[0]["llm_calls"] == []
+
+    @pytest.mark.parametrize("spawn_tool_name", ["Task", "Agent"])
+    def test_full_turn_assembly(self, monkeypatch, env: Path, tmp_path: Path, spawn_tool_name: str):
         sid = "s1"
         main_transcript = tmp_path / "main.jsonl"
-        main_transcript.write_text(
-            _user_frame("do the thing")
-            + "\n"
-            + _assistant_frame(
-                "msg_1",
-                [{"type": "tool_use", "id": "tu_1", "name": "Bash", "input": {"command": "ls"}}],
-                ts="2026-01-01T00:00:01.000Z",
-            )
-            + "\n"
-            + _user_frame([{"type": "tool_result", "tool_use_id": "tu_1", "content": "out"}])
-            + "\n"
-            + _assistant_frame(
-                "msg_2", [{"type": "text", "text": "done"}], ts="2026-01-01T00:00:02.000Z"
-            )
-            + "\n"
-        )
         sub_transcript = tmp_path / "sub.jsonl"
         sub_transcript.write_text(
             _assistant_frame(
@@ -280,6 +385,26 @@ class TestBuildTurn:
             },
         )
         hooks.user_prompt_submit()
+
+        # Written only now, after the prompt was submitted: the marker records
+        # the transcript's size at submit time, so frames the turn itself
+        # produces have to land after it or they fall behind the cursor.
+        main_transcript.write_text(
+            _user_frame("do the thing")
+            + "\n"
+            + _assistant_frame(
+                "msg_1",
+                [{"type": "tool_use", "id": "tu_1", "name": "Bash", "input": {"command": "ls"}}],
+                ts="2026-01-01T00:00:01.000Z",
+            )
+            + "\n"
+            + _user_frame([{"type": "tool_result", "tool_use_id": "tu_1", "content": "out"}])
+            + "\n"
+            + _assistant_frame(
+                "msg_2", [{"type": "text", "text": "done"}], ts="2026-01-01T00:00:02.000Z"
+            )
+            + "\n"
+        )
 
         _stdin(
             monkeypatch,
@@ -316,7 +441,7 @@ class TestBuildTurn:
             {
                 "session_id": sid,
                 "cwd": "/p",
-                "tool_name": "Task",
+                "tool_name": spawn_tool_name,
                 "tool_use_id": "tu_task1",
                 "tool_input": {"description": "explore", "prompt": "explore code"},
             },
@@ -346,7 +471,7 @@ class TestBuildTurn:
             {
                 "session_id": sid,
                 "cwd": "/p",
-                "tool_name": "Task",
+                "tool_name": spawn_tool_name,
                 "tool_use_id": "tu_task1",
                 "tool_response": "found stuff",
             },
@@ -358,6 +483,7 @@ class TestBuildTurn:
 
         events = list(SessionReader(sd).iter_events())
         turn_seq = next(e["seq"] for e in events if e["t"] == "user_message")
+        subagent_turn_seq = next(e["seq"] for e in events if e["t"] == "subagent_start")
         stop_seq = events[-1]["seq"] + 1
 
         turn = tracing.build_turn(
@@ -392,6 +518,7 @@ class TestBuildTurn:
 
         assert len(turn["subagents"]) == 1
         sub = turn["subagents"][0]
+        assert sub["turn_span_id"] == str(turn_span_id(sid, subagent_turn_seq))
         assert sub["input_message"] == "explore code"
         assert sub["output_message"] == "found stuff"
         assert sub["status"] == "completed"
@@ -444,10 +571,292 @@ class TestBuildTurn:
         assert turn["subagents"] == []
 
 
+# -- async subagent export (resolve_subagent_export) ----------------------------
+
+
+class TestAsyncSubagentExport:
+    """A subagent dispatched via the "Agent" tool can keep running well past
+    its dispatching turn's own Stop -- confirmed against a real session where
+    the subagent's own tool calls kept landing in the session log for over
+    two minutes after the parent turn had already closed and exported without
+    it. `build_turn`'s per-turn `[turn_seq, stop_seq)` window can't see any of
+    that; `resolve_subagent_export` searches the whole session instead, so it
+    still finds the subagent's start event and dispatching tool call
+    regardless of which (if any) turn is open by the time SubagentStop fires.
+    """
+
+    def test_resolves_subagent_that_outlives_its_dispatching_turn(
+        self, monkeypatch, env: Path, tmp_path: Path
+    ):
+        sid = "s1"
+        main_transcript = tmp_path / "main.jsonl"
+        sub_transcript = tmp_path / "sub.jsonl"
+        sub_transcript.write_text(
+            _user_frame("explore code")
+            + "\n"
+            + _assistant_frame(
+                "sub_msg_1",
+                [
+                    {
+                        "type": "tool_use",
+                        "id": "tu_sub_1",
+                        "name": "Bash",
+                        "input": {"command": "grep -r foo"},
+                    }
+                ],
+                ts="2026-01-01T00:00:20.000Z",
+            )
+            + "\n"
+            + _user_frame(
+                [{"type": "tool_result", "tool_use_id": "tu_sub_1", "content": "found it"}]
+            )
+            + "\n"
+            + _assistant_frame(
+                "sub_msg_2",
+                [{"type": "text", "text": "found stuff"}],
+                ts="2026-01-01T00:00:21.000Z",
+            )
+            + "\n"
+        )
+        main_transcript.write_text(
+            _assistant_frame("msg_1", [{"type": "text", "text": "on it"}]) + "\n"
+        )
+
+        _stdin(monkeypatch, {"session_id": sid, "cwd": "/p"})
+        hooks.session_start()
+
+        _stdin(
+            monkeypatch,
+            {
+                "session_id": sid,
+                "cwd": "/p",
+                "prompt": "go explore",
+                "transcript_path": str(main_transcript),
+            },
+        )
+        hooks.user_prompt_submit()
+
+        # Dispatch via the "Agent" tool, not "Task" -- this SDK/VSCode
+        # harness surface names the subagent-dispatch tool "Agent".
+        _stdin(
+            monkeypatch,
+            {
+                "session_id": sid,
+                "cwd": "/p",
+                "tool_name": "Agent",
+                "tool_use_id": "tu_agent1",
+                "tool_input": {"description": "explore", "prompt": "explore code"},
+            },
+        )
+        hooks.pre_tool_use()
+        _stdin(
+            monkeypatch,
+            {
+                "session_id": sid,
+                "cwd": "/p",
+                "tool_name": "Agent",
+                "tool_use_id": "tu_agent1",
+                "tool_response": "launched",
+            },
+        )
+        hooks.post_tool_use()
+
+        _stdin(
+            monkeypatch,
+            {"session_id": sid, "cwd": "/p", "agent_id": "agent_1", "agent_type": "Explore"},
+        )
+        hooks.subagent_start()
+
+        # The dispatching turn's own Stop fires -- and closes the marker --
+        # before the subagent has done any of its own work.
+        _stdin(
+            monkeypatch,
+            {
+                "session_id": sid,
+                "cwd": "/p",
+                "transcript_path": str(main_transcript),
+                "response": "on it",
+            },
+        )
+        hooks.stop()
+
+        sd = session_dir(env, "claude", sid)
+        assert not hooks._open_turn_path(sd).exists()
+
+        # The subagent's own tool call, tagged with its agent_id the way this
+        # environment actually tags it -- landing well after the turn above
+        # already closed and exported without it.
+        _stdin(
+            monkeypatch,
+            {
+                "session_id": sid,
+                "cwd": "/p",
+                "tool_name": "Bash",
+                "tool_use_id": "tu_sub_1",
+                "tool_input": {"command": "grep -r foo"},
+                "agent_id": "agent_1",
+                "agent_type": "Explore",
+            },
+        )
+        hooks.pre_tool_use()
+        _stdin(
+            monkeypatch,
+            {
+                "session_id": sid,
+                "cwd": "/p",
+                "tool_name": "Bash",
+                "tool_use_id": "tu_sub_1",
+                "tool_response": "found it",
+                "agent_id": "agent_1",
+                "agent_type": "Explore",
+            },
+        )
+        hooks.post_tool_use()
+
+        exported = []
+        monkeypatch.setattr(
+            "thirdeye.otel_export.export_subagent_turn",
+            lambda config, sd_, sid_, platform, cwd, turn, tool_use_id: exported.append(
+                (turn, tool_use_id)
+            ),
+        )
+
+        _stdin(
+            monkeypatch,
+            {
+                "session_id": sid,
+                "cwd": "/p",
+                "agent_id": "agent_1",
+                "agent_transcript_path": str(sub_transcript),
+                "last_assistant_message": "found stuff",
+            },
+        )
+        hooks.subagent_stop()
+
+        assert len(exported) == 1
+        turn, tool_use_id = exported[0]
+        # Correlated back to the dispatching "Agent" tool call despite it
+        # belonging to an already-closed turn -- this is what "Task"-only
+        # matching, and a per-turn window, both fail to do.
+        assert tool_use_id == "tu_agent1"
+        assert turn["input_message"] == "explore code"
+        assert turn["output_message"] == "found stuff"
+        assert turn["status"] == "completed"
+        assert len(turn["llm_calls"]) == 2
+        assert turn["llm_calls"][0]["tool_calls"][0]["tool_call_id"] == "tu_sub_1"
+
+    def test_returns_none_without_a_matching_subagent_start(self, env: Path):
+        sid = "s1"
+        from thirdeye.reader import SessionReader
+
+        sd = session_dir(env, "claude", sid)
+        Store(Config.load()).append_event(
+            session_id=sid, platform="claude", cwd="/p", t="session_start", data={}
+        )
+        seq = Store(Config.load()).append_event(
+            session_id=sid,
+            platform="claude",
+            cwd="/p",
+            t="subagent_message",
+            data={"agent_id": "ghost", "last_assistant_message": "?"},
+        )
+        stop_ev = SessionReader(sd).get_event(seq)
+        assert tracing.resolve_subagent_export(sd, sid, stop_ev) is None
+
+
 # -- interruption handling (_close_stale_turn_if_open) ---------------------------
 
 
 class TestInterruptionHandling:
+    def test_stale_close_uses_snapshot_and_preserves_newer_marker(self, monkeypatch, env: Path):
+        exported = []
+        monkeypatch.setattr(
+            "thirdeye.otel_export.export_turn",
+            lambda config, sd, sid, platform, cwd, turn: exported.append(turn),
+        )
+        sid = "snapshot-race"
+        _stdin(monkeypatch, {"session_id": sid, "cwd": "/p", "prompt": "first"})
+        hooks.user_prompt_submit()
+        sd = session_dir(env, "claude", sid)
+        old_marker = hooks._read_open_turn(sd)
+        assert old_marker is not None
+        proving_seq = Store(Config.load()).append_event(
+            session_id=sid,
+            platform="claude",
+            cwd="/p",
+            t="user_message",
+            data={"prompt": "second"},
+        )
+        assert proving_seq is not None
+        new_marker = {
+            **old_marker,
+            "turn_seq": proving_seq,
+            "turn_span_id": str(turn_span_id(sid, proving_seq)),
+            "prompt": "second",
+        }
+
+        def fake_build_turn(**kwargs):
+            assert kwargs["marker_snapshot"] == old_marker
+            hooks._write_open_turn(sd, new_marker)
+            return {
+                "turn_id": str(old_marker["turn_seq"]),
+                "turn_span_id": old_marker["turn_span_id"],
+                "start_ts": old_marker["start_ts"],
+                "end_ts": kwargs["stop_ts"],
+                "input_message": "first",
+                "output_message": "",
+                "status": "interrupted",
+                "llm_calls": [],
+                "permission_requests": [],
+                "subagents": [],
+                "attributes": {},
+            }
+
+        monkeypatch.setattr(tracing, "build_turn", fake_build_turn)
+        hooks._close_stale_turn_if_open(Config.load(), sid, "/p", proving_seq, force=True)
+
+        assert len(exported) == 1
+        assert hooks._read_open_turn(sd) == new_marker
+
+    @pytest.mark.parametrize("marker_state", ["missing", "corrupt"])
+    @pytest.mark.parametrize("closing_event", ["next_prompt", "session_end"])
+    def test_invalid_or_missing_marker_recovers_interrupted_turn(
+        self,
+        monkeypatch,
+        env: Path,
+        marker_state: str,
+        closing_event: str,
+    ):
+        exported = []
+        monkeypatch.setattr(
+            "thirdeye.otel_export.export_turn",
+            lambda config, sd, sid, platform, cwd, turn: exported.append(turn),
+        )
+        sid = f"recover-{marker_state}-{closing_event}"
+        _stdin(monkeypatch, {"session_id": sid, "cwd": "/p", "prompt": "first"})
+        hooks.user_prompt_submit()
+        sd = session_dir(env, "claude", sid)
+        if marker_state == "missing":
+            hooks._open_turn_path(sd).unlink()
+        else:
+            hooks._open_turn_path(sd).write_text("{not-json")
+
+        if closing_event == "next_prompt":
+            _stdin(monkeypatch, {"session_id": sid, "cwd": "/p", "prompt": "second"})
+            hooks.user_prompt_submit()
+        else:
+            _stdin(monkeypatch, {"session_id": sid, "cwd": "/p"})
+            hooks.session_end()
+
+        assert len(exported) == 1
+        assert exported[0]["status"] == "interrupted"
+        assert exported[0]["input_message"] == "first"
+        assert exported[0]["llm_calls"] == []
+        if closing_event == "next_prompt":
+            marker = hooks._read_open_turn(sd)
+            assert marker is not None
+            assert marker["prompt"] == "second"
+
     def test_different_prompt_id_closes_interrupted_turn_on_any_hook(self, monkeypatch, env: Path):
         exported = []
         monkeypatch.setattr(
