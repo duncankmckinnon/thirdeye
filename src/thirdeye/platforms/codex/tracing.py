@@ -70,6 +70,11 @@ def _subagent_turn(session_id: str, start: dict[str, Any], stop: dict[str, Any])
     stop_data = stop.get("data") or {}
     input_message = start_data.get("prompt") or start_data.get("description") or ""
     output_message = stop_data.get("message") or stop_data.get("output") or ""
+    attributes = {
+        k: v
+        for k, v in {**start_data, **stop_data}.items()
+        if k not in {"prompt", "description", "message", "output"}
+    }
     return {
         "turn_id": f"subagent:{session_id}:{start.get('seq')}",
         "start_ts": str(start.get("ts") or ""),
@@ -80,8 +85,24 @@ def _subagent_turn(session_id: str, start: dict[str, Any], stop: dict[str, Any])
         "llm_calls": [],
         "permission_requests": [],
         "subagents": [],
-        "attributes": {},
+        "attributes": attributes,
     }
+
+
+def _subagent_id(event: dict[str, Any]) -> str | None:
+    """Return the stable child identity used by Codex hook payloads, if any.
+
+    Accept the spelling variants used elsewhere by Codex so tracing remains
+    compatible across CLI/app hook schema revisions.  ``thread_id`` is a
+    useful fallback for implementations that identify the child by its own
+    thread rather than an explicit agent id.
+    """
+    data = event.get("data") or {}
+    for key in ("agent_id", "agent-id", "agentId", "thread_id", "thread-id", "threadId"):
+        value = data.get(key)
+        if value is not None and str(value):
+            return str(value)
+    return None
 
 
 def _subagents_in_range(
@@ -96,22 +117,31 @@ def _subagents_in_range(
         if _in_range(str(event.get("ts") or ""), start_ts, end_ts)
     ]
 
-    # Subagent invocations nest like a call stack -- a Task tool invoked from
-    # inside a running subagent nests under it -- and these payloads carry no
-    # id shared between a start and its stop, so pairing is LIFO: a stop
-    # closes the most recently opened, still-unclosed start. This is what
-    # makes interleaved starts A, B followed by stops B, A pair correctly as
-    # A->A / B->B instead of crossing into A->B / B->A.
+    # Modern Codex payloads identify the child. Pair by that identity because
+    # concurrently dispatched siblings may finish in any order. Older
+    # identifier-less payloads retain the historical LIFO fallback.
     stack: list[dict[str, Any]] = []
+    starts_by_id: dict[str, list[dict[str, Any]]] = {}
     subagents: list[TurnSpanDict] = []
     for event in events:
         if event.get("t") == "subagent_start":
-            stack.append(event)
-        elif stack:
-            subagents.append(_subagent_turn(session_id, stack.pop(), event))
-        # A stop with nothing open on the stack has no start in this turn's
-        # own window to pair with -- nothing to nest it under, so it's
-        # dropped rather than fabricating a start for it.
+            agent_id = _subagent_id(event)
+            if agent_id is None:
+                stack.append(event)
+            else:
+                starts_by_id.setdefault(agent_id, []).append(event)
+        else:
+            agent_id = _subagent_id(event)
+            starts = starts_by_id.get(agent_id, []) if agent_id is not None else []
+            if starts:
+                start = starts.pop(0)
+                if not starts:
+                    starts_by_id.pop(agent_id, None)
+                subagents.append(_subagent_turn(session_id, start, event))
+            elif agent_id is None and stack:
+                subagents.append(_subagent_turn(session_id, stack.pop(), event))
+        # An unmatched stop has no start in this turn's own window to pair
+        # with, so it is dropped rather than fabricating a child span.
 
     subagents.sort(key=lambda subagent: subagent["start_ts"])
     return subagents

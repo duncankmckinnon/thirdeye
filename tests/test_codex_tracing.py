@@ -179,6 +179,36 @@ class TestBuildTurnFromLocalStore:
         assert sub["permission_requests"] == []
         assert sub["subagents"] == []
 
+    def test_parallel_subagents_pair_by_agent_id_when_stops_are_not_lifo(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ):
+        store = Store(Config(root=tmp_path))
+        _set_next_timestamps(
+            monkeypatch,
+            [
+                "2026-01-01T00:00:02.000Z",
+                "2026-01-01T00:00:03.000Z",
+                "2026-01-01T00:00:06.000Z",
+                "2026-01-01T00:00:08.000Z",
+            ],
+        )
+        for t, data in (
+            ("subagent_start", {"agent_id": "A", "prompt": "task A"}),
+            ("subagent_start", {"agent_id": "B", "prompt": "task B"}),
+            ("subagent_message", {"agent_id": "A", "message": "result A"}),
+            ("subagent_message", {"agent_id": "B", "message": "result B"}),
+        ):
+            seq = store.append_event(
+                session_id="s1", platform="codex", cwd="/p", t=t, data=data
+            )
+        sd = session_dir(tmp_path, "codex", "s1")
+
+        turn = build_turn(session_dir_=sd, session_id="s1", seq=seq + 1, turn=_bare_turn())
+
+        assert [sub["input_message"] for sub in turn["subagents"]] == ["task A", "task B"]
+        assert [sub["output_message"] for sub in turn["subagents"]] == ["result A", "result B"]
+        assert [sub["attributes"]["agent_id"] for sub in turn["subagents"]] == ["A", "B"]
+
     def test_subagent_pair_outside_window_is_excluded(
         self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
     ):
