@@ -59,6 +59,19 @@ def main(argv: list[str] | None = None) -> None:
                 trace_id=payload["trace_id"],
                 spans=payload["spans"],
             )
+        elif payload.get("kind") == "subagent_turn":
+            from thirdeye.otel_export import _export_subagent_turn_inner
+
+            _export_subagent_turn_inner(
+                config=config,
+                session_dir_=Path(payload["session_dir"]),
+                session_id=payload["session_id"],
+                platform=payload["platform"],
+                cwd=payload["cwd"],
+                trace_id=payload["trace_id"],
+                parent_span_id=payload["parent_span_id"],
+                turn=payload["turn"],
+            )
     except Exception:
         pass
 

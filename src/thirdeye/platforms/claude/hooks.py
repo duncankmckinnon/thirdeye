@@ -474,13 +474,47 @@ def subagent_stop() -> None:
     # SubagentStart (below) uses a distinct "subagent_start" type; the
     # start/stop asymmetry is intentional, not an oversight.
     payload = _read_stdin()
+    sid = payload.get("session_id")
+    if not sid:
+        return
+    cwd = payload.get("cwd") or os.getcwd()
     # `_STRIP_KEYS` drops `agent_transcript_path` as noise from every stored
     # event, but `build_turn` needs it here to locate the subagent's own
     # transcript — re-add it under a distinct key so it survives stripping.
     transcript_path = payload.get("agent_transcript_path")
     if transcript_path:
         payload = {**payload, "agent_transcript": transcript_path}
-    _emit("subagent_message", payload)
+    # Deliberately bypasses `_emit`: its stale-open-turn check treats any
+    # event whose `prompt_id` doesn't match the currently open turn's as
+    # proof that turn was abandoned. A subagent can run well past its own
+    # dispatching turn's Stop, so by the time this fires a *different*,
+    # still-legitimately-open later turn may exist -- carrying the earlier
+    # turn's prompt_id here would wrongly force that unrelated turn closed
+    # and exported as "interrupted".
+    config = Config.load()
+    seq = Store(config).append_event(
+        session_id=sid,
+        platform=_PLATFORM,
+        cwd=cwd,
+        t="subagent_message",
+        data=_strip_payload(payload),
+    )
+    if seq is None:
+        return
+
+    try:
+        from thirdeye.otel_export import export_subagent_turn
+        from thirdeye.platforms.claude.tracing import resolve_subagent_export
+
+        sd = session_dir(config.root, _PLATFORM, sid)
+        stop_ev = SessionReader(sd).get_event(seq)
+        resolved = resolve_subagent_export(sd, sid, stop_ev)
+        if resolved is None:
+            return
+        turn, tool_use_id = resolved
+        export_subagent_turn(config, sd, sid, _PLATFORM, cwd, turn, tool_use_id)
+    except Exception:
+        pass
 
 
 def stop_failure() -> None:

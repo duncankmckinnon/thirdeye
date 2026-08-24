@@ -602,6 +602,62 @@ def export_spans(
         return False
 
 
+def export_subagent_turn(
+    config: Config,
+    session_dir_: Path,
+    session_id: str,
+    platform: str,
+    cwd: str,
+    turn: TurnSpanDict,
+    tool_use_id: str,
+) -> None:
+    """Hand a completed subagent turn off for background export, nested
+    under the tool span (already exported, live, when the dispatching tool
+    call itself completed) that dispatched it -- not under whichever turn
+    happens to be open in this session when the subagent's own Stop fires.
+
+    A subagent can run well past its dispatching turn's own Stop, so by the
+    time this is called that turn's span tree may already be exported (with
+    no way to graft a child onto it after the fact) or a wholly unrelated
+    later turn may be in progress. Parenting is independent of turn export
+    for exactly the same reason a live tool/chat span's is: the deterministic
+    `tool_span_id` gives Logfire everything it needs to place this in the
+    tree without its parent needing to still be open, or even in this
+    process. Never raises, never blocks on network I/O -- same contract as
+    `export_turn`.
+    """
+    if not config.logfire.enabled or not config.logfire.token:
+        return
+    try:
+        try:
+            state = json.loads(otel_state_path(session_dir_).read_text())
+            trace_id = int(state["trace_id"], 16)
+        except (OSError, TypeError, ValueError, KeyError, json.JSONDecodeError):
+            trace_id = trace_id_for_session(session_id)
+        job_path = _write_job(
+            config.root,
+            {
+                "kind": "subagent_turn",
+                "session_dir": str(session_dir_),
+                "session_id": session_id,
+                "platform": platform,
+                "cwd": cwd,
+                "trace_id": str(trace_id),
+                "parent_span_id": str(int(tool_span_id(session_id, tool_use_id))),
+                "turn": turn,
+            },
+        )
+        _spawn(job_path)
+    except Exception as exc:
+        log_capture_error(
+            thirdeye_home=config.root,
+            phase="logfire_subagent_turn_export_spawn",
+            error=exc,
+            platform=platform,
+            session_id=session_id,
+        )
+
+
 def _export_turn_inner(
     *,
     config: Config,
@@ -670,6 +726,56 @@ def _export_turn_inner(
         )
         if instance.force_flush(timeout_millis=_FLUSH_TIMEOUT_MS) is False:
             raise RuntimeError("turn export was not flushed")
+    except Exception:
+        claim_path.unlink(missing_ok=True)
+        raise
+    claim_path.write_text("sent")
+
+
+def _export_subagent_turn_inner(
+    *,
+    config: Config,
+    session_dir_: Path,
+    session_id: str,
+    platform: str,
+    cwd: str,
+    trace_id: int | str,
+    parent_span_id: int | str,
+    turn: TurnSpanDict,
+) -> None:
+    """Export one subagent's turn under an already-known parent span id.
+
+    Uses the same first-wins claim as `_export_turn_inner`, keyed separately
+    (`subagent:<turn_id>`) so this and a same-session `build_turn` embedding
+    that also happens to see this subagent (the fast, fully-synchronous case)
+    can't both export it -- whichever claims first wins, the other is a no-op.
+    Unlike a top-level turn, there is no session-root bootstrapping here: the
+    parent (the dispatching tool's span) was already exported live by the
+    time the subagent even started, so this only ever attaches to an existing
+    remote parent context, never creates one.
+    """
+    instance = _get_instance(config, platform)
+    if instance is None:
+        return
+    claim_id = f"subagent:{turn['turn_id']}"
+    if not _claim_turn_export(session_dir_, claim_id):
+        return
+    claim_path = _turn_claim_path(session_dir_, claim_id)
+
+    try:
+        tracer = instance.config.get_tracer_provider().get_tracer("thirdeye")
+        parent_ctx = _parent_context(int(trace_id), int(parent_span_id))
+        _export_turn_subtree(
+            tracer,
+            parent_ctx,
+            turn,
+            session_id=session_id,
+            platform=platform,
+            cwd=cwd,
+            span_name="agent-turn (subagent)",
+        )
+        if instance.force_flush(timeout_millis=_FLUSH_TIMEOUT_MS) is False:
+            raise RuntimeError("subagent turn export was not flushed")
     except Exception:
         claim_path.unlink(missing_ok=True)
         raise
