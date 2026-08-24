@@ -21,6 +21,10 @@ def index_path(session_dir_: Path) -> Path:
     return session_dir_ / "events.idx"
 
 
+def events_lock_path(session_dir_: Path) -> Path:
+    return session_dir_ / "events.lock"
+
+
 def meta_path(session_dir_: Path) -> Path:
     return session_dir_ / "meta.yaml"
 
