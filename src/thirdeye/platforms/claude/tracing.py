@@ -311,7 +311,19 @@ def build_turn(
             initial_prev_ts=marker.get("last_frame_ts"),
             incremental=False,
         )
-        llm_calls = parsed_calls.calls
+        # A `message.id` split across a `user` frame reopens as a second group
+        # after the frame that closed it. When that trailing fragment arrives
+        # with no further PostToolUse to consume it, this parse is the one that
+        # sees it — but live emission already exported a chat span under the
+        # same deterministic id, and re-exporting would double-count its
+        # tokens. Read the ids straight off the marker mapping rather than via
+        # `hooks`, which imports this module.
+        committed = {
+            call_id
+            for call_id in (marker.get("committed_call_ids") or [])
+            if isinstance(call_id, str)
+        }
+        llm_calls = [call for call in parsed_calls.calls if call["call_id"] not in committed]
     else:
         # A session transcript is append-only across turns. Without the marker's
         # byte cursor, parsing it would attach all historical calls to this turn.

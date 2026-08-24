@@ -12,6 +12,7 @@ from thirdeye.platforms.claude.hooks import (
     _advance_turn_cursor,
     _locked_open_turn,
     _read_open_turn_unlocked,
+    committed_call_ids,
 )
 from thirdeye.platforms.claude.tracing import _pair_tool_calls
 from thirdeye.platforms.claude.usage import extract_calls_from_transcript
@@ -87,12 +88,20 @@ def _trace_id(session_dir_: Path, session_id: str) -> int:
         return trace_id_for_session(session_id)
 
 
-def _chat_span(session_id: str, turn_id: int, call: LlmCallSpanDict) -> dict[str, Any]:
+def _chat_span(
+    session_id: str, turn_id: int, turn_seq: int, call: LlmCallSpanDict
+) -> dict[str, Any]:
     model = call.get("model") or ""
     return {
         "name": f"chat {model}" if model else "chat",
         "span_id": chat_span_id(session_id, call["call_id"]),
         "parent_span_id": turn_id,
+        # A live span's `agent-turn` parent is not exported until Stop, so
+        # until then it has no parent row to inherit turn identity from. Carry
+        # it on the span itself, or the span cannot be attributed to a turn
+        # while the turn it belongs to is still running.
+        "turn_seq": turn_seq,
+        "turn_span_id": str(turn_id),
         "start_ts": call["start_ts"],
         "end_ts": call["end_ts"],
         "attributes": call,
@@ -103,12 +112,16 @@ def _tool_span(
     session_id: str,
     tool_use_id: str,
     parent_span_id: int,
+    turn_id: int,
+    turn_seq: int,
     tool_call: ToolCallSpanDict,
 ) -> dict[str, Any]:
     return {
         "name": f"tool: {tool_call['name']}",
         "span_id": tool_span_id(session_id, tool_use_id),
         "parent_span_id": parent_span_id,
+        "turn_seq": turn_seq,
+        "turn_span_id": str(turn_id),
         "start_ts": tool_call["start_ts"],
         "end_ts": tool_call["end_ts"],
         "attributes": tool_call["attributes"],
@@ -150,12 +163,21 @@ def _emit_live_spans(
             return
 
         turn_id = int(marker["turn_span_id"])
-        spans = [_chat_span(session_id, turn_id, call) for call in parsed.calls]
+        turn_seq = int(marker["turn_seq"])
+        # A call already exported by an earlier hook must not be exported
+        # again: a `message.id` split across a `user` frame reopens as a second
+        # group deriving the same deterministic span id, which Logfire stores
+        # as a second row rather than an update, double-counting its tokens.
+        already_committed = set(committed_call_ids(marker))
+        fresh_calls = [call for call in parsed.calls if call["call_id"] not in already_committed]
+        spans = [_chat_span(session_id, turn_id, turn_seq, call) for call in fresh_calls]
         spans.append(
             _tool_span(
                 session_id,
                 tool_use_id,
                 chat_span_id(session_id, requesting_call_id),
+                turn_id,
+                turn_seq,
                 tool_call,
             )
         )
@@ -175,6 +197,7 @@ def _emit_live_spans(
             expected_turn_seq=marker["turn_seq"],
             offset=parsed.offset,
             last_frame_ts=parsed.last_frame_ts,
+            newly_committed_call_ids=[call["call_id"] for call in fresh_calls],
         )
 
 

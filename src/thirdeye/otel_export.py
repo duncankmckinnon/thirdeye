@@ -676,7 +676,84 @@ def _export_turn_inner(
     claim_path.write_text("sent")
 
 
-def _chat_attributes(call_or_attributes: dict[str, Any]) -> dict[str, Any]:
+def _identity_attributes(
+    *,
+    session_id: str,
+    platform: str,
+    cwd: str,
+    turn_id: Any = None,
+    turn_span_id: Any = None,
+) -> dict[str, Any]:
+    """Attributes naming the session and turn a span belongs to.
+
+    A live span is exported while its `agent-turn` parent is still open, so it
+    has no parent row to inherit this from and cannot otherwise be attributed
+    to a turn until the turn ends. Applied on the completed-turn path too, so
+    the two paths keep one vocabulary.
+    """
+    attributes: dict[str, Any] = {
+        "gen_ai.conversation.id": session_id,
+        "thirdeye.platform": platform,
+        "thirdeye.cwd": cwd,
+    }
+    if turn_id is not None:
+        attributes["thirdeye.turn.id"] = str(turn_id)
+    if turn_span_id is not None:
+        attributes["thirdeye.turn.span_id"] = str(turn_span_id)
+    return attributes
+
+
+def _cost_attributes(attributes: dict[str, Any]) -> dict[str, Any]:
+    """Price a chat span's token usage into `operation.cost`, or `{}`.
+
+    Logfire surfaces cost from this attribute; when it is missing the UI falls
+    back to pricing `gen_ai.usage.input_tokens` at the model's full input rate.
+    That count is cache-inclusive (the convention Logfire's own Anthropic
+    instrumentation uses), so on a cache-heavy session — where nearly every
+    input token is a cache read billed at a tenth of the rate — the fallback
+    overstates cost by roughly 9x.
+
+    `genai_prices` is the same library Logfire's instrumentation prices with,
+    so the two agree by construction. It also requires the cache-inclusive
+    convention: it rejects a `cache_read_tokens` larger than `input_tokens`.
+
+    Best-effort by design, matching Logfire's own handling — an unpriceable
+    model or a missing dependency costs the span its cost attribute, never the
+    span itself.
+    """
+    model = attributes.get("gen_ai.response.model")
+    input_tokens = attributes.get("gen_ai.usage.input_tokens")
+    if not model or not isinstance(input_tokens, int):
+        return {}
+    try:
+        from genai_prices import calc_price
+        from genai_prices.types import Usage
+
+        usage = Usage(
+            input_tokens=input_tokens,
+            output_tokens=attributes.get("gen_ai.usage.output_tokens"),
+            cache_read_tokens=attributes.get("gen_ai.usage.cache_read.input_tokens"),
+            cache_write_tokens=attributes.get("gen_ai.usage.cache_creation.input_tokens"),
+        )
+        price = calc_price(
+            usage,
+            model_ref=str(model),
+            provider_id=attributes.get("gen_ai.provider.name"),
+        )
+        return {"operation.cost": float(price.total_price)}
+    except Exception:
+        return {}
+
+
+def _chat_attributes(
+    call_or_attributes: dict[str, Any],
+    *,
+    session_id: str,
+    platform: str,
+    cwd: str,
+    turn_id: Any = None,
+    turn_span_id: Any = None,
+) -> dict[str, Any]:
     """Build flattened attributes for a chat span.
 
     Completed-turn export passes an LLM-call record, while live batch export
@@ -701,7 +778,19 @@ def _chat_attributes(call_or_attributes: dict[str, Any]) -> dict[str, Any]:
                 attributes[target] = usage[source]
     else:
         attributes = call_or_attributes
-    return _flatten_attrs(attributes)
+    return _flatten_attrs(
+        _merge_raw(
+            attributes,
+            _identity_attributes(
+                session_id=session_id,
+                platform=platform,
+                cwd=cwd,
+                turn_id=turn_id,
+                turn_span_id=turn_span_id,
+            ),
+            _cost_attributes(attributes),
+        )
+    )
 
 
 def _tool_attributes(
@@ -710,16 +799,20 @@ def _tool_attributes(
     session_id: str,
     platform: str,
     cwd: str,
+    turn_id: Any = None,
+    turn_span_id: Any = None,
 ) -> dict[str, Any]:
     """Enrich and flatten a tool span's raw attributes."""
     return _flatten_attrs(
         _merge_raw(
             attributes,
-            {
-                "gen_ai.conversation.id": session_id,
-                "thirdeye.platform": platform,
-                "thirdeye.cwd": cwd,
-            },
+            _identity_attributes(
+                session_id=session_id,
+                platform=platform,
+                cwd=cwd,
+                turn_id=turn_id,
+                turn_span_id=turn_span_id,
+            ),
         )
     )
 
@@ -751,14 +844,25 @@ def _export_spans_batch(
     for span_data in spans:
         name = span_data["name"]
         raw_attributes = span_data.get("attributes", {})
+        turn_id = span_data.get("turn_seq")
+        turn_span_id_ = span_data.get("turn_span_id")
         if name == "chat" or name.startswith("chat "):
-            attributes = _chat_attributes(raw_attributes)
+            attributes = _chat_attributes(
+                raw_attributes,
+                session_id=session_id,
+                platform=platform,
+                cwd=cwd,
+                turn_id=turn_id,
+                turn_span_id=turn_span_id_,
+            )
         elif name.startswith("tool:"):
             attributes = _tool_attributes(
                 raw_attributes,
                 session_id=session_id,
                 platform=platform,
                 cwd=cwd,
+                turn_id=turn_id,
+                turn_span_id=turn_span_id_,
             )
         else:
             attributes = _flatten_attrs(raw_attributes)
@@ -837,7 +941,14 @@ def _export_turn_subtree(
             chat_span_id(session_id, llm_call["call_id"]),
             parent_ctx=turn_parent_ctx,
             start_time=_ts_to_ns(llm_call["start_ts"]),
-            attributes=_chat_attributes(llm_call),
+            attributes=_chat_attributes(
+                llm_call,
+                session_id=session_id,
+                platform=platform,
+                cwd=cwd,
+                turn_id=turn["turn_id"],
+                turn_span_id=turn.get("turn_span_id"),
+            ),
         )
         call_span.end(end_time=_ts_to_ns(llm_call["end_ts"]))
         call_ctx = call_span.get_span_context()
@@ -856,6 +967,8 @@ def _export_turn_subtree(
                     session_id=session_id,
                     platform=platform,
                     cwd=cwd,
+                    turn_id=turn["turn_id"],
+                    turn_span_id=turn.get("turn_span_id"),
                 ),
             )
             tool_span.end(end_time=_ts_to_ns(tool_call["end_ts"]))
