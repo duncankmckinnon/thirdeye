@@ -360,7 +360,10 @@ class TestBuildTurn:
         assert exported[0]["input_message"] == "current"
         assert exported[0]["llm_calls"] == []
 
-    def test_full_turn_assembly(self, monkeypatch, env: Path, tmp_path: Path):
+    @pytest.mark.parametrize("spawn_tool_name", ["Task", "Agent"])
+    def test_full_turn_assembly(
+        self, monkeypatch, env: Path, tmp_path: Path, spawn_tool_name: str
+    ):
         sid = "s1"
         main_transcript = tmp_path / "main.jsonl"
         sub_transcript = tmp_path / "sub.jsonl"
@@ -440,7 +443,7 @@ class TestBuildTurn:
             {
                 "session_id": sid,
                 "cwd": "/p",
-                "tool_name": "Task",
+                "tool_name": spawn_tool_name,
                 "tool_use_id": "tu_task1",
                 "tool_input": {"description": "explore", "prompt": "explore code"},
             },
@@ -470,7 +473,7 @@ class TestBuildTurn:
             {
                 "session_id": sid,
                 "cwd": "/p",
-                "tool_name": "Task",
+                "tool_name": spawn_tool_name,
                 "tool_use_id": "tu_task1",
                 "tool_response": "found stuff",
             },
