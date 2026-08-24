@@ -239,7 +239,18 @@ class Thirdeye < Formula
   end
 
   def install
-    virtualenv_install_with_resources
+    # `virtualenv_install_with_resources`'s `pip_install` only points pip at
+    # a resource's staged file directly for a universal `py3-none-any.whl`
+    # (see Homebrew's language/python.rb); pydantic-core's arch-specific
+    # wheel doesn't match that check, so pip would instead be pointed at the
+    # staging *directory*, which has neither a wheel nor a setup.py/
+    # pyproject.toml for it to build -- "not installable". Stage and install
+    # it by hand the same way Homebrew's own universal-wheel case does.
+    venv = virtualenv_install_with_resources(without: "pydantic-core")
+    pydantic_core = resource("pydantic-core")
+    pydantic_core.stage do
+      venv.pip_install Pathname.pwd/pydantic_core.downloader.basename
+    end
   end
 
   test do
