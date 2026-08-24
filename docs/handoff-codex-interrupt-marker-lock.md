@@ -79,8 +79,8 @@ Don't copy the retry budget constants without thinking about whether they're rig
 
 ## Definition of done
 
-- [ ] `_locked_marker` in `interrupt_marker.py` uses bounded retry, not blocking `flock`.
-- [ ] Every caller's exception handling confirmed (not assumed) to tolerate the new `TimeoutError`.
-- [ ] New tests in `tests/test_codex_tracing.py` covering: uncontended acquisition unchanged, contended acquisition gives up within budget (not hangs), acquisition succeeds if contention clears within the budget.
-- [ ] Full test suite green, ruff clean.
+- [x] `_locked_marker` in `interrupt_marker.py` uses bounded retry, not blocking `flock`.
+- [x] Every caller's exception handling confirmed (not assumed) to tolerate the new `TimeoutError`: `has_open_marker`, `mark_turn_open`, `clear_marker_not_after`, and `_reap` each wrap their `_locked_marker` use in `except OSError`, and `TimeoutError` is a builtin `OSError` subclass.
+- [x] New tests in `tests/test_codex_tracing.py` covering: uncontended acquisition unchanged, contended acquisition gives up within budget (not hangs), acquisition succeeds if contention clears within the budget. Confirmed the hang test genuinely hung against the unfixed code (killed via watchdog) before implementing the fix.
+- [x] Full test suite green (1944 passed, 1 skipped, 2 xpassed), ruff clean.
 - [ ] PR opened against `main`, description explains the gap this closes and links back to PR #35 for the pattern it mirrors.
