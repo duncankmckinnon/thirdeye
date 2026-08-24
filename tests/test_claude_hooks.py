@@ -1,7 +1,10 @@
 from __future__ import annotations
 
+import fcntl
 import io
 import json
+import threading
+import time
 from pathlib import Path
 
 import pytest
@@ -446,6 +449,87 @@ class TestOpenTurnCursor:
 
         assert hooks._delete_open_turn(sd, expected_turn_seq=marker["turn_seq"]) is False
         assert marker_path.exists()
+
+
+class TestLockedOpenTurnBoundedRetry:
+    """A background subagent's dispatching PostToolUse and its own
+    SubagentStart can fire concurrently, both wanting this lock. Blocking
+    indefinitely risks the harness's hook timeout killing the process with
+    zero signal; every caller already tolerates a raised error (see
+    TestHookInvocationBreadcrumbs and the `except OSError`/`except Exception`
+    around every call site) and falls back to Stop-time reconstruction, so
+    the lock must give up after a bounded wait instead of blocking forever.
+    """
+
+    def test_uncontended_acquisition_still_works(self, tmp_path: Path):
+        entered = False
+        with hooks._locked_open_turn(tmp_path, fcntl.LOCK_EX):
+            entered = True
+        assert entered
+
+    def test_reentrant_acquisition_still_works(self, tmp_path: Path):
+        depths = []
+        with hooks._locked_open_turn(tmp_path, fcntl.LOCK_EX):
+            depths.append(1)
+            with hooks._locked_open_turn(tmp_path, fcntl.LOCK_EX):
+                depths.append(2)
+        assert depths == [1, 2]
+
+    def test_gives_up_with_timeout_error_instead_of_blocking_forever(self, tmp_path: Path):
+        lock_path = hooks._open_turn_lock_path(tmp_path)
+        lock_path.parent.mkdir(parents=True, exist_ok=True)
+        # A separate open file description on the same path -- flock locks
+        # are scoped to the open file description, not the process, so this
+        # genuinely contends with a fresh `_locked_open_turn` call the same
+        # way a different hook process holding the lock would.
+        holder = lock_path.open("a+")
+        fcntl.flock(holder.fileno(), fcntl.LOCK_EX)
+        try:
+            start = time.monotonic()
+            with pytest.raises(TimeoutError):
+                with hooks._locked_open_turn(tmp_path, fcntl.LOCK_EX):
+                    pass
+            elapsed = time.monotonic() - start
+            assert elapsed < 2.0, "must give up well before a realistic hook timeout, not hang"
+        finally:
+            fcntl.flock(holder.fileno(), fcntl.LOCK_UN)
+            holder.close()
+
+    def test_succeeds_once_contention_clears_within_budget(self, tmp_path: Path):
+        lock_path = hooks._open_turn_lock_path(tmp_path)
+        lock_path.parent.mkdir(parents=True, exist_ok=True)
+        holder = lock_path.open("a+")
+        fcntl.flock(holder.fileno(), fcntl.LOCK_EX)
+
+        def release_shortly() -> None:
+            time.sleep(0.05)
+            fcntl.flock(holder.fileno(), fcntl.LOCK_UN)
+            holder.close()
+
+        releaser = threading.Thread(target=release_shortly)
+        releaser.start()
+        try:
+            entered = False
+            with hooks._locked_open_turn(tmp_path, fcntl.LOCK_EX):
+                entered = True
+            assert (
+                entered
+            ), "must retry and succeed once the other holder releases, not give up early"
+        finally:
+            releaser.join()
+
+    def test_shared_lock_also_gives_up_under_contention(self, tmp_path: Path):
+        lock_path = hooks._open_turn_lock_path(tmp_path)
+        lock_path.parent.mkdir(parents=True, exist_ok=True)
+        holder = lock_path.open("a+")
+        fcntl.flock(holder.fileno(), fcntl.LOCK_EX)
+        try:
+            with pytest.raises(TimeoutError):
+                with hooks._locked_open_turn(tmp_path, fcntl.LOCK_SH):
+                    pass
+        finally:
+            fcntl.flock(holder.fileno(), fcntl.LOCK_UN)
+            holder.close()
 
 
 class TestUserPromptSubmitTranscriptOffset:

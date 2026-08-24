@@ -6,6 +6,7 @@ import json
 import os
 import sys
 import threading
+import time
 from collections.abc import Iterator
 from pathlib import Path
 from typing import TypedDict, cast
@@ -144,6 +145,37 @@ _COMMITTED_CALL_ID_LIMIT = 64
 _OPEN_TURN_FIELDS = frozenset(OpenTurnMarker.__required_keys__)
 _OPEN_TURN_LOCK_STATE = threading.local()
 
+# A background subagent's dispatching PostToolUse and its own SubagentStart
+# can fire concurrently, both wanting this lock -- see `_log_hook_invocation`.
+# Blocking indefinitely risks the harness's own hook timeout killing this
+# process with zero signal; every caller already tolerates a raised error
+# (each wraps its `_locked_open_turn` use in `except OSError`/`except
+# Exception`) and falls back to Stop-time reconstruction, so giving up after
+# a bounded wait -- comfortably under any realistic hook timeout -- is
+# strictly safer than blocking. Measured critical sections under this lock
+# are sub-millisecond local disk I/O even under 5-way contention, so this
+# budget is generous, not tight.
+_LOCK_RETRY_BUDGET_S = 0.3
+_LOCK_RETRY_INITIAL_DELAY_S = 0.005
+_LOCK_RETRY_MAX_DELAY_S = 0.025
+
+
+def _acquire_with_bounded_retry(fd: int, operation: int) -> None:
+    deadline = time.monotonic() + _LOCK_RETRY_BUDGET_S
+    delay = _LOCK_RETRY_INITIAL_DELAY_S
+    while True:
+        try:
+            fcntl.flock(fd, operation | fcntl.LOCK_NB)
+            return
+        except BlockingIOError:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise TimeoutError(
+                    f"timed out after {_LOCK_RETRY_BUDGET_S}s waiting for claude-open-turn.lock"
+                ) from None
+            time.sleep(max(0.0, min(delay, remaining)))
+            delay = min(delay * 2, _LOCK_RETRY_MAX_DELAY_S)
+
 
 @contextlib.contextmanager
 def _locked_open_turn(session_dir_: Path, operation: int) -> Iterator[None]:
@@ -163,7 +195,7 @@ def _locked_open_turn(session_dir_: Path, operation: int) -> Iterator[None]:
 
     session_dir_.mkdir(parents=True, exist_ok=True)
     with _open_turn_lock_path(session_dir_).open("a+") as lock:
-        fcntl.flock(lock.fileno(), operation)
+        _acquire_with_bounded_retry(lock.fileno(), operation)
         held[key] = (operation, 1)
         _OPEN_TURN_LOCK_STATE.held = held
         try:
