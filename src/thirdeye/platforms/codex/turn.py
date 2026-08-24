@@ -123,7 +123,6 @@ def extract_turn_codex(rollout_path: str, turn_id: str) -> dict[str, Any] | None
     call_start_ts = ""
     last_output_ts = ""
     pending: dict[str, dict[str, Any]] = {}
-    pending_search: dict[str, Any] | None = None
 
     try:
         lines = path.read_text().splitlines()
@@ -342,17 +341,19 @@ def extract_turn_codex(rollout_path: str, turn_id: str) -> dict[str, Any] | None
                 )
             continue
         if outer == "event_msg" and subtype == "web_search_end":
-            pending_search = {"call_id": str(payload.get("call_id") or ""), "ts": ts}
-            continue
-        if outer == "response_item" and subtype == "web_search_call":
+            # Self-contained, like mcp_tool_call_end: real Codex rollouts
+            # carry call_id/query/action/results directly on this frame and
+            # never emit a matching response_item/web_search_call to pair it
+            # with (confirmed against 34 real local rollouts -- 18
+            # web_search_end frames, 0 web_search_call frames).
             action = payload.get("action") if isinstance(payload.get("action"), dict) else {}
             action_type = str(action.get("type") or "search")
             entry = {
                 "name": "open_page" if action_type == "open_page" else "web_search",
-                "call_id": (pending_search or {}).get("call_id", ""),
-                "arguments": action.get("url") or action.get("query") or "",
-                "result": payload.get("status", ""),
-                "start_ts": (pending_search or {}).get("ts") or ts,
+                "call_id": str(payload.get("call_id") or ""),
+                "arguments": payload.get("query") or action.get("url") or "",
+                "result": payload.get("results") or "",
+                "start_ts": ts,
                 "end_ts": ts,
             }
             call_tools.append(entry)
@@ -364,8 +365,7 @@ def extract_turn_codex(rollout_path: str, turn_id: str) -> dict[str, Any] | None
                     "arguments": entry["arguments"],
                 }
             )
-            last_output_ts = entry["start_ts"] or last_output_ts
-            pending_search = None
+            last_output_ts = ts or last_output_ts
 
     if not in_turn:
         return None
