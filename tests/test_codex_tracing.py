@@ -11,8 +11,11 @@ lives in test_codex_turn.py, which this file does not duplicate.
 
 from __future__ import annotations
 
+import fcntl
 import io
 import json
+import threading
+import time
 from pathlib import Path
 from typing import Any
 
@@ -178,6 +181,34 @@ class TestBuildTurnFromLocalStore:
         assert sub["llm_calls"] == []
         assert sub["permission_requests"] == []
         assert sub["subagents"] == []
+
+    def test_parallel_subagents_pair_by_agent_id_when_stops_are_not_lifo(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ):
+        store = Store(Config(root=tmp_path))
+        _set_next_timestamps(
+            monkeypatch,
+            [
+                "2026-01-01T00:00:02.000Z",
+                "2026-01-01T00:00:03.000Z",
+                "2026-01-01T00:00:06.000Z",
+                "2026-01-01T00:00:08.000Z",
+            ],
+        )
+        for t, data in (
+            ("subagent_start", {"agent_id": "A", "prompt": "task A"}),
+            ("subagent_start", {"agent_id": "B", "prompt": "task B"}),
+            ("subagent_message", {"agent_id": "A", "message": "result A"}),
+            ("subagent_message", {"agent_id": "B", "message": "result B"}),
+        ):
+            seq = store.append_event(session_id="s1", platform="codex", cwd="/p", t=t, data=data)
+        sd = session_dir(tmp_path, "codex", "s1")
+
+        turn = build_turn(session_dir_=sd, session_id="s1", seq=seq + 1, turn=_bare_turn())
+
+        assert [sub["input_message"] for sub in turn["subagents"]] == ["task A", "task B"]
+        assert [sub["output_message"] for sub in turn["subagents"]] == ["result A", "result B"]
+        assert [sub["attributes"]["agent_id"] for sub in turn["subagents"]] == ["A", "B"]
 
     def test_subagent_pair_outside_window_is_excluded(
         self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
@@ -481,6 +512,70 @@ class TestInterruptMarker:
         # truncated in place rather than left to wedge every future hook
         # call that reads this marker.
         assert not has_open_marker(sd)
+
+
+class TestLockedMarkerBoundedRetry:
+    """Concurrently dispatched Codex subagent hook processes (SubagentStart /
+    SubagentStop firing alongside the parent's own hooks) can contend for
+    codex-open-turn.json's lock at the same time. Every caller already
+    tolerates a raised OSError (see TestInterruptMarker: each wraps its
+    `_locked_marker` use in `except OSError`), so the lock must give up
+    after a bounded wait instead of blocking forever.
+    """
+
+    def test_uncontended_acquisition_still_works(self, tmp_path: Path):
+        from thirdeye.platforms.codex.interrupt_marker import _locked_marker
+
+        sd = tmp_path / "s1"
+        entered = False
+        with _locked_marker(sd):
+            entered = True
+        assert entered
+
+    def test_gives_up_with_timeout_error_instead_of_blocking_forever(self, tmp_path: Path):
+        from thirdeye.platforms.codex.interrupt_marker import _locked_marker, _marker_path
+
+        sd = tmp_path / "s1"
+        sd.mkdir()
+        # A separate open file description on the same path -- flock locks
+        # are scoped to the open file description, not the process, so this
+        # genuinely contends with a fresh `_locked_marker` call the same way
+        # a different hook process holding the lock would.
+        holder = _marker_path(sd).open("a+")
+        fcntl.flock(holder.fileno(), fcntl.LOCK_EX)
+        try:
+            start = time.monotonic()
+            with pytest.raises(TimeoutError):
+                with _locked_marker(sd):
+                    pass
+            elapsed = time.monotonic() - start
+            assert elapsed < 2.0, "must give up well before a realistic hook timeout, not hang"
+        finally:
+            fcntl.flock(holder.fileno(), fcntl.LOCK_UN)
+            holder.close()
+
+    def test_succeeds_once_contention_clears_within_budget(self, tmp_path: Path):
+        from thirdeye.platforms.codex.interrupt_marker import _locked_marker, _marker_path
+
+        sd = tmp_path / "s1"
+        sd.mkdir()
+        holder = _marker_path(sd).open("a+")
+        fcntl.flock(holder.fileno(), fcntl.LOCK_EX)
+
+        def release_shortly() -> None:
+            time.sleep(0.05)
+            fcntl.flock(holder.fileno(), fcntl.LOCK_UN)
+            holder.close()
+
+        releaser = threading.Thread(target=release_shortly)
+        releaser.start()
+        try:
+            entered = False
+            with _locked_marker(sd):
+                entered = True
+            assert entered
+        finally:
+            releaser.join()
 
 
 # -- hooks_json.py wiring: user_prompt_submit / session_end -------------------

@@ -250,6 +250,145 @@ def test_extracts_mcp_and_image_tools_and_provider_timing(tmp_path: Path) -> Non
     assert tool_calls[0]["start_ts"] == "2026-01-01T00:00:01.000Z"
 
 
+def test_web_search_end_is_self_contained_and_produces_a_tool_call(tmp_path: Path) -> None:
+    """Real Codex rollouts never emit a matching ``response_item/web_search_call``
+    for a search -- ``event_msg/web_search_end`` carries everything (call_id,
+    query, action, results) by itself, the same way ``mcp_tool_call_end`` does.
+    Checked against 34 real local rollouts (18 ``web_search_end`` frames, 0
+    ``web_search_call`` frames) before writing this test.
+    """
+    path = tmp_path / "rollout.jsonl"
+    path.write_text(
+        "\n".join(
+            [
+                _frame("2026-01-01T00:00:00Z", "turn_context", {"turn_id": "t1", "model": "gpt-5"}),
+                _frame(
+                    "2026-01-01T00:00:01Z",
+                    "event_msg",
+                    {"type": "task_started", "turn_id": "t1", "started_at": 1767225600},
+                ),
+                _frame(
+                    "2026-01-01T00:00:03.000Z",
+                    "event_msg",
+                    {
+                        "type": "web_search_end",
+                        "call_id": "exec-e558476c-83b3-40c0-afb4-ed9cc0d2a715",
+                        "query": "site:example.com docs",
+                        "action": {"type": "search", "queries": ["site:example.com docs"]},
+                        "results": [
+                            {"type": "text_result", "title": "Example", "url": "https://x"}
+                        ],
+                    },
+                ),
+                _frame(
+                    "2026-01-01T00:00:05Z",
+                    "event_msg",
+                    {"type": "task_complete", "turn_id": "t1", "completed_at": 1767225605},
+                ),
+            ]
+        )
+        + "\n"
+    )
+    turn = extract_turn_codex(str(path), "t1")
+    assert turn is not None
+    tool_calls = turn["calls"][0]["tool_calls"]
+    assert len(tool_calls) == 1
+    assert tool_calls[0]["name"] == "web_search"
+    assert tool_calls[0]["tool_call_id"] == "exec-e558476c-83b3-40c0-afb4-ed9cc0d2a715"
+    assert tool_calls[0]["start_ts"] == "2026-01-01T00:00:03.000Z"
+    assert tool_calls[0]["attributes"]["arguments"] == "site:example.com docs"
+
+
+def test_web_search_end_open_page_action_is_named_open_page(tmp_path: Path) -> None:
+    path = tmp_path / "rollout.jsonl"
+    path.write_text(
+        "\n".join(
+            [
+                _frame("2026-01-01T00:00:00Z", "turn_context", {"turn_id": "t1", "model": "gpt-5"}),
+                _frame(
+                    "2026-01-01T00:00:01Z",
+                    "event_msg",
+                    {"type": "task_started", "turn_id": "t1", "started_at": 1767225600},
+                ),
+                _frame(
+                    "2026-01-01T00:00:03Z",
+                    "event_msg",
+                    {
+                        "type": "web_search_end",
+                        "call_id": "exec-1",
+                        "query": "https://example.com/page",
+                        "action": {"type": "open_page", "url": "https://example.com/page"},
+                        "results": [],
+                    },
+                ),
+                _frame(
+                    "2026-01-01T00:00:05Z",
+                    "event_msg",
+                    {"type": "task_complete", "turn_id": "t1", "completed_at": 1767225605},
+                ),
+            ]
+        )
+        + "\n"
+    )
+    turn = extract_turn_codex(str(path), "t1")
+    assert turn is not None
+    assert turn["calls"][0]["tool_calls"][0]["name"] == "open_page"
+
+
+def test_multiple_web_searches_in_one_turn_do_not_cross_contaminate(tmp_path: Path) -> None:
+    """Each ``web_search_end`` is self-contained, so two searches back-to-back
+    (or, before the fix this test guards, interleaved with an unrelated
+    ``response_item/web_search_call`` from a different call) can never mix up
+    each other's call_id/query the way a single shared correlation slot would.
+    """
+    path = tmp_path / "rollout.jsonl"
+    path.write_text(
+        "\n".join(
+            [
+                _frame("2026-01-01T00:00:00Z", "turn_context", {"turn_id": "t1", "model": "gpt-5"}),
+                _frame(
+                    "2026-01-01T00:00:01Z",
+                    "event_msg",
+                    {"type": "task_started", "turn_id": "t1", "started_at": 1767225600},
+                ),
+                _frame(
+                    "2026-01-01T00:00:02Z",
+                    "event_msg",
+                    {
+                        "type": "web_search_end",
+                        "call_id": "exec-a",
+                        "query": "query a",
+                        "action": {"type": "search"},
+                        "results": [],
+                    },
+                ),
+                _frame(
+                    "2026-01-01T00:00:03Z",
+                    "event_msg",
+                    {
+                        "type": "web_search_end",
+                        "call_id": "exec-b",
+                        "query": "query b",
+                        "action": {"type": "search"},
+                        "results": [],
+                    },
+                ),
+                _frame(
+                    "2026-01-01T00:00:05Z",
+                    "event_msg",
+                    {"type": "task_complete", "turn_id": "t1", "completed_at": 1767225605},
+                ),
+            ]
+        )
+        + "\n"
+    )
+    turn = extract_turn_codex(str(path), "t1")
+    assert turn is not None
+    tool_calls = turn["calls"][0]["tool_calls"]
+    assert [tc["tool_call_id"] for tc in tool_calls] == ["exec-a", "exec-b"]
+    assert [tc["attributes"]["arguments"] for tc in tool_calls] == ["query a", "query b"]
+
+
 def test_synthesized_timestamps_use_millisecond_format(tmp_path: Path) -> None:
     path = tmp_path / "rollout.jsonl"
     path.write_text(
