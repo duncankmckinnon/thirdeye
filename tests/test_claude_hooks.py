@@ -701,6 +701,47 @@ class TestSubagentStop:
         assert events[1]["data"]["agent"] == "explore"
 
 
+# -- hook invocation breadcrumbs ------------------------------------------------
+
+
+def _error_log_entries(home: Path) -> list[dict]:
+    log = home / "logs" / "usage-errors.jsonl"
+    if not log.exists():
+        return []
+    return [json.loads(line) for line in log.read_text().splitlines() if line]
+
+
+class TestHookInvocationBreadcrumbs:
+    def test_post_tool_use_logs_breadcrumb_even_without_session_id(self, monkeypatch, env: Path):
+        _stdin(monkeypatch, {"cwd": "/p", "tool_use_id": "tu_missing_session"})
+
+        hooks.post_tool_use()
+
+        entries = _error_log_entries(env)
+        assert any(
+            e["phase"] == "hook_invoked" and "tu_missing_session" in e["message"] for e in entries
+        )
+
+    def test_subagent_start_logs_breadcrumb_with_agent_id(self, monkeypatch, env: Path):
+        _stdin(monkeypatch, {"session_id": "s1", "cwd": "/p", "agent_id": "agent-123"})
+
+        hooks.subagent_start()
+
+        entries = _error_log_entries(env)
+        assert any(
+            e["phase"] == "hook_invoked" and e["session_id"] == "s1" and "agent-123" in e["message"]
+            for e in entries
+        )
+
+    def test_subagent_stop_logs_breadcrumb_even_without_session_id(self, monkeypatch, env: Path):
+        _stdin(monkeypatch, {"cwd": "/p", "agent_id": "agent-456"})
+
+        hooks.subagent_stop()
+
+        entries = _error_log_entries(env)
+        assert any(e["phase"] == "hook_invoked" and "agent-456" in e["message"] for e in entries)
+
+
 # -- stop_failure --------------------------------------------------------------
 
 

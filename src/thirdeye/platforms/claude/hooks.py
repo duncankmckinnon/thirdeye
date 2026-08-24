@@ -18,6 +18,7 @@ from thirdeye.reader import SessionReader
 from thirdeye.span_ids import turn_span_id
 from thirdeye.store import Store
 from thirdeye.tags import TagStore, extract_hashtags
+from thirdeye.usage.errlog import log_capture_error
 
 _PLATFORM = "claude"
 
@@ -46,7 +47,34 @@ def _strip_payload(payload: dict) -> dict:
     return {k: v for k, v in payload.items() if k not in _STRIP_KEYS}
 
 
+def _log_hook_invocation(t: str, payload: dict) -> None:
+    """Breadcrumb that a hook actually fired, before any processing that
+    could return early. A background subagent's dispatching PostToolUse and
+    its own SubagentStart can fire concurrently -- unlike a foreground one,
+    where they're strictly sequential -- and one of the two is observed to
+    silently go missing under that concurrency. Without this there's no way
+    to tell "the hook was never invoked" from "it ran but this code
+    discarded what it got", since both look identical: nothing.
+    """
+    try:
+        config = Config.load()
+        log_capture_error(
+            thirdeye_home=config.root,
+            phase="hook_invoked",
+            level="info",
+            platform=_PLATFORM,
+            session_id=str(payload.get("session_id") or ""),
+            message=(
+                f"t={t} tool_use_id={payload.get('tool_use_id')!r} "
+                f"agent_id={payload.get('agent_id')!r} prompt_id={payload.get('prompt_id')!r}"
+            ),
+        )
+    except Exception:
+        pass
+
+
 def _emit(t: str, payload: dict) -> int | None:
+    _log_hook_invocation(t, payload)
     sid = payload.get("session_id")
     if not sid:
         return None
@@ -495,6 +523,7 @@ def subagent_stop() -> None:
     # SubagentStart (below) uses a distinct "subagent_start" type; the
     # start/stop asymmetry is intentional, not an oversight.
     payload = _read_stdin()
+    _log_hook_invocation("subagent_message", payload)
     sid = payload.get("session_id")
     if not sid:
         return
