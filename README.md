@@ -99,7 +99,7 @@ thirdeye logfire status
 thirdeye logfire disable                                          # keeps the saved key
 ```
 
-Or from `thirdeye ui`, under **settings**: paste the gateway key and project name and hit Enable — persisted the same way, in `~/.thirdeye/config.yaml`.
+Or from `thirdeye ui`, under **settings**: paste the gateway key and hit Enable — persisted the same way, in `~/.thirdeye/config.yaml`.
 
 Export is dispatched from the same Claude Code / Codex hooks that already capture events, but the actual Logfire call (including a flush, a real network round trip) runs in a detached background process — the hook itself never waits on the network, so enabling this adds no latency to your tool calls.
 
