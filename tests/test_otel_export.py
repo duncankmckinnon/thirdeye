@@ -250,9 +250,7 @@ class TestBackgroundNoiseSuppression:
 
         monkeypatch.setattr(otel_export, "_silence_background_noise", lambda: calls.append(1))
         monkeypatch.setattr(logfire, "configure", _configure)
-        config = Config(
-            root=tmp_path, logfire=LogfireSettings(enabled=True, token="bad-token")
-        )
+        config = Config(root=tmp_path, logfire=LogfireSettings(enabled=True, token="bad-token"))
         otel_export._get_instance(config, "claude")
         assert calls == [1]
         assert configured_with["advanced"].id_generator is otel_export._state["id_generator"]

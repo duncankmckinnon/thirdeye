@@ -31,9 +31,7 @@ def enable() -> None:
 def disable() -> None:
     config = Config.load()
     settings = config.logfire
-    config.write_logfire_settings(
-        LogfireSettings(enabled=False, token=settings.token)
-    )
+    config.write_logfire_settings(LogfireSettings(enabled=False, token=settings.token))
     click.echo("logfire export disabled")
 
 

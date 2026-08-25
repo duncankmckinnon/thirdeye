@@ -43,9 +43,7 @@ def test_logfire_settings_default_disabled() -> None:
 class TestLogfireSettingsPersistence:
     def test_load_reads_persisted_settings(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
         monkeypatch.setenv("THIRDEYE_HOME", str(tmp_path))
-        Config.load().write_logfire_settings(
-            LogfireSettings(enabled=True, token="tok")
-        )
+        Config.load().write_logfire_settings(LogfireSettings(enabled=True, token="tok"))
         reloaded = Config.load()
         assert reloaded.logfire == LogfireSettings(enabled=True, token="tok")
 
@@ -57,9 +55,7 @@ class TestLogfireSettingsPersistence:
         monkeypatch.setenv("THIRDEYE_HOME", str(tmp_path))
         config_file = tmp_path / "config.yaml"
         config_file.write_text(
-            yaml.safe_dump(
-                {"logfire": {"enabled": True, "token": "tok", "project": "legacy"}}
-            )
+            yaml.safe_dump({"logfire": {"enabled": True, "token": "tok", "project": "legacy"}})
         )
 
         config = Config.load()
