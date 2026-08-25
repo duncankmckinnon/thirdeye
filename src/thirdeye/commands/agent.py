@@ -8,7 +8,7 @@ import click
 from thirdeye.agent.exec import run_agent_streaming
 from thirdeye.agent.harness import AgentHarness
 from thirdeye.agent.prompt import (
-    VALID_SKILLS,
+    DEFAULT_SKILLS,
     build_agent_prompt,
     load_builtin_skills,
     load_skill_file,
@@ -85,7 +85,7 @@ def agent_cmd(
 ) -> None:
     if list_skills:
         click.echo("Available skills:")
-        for name in sorted(VALID_SKILLS):
+        for name in DEFAULT_SKILLS:
             click.echo(f"  {name}")
         return
 

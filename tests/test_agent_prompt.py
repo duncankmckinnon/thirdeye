@@ -23,8 +23,8 @@ def test_task_appears_at_end():
     assert result.endswith("TASK:\nmy task here")
 
 
-def test_default_skills_includes_all_valid_skills():
-    assert set(DEFAULT_SKILLS) == VALID_SKILLS
+def test_default_skills_excludes_logfire_skill():
+    assert set(DEFAULT_SKILLS) == VALID_SKILLS - {"thirdeye-logfire"}
 
 
 def test_default_prompt_contains_all_skills():
@@ -32,6 +32,7 @@ def test_default_prompt_contains_all_skills():
     assert "## Overview" in result  # use-thirdeye
     assert "Reviewing thirdeye" in result  # thirdeye-review
     assert "Evaluating thirdeye" in result  # thirdeye-evals
+    assert "Set up thirdeye Logfire export" not in result
 
 
 def test_single_skill_only_loads_that_skill():
@@ -86,6 +87,7 @@ def test_valid_skills_set_contains_expected_names():
     assert "thirdeye-review" in VALID_SKILLS
     assert "thirdeye-evals" in VALID_SKILLS
     assert "thirdeye-filter" in VALID_SKILLS
+    assert "thirdeye-logfire" in VALID_SKILLS
 
 
 def test_all_valid_skills_load_without_error():

@@ -6,7 +6,8 @@ from unittest.mock import patch
 import pytest
 from click.testing import CliRunner
 
-from thirdeye.commands.skill import _list_bundled_skills, install, skill_group
+from thirdeye.cli import main
+from thirdeye.commands.skill import _list_bundled_skills, add, skills_group
 
 
 @pytest.fixture
@@ -20,7 +21,7 @@ def fake_skill(tmp_path: Path) -> Path:
 def _run(fake_skill: Path, args: list[str]) -> object:
     runner = CliRunner()
     with patch("thirdeye.commands.skill._bundled_skill_root", return_value=fake_skill):
-        return runner.invoke(install, args, catch_exceptions=False)
+        return runner.invoke(add, args, catch_exceptions=False)
 
 
 def test_install_creates_symlink_at_default(
@@ -68,48 +69,32 @@ def test_install_force_replaces(
     assert dest.is_symlink()
 
 
-def test_install_custom_target_full_path(fake_skill: Path, tmp_path: Path) -> None:
-    custom = tmp_path / ".claude" / "commands" / "use-thirdeye"
-    result = _run(fake_skill, ["--target", str(custom)])
+def test_install_custom_target_folder(fake_skill: Path, tmp_path: Path) -> None:
+    custom = tmp_path / "custom-skills"
+    result = _run(fake_skill, ["-p", str(custom)])
     assert result.exit_code == 0
-    assert custom.is_symlink()
-    assert custom.resolve() == fake_skill.resolve()
+    installed = custom / "use-thirdeye"
+    assert installed.is_symlink()
+    assert installed.resolve() == fake_skill.resolve()
 
 
 def test_install_expands_user(
     fake_skill: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     monkeypatch.setenv("HOME", str(tmp_path))
-    result = _run(fake_skill, ["--target", "~/.claude/skills/use-thirdeye"])
+    result = _run(fake_skill, ["--path", "~/.claude/skills"])
     assert result.exit_code == 0
     assert (tmp_path / ".claude" / "skills" / "use-thirdeye").is_symlink()
 
 
-def test_install_positional_argument(fake_skill: Path, tmp_path: Path) -> None:
-    custom = tmp_path / ".claude" / "skills" / "use-thirdeye"
-    result = _run(fake_skill, [str(custom)])
-    assert result.exit_code == 0
-    assert custom.is_symlink()
-
-
-def test_install_appends_skill_name_when_missing(fake_skill: Path, tmp_path: Path) -> None:
-    # Passing a parent dir auto-appends `use-thirdeye`.
-    parent = tmp_path / ".claude" / "skills"
-    result = _run(fake_skill, [str(parent)])
-    assert result.exit_code == 0
-    assert (parent / "use-thirdeye").is_symlink()
-
-
-def test_install_rejects_both_positional_and_option(fake_skill: Path, tmp_path: Path) -> None:
-    a = tmp_path / "a"
-    b = tmp_path / "b"
-    result = _run(fake_skill, [str(a), "--target", str(b)])
+def test_install_rejects_custom_path_with_agent_flag(fake_skill: Path, tmp_path: Path) -> None:
+    result = _run(fake_skill, ["-p", str(tmp_path / "skills"), "--claude"])
     assert result.exit_code != 0
-    assert "not both" in result.output
+    assert "cannot be combined" in result.output
 
 
 def test_skill_list_command() -> None:
-    result = CliRunner().invoke(skill_group, ["list"], catch_exceptions=False)
+    result = CliRunner().invoke(skills_group, ["list"], catch_exceptions=False)
     assert result.exit_code == 0
     assert "use-thirdeye" in result.output
 
@@ -119,7 +104,7 @@ def test_install_all_bundled_skills_by_default(
 ) -> None:
     monkeypatch.chdir(tmp_path)
     dest_root = tmp_path / "skills"
-    result = CliRunner().invoke(skill_group, ["install", str(dest_root)], catch_exceptions=False)
+    result = CliRunner().invoke(skills_group, ["add", "-p", str(dest_root)], catch_exceptions=False)
     assert result.exit_code == 0
     bundled = _list_bundled_skills()
     assert bundled, "expected at least one bundled skill"
@@ -130,8 +115,8 @@ def test_install_all_bundled_skills_by_default(
 
 def test_install_only_single_skill(tmp_path: Path) -> None:
     result = CliRunner().invoke(
-        skill_group,
-        ["install", str(tmp_path / "skills"), "--only", "use-thirdeye"],
+        skills_group,
+        ["add", "-p", str(tmp_path / "skills"), "--only", "use-thirdeye"],
         catch_exceptions=False,
     )
     assert result.exit_code == 0
@@ -140,20 +125,33 @@ def test_install_only_single_skill(tmp_path: Path) -> None:
 
 def test_install_unknown_only_errors(tmp_path: Path) -> None:
     result = CliRunner().invoke(
-        skill_group,
-        ["install", str(tmp_path / "skills"), "--only", "nonexistent-skill"],
+        skills_group,
+        ["add", "-p", str(tmp_path / "skills"), "--only", "nonexistent-skill"],
     )
     assert result.exit_code != 0
     assert "unknown skill" in result.output
 
 
-def test_install_basename_match_only_with_single_skill(tmp_path: Path) -> None:
-    """When TARGET basename matches the single selected skill, use as full path."""
-    dest = tmp_path / "use-thirdeye"
-    result = CliRunner().invoke(
-        skill_group,
-        ["install", str(dest), "--only", "use-thirdeye"],
-        catch_exceptions=False,
-    )
+def test_install_claude_and_codex_together(
+    fake_skill: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    result = _run(fake_skill, ["--claude", "--codex"])
     assert result.exit_code == 0
-    assert dest.exists()
+    assert (tmp_path / ".claude" / "skills" / "use-thirdeye").is_symlink()
+    assert (tmp_path / ".codex" / "skills" / "use-thirdeye").is_symlink()
+
+
+def test_plural_top_level_command_replaces_singular() -> None:
+    plural = CliRunner().invoke(main, ["skills", "list"], catch_exceptions=False)
+    singular = CliRunner().invoke(main, ["skill", "list"])
+    assert plural.exit_code == 0
+    assert "use-thirdeye" in plural.output
+    assert singular.exit_code != 0
+
+
+def test_long_path_option_accepts_equals_syntax(fake_skill: Path, tmp_path: Path) -> None:
+    target = tmp_path / "skills"
+    result = _run(fake_skill, [f"--path={target}"])
+    assert result.exit_code == 0
+    assert (target / "use-thirdeye").is_symlink()

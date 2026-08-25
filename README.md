@@ -20,6 +20,23 @@ brew install duncankmckinnon/tap/thirdeye    # macOS / Linux
 pipx install thrdi                           # or: uv tool install thrdi
 ```
 
+## Install agent skills locally
+
+Install thirdeye's bundled skills for agents working in the current project:
+
+```bash
+thirdeye skills list                                 # show bundled skill names
+thirdeye skills add                                  # all skills → .agents/skills/
+thirdeye skills add --claude --codex                 # both agent-specific folders
+thirdeye skills add -p path/to/folder                # custom parent folder
+thirdeye skills add --only thirdeye-review           # just one
+thirdeye skills add --force                          # replace existing entries
+```
+
+Skills install as symlinks, so upgrading thirdeye (`brew upgrade thirdeye` or
+`pipx upgrade thrdi`) automatically refreshes them in every repository where
+they are installed.
+
 ## Enable tracing
 
 ```bash
@@ -152,8 +169,8 @@ deps — thirdeye shells out to the agent binaries you already have installed.
 ## Agent
 
 Dispatch an AI agent (Claude Code, Codex, or Gemini) against your thirdeye
-history directly from the CLI. The agent is pre-loaded with all built-in
-skills and runs in read-only mode by default.
+history directly from the CLI. The agent is pre-loaded with its analysis and
+evaluation skills and runs in read-only mode by default.
 
 ```bash
 thirdeye agent "review my sessions from the last week"
@@ -176,7 +193,7 @@ Flags:
 New sessions opened by the agent are automatically tagged `thirdeye-agent`
 so you can filter them with `thirdeye list --tag thirdeye-agent`.
 
-## Agent skills
+### Skills used by `thirdeye agent`
 
 Four bundled skills are injected into every `thirdeye agent` run by default:
 
@@ -193,22 +210,7 @@ Four bundled skills are injected into every `thirdeye agent` run by default:
   alongside the others; not invoked directly by agents.
 
 Pass `--skill path/to/skill.md` to inject additional skills from local files
-alongside the defaults. Run `thirdeye agent --skills` to see the built-in list.
-
-You can also install the skills into your project for use outside of
-`thirdeye agent`:
-
-```bash
-thirdeye skill list                                  # show bundled skill names
-thirdeye skill install                               # all skills → .agents/skills/
-thirdeye skill install .claude/skills                # custom parent dir
-thirdeye skill install --only thirdeye-review        # just one
-thirdeye skill install --force                       # replace existing entries
-```
-
-Skills install as symlinks, so upgrading thirdeye (`brew upgrade thirdeye` or
-`pipx upgrade thrdi`) automatically refreshes the skill content in every repo
-where they're installed.
+alongside the defaults. Run `thirdeye agent --skills` to see the default list.
 
 ## License
 
