@@ -33,7 +33,7 @@ pip install 'thrdi[logfire]'
 Enabling requires a Logfire project write token (gateway key):
 
 ```bash
-thirdeye logfire enable --project '<project-name>'
+thirdeye logfire enable
 ```
 
 The command prompts for the write token with hidden input so it is not placed

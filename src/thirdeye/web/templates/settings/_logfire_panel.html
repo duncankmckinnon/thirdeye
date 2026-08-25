@@ -16,8 +16,6 @@
     </dd>
     <dt>gateway key</dt>
     <dd>{% if logfire.has_token %}********{% else %}(none saved){% endif %}</dd>
-    <dt>project</dt>
-    <dd>{{ logfire.project or "(unset)" }}</dd>
     <dt>package</dt>
     <dd>
       {% if logfire.package_installed %}installed{% else %}
@@ -33,10 +31,6 @@
     <label>Gateway key
       <input type="password" name="token" placeholder="pylf_v1_..." required
              autocomplete="new-password" spellcheck="false">
-    </label>
-    <label>Project <span class="muted">(optional, for your reference)</span>
-      <input type="text" name="project" value="{{ logfire.project or '' }}"
-             placeholder="my-project">
     </label>
     <div class="settings-actions">
       <button type="submit">

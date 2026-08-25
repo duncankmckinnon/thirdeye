@@ -31,10 +31,9 @@ class LogfireSettings:
 
     enabled: bool = False
     token: str | None = None
-    project: str | None = None
 
     def to_dict(self) -> dict[str, Any]:
-        return {"enabled": self.enabled, "token": self.token, "project": self.project}
+        return {"enabled": self.enabled, "token": self.token}
 
     @classmethod
     def from_dict(cls, raw: dict[str, Any] | None) -> LogfireSettings:
@@ -42,7 +41,6 @@ class LogfireSettings:
         return cls(
             enabled=bool(raw.get("enabled", False)),
             token=raw.get("token") or None,
-            project=raw.get("project") or None,
         )
 
 

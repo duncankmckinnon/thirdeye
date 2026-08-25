@@ -32,15 +32,12 @@ def test_status_disabled_by_default():
     assert "enabled           : False" in result.output
 
 
-def test_enable_persists_token_and_project():
-    result = CliRunner().invoke(
-        logfire_group, ["enable", "--project", "myproj"], input="pylf_v1_us_abcd1234\n"
-    )
+def test_enable_persists_token():
+    result = CliRunner().invoke(logfire_group, ["enable"], input="pylf_v1_us_abcd1234\n")
     assert result.exit_code == 0, result.output
     config = Config.load()
     assert config.logfire.enabled is True
     assert config.logfire.token == "pylf_v1_us_abcd1234"
-    assert config.logfire.project == "myproj"
 
 
 def test_enable_masks_token_in_output():
@@ -57,17 +54,21 @@ def test_enable_rejects_token_command_line_option():
 
 
 def test_disable_keeps_token_but_flips_flag():
-    CliRunner().invoke(logfire_group, ["enable", "--project", "p"], input="tok\n")
+    CliRunner().invoke(logfire_group, ["enable"], input="tok\n")
     result = CliRunner().invoke(logfire_group, ["disable"])
     assert result.exit_code == 0
     config = Config.load()
     assert config.logfire.enabled is False
     assert config.logfire.token == "tok"
-    assert config.logfire.project == "p"
 
 
 def test_status_reflects_enabled_state():
-    CliRunner().invoke(logfire_group, ["enable", "--project", "p"], input="tok\n")
+    CliRunner().invoke(logfire_group, ["enable"], input="tok\n")
     result = CliRunner().invoke(logfire_group, ["status"])
     assert "enabled           : True" in result.output
-    assert "project           : p" in result.output
+
+
+def test_enable_rejects_removed_project_option():
+    result = CliRunner().invoke(logfire_group, ["enable", "--project", "p"])
+    assert result.exit_code != 0
+    assert "No such option" in result.output

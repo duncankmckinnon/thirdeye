@@ -94,7 +94,7 @@ On Claude Code, each individual model call within a turn gets its own `chat <mod
 
 ```bash
 pip install 'thrdi[logfire]'
-thirdeye logfire enable --project my-project                      # securely prompts for gateway key
+thirdeye logfire enable                                           # securely prompts for gateway key
 thirdeye logfire status
 thirdeye logfire disable                                          # keeps the saved key
 ```

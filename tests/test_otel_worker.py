@@ -33,7 +33,7 @@ def home(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
 @pytest.fixture
 def enabled(home: Path) -> None:
     Config.load().write_logfire_settings(
-        LogfireSettings(enabled=True, token="fake-token", project="p")
+        LogfireSettings(enabled=True, token="fake-token")
     )
 
 

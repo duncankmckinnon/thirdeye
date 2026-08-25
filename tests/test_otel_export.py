@@ -63,7 +63,7 @@ def wired_instance(exporter, monkeypatch: pytest.MonkeyPatch):
 def enabled_config(tmp_path: Path) -> Config:
     return Config(
         root=tmp_path,
-        logfire=LogfireSettings(enabled=True, token="fake-token", project="p"),
+        logfire=LogfireSettings(enabled=True, token="fake-token"),
     )
 
 
@@ -251,7 +251,7 @@ class TestBackgroundNoiseSuppression:
         monkeypatch.setattr(otel_export, "_silence_background_noise", lambda: calls.append(1))
         monkeypatch.setattr(logfire, "configure", _configure)
         config = Config(
-            root=tmp_path, logfire=LogfireSettings(enabled=True, token="bad-token", project=None)
+            root=tmp_path, logfire=LogfireSettings(enabled=True, token="bad-token")
         )
         otel_export._get_instance(config, "claude")
         assert calls == [1]
