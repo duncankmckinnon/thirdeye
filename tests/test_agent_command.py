@@ -90,10 +90,11 @@ def test_without_fix_flag_mode_is_review():
 def test_skills_flag_lists_builtins_and_exits():
     result = CliRunner().invoke(main, ["agent", "--skills"], catch_exceptions=False)
     assert result.exit_code == 0
-    from thirdeye.agent.prompt import VALID_SKILLS
+    from thirdeye.agent.prompt import DEFAULT_SKILLS
 
-    for name in VALID_SKILLS:
+    for name in DEFAULT_SKILLS:
         assert name in result.output
+    assert "thirdeye-logfire" not in result.output
 
 
 def test_skills_flag_does_not_require_task():
