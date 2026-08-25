@@ -1,5 +1,5 @@
 ---
-name: setup-logfire
+name: thirdeye-logfire
 description: Set up, verify, disable, or troubleshoot thirdeye's live Pydantic Logfire export and Logfire MCP access for Claude Code or Codex. Use for thirdeye Logfire tokens, missing spans, export status, MCP connection, and integration diagnostics; do not use for instrumenting unrelated applications directly with the Logfire SDK.
 ---
 

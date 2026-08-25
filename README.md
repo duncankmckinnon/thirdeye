@@ -191,7 +191,7 @@ Five bundled skills are injected into every `thirdeye agent` run by default:
 - **`thirdeye-filter`** — directive used by the browser UI's Ask panel
   to translate natural-language queries into filter JSON. Installed
   alongside the others; not invoked directly by agents.
-- **`setup-logfire`** — enable, verify, disable, and troubleshoot thirdeye's
+- **`thirdeye-logfire`** — enable, verify, disable, and troubleshoot thirdeye's
   live Pydantic Logfire export and connect its hosted MCP server to Claude
   Code or Codex without exposing credentials.
 

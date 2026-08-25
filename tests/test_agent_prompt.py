@@ -32,7 +32,7 @@ def test_default_prompt_contains_all_skills():
     assert "## Overview" in result  # use-thirdeye
     assert "Reviewing thirdeye" in result  # thirdeye-review
     assert "Evaluating thirdeye" in result  # thirdeye-evals
-    assert "Set up thirdeye Logfire export" in result  # setup-logfire
+    assert "Set up thirdeye Logfire export" in result  # thirdeye-logfire
 
 
 def test_single_skill_only_loads_that_skill():
@@ -87,7 +87,7 @@ def test_valid_skills_set_contains_expected_names():
     assert "thirdeye-review" in VALID_SKILLS
     assert "thirdeye-evals" in VALID_SKILLS
     assert "thirdeye-filter" in VALID_SKILLS
-    assert "setup-logfire" in VALID_SKILLS
+    assert "thirdeye-logfire" in VALID_SKILLS
 
 
 def test_all_valid_skills_load_without_error():
