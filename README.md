@@ -202,11 +202,12 @@ You can also install the skills into your project for use outside of
 `thirdeye agent`:
 
 ```bash
-thirdeye skill list                                  # show bundled skill names
-thirdeye skill install                               # all skills → .agents/skills/
-thirdeye skill install .claude/skills                # custom parent dir
-thirdeye skill install --only thirdeye-review        # just one
-thirdeye skill install --force                       # replace existing entries
+thirdeye skills list                                 # show bundled skill names
+thirdeye skills add                                  # all skills → .agents/skills/
+thirdeye skills add --claude --codex                 # both agent-specific folders
+thirdeye skills add -p path/to/folder                # custom parent folder
+thirdeye skills add --only thirdeye-review           # just one
+thirdeye skills add --force                          # replace existing entries
 ```
 
 Skills install as symlinks, so upgrading thirdeye (`brew upgrade thirdeye` or
