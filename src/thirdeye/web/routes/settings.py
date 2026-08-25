@@ -32,13 +32,10 @@ async def _page(request: Request) -> HTMLResponse:
 async def _enable(request: Request) -> HTMLResponse:
     form = await request.form()
     token = (form.get("token") or "").strip()
-    project = (form.get("project") or "").strip() or None
     if not token:
         return HTMLResponse("a Logfire gateway key is required", status_code=400)
     config = request.app.state.config
-    config = config.write_logfire_settings(
-        LogfireSettings(enabled=True, token=token, project=project)
-    )
+    config = config.write_logfire_settings(LogfireSettings(enabled=True, token=token))
     request.app.state.config = config
     request.app.state.store = Store(config)
     return _render(request, config)
@@ -47,9 +44,7 @@ async def _enable(request: Request) -> HTMLResponse:
 async def _disable(request: Request) -> HTMLResponse:
     config = request.app.state.config
     settings = config.logfire
-    config = config.write_logfire_settings(
-        LogfireSettings(enabled=False, token=settings.token, project=settings.project)
-    )
+    config = config.write_logfire_settings(LogfireSettings(enabled=False, token=settings.token))
     request.app.state.config = config
     request.app.state.store = Store(config)
     return _render(request, config)

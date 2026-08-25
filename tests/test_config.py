@@ -43,11 +43,26 @@ def test_logfire_settings_default_disabled() -> None:
 class TestLogfireSettingsPersistence:
     def test_load_reads_persisted_settings(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
         monkeypatch.setenv("THIRDEYE_HOME", str(tmp_path))
-        Config.load().write_logfire_settings(
-            LogfireSettings(enabled=True, token="tok", project="proj")
-        )
+        Config.load().write_logfire_settings(LogfireSettings(enabled=True, token="tok"))
         reloaded = Config.load()
-        assert reloaded.logfire == LogfireSettings(enabled=True, token="tok", project="proj")
+        assert reloaded.logfire == LogfireSettings(enabled=True, token="tok")
+
+    def test_load_ignores_legacy_project_and_next_write_removes_it(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        import yaml
+
+        monkeypatch.setenv("THIRDEYE_HOME", str(tmp_path))
+        config_file = tmp_path / "config.yaml"
+        config_file.write_text(
+            yaml.safe_dump({"logfire": {"enabled": True, "token": "tok", "project": "legacy"}})
+        )
+
+        config = Config.load()
+        assert config.logfire == LogfireSettings(enabled=True, token="tok")
+
+        config.write_logfire_settings(config.logfire)
+        assert "project" not in yaml.safe_load(config_file.read_text())["logfire"]
 
     def test_write_returns_updated_copy(self, tmp_path: Path) -> None:
         config = Config(root=tmp_path)

@@ -23,26 +23,25 @@ def test_settings_page_renders(client):
 
 
 def test_enable_persists_and_updates_panel(client, web_config: Config):
-    resp = client.post(
-        "/settings/logfire", data={"token": "pylf_v1_us_abcd1234", "project": "myproj"}
-    )
+    resp = client.post("/settings/logfire", data={"token": "pylf_v1_us_abcd1234"})
     assert resp.status_code == 200
     assert "enabled" in resp.text
-    assert "...1234" in resp.text  # masked suffix shown, not the full token
+    assert "********" in resp.text
+    assert "1234" not in resp.text
     assert "abcd1234" not in resp.text
     on_disk = _on_disk_logfire(web_config)
     assert on_disk["enabled"] is True
     assert on_disk["token"] == "pylf_v1_us_abcd1234"
-    assert on_disk["project"] == "myproj"
+    assert "project" not in on_disk
 
 
 def test_enable_requires_token(client):
-    resp = client.post("/settings/logfire", data={"project": "myproj"})
+    resp = client.post("/settings/logfire", data={})
     assert resp.status_code == 400
 
 
 def test_disable_flips_flag_but_keeps_token(client, web_config: Config):
-    client.post("/settings/logfire", data={"token": "tok", "project": "p"})
+    client.post("/settings/logfire", data={"token": "tok"})
     resp = client.post("/settings/logfire/disable")
     assert resp.status_code == 200
     assert "disabled" in resp.text

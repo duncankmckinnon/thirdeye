@@ -15,9 +15,7 @@
       {% endif %}
     </dd>
     <dt>gateway key</dt>
-    <dd>{% if logfire.token_suffix %}...{{ logfire.token_suffix }}{% else %}(none saved){% endif %}</dd>
-    <dt>project</dt>
-    <dd>{{ logfire.project or "(unset)" }}</dd>
+    <dd>{% if logfire.has_token %}********{% else %}(none saved){% endif %}</dd>
     <dt>package</dt>
     <dd>
       {% if logfire.package_installed %}installed{% else %}
@@ -32,11 +30,7 @@
         hx-swap="innerHTML">
     <label>Gateway key
       <input type="password" name="token" placeholder="pylf_v1_..." required
-             autocomplete="off">
-    </label>
-    <label>Project <span class="muted">(optional, for your reference)</span>
-      <input type="text" name="project" value="{{ logfire.project or '' }}"
-             placeholder="my-project">
+             autocomplete="new-password" spellcheck="false">
     </label>
     <div class="settings-actions">
       <button type="submit">

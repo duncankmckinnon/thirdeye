@@ -33,14 +33,16 @@ pip install 'thrdi[logfire]'
 Enabling requires a Logfire project write token (gateway key):
 
 ```bash
-thirdeye logfire enable --token '<write-token>' --project '<project-name>'
+thirdeye logfire enable
 ```
+
+The command prompts for the write token with hidden input so it is not placed
+in shell history or process arguments.
 
 Never invent, search broadly for, print, or commit a token. Ask the user to
 provide it when it is unavailable, and explain that thirdeye persists it in
-its config. Do not run the enable command without authorization when doing so
-would expose the token in shell history or process arguments; the Settings
-page in `thirdeye ui` is an alternative for interactive entry.
+its config. The user can enter it through the command's hidden prompt or the
+Settings page in `thirdeye ui`.
 
 Ensure tracing hooks are installed for each requested harness (`thirdeye add
 --codex`, `--claude`, or another supported platform). Logfire export does not
