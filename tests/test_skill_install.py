@@ -104,9 +104,7 @@ def test_install_all_bundled_skills_by_default(
 ) -> None:
     monkeypatch.chdir(tmp_path)
     dest_root = tmp_path / "skills"
-    result = CliRunner().invoke(
-        skills_group, ["add", "-p", str(dest_root)], catch_exceptions=False
-    )
+    result = CliRunner().invoke(skills_group, ["add", "-p", str(dest_root)], catch_exceptions=False)
     assert result.exit_code == 0
     bundled = _list_bundled_skills()
     assert bundled, "expected at least one bundled skill"
@@ -152,9 +150,7 @@ def test_plural_top_level_command_replaces_singular() -> None:
     assert singular.exit_code != 0
 
 
-def test_long_path_option_accepts_equals_syntax(
-    fake_skill: Path, tmp_path: Path
-) -> None:
+def test_long_path_option_accepts_equals_syntax(fake_skill: Path, tmp_path: Path) -> None:
     target = tmp_path / "skills"
     result = _run(fake_skill, [f"--path={target}"])
     assert result.exit_code == 0
