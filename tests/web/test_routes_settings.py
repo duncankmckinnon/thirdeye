@@ -28,7 +28,8 @@ def test_enable_persists_and_updates_panel(client, web_config: Config):
     )
     assert resp.status_code == 200
     assert "enabled" in resp.text
-    assert "...1234" in resp.text  # masked suffix shown, not the full token
+    assert "********" in resp.text
+    assert "1234" not in resp.text
     assert "abcd1234" not in resp.text
     on_disk = _on_disk_logfire(web_config)
     assert on_disk["enabled"] is True

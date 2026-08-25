@@ -124,7 +124,6 @@ def status(config: Config) -> dict[str, Any]:
         "enabled": config.logfire.enabled,
         "has_token": bool(config.logfire.token),
         "project": config.logfire.project,
-        "token_suffix": config.logfire.token[-4:] if config.logfire.token else None,
     }
 
 
