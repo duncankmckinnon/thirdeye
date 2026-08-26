@@ -104,6 +104,13 @@ _FLUSH_TIMEOUT_MS = 2000
 # and from the configured service name, which both stay the internal key.
 _AGENT_NAMES = {"claude": "claude-code"}
 
+# The provider a platform talks to, for spans that describe no single LLM call
+# and so have no provider of their own to report. A chat span always prefers
+# the provider the call itself reported; this is only the fallback. An unlisted
+# platform yields nothing rather than a guess. Mirrors the per-call providers
+# the platform capture modules already hardcode.
+_PROVIDER_NAMES = {"claude": "anthropic", "codex": "openai"}
+
 # Maps a key in an `UsageDict` to the OTel GenAI semantic-convention attribute
 # it becomes. `UsageDict` is `total=False`, so only keys actually present are
 # ever emitted — an absent count means "not reported", not zero.
@@ -695,12 +702,14 @@ def _export_turn_inner(
                 # this trace and this parent without having read the file back
                 # first, which is what makes mid-turn emission possible.
                 root_ns = _ts_to_ns(turn["start_ts"])
+                # The same vocabulary every other span carries, minus the
+                # turn-level keys there is no turn to fill in. Shared rather
+                # than spelled out again: the root has no parent to inherit
+                # from, so an attribute that identifies a session has to be
+                # here too, and a hand-written copy silently falls behind
+                # (`thirdeye.repo` did exactly that).
                 root_attrs = _flatten_attrs(
-                    {
-                        "gen_ai.conversation.id": session_id,
-                        "thirdeye.platform": platform,
-                        "thirdeye.cwd": cwd,
-                    }
+                    _identity_attributes(session_id=session_id, platform=platform, cwd=cwd)
                 )
                 derived = (
                     trace_id_for_session(session_id),
@@ -819,6 +828,11 @@ def _agent_name(platform: str) -> str:
     return _AGENT_NAMES.get(platform, platform)
 
 
+def _provider_name(platform: str) -> str | None:
+    """The provider a platform's spans default to, or None if unknown."""
+    return _PROVIDER_NAMES.get(platform)
+
+
 def _identity_attributes(
     *,
     session_id: str,
@@ -826,6 +840,7 @@ def _identity_attributes(
     cwd: str,
     turn_id: Any = None,
     turn_span_id: Any = None,
+    provider: str | None = None,
 ) -> dict[str, Any]:
     """Attributes naming the session and turn a span belongs to.
 
@@ -840,6 +855,9 @@ def _identity_attributes(
     attributes: dict[str, Any] = {
         "gen_ai.conversation.id": session_id,
         "gen_ai.agent.name": _agent_name(platform),
+        # A call's own provider when there is one, else the platform's. Dropped
+        # by `_flatten_attrs` when neither is known.
+        "gen_ai.provider.name": provider or _provider_name(platform),
         "thirdeye.platform": platform,
         "thirdeye.cwd": cwd,
         # Dropped by `_flatten_attrs` when None, i.e. outside a repository.
@@ -914,7 +932,7 @@ def _chat_attributes(
         for key in ("input_messages", "output_messages", "provider", "usage")
     ):
         model = call_or_attributes.get("model") or ""
-        provider = call_or_attributes["provider"]
+        provider: str | None = call_or_attributes["provider"]
         attributes: dict[str, Any] = {
             "gen_ai.input.messages": call_or_attributes["input_messages"],
             "gen_ai.output.messages": call_or_attributes["output_messages"],
@@ -940,6 +958,8 @@ def _chat_attributes(
                 attributes[target] = usage[source]
     else:
         attributes = call_or_attributes
+        # Already-built attributes carry the provider under its final name.
+        provider = attributes.get("gen_ai.provider.name")
     return _flatten_attrs(
         _merge_raw(
             attributes,
@@ -949,6 +969,7 @@ def _chat_attributes(
                 cwd=cwd,
                 turn_id=turn_id,
                 turn_span_id=turn_span_id,
+                provider=provider,
             ),
             _cost_attributes(attributes),
         )
@@ -1063,19 +1084,16 @@ def _export_turn_subtree(
     from opentelemetry.trace import SpanKind
 
     turn_attrs: dict[str, Any] = {
+        **_identity_attributes(session_id=session_id, platform=platform, cwd=cwd),
         "thirdeye.turn.status": turn["status"],
         "thirdeye.turn.id": turn["turn_id"],
-        "gen_ai.conversation.id": session_id,
         # What Logfire's Agents page matches a span on: an `invoke_agent`
-        # operation carrying the agent's name. A pydantic-ai agent gets both
-        # from its own instrumentation; spans built through the raw OTel API
-        # get neither, and without them a turn is just an anonymous span and
-        # the session never registers as an agent run at all.
+        # operation carrying the agent's name (the latter from the shared
+        # vocabulary above). A pydantic-ai agent gets both from its own
+        # instrumentation; spans built through the raw OTel API get neither,
+        # and without them a turn is just an anonymous span and the session
+        # never registers as an agent run at all.
         "gen_ai.operation.name": "invoke_agent",
-        "gen_ai.agent.name": _agent_name(platform),
-        "thirdeye.platform": platform,
-        "thirdeye.cwd": cwd,
-        "thirdeye.repo": _repo_name(cwd),
     }
     if turn["input_message"]:
         turn_attrs["gen_ai.input.messages"] = _message("user", turn["input_message"])
