@@ -15,9 +15,26 @@ Trace every agent session on your machine — Claude Code, Codex, Gemini, Cursor
 
 ## Install
 
+The easiest installation approach is to use [homebrew](https://brew.sh/). This will package all thirdeye extras as a globally available CLI tool.
+
 ```bash
 brew install duncankmckinnon/tap/thirdeye    # macOS / Linux
-pipx install thrdi                           # or: uv tool install thrdi
+```
+
+Alternatively, you can get the same result with [pipx](https://pipx.pypa.io/stable/)
+
+```bash
+pipx install 'thrdi[ui,logfire]' # global install
+```
+
+For local installation, you can also use `uv` or `pip` with the optional ui and logfire extras that add the ability to navigate thirdeye as a webpage and export traces via OpenTelemetry to Pydantic Logfire.
+
+```bash
+uv tool install thrdi # or: uv tool install 'thrdi[ui,logfire]'
+```
+
+```bash
+pip install thrdi # or: pip install 'thrdi[ui,logfire]'
 ```
 
 ## Install agent skills locally
@@ -93,7 +110,6 @@ Mirror every captured session into [Logfire](https://pydantic.dev/logfire) live,
 On Claude Code, each individual model call within a turn gets its own `chat <model>` span. Codex uses a turn-level `chat <model>` span reconstructed from the completed turn in its rollout JSONL, with `execute_tool <name>` children for every paired tool call. Both use OpenTelemetry GenAI attributes for model, messages, and token usage; Codex repeated token reports are deduplicated by their cumulative watermark before turn totals are calculated.
 
 ```bash
-pip install 'thrdi[logfire]'
 thirdeye logfire enable                                           # securely prompts for gateway key
 thirdeye logfire status
 thirdeye logfire disable                                          # keeps the saved key
@@ -108,7 +124,6 @@ Export is dispatched from the same Claude Code / Codex hooks that already captur
 For a richer experience than the CLI, install the UI extra and launch:
 
 ```bash
-pip install 'thrdi[ui]'
 thirdeye ui
 ```
 
