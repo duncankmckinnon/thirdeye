@@ -123,6 +123,11 @@ Logfire as a named managed dataset. Configure a separate project API key with
 session filters you want, enter a dataset name, and choose **Send to Logfire**.
 Each session becomes one case containing its metadata and ordered event stream.
 The managed-datasets feature must be enabled for the Logfire project.
+Choose **one case per turn** to export each captured user-to-assistant turn as
+its own case. A turn-content query searches every turn in every session selected
+by the broader filters; comma-separated terms are ANDed within the same turn.
+An optional exact selector in the form `<session-id>:<platform-turn-id>` remains
+available for direct lookup.
 
 ## Browse in a browser
 

@@ -28,6 +28,14 @@
   </label>
   <button type="submit">Filter</button>
   <span class="dataset-export">
+    <select name="dataset_scope" aria-label="dataset case scope">
+      <option value="session">one case per session</option>
+      <option value="turn" {% if filters.turn or filters.turn_query %}selected{% endif %}>one case per turn</option>
+    </select>
+    <input type="text" name="turn_query" placeholder="turn contains (comma-separated AND terms)"
+           value="{{ filters.turn_query or '' }}" aria-label="turn content query">
+    <input type="text" name="turn" placeholder="session:turn ID (optional)"
+           value="{{ filters.turn or '' }}" aria-label="turn ID">
     <input type="text" name="dataset_name" placeholder="Logfire dataset name"
            aria-label="Logfire dataset name">
     <button type="button"

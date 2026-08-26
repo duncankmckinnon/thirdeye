@@ -10,6 +10,7 @@ from starlette.routing import Route
 from thirdeye.eval.agents import BUILTIN_ADAPTERS, list_agent_names
 from thirdeye.eval.definition import list_definitions
 from thirdeye.timeparse import parse_when
+from thirdeye.turns import filter_turns
 from thirdeye.web.views_store import ViewStore
 from thirdeye.web.vocabulary import inventory_tags
 
@@ -34,6 +35,8 @@ async def _index(request: Request) -> HTMLResponse:
     since_str = params.get("since") or None
     until_str = params.get("until") or None
     order = params.get("order") or None
+    turn = params.get("turn") or None
+    turn_query = params.get("turn_query") or None
     tag_list = [t for t in params.getlist("tag") if t]
     tags = set(tag_list) if tag_list else None
 
@@ -43,7 +46,7 @@ async def _index(request: Request) -> HTMLResponse:
     if order is None:
         order = "newest"
 
-    sessions = sorted(
+    matching_sessions = list(
         store.list_sessions(
             platform=platform,
             cwd=cwd,
@@ -51,7 +54,14 @@ async def _index(request: Request) -> HTMLResponse:
             tags=tags,
             since=parse_when(since_str),
             until=parse_when(until_str),
-        ),
+        )
+    )
+    if turn or turn_query:
+        matching_sessions = [
+            meta for meta in matching_sessions if filter_turns([meta], store, turn, turn_query)
+        ]
+    sessions = sorted(
+        matching_sessions,
         key=lambda s: s.started_at or "",
         reverse=(order != "oldest"),
     )
@@ -67,6 +77,8 @@ async def _index(request: Request) -> HTMLResponse:
                 "since": since_str,
                 "until": until_str,
                 "order": order,
+                "turn": turn,
+                "turn_query": turn_query,
                 "tag": tag_list,
             },
             "defaults_applied": defaults_applied,
