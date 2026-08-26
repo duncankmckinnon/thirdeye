@@ -1306,3 +1306,180 @@ class TestExportTurnInnerFailureRecovery:
         )
         assert claim_path.read_text() == "sent"
         assert len(exporter.exported_spans_as_dict()) > spans_after_failure
+
+
+class TestGenAiAgentSemantics:
+    """Logfire's Agents page matches on the OTel GenAI agent conventions, and
+    its LLM views read the model off `gen_ai.request.model`. Hand-built spans
+    get none of that for free the way a pydantic-ai agent does, so the
+    vocabulary has to be spelled out here.
+    """
+
+    def test_turn_span_declares_itself_an_agent_invocation(
+        self, tmp_path: Path, enabled_config: Config, wired_instance, exporter
+    ):
+        otel_export._export_turn_inner(
+            config=enabled_config,
+            session_dir_=tmp_path / "traces" / "claude" / "s1",
+            session_id="s1",
+            platform="claude",
+            cwd="/proj",
+            turn=_turn(),
+        )
+
+        [turn_span] = [
+            span for span in exporter.exported_spans_as_dict() if span["name"] == "agent-turn"
+        ]
+        assert turn_span["attributes"]["gen_ai.operation.name"] == "invoke_agent"
+        assert turn_span["attributes"]["gen_ai.agent.name"] == "claude-code"
+
+    def test_subagent_turn_is_an_agent_invocation_too(
+        self, tmp_path: Path, enabled_config: Config, wired_instance, exporter
+    ):
+        turn = _turn(subagents=[_turn(turn_id="turn_1.1")])
+
+        otel_export._export_turn_inner(
+            config=enabled_config,
+            session_dir_=tmp_path / "traces" / "codex" / "s1",
+            session_id="s1",
+            platform="codex",
+            cwd="/proj",
+            turn=turn,
+        )
+
+        [subagent_span] = [
+            span
+            for span in exporter.exported_spans_as_dict()
+            if span["name"] == "agent-turn (subagent)"
+        ]
+        assert subagent_span["attributes"]["gen_ai.operation.name"] == "invoke_agent"
+        # A platform whose CLI name needs no translating is used verbatim.
+        assert subagent_span["attributes"]["gen_ai.agent.name"] == "codex"
+
+    def test_chat_span_names_the_requested_model_and_provider(self):
+        attributes = otel_export._chat_attributes(
+            _llm_call(model="claude-sonnet-5", provider="anthropic"),
+            session_id="s1",
+            platform="claude",
+            cwd="/proj",
+        )
+
+        # `gen_ai.request.model` is the conditionally-required one the span
+        # name is built from; `response.model` alone is merely Recommended and
+        # leaves the LLM views with no model to group by.
+        assert attributes["gen_ai.request.model"] == "claude-sonnet-5"
+        assert attributes["gen_ai.response.model"] == "claude-sonnet-5"
+        assert attributes["gen_ai.provider.name"] == "anthropic"
+        # The superseded spelling, still what pydantic-ai emits alongside.
+        assert attributes["gen_ai.system"] == "anthropic"
+
+    def test_chat_span_is_attributed_to_the_agent_that_made_the_call(self):
+        attributes = otel_export._chat_attributes(
+            _llm_call(),
+            session_id="s1",
+            platform="claude",
+            cwd="/proj",
+        )
+
+        assert attributes["gen_ai.agent.name"] == "claude-code"
+
+    def test_modelless_chat_call_omits_the_model_attributes(self):
+        attributes = otel_export._chat_attributes(
+            _llm_call(model=""),
+            session_id="s1",
+            platform="claude",
+            cwd="/proj",
+        )
+
+        assert "gen_ai.request.model" not in attributes
+        assert "gen_ai.response.model" not in attributes
+
+
+class TestRepoAttribution:
+    """`thirdeye.cwd` says which directory a session ran in; `thirdeye.repo`
+    says which project that was, so sessions group by codebase rather than by
+    whichever subdirectory the agent happened to be started from.
+    """
+
+    def test_repo_root_is_named_by_its_directory(self, tmp_path: Path):
+        repo = tmp_path / "my-project"
+        (repo / ".git").mkdir(parents=True)
+
+        assert otel_export._repo_name(str(repo)) == "my-project"
+
+    def test_subdirectory_resolves_to_the_repo_root(self, tmp_path: Path):
+        repo = tmp_path / "my-project"
+        (repo / ".git").mkdir(parents=True)
+        deep = repo / "src" / "thirdeye"
+        deep.mkdir(parents=True)
+
+        assert otel_export._repo_name(str(deep)) == "my-project"
+
+    def test_worktree_dot_git_file_still_counts(self, tmp_path: Path):
+        """A worktree or submodule has `.git` as a file, not a directory."""
+        repo = tmp_path / "linked-worktree"
+        repo.mkdir()
+        (repo / ".git").write_text("gitdir: /elsewhere/.git/worktrees/x\n")
+
+        assert otel_export._repo_name(str(repo)) == "linked-worktree"
+
+    def test_directory_outside_any_repo_has_no_repo(self, tmp_path: Path):
+        loose = tmp_path / "not-a-repo"
+        loose.mkdir()
+
+        assert otel_export._repo_name(str(loose)) is None
+
+    def test_missing_or_empty_cwd_is_not_an_error(self, tmp_path: Path):
+        """Export can run long after the session's directory is gone."""
+        assert otel_export._repo_name("") is None
+        assert otel_export._repo_name(str(tmp_path / "deleted-since")) is None
+
+    def test_chat_and_tool_spans_carry_the_repo(self, tmp_path: Path):
+        repo = tmp_path / "thirdeye"
+        (repo / ".git").mkdir(parents=True)
+
+        attributes = otel_export._chat_attributes(
+            _llm_call(), session_id="s1", platform="claude", cwd=str(repo)
+        )
+
+        assert attributes["thirdeye.repo"] == "thirdeye"
+        assert attributes["thirdeye.cwd"] == str(repo)
+
+    def test_span_outside_a_repo_omits_the_attribute_entirely(self, tmp_path: Path):
+        loose = tmp_path / "scratch"
+        loose.mkdir()
+
+        attributes = otel_export._chat_attributes(
+            _llm_call(), session_id="s1", platform="claude", cwd=str(loose)
+        )
+
+        assert "thirdeye.repo" not in attributes
+        assert attributes["thirdeye.cwd"] == str(loose)
+
+    def test_turn_and_permission_spans_carry_the_repo_too(
+        self, tmp_path: Path, enabled_config: Config, wired_instance, exporter
+    ):
+        repo = tmp_path / "some-repo"
+        (repo / ".git").mkdir(parents=True)
+        turn = _turn(
+            permission_requests=[
+                {
+                    "ts": "2026-01-01T00:00:03.000Z",
+                    "tool_name": "Bash",
+                    "attributes": {"decision": "allow"},
+                }
+            ]
+        )
+
+        otel_export._export_turn_inner(
+            config=enabled_config,
+            session_dir_=tmp_path / "traces" / "claude" / "s1",
+            session_id="s1",
+            platform="claude",
+            cwd=str(repo),
+            turn=turn,
+        )
+
+        exported = {span["name"]: span for span in exporter.exported_spans_as_dict()}
+        assert exported["agent-turn"]["attributes"]["thirdeye.repo"] == "some-repo"
+        assert exported["permission_request: Bash"]["attributes"]["thirdeye.repo"] == "some-repo"
