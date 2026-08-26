@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from typing import Any
 
 from thirdeye.meta import SessionMeta
@@ -55,9 +56,21 @@ def session_turns(meta: SessionMeta, store: Store) -> list[dict[str, Any]]:
 
 
 def filter_turns(
-    sessions: list[SessionMeta], store: Store, turn_id: str | None = None
+    sessions: list[SessionMeta],
+    store: Store,
+    turn_id: str | None = None,
+    query: str | None = None,
 ) -> list[dict[str, Any]]:
     turns = [turn for meta in sessions for turn in session_turns(meta, store)]
     if turn_id is not None:
         turns = [turn for turn in turns if turn["id"] == turn_id or turn["turn_id"] == turn_id]
+    terms = [term.strip().lower() for term in (query or "").split(",") if term.strip()]
+    if terms:
+        turns = [
+            turn
+            for turn in turns
+            if all(
+                term in json.dumps(turn, default=str, ensure_ascii=False).lower() for term in terms
+            )
+        ]
     return turns

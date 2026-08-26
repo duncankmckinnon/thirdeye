@@ -150,3 +150,23 @@ def test_sessions_agentic_populates_turn(client, monkeypatch):
     assert 'name="turn"' in response.text
     assert 'value="turn-42"' in response.text
     assert "turn=turn-42" in proposed.query_string()
+
+
+def test_sessions_agentic_populates_cross_session_turn_query(client, monkeypatch):
+    proposed = ProposedFilters(
+        **{**_stub_proposed_sessions().__dict__, "turn_query": "apply_patch,Logfire"}
+    )
+
+    def fake_propose(config, *, nl, agent_name, surface):
+        return proposed
+
+    monkeypatch.setattr("thirdeye.web.routes.sessions.propose_filters", fake_propose)
+    monkeypatch.setattr("thirdeye.web.routes.sessions.inventory_tags", lambda cfg: [])
+    response = client.post(
+        "/sessions/agentic",
+        data={"nl": "turns that patched Logfire", "agent": "claude"},
+    )
+
+    assert 'value="apply_patch,Logfire"' in response.text
+    assert '<option value="turn" selected' in response.text
+    assert "turn_query=apply_patch%2CLogfire" in proposed.query_string()

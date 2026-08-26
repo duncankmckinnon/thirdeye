@@ -36,6 +36,7 @@ async def _index(request: Request) -> HTMLResponse:
     until_str = params.get("until") or None
     order = params.get("order") or None
     turn = params.get("turn") or None
+    turn_query = params.get("turn_query") or None
     tag_list = [t for t in params.getlist("tag") if t]
     tags = set(tag_list) if tag_list else None
 
@@ -55,9 +56,9 @@ async def _index(request: Request) -> HTMLResponse:
             until=parse_when(until_str),
         )
     )
-    if turn:
+    if turn or turn_query:
         matching_sessions = [
-            meta for meta in matching_sessions if filter_turns([meta], store, turn)
+            meta for meta in matching_sessions if filter_turns([meta], store, turn, turn_query)
         ]
     sessions = sorted(
         matching_sessions,
@@ -77,6 +78,7 @@ async def _index(request: Request) -> HTMLResponse:
                 "until": until_str,
                 "order": order,
                 "turn": turn,
+                "turn_query": turn_query,
                 "tag": tag_list,
             },
             "defaults_applied": defaults_applied,

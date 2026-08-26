@@ -106,3 +106,48 @@ def test_export_turn_scope_creates_one_case_per_matching_turn(monkeypatch, tmp_p
     assert count == 1
     assert added[0]["name"] == "session-1:2"
     assert added[0]["inputs"]["turn"]["events"][0]["data"]["prompt"] == "second"
+
+
+def test_export_turn_scope_filters_content_across_sessions(monkeypatch, tmp_path):
+    store = Store(Config(root=tmp_path))
+    metas = []
+    for sid, prompt in (("one", "Fix Logfire export"), ("two", "Fix the docs")):
+        with store.open_session(sid, platform="claude", cwd="/project") as writer:
+            writer.append("user_message", {"prompt": prompt})
+            writer.append("assistant_message", {"text": "done"})
+        metas.append(store.get_meta(sid))
+    added = []
+
+    class Client:
+        def __init__(self, api_key):
+            pass
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return None
+
+        def create_dataset(self, **kwargs):
+            pass
+
+        def add_cases(self, name, *, cases):
+            added.extend(cases)
+
+    api_client = ModuleType("logfire.experimental.api_client")
+    api_client.LogfireAPIClient = Client
+    monkeypatch.setitem(sys.modules, "logfire", ModuleType("logfire"))
+    monkeypatch.setitem(sys.modules, "logfire.experimental", ModuleType("logfire.experimental"))
+    monkeypatch.setitem(sys.modules, "logfire.experimental.api_client", api_client)
+
+    count = export_sessions(
+        api_key="secret",
+        name="turns",
+        sessions=metas,
+        store=store,
+        scope="turn",
+        turn_query="logfire",
+    )
+
+    assert count == 1
+    assert added[0]["inputs"]["turn"]["session_id"] == "one"

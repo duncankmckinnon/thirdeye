@@ -39,3 +39,34 @@ def test_codex_turns_use_explicit_ids_and_successive_agent_turn_boundaries(tmp_p
     assert [turn["turn_id"] for turn in turns] == ["turn-a", "turn-b"]
     assert [event["seq"] for event in turns[0]["events"]] == [0, 1]
     assert filter_turns([meta], store, "turn-b") == [turns[1]]
+
+
+def test_turn_query_searches_every_session_and_ands_terms_within_turn(tmp_path):
+    store = Store(Config(root=tmp_path))
+    metas = []
+    for sid, tool, result in (
+        ("first-session", "apply_patch", "Logfire updated"),
+        ("second-session", "Read", "Logfire inspected"),
+    ):
+        with store.open_session(sid, platform="claude", cwd="/project") as writer:
+            writer.append("user_message", {"prompt": "dataset work"})
+            writer.append("tool_call", {"tool_name": tool})
+            writer.append("tool_result", {"content": result})
+            writer.append("assistant_message", {"text": "done"})
+        metas.append(store.get_meta(sid))
+
+    matches = filter_turns(metas, store, query="apply_patch, logfire")
+
+    assert [turn["session_id"] for turn in matches] == ["first-session"]
+
+
+def test_turn_query_terms_cannot_match_across_different_turns(tmp_path):
+    store = Store(Config(root=tmp_path))
+    with store.open_session("session", platform="claude", cwd="/project") as writer:
+        writer.append("user_message", {"prompt": "alpha"})
+        writer.append("assistant_message", {"text": "done"})
+        writer.append("user_message", {"prompt": "beta"})
+        writer.append("assistant_message", {"text": "done"})
+    meta = store.get_meta("session")
+
+    assert filter_turns([meta], store, query="alpha,beta") == []

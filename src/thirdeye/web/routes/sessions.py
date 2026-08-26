@@ -153,6 +153,7 @@ async def _sessions_agentic(request: Request) -> HTMLResponse:
         "until": proposed.until,
         "order": proposed.order,
         "turn": proposed.turn,
+        "turn_query": proposed.turn_query,
         "tag": list(proposed.tags),
     }
     return templates.TemplateResponse(
@@ -188,6 +189,7 @@ async def _export_logfire_dataset(request: Request) -> HTMLResponse:
             request, "_error.html", {"message": "Invalid dataset scope."}, status_code=400
         )
     turn_id = (form.get("turn") or "").strip() or None
+    turn_query = (form.get("turn_query") or "").strip() or None
     tag_list = [str(t) for t in form.getlist("tag") if t]
     sessions = list(
         store.list_sessions(
@@ -215,6 +217,7 @@ async def _export_logfire_dataset(request: Request) -> HTMLResponse:
             store=store,
             scope=scope,
             turn_id=turn_id,
+            turn_query=turn_query,
         )
     except DatasetExportError as exc:
         return templates.TemplateResponse(

@@ -41,15 +41,21 @@ response that contains any non-JSON characters.
   "until": "<relative or ISO date, or null>",
   "status": "<open|closed|null>",
   "order": "<newest|oldest|longest|shortest|null>",
-  "turn": "<exact session:turn id from vocab, or null>",
+  "turn_query": "<comma-separated literal terms that must occur in the same turn, or null>",
+  "turn": "<exact session:turn id only when explicitly supplied by the user, or null>",
   "rationale": "<one sentence explaining the filter choices, or null>"
 }
 ```
 
 ## Rules
-- Only use `platform`, `cwd`, `tag`, and `turn` values that appear in the
+- Only use `platform`, `cwd`, and `tag` values that appear in the
   vocabulary block. Inventing values leaks no-op filters into the
   resulting query.
+- Put detailed prompt, response, tool, argument, and result criteria in
+  `turn_query`. Separate multiple required literal terms with commas; all
+  terms must occur within the same turn. This searches every turn in every
+  session selected by the broader session filters.
+- Set `turn` only when the user explicitly supplies an exact turn selector.
 - Use relative time (`"7d"`, `"24h"`, `"2w"`) when the user phrases
   time relatively ("this week", "last 24 hours"). Use ISO dates
   (`"2026-05-20"`) when the user gives an explicit date.
@@ -85,5 +91,20 @@ USER QUERY: still-open refactor work, longest first
 ```
 Expected response:
 ```
-{"platform": null, "cwd": null, "tags": ["refactor"], "since": null, "until": null, "status": "open", "order": "longest", "turn": null, "rationale": "Open sessions tagged refactor, ordered by longest duration."}
+{"platform": null, "cwd": null, "tags": ["refactor"], "since": null, "until": null, "status": "open", "order": "longest", "turn_query": null, "turn": null, "rationale": "Open sessions tagged refactor, ordered by longest duration."}
+```
+
+## Example — detailed turn criteria across sessions
+```
+VOCABULARY:
+  platforms: claude, codex
+  cwds: /Users/me/projects/api
+  tags: bug, refactor
+
+SURFACE: sessions
+USER QUERY: turns in the api repo that used apply_patch and mentioned Logfire
+```
+Expected response:
+```
+{"platform": null, "cwd": "/Users/me/projects/api", "tags": [], "since": null, "until": null, "status": null, "order": null, "turn_query": "apply_patch,Logfire", "turn": null, "rationale": "Turns in the api repo containing both apply_patch and Logfire."}
 ```

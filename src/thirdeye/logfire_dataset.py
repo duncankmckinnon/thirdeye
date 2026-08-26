@@ -39,6 +39,7 @@ def export_sessions(
     store: Store,
     scope: str = "session",
     turn_id: str | None = None,
+    turn_query: str | None = None,
 ) -> int:
     """Create a managed Logfire dataset with one case per session or turn."""
     try:
@@ -50,7 +51,7 @@ def export_sessions(
 
     try:
         cases = (
-            [_turn_case(turn) for turn in filter_turns(sessions, store, turn_id)]
+            [_turn_case(turn) for turn in filter_turns(sessions, store, turn_id, turn_query)]
             if scope == "turn"
             else [_case(meta, store) for meta in sessions]
         )

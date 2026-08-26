@@ -41,6 +41,7 @@ def test_export_uses_current_filters(client, app, web_store, monkeypatch):
     assert captured["api_key"] == "dataset-key"
     assert captured["scope"] == "session"
     assert captured["turn_id"] is None
+    assert captured["turn_query"] is None
     assert [m.session_id for m in captured["sessions"]] == ["claude-one"]
 
 
@@ -65,6 +66,7 @@ def test_export_passes_turn_scope_and_exact_turn(client, app, web_store, monkeyp
             "dataset_name": "one-turn",
             "dataset_scope": "turn",
             "turn": "0",
+            "turn_query": "apply_patch,logfire",
             "since": "2020-01-01",
         },
     )
@@ -73,6 +75,7 @@ def test_export_passes_turn_scope_and_exact_turn(client, app, web_store, monkeyp
     assert "Sent 1 turn" in response.text
     assert captured["scope"] == "turn"
     assert captured["turn_id"] == "0"
+    assert captured["turn_query"] == "apply_patch,logfire"
 
 
 def test_filter_form_has_logfire_dataset_action(client):
@@ -80,4 +83,5 @@ def test_filter_form_has_logfire_dataset_action(client):
     assert 'name="dataset_name"' in response.text
     assert 'name="dataset_scope"' in response.text
     assert 'name="turn"' in response.text
+    assert 'name="turn_query"' in response.text
     assert 'hx-post="/sessions/logfire-dataset"' in response.text
