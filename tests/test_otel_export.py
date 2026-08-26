@@ -1483,3 +1483,127 @@ class TestRepoAttribution:
         exported = {span["name"]: span for span in exporter.exported_spans_as_dict()}
         assert exported["agent-turn"]["attributes"]["thirdeye.repo"] == "some-repo"
         assert exported["permission_request: Bash"]["attributes"]["thirdeye.repo"] == "some-repo"
+
+
+class TestSessionRootAttributes:
+    """The session root is the span a whole session is read at, so the
+    vocabulary that identifies one has to be on it — it has no parent to
+    inherit any of it from.
+
+    Test names here deliberately avoid the word "session": pytest builds
+    `tmp_path` from the test name, and the fixture's Logfire instance runs
+    default scrubbing (unlike `_get_instance`, which installs the callback
+    that exempts it), so the word would be redacted back out of
+    `thirdeye.cwd`.
+    """
+
+    def _export_root(self, tmp_path: Path, enabled_config: Config, exporter) -> dict[str, Any]:
+        repo = tmp_path / "some-project"
+        (repo / ".git").mkdir(parents=True)
+        otel_export._export_turn_inner(
+            config=enabled_config,
+            session_dir_=tmp_path / "traces" / "claude" / "s1",
+            session_id="s1",
+            platform="claude",
+            cwd=str(repo),
+            turn=_turn(),
+        )
+        [root] = [s for s in exporter.exported_spans_as_dict() if s["name"] == "session"]
+        return {"root": root, "cwd": str(repo)}
+
+    def test_root_span_names_the_agent_and_project(
+        self, tmp_path: Path, enabled_config: Config, wired_instance, exporter
+    ):
+        exported = self._export_root(tmp_path, enabled_config, exporter)
+        attributes = exported["root"]["attributes"]
+
+        assert attributes["gen_ai.agent.name"] == "claude-code"
+        assert attributes["thirdeye.repo"] == "some-project"
+        assert attributes["gen_ai.conversation.id"] == "s1"
+        assert attributes["thirdeye.platform"] == "claude"
+        assert attributes["thirdeye.cwd"] == exported["cwd"]
+
+    def test_root_span_shares_the_common_vocabulary(
+        self, tmp_path: Path, enabled_config: Config, wired_instance, exporter
+    ):
+        """The root drifted from the rest once already: `thirdeye.repo` landed
+        on chat, tool and turn spans but not here. Pinning the two together is
+        what stops the next attribute added to the vocabulary from missing it.
+        """
+        exported = self._export_root(tmp_path, enabled_config, exporter)
+        # `logfire.*` keys are the SDK's own and are not part of the vocabulary.
+        actual = {
+            k: v for k, v in exported["root"]["attributes"].items() if not k.startswith("logfire.")
+        }
+
+        assert actual == otel_export._flatten_attrs(
+            otel_export._identity_attributes(
+                session_id="s1", platform="claude", cwd=exported["cwd"]
+            )
+        )
+
+
+class TestProviderAttribution:
+    """A chat span learns its provider from the call it describes. Every other
+    span has no call to read, so it derives one from the platform — otherwise
+    the session and turn levels say which agent ran but not who served it.
+    """
+
+    def test_root_and_turn_spans_derive_the_provider_from_the_platform(
+        self, tmp_path: Path, enabled_config: Config, wired_instance, exporter
+    ):
+        otel_export._export_turn_inner(
+            config=enabled_config,
+            session_dir_=tmp_path / "traces" / "claude" / "s1",
+            session_id="s1",
+            platform="claude",
+            cwd="/proj",
+            turn=_turn(),
+        )
+
+        exported = {s["name"]: s for s in exporter.exported_spans_as_dict()}
+        assert exported["session"]["attributes"]["gen_ai.provider.name"] == "anthropic"
+        assert exported["agent-turn"]["attributes"]["gen_ai.provider.name"] == "anthropic"
+
+    def test_codex_derives_its_own_provider(
+        self, tmp_path: Path, enabled_config: Config, wired_instance, exporter
+    ):
+        otel_export._export_turn_inner(
+            config=enabled_config,
+            session_dir_=tmp_path / "traces" / "codex" / "s1",
+            session_id="s1",
+            platform="codex",
+            cwd="/proj",
+            turn=_turn(),
+        )
+
+        exported = {s["name"]: s for s in exporter.exported_spans_as_dict()}
+        assert exported["session"]["attributes"]["gen_ai.provider.name"] == "openai"
+        assert exported["agent-turn"]["attributes"]["gen_ai.provider.name"] == "openai"
+
+    def test_tool_spans_carry_the_provider_too(self):
+        attributes = otel_export._tool_attributes(
+            {"command": "ls"}, session_id="s1", platform="claude", cwd="/proj"
+        )
+
+        assert attributes["gen_ai.provider.name"] == "anthropic"
+
+    def test_the_calls_own_provider_wins_over_the_platform_default(self):
+        """The platform is only a fallback. A call that reports its own
+        provider is authoritative — a Claude Code session served through a
+        different provider must not be relabelled as Anthropic."""
+        attributes = otel_export._chat_attributes(
+            _llm_call(provider="bedrock"),
+            session_id="s1",
+            platform="claude",
+            cwd="/proj",
+        )
+
+        assert attributes["gen_ai.provider.name"] == "bedrock"
+
+    def test_unknown_platform_omits_the_provider_rather_than_guessing(self):
+        attributes = otel_export._tool_attributes(
+            {"command": "ls"}, session_id="s1", platform="some-new-cli", cwd="/proj"
+        )
+
+        assert "gen_ai.provider.name" not in attributes
