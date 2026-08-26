@@ -63,6 +63,7 @@ import sys
 import time
 import warnings
 from datetime import datetime
+from functools import lru_cache
 from pathlib import Path
 from typing import Any
 
@@ -96,6 +97,12 @@ _ATTR_PRIMITIVES = (str, bool, int, float)
 _LOGFIRE_JSON_SCHEMA_KEY = "logfire.json_schema"
 
 _FLUSH_TIMEOUT_MS = 2000
+
+# The name a platform goes by on Logfire's Agents page. Only platforms whose
+# internal key differs from the name their CLI is known by need an entry; any
+# other platform is used verbatim. Deliberately separate from `thirdeye.platform`
+# and from the configured service name, which both stay the internal key.
+_AGENT_NAMES = {"claude": "claude-code"}
 
 # Maps a key in an `UsageDict` to the OTel GenAI semantic-convention attribute
 # it becomes. `UsageDict` is `total=False`, so only keys actually present are
@@ -780,6 +787,38 @@ def _export_subagent_turn_inner(
     claim_path.write_text("sent")
 
 
+@lru_cache(maxsize=128)
+def _repo_name(cwd: str) -> str | None:
+    """The name of the git repository `cwd` sits in, or None outside one.
+
+    Walks upward from `cwd` looking for `.git` — a directory in an ordinary
+    clone, a file in a worktree or submodule, so existence is the test rather
+    than being a directory. Complements `thirdeye.cwd`: the directory an agent
+    was started from is often some subdirectory of the project, and only the
+    repo root groups those sessions together.
+
+    Cached because it is consulted once per span, and it swallows OS errors
+    rather than raising: export runs in a background worker that can outlive
+    the directory the session ran in.
+    """
+    if not cwd:
+        return None
+    try:
+        path = Path(cwd).resolve()
+        for candidate in (path, *path.parents):
+            if (candidate / ".git").exists():
+                # The filesystem root is not a project name worth reporting.
+                return candidate.name or None
+    except OSError:
+        return None
+    return None
+
+
+def _agent_name(platform: str) -> str:
+    """The `gen_ai.agent.name` a platform's spans are attributed to."""
+    return _AGENT_NAMES.get(platform, platform)
+
+
 def _identity_attributes(
     *,
     session_id: str,
@@ -794,11 +833,17 @@ def _identity_attributes(
     has no parent row to inherit this from and cannot otherwise be attributed
     to a turn until the turn ends. Applied on the completed-turn path too, so
     the two paths keep one vocabulary.
+
+    `gen_ai.agent.name` is the platform rather than anything per-session, so
+    one Logfire agent covers every session a given CLI ever ran.
     """
     attributes: dict[str, Any] = {
         "gen_ai.conversation.id": session_id,
+        "gen_ai.agent.name": _agent_name(platform),
         "thirdeye.platform": platform,
         "thirdeye.cwd": cwd,
+        # Dropped by `_flatten_attrs` when None, i.e. outside a repository.
+        "thirdeye.repo": _repo_name(cwd),
     }
     if turn_id is not None:
         attributes["thirdeye.turn.id"] = str(turn_id)
@@ -869,13 +914,26 @@ def _chat_attributes(
         for key in ("input_messages", "output_messages", "provider", "usage")
     ):
         model = call_or_attributes.get("model") or ""
+        provider = call_or_attributes["provider"]
         attributes: dict[str, Any] = {
             "gen_ai.input.messages": call_or_attributes["input_messages"],
             "gen_ai.output.messages": call_or_attributes["output_messages"],
-            "gen_ai.provider.name": call_or_attributes["provider"],
+            "gen_ai.provider.name": provider,
+            # Superseded by `provider.name`, but still what pydantic-ai's own
+            # instrumentation emits alongside it, and what Logfire's older
+            # views read the provider from. Cheap enough to carry both.
+            "gen_ai.system": provider,
             "gen_ai.operation.name": "chat",
-            "gen_ai.response.model": model,
         }
+        if model:
+            # `request.model` is the attribute the convention builds the span
+            # name from and the LLM views group by; `response.model` on its own
+            # is only Recommended, so a span carrying just that one has no
+            # model as far as those views are concerned. When the model is
+            # unknown both are left absent rather than emitted as "", which
+            # would collect every modelless call under one blank name.
+            attributes["gen_ai.request.model"] = model
+            attributes["gen_ai.response.model"] = model
         usage = call_or_attributes["usage"]
         for source, target in _USAGE_KEYS.items():
             if source in usage:
@@ -1008,8 +1066,16 @@ def _export_turn_subtree(
         "thirdeye.turn.status": turn["status"],
         "thirdeye.turn.id": turn["turn_id"],
         "gen_ai.conversation.id": session_id,
+        # What Logfire's Agents page matches a span on: an `invoke_agent`
+        # operation carrying the agent's name. A pydantic-ai agent gets both
+        # from its own instrumentation; spans built through the raw OTel API
+        # get neither, and without them a turn is just an anonymous span and
+        # the session never registers as an agent run at all.
+        "gen_ai.operation.name": "invoke_agent",
+        "gen_ai.agent.name": _agent_name(platform),
         "thirdeye.platform": platform,
         "thirdeye.cwd": cwd,
+        "thirdeye.repo": _repo_name(cwd),
     }
     if turn["input_message"]:
         turn_attrs["gen_ai.input.messages"] = _message("user", turn["input_message"])
@@ -1107,6 +1173,9 @@ def _export_turn_subtree(
         pr_attrs["gen_ai.conversation.id"] = session_id
         pr_attrs["thirdeye.platform"] = platform
         pr_attrs["thirdeye.cwd"] = cwd
+        pr_repo = _repo_name(cwd)
+        if pr_repo:
+            pr_attrs["thirdeye.repo"] = pr_repo
         pr_span = tracer.start_span(
             f"permission_request: {permission_request['tool_name']}",
             context=turn_parent_ctx,
