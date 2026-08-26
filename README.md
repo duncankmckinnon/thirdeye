@@ -9,7 +9,7 @@
 [![Python](https://img.shields.io/pypi/pyversions/thrdi.svg)](https://pypi.org/project/thrdi/)
 [![License](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 
-Trace every agent session on your machine — Claude Code, Codex, Gemini, Cursor — into one history you and your agents can manage, search, and evaluate.
+Trace every agent session on your machine — Claude Code, Codex, Cursor — into one history you and your agents can manage, search, and evaluate.
 
 ## Install
 
