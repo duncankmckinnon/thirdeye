@@ -7,6 +7,7 @@ from thirdeye.config import Config
 from thirdeye.paths import session_dir as _session_dir
 from thirdeye.store import Store
 from thirdeye.tags import TagStore
+from thirdeye.turns import session_turns
 
 Surface = Literal["search", "sessions"]
 
@@ -22,8 +23,10 @@ def build_vocabulary_block(config: Config, surface: Surface) -> str:
     platforms: set[str] = set()
     cwd_recency: list[str] = []
     tag_counter: Counter[str] = Counter()
+    metas = []
 
     for meta in store.list_sessions():
+        metas.append(meta)
         platforms.add(meta.platform)
         if meta.cwd:
             cwd_recency.append(meta.cwd)
@@ -47,8 +50,11 @@ def build_vocabulary_block(config: Config, surface: Surface) -> str:
     lines.append(f"cwds (top 20, most-recent first): {cwds_top}")
     lines.append(f"tags (top 50 by frequency): {tags_top}")
     if surface == "sessions":
+        recent = sorted(metas, key=lambda meta: meta.started_at or "")[-50:]
+        turn_ids = [turn["id"] for meta in recent for turn in session_turns(meta, store)][-50:]
         lines.append('statuses: ["open", "closed"]')
         lines.append('orders: ["newest", "oldest", "longest", "shortest"]')
+        lines.append(f"turn ids (most recent 50): {turn_ids[-50:]}")
     return "\n".join(lines)
 
 

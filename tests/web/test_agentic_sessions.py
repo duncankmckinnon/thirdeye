@@ -134,3 +134,19 @@ def test_proposed_filters_query_string_sessions_surface():
     assert "order=longest" in qs
     assert "tag=refactor" in qs
     assert "q=" not in qs
+
+
+def test_sessions_agentic_populates_turn(client, monkeypatch):
+    proposed = _stub_proposed_sessions()
+    proposed = ProposedFilters(**{**proposed.__dict__, "turn": "turn-42"})
+
+    def fake_propose(config, *, nl, agent_name, surface):
+        return proposed
+
+    monkeypatch.setattr("thirdeye.web.routes.sessions.propose_filters", fake_propose)
+    monkeypatch.setattr("thirdeye.web.routes.sessions.inventory_tags", lambda cfg: [])
+    response = client.post("/sessions/agentic", data={"nl": "turn 42", "agent": "claude"})
+
+    assert 'name="turn"' in response.text
+    assert 'value="turn-42"' in response.text
+    assert "turn=turn-42" in proposed.query_string()

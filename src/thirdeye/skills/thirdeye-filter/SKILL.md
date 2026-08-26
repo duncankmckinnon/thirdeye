@@ -41,12 +41,13 @@ response that contains any non-JSON characters.
   "until": "<relative or ISO date, or null>",
   "status": "<open|closed|null>",
   "order": "<newest|oldest|longest|shortest|null>",
+  "turn": "<exact session:turn id from vocab, or null>",
   "rationale": "<one sentence explaining the filter choices, or null>"
 }
 ```
 
 ## Rules
-- Only use `platform`, `cwd`, and `tag` values that appear in the
+- Only use `platform`, `cwd`, `tag`, and `turn` values that appear in the
   vocabulary block. Inventing values leaks no-op filters into the
   resulting query.
 - Use relative time (`"7d"`, `"24h"`, `"2w"`) when the user phrases
@@ -84,5 +85,5 @@ USER QUERY: still-open refactor work, longest first
 ```
 Expected response:
 ```
-{"platform": null, "cwd": null, "tags": ["refactor"], "since": null, "until": null, "status": "open", "order": "longest", "rationale": "Open sessions tagged refactor, ordered by longest duration."}
+{"platform": null, "cwd": null, "tags": ["refactor"], "since": null, "until": null, "status": "open", "order": "longest", "turn": null, "rationale": "Open sessions tagged refactor, ordered by longest duration."}
 ```

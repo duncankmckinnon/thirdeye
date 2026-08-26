@@ -24,6 +24,7 @@ class ProposedFilters:
     status: str | None
     order: str | None
     rationale: str | None
+    turn: str | None = None
 
     def query_string(self) -> str:
         pairs: list[tuple[str, str]] = []
@@ -36,6 +37,7 @@ class ProposedFilters:
             ("until", self.until),
             ("status", self.status),
             ("order", self.order),
+            ("turn", self.turn),
         ):
             if v:
                 pairs.append((k, v))
@@ -98,6 +100,7 @@ def _to_proposed(env: dict, surface: Surface) -> ProposedFilters:
         status=(env.get("status") or None) if surface == "sessions" else None,
         order=(env.get("order") or None) if surface == "sessions" else None,
         rationale=env.get("rationale") or None,
+        turn=(env.get("turn") or None) if surface == "sessions" else None,
     )
 
 
