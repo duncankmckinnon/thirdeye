@@ -41,7 +41,7 @@ The 'ui' extra is required. Install it with: pip install 'thrdi[ui]'
 ## What you can do
 
 - **Browse sessions.** The list at `/` shows every recorded session
-  across every platform (claude, codex, gemini, cursor), with filters
+  across every platform (claude, codex, cursor), with filters
   for platform, cwd, status (open / closed / stale), date range, and a
   **tag multi-select** dropdown
   populated from every tag in your history. Defaults to the last 7
@@ -50,7 +50,7 @@ The 'ui' extra is required. Install it with: pip install 'thrdi[ui]'
 - **Ask panel (agentic filters).** Both `/` and `/search` carry an
   "Ask" textarea. Type a natural-language description ("find sessions
   about the workbench plan", "long-lasting claude runs this week"),
-  pick a CLI agent (claude / codex / gemini), and submit. The agent
+  pick a CLI agent (claude / codex), and submit. The agent
   receives a grounded vocabulary block (your platforms, cwds, tags)
   plus the bundled `thirdeye-filter` skill and returns a structured
   JSON envelope. The UI **auto-fills the existing filter form** with

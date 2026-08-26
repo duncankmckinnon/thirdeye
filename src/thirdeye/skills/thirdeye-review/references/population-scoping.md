@@ -11,7 +11,7 @@ Pick a value for each before looking at any data.
 
 | Axis | Examples | Rule of thumb |
 |------|----------|---------------|
-| **Agent type** | `claude`, `codex`, `gemini` | Always pick exactly one. Tool conventions differ enough that mixing platforms hides per-agent waste. |
+| **Agent type** | `claude`, `codex` | Always pick exactly one. Tool conventions differ enough that mixing platforms hides per-agent waste. |
 | **Repo / cwd** | `$PWD`, `~/code/thrdi-web` | Constrain to repos with similar conventions. Cross-repo reviews need a common task type. |
 | **Time window** | `7d`, `14d`, ISO range | Wider = more sessions, but older sessions may predate skill/convention changes. Default 14d. |
 | **Task shape** | workbench dispatch, free-form, eval, planning | The hardest axis to filter on — usually requires reading the first user turn. See [task-identification.md](task-identification.md). |

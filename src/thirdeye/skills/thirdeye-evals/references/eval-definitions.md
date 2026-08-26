@@ -27,7 +27,7 @@ Field reference:
 
 - `name` — kebab-case identifier; also the filename stem.
 - `description` — one line, surfaced by `thirdeye eval def list`.
-- `default_agent` — `claude` | `codex` | `gemini`. Used when `--agent` is
+- `default_agent` — `claude` | `codex`. Used when `--agent` is
   omitted on `thirdeye eval run`.
 - `output_schema` — pinned to `v1`. The dispatcher uses this to know which
   output contract block to append.

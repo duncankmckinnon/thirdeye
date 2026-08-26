@@ -16,8 +16,8 @@ for the underlying CLI surface (`thirdeye list / events / usage / search`).
 Follow these in order. Each step has a dedicated reference with concrete
 recipes — open it when you start that step, not all at once.
 
-1. **Scope the population.** Pick a cohort: one platform (`claude` / `codex`
-   / `gemini`), one cwd / repo, one time window. Wider cohorts dilute
+1. **Scope the population.** Pick a cohort: one platform (`claude` /
+   `codex`), one cwd / repo, one time window. Wider cohorts dilute
    signal; narrower cohorts overfit to a single quirky session. Target
    5–20 sessions of comparable task type.
    → [population-scoping.md](references/population-scoping.md)

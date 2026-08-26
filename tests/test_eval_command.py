@@ -485,10 +485,10 @@ def test_list_no_prefix_iterates_all_sessions(home: Path):
 
 def test_list_filter_by_agent(home: Path):
     _seed_result(home, "abc123", id="A", agent="claude")
-    _seed_result(home, "abc123", id="B", agent="gemini")
+    _seed_result(home, "abc123", id="B", agent="codex")
     result = CliRunner().invoke(
         eval_group,
-        ["list", "abc", "--agent", "gemini", "--json"],
+        ["list", "abc", "--agent", "codex", "--json"],
         catch_exceptions=False,
     )
     ids = [json.loads(l)["id"] for l in result.output.splitlines() if l.strip()]

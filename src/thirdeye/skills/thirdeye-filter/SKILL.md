@@ -67,7 +67,7 @@ response that contains any non-JSON characters.
 ## Example — search surface
 ```
 VOCABULARY:
-  platforms: claude, codex, gemini
+  platforms: claude, codex
   cwds: /Users/me/projects/api, /Users/me/projects/web
   tags: bug, refactor, spike
 

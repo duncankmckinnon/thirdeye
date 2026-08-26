@@ -144,7 +144,7 @@ The local browser UI covers:
   the last 7 days, newest first.
 - **Ask panel** — type "find sessions about the workbench plan" or
   "long-lasting claude runs this week" and a CLI agent of your choice
-  (claude / codex / gemini) auto-fills the filter form. Review the
+  (claude / codex) auto-fills the filter form. Review the
   populated fields and hit Search / Filter to run.
 - **Saved filter views** — name a filter combination and pin it to the
   sidebar; restored across browser sessions via local storage.
@@ -166,7 +166,7 @@ See [docs/ui.md](docs/ui.md) for full reference.
 ## Evaluations
 
 Grade a recorded session by dispatching one of your installed CLI agents
-(claude / codex / gemini) as an LLM-as-judge. Eval definitions are named
+(claude / codex) as an LLM-as-judge. Eval definitions are named
 rubrics — directive text shipped with sensible defaults and editable per-user.
 
 ```bash
@@ -175,7 +175,7 @@ thirdeye eval def show default                                  # see the direct
 thirdeye eval def create my-rubric --directive "<text>"         # custom rubric
 
 thirdeye eval run <id> --agent claude                           # foreground
-thirdeye eval run <id> --agent gemini --using token-efficiency --background
+thirdeye eval run <id> --agent codex --using token-efficiency --background
 
 thirdeye eval show <id>                                         # latest result
 thirdeye eval list --since 2026-05-01 --verdict warn            # history
@@ -188,12 +188,12 @@ Per-turn findings are stored with the event `seq` they anchor to, and
 thirdeye-traced session, so every grading run has its own audit trail.
 
 Dispatched agents run in read-only mode (Claude `--allowedTools` allowlist,
-Codex `--sandbox read-only`, Gemini `--approval-mode plan`). No new Python
+Codex `--sandbox read-only`). No new Python
 deps — thirdeye shells out to the agent binaries you already have installed.
 
 ## Agent
 
-Dispatch an AI agent (Claude Code, Codex, or Gemini) against your thirdeye
+Dispatch an AI agent (Claude Code or Codex) against your thirdeye
 history directly from the CLI. The agent is pre-loaded with its analysis and
 evaluation skills and runs in read-only mode by default.
 
@@ -201,7 +201,7 @@ evaluation skills and runs in read-only mode by default.
 thirdeye agent "review my sessions from the last week"
 thirdeye agent "find sessions where token usage spiked" --stream
 thirdeye agent "fix inefficient tool use in session abc123" --fix
-thirdeye agent "summarize eval findings" --agent gemini
+thirdeye agent "summarize eval findings" --agent codex
 ```
 
 Flags:
@@ -210,7 +210,7 @@ Flags:
 |------|-------------|
 | `--stream` | Print tool calls and results in real time as the agent explores |
 | `--fix` | Unlock full tool access so the agent can edit files (default: read-only) |
-| `--agent NAME` | Agent to dispatch: `claude` (default), `codex`, or `gemini` |
+| `--agent NAME` | Agent to dispatch: `claude` (default) or `codex` |
 | `--skill PATH` | Inject an additional skill from a local file (repeatable) |
 | `--skills` | List the built-in skills and exit |
 | `--cwd PATH` | Working directory context injected into the prompt |
