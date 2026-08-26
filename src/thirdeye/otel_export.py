@@ -137,6 +137,7 @@ def status(config: Config) -> dict[str, Any]:
         "package_installed": is_available(),
         "enabled": config.logfire.enabled,
         "has_token": bool(config.logfire.token),
+        "has_api_key": bool(config.logfire.api_key),
     }
 
 

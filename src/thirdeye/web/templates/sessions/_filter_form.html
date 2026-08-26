@@ -27,4 +27,15 @@
     </select>
   </label>
   <button type="submit">Filter</button>
+  <span class="dataset-export">
+    <input type="text" name="dataset_name" placeholder="Logfire dataset name"
+           aria-label="Logfire dataset name">
+    <button type="button"
+            hx-post="/sessions/logfire-dataset"
+            hx-include="closest form"
+            hx-target="#dataset-export-status">
+      Send to Logfire
+    </button>
+  </span>
 </form>
+<div id="dataset-export-status"></div>

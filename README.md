@@ -117,6 +117,13 @@ Or from `thirdeye ui`, under **settings**: paste the gateway key and hit Enable 
 
 Export is dispatched from the same Claude Code / Codex hooks that already capture events, but the actual Logfire call (including a flush, a real network round trip) runs in a detached background process — the hook itself never waits on the network, so enabling this adds no latency to your tool calls.
 
+From the sessions page, you can also send the currently filtered sessions to
+Logfire as a named managed dataset. Configure a separate project API key with
+`project:write_datasets` scope under **Settings → Pydantic Logfire**, apply the
+session filters you want, enter a dataset name, and choose **Send to Logfire**.
+Each session becomes one case containing its metadata and ordered event stream.
+The managed-datasets feature must be enabled for the Logfire project.
+
 ## Browse in a browser
 
 For a richer experience than the CLI, install the UI extra and launch:

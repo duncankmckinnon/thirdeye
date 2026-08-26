@@ -109,7 +109,7 @@ ui = [
   "python-multipart>=0.0.20",
 ]
 logfire = [
-  "logfire>=4.0",
+  "logfire[datasets]>=4.25",
   # Prices a span's token usage into `operation.cost`. Logfire's own
   # instrumentation computes cost client-side with this same library and the
   # backend surfaces that attribute; without it the UI falls back to pricing
