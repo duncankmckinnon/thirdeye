@@ -55,9 +55,7 @@ class CursorPlatform(Platform):
             if not isinstance(entries, list):
                 entries = hooks[event] = []
             if not any(_is_ours(entry) for entry in entries):
-                entries.append(
-                    {"type": "command", "command": command, "timeout": HOOK_TIMEOUT_S}
-                )
+                entries.append({"type": "command", "command": command, "timeout": HOOK_TIMEOUT_S})
         _save(self._hooks_file, data)
 
     def uninstall(self) -> None:

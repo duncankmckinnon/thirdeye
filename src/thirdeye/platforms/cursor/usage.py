@@ -18,7 +18,12 @@ def capture_usage_cursor(
     generation_id = _text(payload, "generation_id", "generationId")
     model = _text(payload, "model", "model_name")
     usage = usage_from_payload(payload)
-    if not generation_id or not model or "input_tokens" not in usage or "output_tokens" not in usage:
+    if (
+        not generation_id
+        or not model
+        or "input_tokens" not in usage
+        or "output_tokens" not in usage
+    ):
         return 0
     store = UsageStore(session_dir(thirdeye_home, "cursor", session_id))
     if store.read_state().get("last_cursor_generation_id") == generation_id:

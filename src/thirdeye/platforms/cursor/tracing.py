@@ -169,9 +169,7 @@ def _tool_span(
         "tool_call_id": call_id,
         "name": name,
         "start_ts": (
-            _start_ts(end)
-            if start is end
-            else str(start.get("ts") or end.get("ts") or "")
+            _start_ts(end) if start is end else str(start.get("ts") or end.get("ts") or "")
         ),
         "end_ts": str(end.get("ts") or start.get("ts") or ""),
         "attributes": attributes,
@@ -231,16 +229,16 @@ def build_turn(
         return None
     prompt_event = next((event for event in events if event.get("t") == "user_message"), None)
     response_events = [event for event in events if event.get("t") == "assistant_message"]
-    stop_event = next((event for event in reversed(events) if event.get("t") == "turn_stop"), events[-1])
+    stop_event = next(
+        (event for event in reversed(events) if event.get("t") == "turn_stop"), events[-1]
+    )
     response_event = response_events[-1] if response_events else None
     prompt_data = _data(prompt_event or {})
     response_data = _data(response_event or {})
     stop_data = _data(stop_event)
     prompt = _text(prompt_data, "prompt", "input", "text")
     response = _text(response_data, "text", "response", "output")
-    model = _text(stop_data, "model", "model_name") or _text(
-        response_data, "model", "model_name"
-    )
+    model = _text(stop_data, "model", "model_name") or _text(response_data, "model", "model_name")
     usage = usage_from_payload(stop_data)
     start_event = prompt_event or events[0]
     start_ts = str(start_event.get("ts") or "")

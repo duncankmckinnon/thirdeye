@@ -14,9 +14,7 @@ def _invoke(monkeypatch, payload: dict) -> None:
     assert hook.main() == 0
 
 
-def test_hook_captures_cursor_turn_and_dispatches_logfire_export(
-    tmp_path: Path, monkeypatch
-):
+def test_hook_captures_cursor_turn_and_dispatches_logfire_export(tmp_path: Path, monkeypatch):
     monkeypatch.setenv("THIRDEYE_HOME", str(tmp_path))
     exported = []
     monkeypatch.setattr("thirdeye.otel_export.export_turn", lambda *args: exported.append(args))

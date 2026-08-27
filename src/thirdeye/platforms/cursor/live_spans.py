@@ -152,9 +152,7 @@ def emit_live_tools(
     through_seq: int,
 ) -> None:
     try:
-        _emit_live_tools(
-            config, session_dir_, session_id, cwd, generation_id, through_seq
-        )
+        _emit_live_tools(config, session_dir_, session_id, cwd, generation_id, through_seq)
     except Exception as exc:
         try:
             log_capture_error(

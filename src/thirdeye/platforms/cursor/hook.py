@@ -92,7 +92,9 @@ def _emit(
 def _print_permissive(event: str) -> None:
     output = sys.__stdout__ or sys.stdout
     try:
-        output.write('{"permission": "allow"}' if event.startswith("before") else '{"continue": true}')
+        output.write(
+            '{"permission": "allow"}' if event.startswith("before") else '{"continue": true}'
+        )
         output.flush()
     except Exception:
         pass

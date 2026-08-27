@@ -23,15 +23,11 @@ def _append(store: Store, sid: str, event_type: str, data: dict) -> int:
     )
 
 
-def test_completed_tool_is_emitted_live_once_and_omitted_at_stop(
-    tmp_path: Path, monkeypatch
-):
+def test_completed_tool_is_emitted_live_once_and_omitted_at_stop(tmp_path: Path, monkeypatch):
     config = _config(tmp_path)
     store = Store(config)
     sid, generation = "cursor-session", "generation-1"
-    turn_seq = _append(
-        store, sid, "user_message", {"generation_id": generation, "prompt": "test"}
-    )
+    turn_seq = _append(store, sid, "user_message", {"generation_id": generation, "prompt": "test"})
     _append(
         store,
         sid,

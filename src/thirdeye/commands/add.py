@@ -21,9 +21,7 @@ PLATFORMS: dict[str, type[Platform]] = {
 # version no longer installs (Gemini). Deleting those platforms
 # leaves their hook entries orphaned in other tools' config, firing a missing
 # binary on every event, so `thirdeye add --list` warns about them.
-ORPHAN_CONFIG_PATHS: tuple[Path, ...] = (
-    Path.home() / ".gemini" / "settings.json",
-)
+ORPHAN_CONFIG_PATHS: tuple[Path, ...] = (Path.home() / ".gemini" / "settings.json",)
 
 
 def _platform_options(fn):
