@@ -33,7 +33,7 @@ from thirdeye.eval.agents import get_adapter, list_agent_names
     "agent_name",
     default="claude",
     show_default=True,
-    help="Agent CLI to dispatch (claude, codex, gemini, or a custom name).",
+    help="Agent CLI to dispatch (claude, codex, or a custom name).",
 )
 @click.option(
     "--fix",

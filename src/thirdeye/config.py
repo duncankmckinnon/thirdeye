@@ -26,14 +26,17 @@ class LogfireSettings:
     ``token`` is the Logfire write token (called "gateway key" in the UI/CLI,
     since that's the term users reach for). Persisted indefinitely to disk, not
     just for the current environment/session, so ``thirdeye logfire enable`` is
-    a one-time setup step.
+    a one-time setup step. ``api_key`` is a separate project key with managed
+    dataset write scope; keeping it separate prevents dataset setup from
+    changing live trace ingestion.
     """
 
     enabled: bool = False
     token: str | None = None
+    api_key: str | None = None
 
     def to_dict(self) -> dict[str, Any]:
-        return {"enabled": self.enabled, "token": self.token}
+        return {"enabled": self.enabled, "token": self.token, "api_key": self.api_key}
 
     @classmethod
     def from_dict(cls, raw: dict[str, Any] | None) -> LogfireSettings:
@@ -41,6 +44,7 @@ class LogfireSettings:
         return cls(
             enabled=bool(raw.get("enabled", False)),
             token=raw.get("token") or None,
+            api_key=raw.get("api_key") or None,
         )
 
 

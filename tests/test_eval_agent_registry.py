@@ -15,7 +15,7 @@ from thirdeye.paths import eval_agents_config_path
 
 
 def test_builtin_names_present():
-    assert set(BUILTIN_ADAPTERS.keys()) == {"claude", "codex", "gemini"}
+    assert set(BUILTIN_ADAPTERS.keys()) == {"claude", "codex"}
 
 
 def test_get_builtin_adapter():
@@ -73,7 +73,7 @@ def test_user_can_define_new_agent(tmp_path: Path):
 
 def test_list_agent_names_builtins_only():
     names = list_agent_names()
-    assert names == ["claude", "codex", "gemini"]
+    assert names == ["claude", "codex"]
 
 
 def test_list_agent_names_includes_overrides(tmp_path: Path):
@@ -86,7 +86,7 @@ def test_list_agent_names_includes_overrides(tmp_path: Path):
             }
         )
     )
-    assert list_agent_names(tmp_path) == ["claude", "codex", "gemini", "myagent"]
+    assert list_agent_names(tmp_path) == ["claude", "codex", "myagent"]
 
 
 def test_malformed_overrides_yaml_falls_back_to_builtins(tmp_path: Path):

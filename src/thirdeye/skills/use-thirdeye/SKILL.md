@@ -5,7 +5,7 @@ description: Use when an agent needs to inspect, search, or evaluate past agent 
 
 ## Overview
 
-`thirdeye` (PyPI: `thrdi`) captures events from agentic CLI tools (Claude Code, Codex, Gemini CLI)
+`thirdeye` (PyPI: `thrdi`) captures events from agentic CLI tools (Claude Code, Codex)
 into a unified per-session event store on disk. Each session's data lives under
 `<thirdeye_home>/traces/<platform>/<sid>/` and contains a sequential log of all events the
 agent emitted during that session. Sessions are addressable by any unique prefix of their session ID,
@@ -21,12 +21,10 @@ for full instructions on installing hooks, verifying data flow, and removing hoo
 # Enable hooks for a platform
 thirdeye add --claude
 thirdeye add --codex
-thirdeye add --gemini
 
 # Remove hooks
 thirdeye remove --claude
 thirdeye remove --codex
-thirdeye remove --gemini
 ```
 
 ## Searching and retrieving session data

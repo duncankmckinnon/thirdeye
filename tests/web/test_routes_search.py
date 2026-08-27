@@ -17,7 +17,7 @@ def test_search_includes_ask_panel(client, monkeypatch):
     body = r.text
     assert 'name="nl"' in body
     assert 'name="agent"' in body
-    for agent in ("claude", "codex", "gemini"):
+    for agent in ("claude", "codex"):
         assert f'value="{agent}"' in body
 
 

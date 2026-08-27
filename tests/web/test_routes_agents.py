@@ -49,4 +49,4 @@ def test_agents_list_all_when_all_installed(web_config, monkeypatch):
     names = r.json()["agents"]
     assert "claude" in names
     assert "codex" in names
-    assert "gemini" in names
+    assert "gemini" not in names

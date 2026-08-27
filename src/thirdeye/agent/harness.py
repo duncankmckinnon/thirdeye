@@ -15,14 +15,12 @@ _REVIEW_ARGS: dict[str, list[str]] = {
         "--allowedTools",
         "Bash(thirdeye *) Bash(jq *) Read Glob Grep",
     ],
-    "gemini": ["-p", "{prompt}", "--approval-mode", "plan"],
     "codex": ["exec", "--sandbox", "read-only", "{prompt}"],
 }
 
 # Per-adapter arg overrides for fix mode (full tool access).
 _FIX_ARGS: dict[str, list[str]] = {
     "claude": ["-p", "{prompt}", "--output-format", "text"],
-    "gemini": ["-p", "{prompt}"],
     "codex": ["exec", "{prompt}"],
 }
 
@@ -37,13 +35,11 @@ _STREAM_REVIEW_ARGS: dict[str, list[str]] = {
         "--allowedTools",
         "Bash(thirdeye *) Bash(jq *) Read Glob Grep",
     ],
-    "gemini": ["-p", "{prompt}", "--approval-mode", "plan"],
     "codex": ["exec", "--sandbox", "read-only", "{prompt}"],
 }
 
 _STREAM_FIX_ARGS: dict[str, list[str]] = {
     "claude": ["-p", "{prompt}", "--output-format", "stream-json", "--verbose"],
-    "gemini": ["-p", "{prompt}"],
     "codex": ["exec", "{prompt}"],
 }
 

@@ -48,3 +48,12 @@ def test_disable_flips_flag_but_keeps_token(client, web_config: Config):
     on_disk = _on_disk_logfire(web_config)
     assert on_disk["enabled"] is False
     assert on_disk["token"] == "tok"
+
+
+def test_save_dataset_api_key_without_changing_trace_settings(client, web_config: Config):
+    client.post("/settings/logfire", data={"token": "gateway"})
+    resp = client.post("/settings/logfire/api-key", data={"api_key": "project-key"})
+    assert resp.status_code == 200
+    assert "project-key" not in resp.text
+    on_disk = _on_disk_logfire(web_config)
+    assert on_disk == {"enabled": True, "token": "gateway", "api_key": "project-key"}

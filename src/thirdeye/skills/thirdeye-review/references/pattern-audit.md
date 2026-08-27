@@ -8,7 +8,7 @@ invocation issue in past reviews.
 
 thirdeye events use `t` (not `type`). For Claude Code tool calls:
 `t == "tool_call"` and `data.tool_name`, `data.tool_input`. Other
-platforms (Codex, Gemini) use the same envelope.
+platforms (Codex) use the same envelope.
 
 ```bash
 thirdeye events <sid> --json | jq -r 'select(.t == "tool_call") | .data.tool_name' | sort | uniq -c | sort -rn

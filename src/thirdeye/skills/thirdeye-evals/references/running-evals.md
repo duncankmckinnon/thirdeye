@@ -1,6 +1,6 @@
 # Running evals
 
-`thirdeye eval run` dispatches a judge agent (`claude`, `codex`, or `gemini`)
+`thirdeye eval run` dispatches a judge agent (`claude` or `codex`)
 to grade a recorded session against a definition. The judge runs as a normal
 local CLI invocation in read-only mode — no Python LLM SDK is used.
 
@@ -9,7 +9,6 @@ local CLI invocation in read-only mode — no Python LLM SDK is used.
 | Agent    | Pros                                                                 | Cons                                                |
 |----------|----------------------------------------------------------------------|-----------------------------------------------------|
 | `claude` | Rich tool use, dependable structured-output adherence.               | Costs more per run; slower in some configurations.  |
-| `gemini` | Cheaper, generally faster.                                           | Less consistent on structured output and reasoning. |
 | `codex`  | Useful when you already have an OpenAI/Codex billing relationship.   | NDJSON wire format, less granular cost data.        |
 
 The eval invocation itself is a fully traced thirdeye session (your hooks
@@ -62,7 +61,7 @@ These two are mutually exclusive — pick one:
 thirdeye eval run <sid> --using token-efficiency
 
 # one-off
-thirdeye eval run <sid> --rubric ./adhoc-rubric.yaml --agent gemini
+thirdeye eval run <sid> --rubric ./adhoc-rubric.yaml --agent codex
 ```
 
 Prefer `--using` whenever you'll run the rubric more than once — installed

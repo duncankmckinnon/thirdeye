@@ -18,7 +18,6 @@ The PyPI package is `thrdi`; the installed commands are `thirdeye` and `thrdi`
 ```bash
 thirdeye add --claude       # Claude Code
 thirdeye add --codex        # OpenAI Codex CLI
-thirdeye add --gemini       # Gemini CLI
 thirdeye add --cursor       # Cursor
 thirdeye add --copilot      # GitHub Copilot CLI
 ```
@@ -27,15 +26,15 @@ thirdeye add --copilot      # GitHub Copilot CLI
 the existing hook entries in place rather than duplicating them.
 
 Hook entries are written into each platform's own config file: Claude Code
-uses `~/.claude/settings.json`, Codex uses `~/.codex/config.toml`, Gemini
-uses `~/.gemini/settings.json`, and Cursor uses `~/.cursor/hooks.json`
+uses `~/.claude/settings.json`, Codex uses `~/.codex/config.toml`, and
+Cursor uses `~/.cursor/hooks.json`
 (covering both the IDE chat and the `cursor-agent` CLI).
 
 ## Detach
 
 ```bash
 thirdeye remove --claude    # remove only Claude hooks
-thirdeye remove --gemini    # etc.
+thirdeye remove --codex     # etc.
 ```
 
 ## Verify tracing is live

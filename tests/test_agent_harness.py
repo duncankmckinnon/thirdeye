@@ -11,10 +11,10 @@ from thirdeye.agent.harness import (
     _STREAM_REVIEW_ARGS,
     AgentHarness,
 )
+from thirdeye.eval.agents import BUILTIN_ADAPTERS
 from thirdeye.eval.agents.base import AgentConfig, ConfigAdapter
 from thirdeye.eval.agents.claude import ClaudeAdapter
 from thirdeye.eval.agents.codex import CodexAdapter
-from thirdeye.eval.agents.gemini import GeminiAdapter
 
 # --- construction ---
 
@@ -90,29 +90,6 @@ def test_claude_fix_does_not_have_json_output():
     assert "json" not in cmd
 
 
-# --- GeminiAdapter overrides ---
-
-
-def test_gemini_review_uses_plan_approval_mode():
-    h = AgentHarness(GeminiAdapter(), "review")
-    cmd = h.build_command("x", Path("/"))
-    assert "--approval-mode" in cmd
-    idx = cmd.index("--approval-mode")
-    assert cmd[idx + 1] == "plan"
-
-
-def test_gemini_review_no_output_format_json():
-    h = AgentHarness(GeminiAdapter(), "review")
-    cmd = h.build_command("x", Path("/"))
-    assert "--output-format" not in cmd
-
-
-def test_gemini_fix_has_no_approval_mode():
-    h = AgentHarness(GeminiAdapter(), "fix")
-    cmd = h.build_command("x", Path("/"))
-    assert "--approval-mode" not in cmd
-
-
 # --- CodexAdapter overrides ---
 
 
@@ -181,12 +158,12 @@ def test_unknown_adapter_fix_mode_also_uses_own_args():
 
 
 def test_review_args_table_covers_all_builtin_names():
-    for name in ("claude", "gemini", "codex"):
+    for name in BUILTIN_ADAPTERS:
         assert name in _REVIEW_ARGS
 
 
 def test_fix_args_table_covers_all_builtin_names():
-    for name in ("claude", "gemini", "codex"):
+    for name in BUILTIN_ADAPTERS:
         assert name in _FIX_ARGS
 
 
@@ -237,12 +214,12 @@ def test_non_streaming_review_still_uses_text_for_claude():
 
 
 def test_stream_review_args_table_covers_all_builtin_names():
-    for name in ("claude", "gemini", "codex"):
+    for name in BUILTIN_ADAPTERS:
         assert name in _STREAM_REVIEW_ARGS
 
 
 def test_stream_fix_args_table_covers_all_builtin_names():
-    for name in ("claude", "gemini", "codex"):
+    for name in BUILTIN_ADAPTERS:
         assert name in _STREAM_FIX_ARGS
 
 

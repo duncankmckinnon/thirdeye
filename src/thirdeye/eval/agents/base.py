@@ -56,7 +56,7 @@ class AgentConfig:
 
 
 class AgentAdapter(ABC):
-    """Abstraction for a CLI agent platform (Claude, Codex, Gemini, etc.).
+    """Abstraction for a CLI agent platform (Claude, Codex, etc.).
 
     Built-in adapters set ``self.config`` in ``__init__``. Custom adapters
     are constructed from YAML via ``ConfigAdapter.from_config(name, entry)``.

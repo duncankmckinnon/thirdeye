@@ -44,4 +44,26 @@
       {% endif %}
     </div>
   </form>
+
+  <hr>
+  <p class="muted">
+    Sending filtered sessions as managed datasets requires a project API key
+    with <code>project:write_datasets</code> scope.
+  </p>
+  <dl class="settings-status">
+    <dt>dataset API key</dt>
+    <dd>{% if logfire.has_api_key %}********{% else %}(none saved){% endif %}</dd>
+  </dl>
+  <form class="settings-form"
+        hx-post="/settings/logfire/api-key"
+        hx-target="#logfire-panel"
+        hx-swap="innerHTML">
+    <label>Project API key
+      <input type="password" name="api_key" required
+             autocomplete="new-password" spellcheck="false">
+    </label>
+    <div class="settings-actions">
+      <button type="submit">Save dataset key</button>
+    </div>
+  </form>
 </div>

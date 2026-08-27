@@ -136,6 +136,36 @@ def test_index_no_legacy_ask_target_div(client):
     assert 'id="ask-sessions-target"' not in body
 
 
+def test_index_exact_turn_filter(client, web_store):
+    with web_store.open_session("matching", platform="claude", cwd="/project") as writer:
+        writer.append("user_message", {"prompt": "first"})
+        writer.append("assistant_message", {"text": "done"})
+        writer.append("user_message", {"prompt": "second"})
+    with web_store.open_session("other", platform="claude", cwd="/project") as writer:
+        writer.append("user_message", {"prompt": "only"})
+
+    response = client.get("/?since=2020-01-01&turn=2")
+
+    assert "matching" in response.text
+    assert "other" not in response.text
+    assert 'name="turn"' in response.text
+    assert 'value="2"' in response.text
+
+
+def test_index_turn_content_query_searches_all_candidate_sessions(client, web_store):
+    for sid, tool in (("matching", "apply_patch"), ("other", "Read")):
+        with web_store.open_session(sid, platform="claude", cwd="/project") as writer:
+            writer.append("user_message", {"prompt": "Logfire work"})
+            writer.append("tool_call", {"tool_name": tool})
+            writer.append("assistant_message", {"text": "done"})
+
+    response = client.get("/?since=2020-01-01&turn_query=apply_patch%2Clogfire")
+
+    assert "matching" in response.text
+    assert "other" not in response.text
+    assert 'value="apply_patch,logfire"' in response.text
+
+
 def test_proposed_filters_templates_removed():
     import tempfile
     from pathlib import Path

@@ -23,7 +23,9 @@ def enable() -> None:
         )
     token = click.prompt("Logfire write token (gateway key)", hide_input=True)
     config = Config.load()
-    config.write_logfire_settings(LogfireSettings(enabled=True, token=token))
+    config.write_logfire_settings(
+        LogfireSettings(enabled=True, token=token, api_key=config.logfire.api_key)
+    )
     click.echo(f"logfire export enabled (token {_mask(token)})")
 
 
@@ -31,7 +33,9 @@ def enable() -> None:
 def disable() -> None:
     config = Config.load()
     settings = config.logfire
-    config.write_logfire_settings(LogfireSettings(enabled=False, token=settings.token))
+    config.write_logfire_settings(
+        LogfireSettings(enabled=False, token=settings.token, api_key=settings.api_key)
+    )
     click.echo("logfire export disabled")
 
 
@@ -42,5 +46,6 @@ def show_status() -> None:
     click.echo(f"package installed : {s['package_installed']}")
     click.echo(f"enabled           : {s['enabled']}")
     click.echo(f"token             : {_mask(config.logfire.token)}")
+    click.echo(f"dataset API key   : {_mask(config.logfire.api_key)}")
     active = s["package_installed"] and s["enabled"] and s["has_token"]
     click.echo(f"active            : {active}")

@@ -17,7 +17,7 @@ All filters AND together. `--tag` is repeatable and tags are AND'd.
 
 ```bash
 thirdeye list --platform claude              # by platform
-thirdeye list --harness gemini               # alias for --platform
+thirdeye list --harness codex                # alias for --platform
 thirdeye list --cwd /path/to/repo            # by working directory
 thirdeye list --status open                  # only open sessions
 thirdeye list --since 2026-05-01             # active at/after this time

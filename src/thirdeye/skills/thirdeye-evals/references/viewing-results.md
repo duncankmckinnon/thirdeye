@@ -64,7 +64,7 @@ Lists eval rows across sessions. With no `<sid>` it scans the whole store.
 thirdeye eval list                              # all evals everywhere
 thirdeye eval list <sid>                        # one session's history
 thirdeye eval list --using default              # filter by definition
-thirdeye eval list --agent gemini               # filter by judge agent
+thirdeye eval list --agent codex                # filter by judge agent
 thirdeye eval list --verdict fail               # only failures
 thirdeye eval list --since 2026-05-01 --until 2026-05-10
 ```

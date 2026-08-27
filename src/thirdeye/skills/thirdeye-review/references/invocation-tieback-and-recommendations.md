@@ -12,7 +12,7 @@ The set of things that shape an agent's behavior on a given run:
 | Surface | Where it lives | Edited by |
 |---------|----------------|-----------|
 | User prompt / task description | First user turn of the session; for `wb`-dispatched tasks, the rendered task body. | Plan author (`.workbench/<plan>/plan.md`). |
-| System prompt / harness defaults | The agent harness (Claude Code, Codex, Gemini CLI). | Usually fixed per platform. |
+| System prompt / harness defaults | The agent harness (Claude Code, Codex). | Usually fixed per platform. |
 | Available skills | `~/.claude/skills/`, `.agents/skills/`, `.claude/skills/` and per-plugin registries. | Skill author. |
 | Skill descriptions | Each skill's `description:` frontmatter — drives whether the harness loads it. | Skill author. |
 | Conventions file | `.workbench/conventions.md` or repo `CLAUDE.md` / `AGENTS.md`. | Repo maintainer. |

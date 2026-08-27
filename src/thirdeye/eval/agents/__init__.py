@@ -15,13 +15,11 @@ from thirdeye.eval.agents.base import (
 )
 from thirdeye.eval.agents.claude import ClaudeAdapter
 from thirdeye.eval.agents.codex import CodexAdapter
-from thirdeye.eval.agents.gemini import GeminiAdapter
 from thirdeye.paths import eval_agents_config_path
 
 BUILTIN_ADAPTERS: dict[str, type[AgentAdapter]] = {
     "claude": ClaudeAdapter,
     "codex": CodexAdapter,
-    "gemini": GeminiAdapter,
 }
 
 
@@ -73,7 +71,6 @@ __all__ = [
     "OutputFormat",
     "ClaudeAdapter",
     "CodexAdapter",
-    "GeminiAdapter",
     "BUILTIN_ADAPTERS",
     "get_adapter",
     "list_agent_names",

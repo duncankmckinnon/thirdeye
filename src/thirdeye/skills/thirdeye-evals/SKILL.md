@@ -1,6 +1,6 @@
 ---
 name: thirdeye-evals
-description: Use when an agent needs to create, run, view, or manage evaluations against thirdeye-recorded sessions — defining named rubrics, dispatching agent-based evaluators (claude/codex/gemini), interpreting per-turn findings, or comparing eval results across sessions.
+description: Use when an agent needs to create, run, view, or manage evaluations against thirdeye-recorded sessions — defining named rubrics, dispatching agent-based evaluators (claude/codex), interpreting per-turn findings, or comparing eval results across sessions.
 ---
 
 # Evaluating thirdeye sessions
@@ -13,7 +13,7 @@ installed for basic session navigation (`thirdeye list`, `thirdeye events`,
 ## Overview
 
 An evaluation is one run of an **eval definition** (a named directive) against
-a **session**, dispatched to one of: `claude`, `codex`, or `gemini`. Results
+a **session**, dispatched to one of: `claude` or `codex`. Results
 are append-only at `<session>/evals.jsonl`. The dispatched agent runs in
 read-only mode and can use `thirdeye` and `sqlite3` to verify findings.
 
@@ -27,7 +27,7 @@ read-only mode and can use `thirdeye` and `sqlite3` to verify findings.
 
 ## Running an eval
 
-`thirdeye eval run <sid> --using <name> --agent claude|codex|gemini`. Add
+`thirdeye eval run <sid> --using <name> --agent claude|codex`. Add
 `--background` to detach. Exit code is 0 regardless of verdict. The eval
 invocation is itself a traced thirdeye session for audit. See
 [running-evals.md](references/running-evals.md).
