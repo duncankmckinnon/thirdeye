@@ -9,23 +9,25 @@ import click
 from thirdeye.platforms.base import Platform
 from thirdeye.platforms.claude.install import ClaudePlatform
 from thirdeye.platforms.codex.install import CodexPlatform
+from thirdeye.platforms.cursor.install import CursorPlatform
 
 PLATFORMS: dict[str, type[Platform]] = {
     "claude": ClaudePlatform,
     "codex": CodexPlatform,
+    "cursor": CursorPlatform,
 }
 
 # Config files that may still reference console scripts for platforms this
-# version no longer installs (Gemini and Cursor). Deleting those platforms
+# version no longer installs (Gemini). Deleting those platforms
 # leaves their hook entries orphaned in other tools' config, firing a missing
 # binary on every event, so `thirdeye add --list` warns about them.
 ORPHAN_CONFIG_PATHS: tuple[Path, ...] = (
     Path.home() / ".gemini" / "settings.json",
-    Path.home() / ".cursor" / "hooks.json",
 )
 
 
 def _platform_options(fn):
+    fn = click.option("--cursor", "platform_flag", flag_value="cursor", help="Cursor.")(fn)
     fn = click.option("--codex", "platform_flag", flag_value="codex", help="Codex CLI.")(fn)
     fn = click.option("--claude", "platform_flag", flag_value="claude", help="Claude Code.")(fn)
     return fn
@@ -33,7 +35,7 @@ def _platform_options(fn):
 
 def _resolve_platform(platform_flag: str | None, *, force: bool = False) -> Platform:
     if not platform_flag:
-        raise click.UsageError("Pick a platform: --claude, --codex")
+        raise click.UsageError("Pick a platform: --claude, --codex, --cursor")
     platform_cls = PLATFORMS[platform_flag]
     if platform_flag == "codex" and force:
         return platform_cls(force=True)
@@ -43,7 +45,7 @@ def _resolve_platform(platform_flag: str | None, *, force: bool = False) -> Plat
 def _is_stale_command(command: str) -> bool:
     """True if a hook command targets a removed-platform console script."""
     name = Path(command).name
-    return name.startswith("thirdeye-gemini-") or name == "thirdeye-cursor-hook"
+    return name.startswith("thirdeye-gemini-")
 
 
 def find_orphaned_hooks(
@@ -51,8 +53,8 @@ def find_orphaned_hooks(
 ) -> list[tuple[Path, str]]:
     """Return (config_file, stale_command) for each removed-platform hook found.
 
-    A command is stale when its basename starts with "thirdeye-gemini-" or
-    equals "thirdeye-cursor-hook". Missing or malformed files yield nothing.
+    A command is stale when its basename starts with "thirdeye-gemini-".
+    Missing or malformed files yield nothing.
     """
     found: list[tuple[Path, str]] = []
     for path in config_paths:

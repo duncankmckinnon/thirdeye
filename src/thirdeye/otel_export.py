@@ -102,7 +102,7 @@ _FLUSH_TIMEOUT_MS = 2000
 # internal key differs from the name their CLI is known by need an entry; any
 # other platform is used verbatim. Deliberately separate from `thirdeye.platform`
 # and from the configured service name, which both stay the internal key.
-_AGENT_NAMES = {"claude": "claude-code"}
+_AGENT_NAMES = {"claude": "claude-code", "cursor": "cursor"}
 
 # The provider a platform talks to, for spans that describe no single LLM call
 # and so have no provider of their own to report. A chat span always prefers
@@ -985,10 +985,32 @@ def _tool_attributes(
     cwd: str,
     turn_id: Any = None,
     turn_span_id: Any = None,
+    tool_name: str | None = None,
+    tool_call_id: str | None = None,
 ) -> dict[str, Any]:
-    """Enrich and flatten a tool span's raw attributes."""
+    """Enrich and flatten a tool span using OTel GenAI tool conventions.
+
+    Platform adapters keep their raw hook fields for local fidelity. This
+    projection gives every harness the same Logfire-facing vocabulary.
+    """
+    semantic: dict[str, Any] = {"gen_ai.operation.name": "execute_tool"}
+    if tool_name:
+        semantic["gen_ai.tool.name"] = tool_name
+    if tool_call_id:
+        semantic["gen_ai.tool.call.id"] = tool_call_id
+    if "gen_ai.tool.call.arguments" not in attributes:
+        for key in ("tool_input", "arguments", "input", "command"):
+            if key in attributes and attributes[key] not in (None, ""):
+                semantic["gen_ai.tool.call.arguments"] = attributes[key]
+                break
+    if "gen_ai.tool.call.result" not in attributes:
+        for key in ("tool_response", "tool_result", "result", "output"):
+            if key in attributes and attributes[key] not in (None, ""):
+                semantic["gen_ai.tool.call.result"] = attributes[key]
+                break
     return _flatten_attrs(
         _merge_raw(
+            semantic,
             attributes,
             _identity_attributes(
                 session_id=session_id,
@@ -1047,6 +1069,8 @@ def _export_spans_batch(
                 cwd=cwd,
                 turn_id=turn_id,
                 turn_span_id=turn_span_id_,
+                tool_name=span_data.get("tool_name") or name.removeprefix("tool:").strip(),
+                tool_call_id=span_data.get("tool_call_id"),
             )
         else:
             attributes = _flatten_attrs(raw_attributes)
@@ -1158,6 +1182,8 @@ def _export_turn_subtree(
                     cwd=cwd,
                     turn_id=turn["turn_id"],
                     turn_span_id=turn.get("turn_span_id"),
+                    tool_name=tool_call["name"],
+                    tool_call_id=tool_call["tool_call_id"],
                 ),
             )
             tool_span.end(end_time=_ts_to_ns(tool_call["end_ts"]))
@@ -1182,6 +1208,8 @@ def _export_turn_subtree(
                 cwd=cwd,
                 turn_id=turn["turn_id"],
                 turn_span_id=turn.get("turn_span_id"),
+                tool_name=tool_call["name"],
+                tool_call_id=tool_call["tool_call_id"],
             ),
         )
         orphan_span.end(end_time=_ts_to_ns(tool_call["end_ts"]))

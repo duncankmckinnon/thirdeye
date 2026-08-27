@@ -1373,6 +1373,39 @@ class TestGenAiAgentSemantics:
         # The superseded spelling, still what pydantic-ai emits alongside.
         assert attributes["gen_ai.system"] == "anthropic"
 
+    def test_cursor_turn_uses_otel_gen_ai_agent_chat_and_tool_attributes(
+        self, tmp_path: Path, enabled_config: Config, wired_instance, exporter
+    ):
+        tool = _tool_call(
+            name="shell",
+            attributes={
+                "gen_ai.operation.name": "execute_tool",
+                "gen_ai.tool.name": "shell",
+                "gen_ai.tool.call.id": "cursor-call-1",
+                "gen_ai.tool.call.arguments": {"command": "pytest"},
+                "gen_ai.tool.call.result": {"exit_code": 0},
+            },
+        )
+        call = _llm_call(provider="openai", model="gpt-5", tool_calls=[tool])
+        otel_export._export_turn_inner(
+            config=enabled_config,
+            session_dir_=tmp_path / "traces" / "cursor" / "s1",
+            session_id="s1",
+            platform="cursor",
+            cwd="/proj",
+            turn=_turn(llm_calls=[call]),
+        )
+
+        spans = {span["name"]: span for span in exporter.exported_spans_as_dict()}
+        assert spans["agent-turn"]["attributes"]["gen_ai.operation.name"] == "invoke_agent"
+        assert spans["agent-turn"]["attributes"]["gen_ai.agent.name"] == "cursor"
+        assert spans["chat gpt-5"]["attributes"]["gen_ai.operation.name"] == "chat"
+        tool_attrs = spans["tool: shell"]["attributes"]
+        assert tool_attrs["gen_ai.operation.name"] == "execute_tool"
+        assert tool_attrs["gen_ai.tool.name"] == "shell"
+        assert tool_attrs["gen_ai.tool.call.id"] == "cursor-call-1"
+        assert not any(key.startswith("openinference") for key in tool_attrs)
+
     def test_chat_span_is_attributed_to_the_agent_that_made_the_call(self):
         attributes = otel_export._chat_attributes(
             _llm_call(),

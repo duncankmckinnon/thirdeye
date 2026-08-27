@@ -11,7 +11,7 @@
     <label>platform
       <select name="platform">
         <option value="">All</option>
-        {% for p in ["claude", "codex"] %}
+        {% for p in ["claude", "codex", "cursor"] %}
           <option value="{{ p }}"
             {% if filters.platform == p %}selected{% endif %}>{{ p }}</option>
         {% endfor %}

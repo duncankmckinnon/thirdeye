@@ -139,6 +139,8 @@ def _tool_span(
 ) -> dict[str, Any]:
     return {
         "name": f"tool: {tool_call['name']}",
+        "tool_name": tool_call["name"],
+        "tool_call_id": tool_use_id,
         "span_id": tool_span_id(session_id, tool_use_id),
         "parent_span_id": parent_span_id,
         "turn_seq": turn_seq,
