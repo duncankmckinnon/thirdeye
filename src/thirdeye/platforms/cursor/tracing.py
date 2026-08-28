@@ -256,6 +256,12 @@ def tool_calls_for_generation(
 _ERROR_STATUSES = {"error", "failed", "failure"}
 
 # Attribute name -> the payload keys that may carry it, most preferred first.
+# Cursor declares the callback as `agent.v1.SubagentStopRequestQuery`, whose
+# fields are `subagent_id`, `subagent_type`, `status`, `duration_ms`, `summary`,
+# `parent_conversation_id`, `message_count`, `tool_call_count`, `error_message`,
+# `modified_files`, `git_branch`, `conversation_id`, `generation_id`, `model`,
+# `loop_count`, `task`, `description`, and `model_id`. Both spellings are read
+# because the proto reaches a command hook as JSON, which may camel-case it.
 _SUBAGENT_TEXT_ATTRS: tuple[tuple[str, tuple[str, ...]], ...] = (
     ("cursor.subagent.id", ("subagent_id", "subagentId", "agent_id", "agentId")),
     ("cursor.subagent.type", ("subagent_type", "subagentType", "agent_type", "agentType")),
