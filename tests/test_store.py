@@ -205,6 +205,10 @@ class TestResolveSessionId:
         with pytest.raises(ValueError, match="unknown platform qualifier.*unknown"):
             populated_store.resolve_session_id("unknown:01J9")
 
+    def test_unknown_platform_codex_qualifier_raises(self, populated_store: Store):
+        with pytest.raises(ValueError, match=r"unknown platform.*codex"):
+            populated_store.resolve_session_id("codex:01J9")
+
     def test_known_platform_with_no_matching_session_raises(self, populated_store: Store):
         with pytest.raises(ValueError, match="no session matching.*claude:ZZZZZ"):
             populated_store.resolve_session_id("claude:ZZZZZ")
