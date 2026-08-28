@@ -223,6 +223,6 @@ def test_all_zero_digest_is_replaced_with_one(monkeypatch):
         (tool_span_id, ("session", "tool")),
     ],
 )
-def test_platform_argument_is_required(derive, legacy_args):
+def test_platform_argument_is_required_without_legacy_overloads(derive, legacy_args):
     with pytest.raises(TypeError):
         derive(*legacy_args)
