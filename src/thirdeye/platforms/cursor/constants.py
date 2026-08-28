@@ -25,20 +25,32 @@ TRACED_EVENTS: tuple[str, ...] = (
     "beforeTabFileRead",
     "afterTabFileEdit",
     "postToolUse",
+    "subagentStop",
     "stop",
 )
 
-DEDICATED_TOOL_NAMES = frozenset(
+READ_TOOL_NAMES = frozenset(
+    {
+        "read_file",
+        "read",
+        "view_file",
+        "view",
+    }
+)
+
+# Tools in this set already produce a complete record from their dedicated
+# Cursor callbacks, so their generic postToolUse notification would duplicate it.
+# Most have a real after-callback that emits the paired `tool_result`.
+# `tab_file_read` is the exception: Cursor registers `beforeTabFileRead` with no
+# matching after-event, and that before-callback emits a self-contained instant
+# event, so its postToolUse is dropped rather than paired.
+DEDICATED_AFTER_TOOL_NAMES = frozenset(
     {
         "shell",
         "terminal",
         "bash",
         "run_command",
         "run_shell",
-        "read_file",
-        "read",
-        "view_file",
-        "view",
         "edit_file",
         "edit",
         "write_file",

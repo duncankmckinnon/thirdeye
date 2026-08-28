@@ -21,10 +21,12 @@ for full instructions on installing hooks, verifying data flow, and removing hoo
 # Enable hooks for a platform
 thirdeye add --claude
 thirdeye add --codex
+thirdeye add --cursor
 
 # Remove hooks
 thirdeye remove --claude
 thirdeye remove --codex
+thirdeye remove --cursor
 ```
 
 ## Searching and retrieving session data

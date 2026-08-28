@@ -12,9 +12,15 @@ from thirdeye.config import Config
 from thirdeye.env_capture import capture_env, env_to_tag
 from thirdeye.meta import read_meta, write_meta
 from thirdeye.paths import meta_path, session_dir
-from thirdeye.platforms.cursor.constants import DEDICATED_TOOL_NAMES, STRIP_KEYS
+from thirdeye.platforms.cursor.constants import (
+    DEDICATED_AFTER_TOOL_NAMES,
+    READ_TOOL_NAMES,
+    STRIP_KEYS,
+)
+from thirdeye.platforms.provenance import foreign_payload_reason
 from thirdeye.store import Store
 from thirdeye.tags import TagStore, extract_hashtags
+from thirdeye.usage.errlog import log_capture_error
 
 _PLATFORM = "cursor"
 
@@ -187,6 +193,14 @@ def _instant_tool(payload: dict[str, Any], event_type: str, name: str) -> None:
     _emit_live(payload, seq)
 
 
+def _before_read(payload: dict[str, Any]) -> None:
+    _emit(
+        payload,
+        "tool_call",
+        {"tool_name": "read_file", "cursor_tool_family": "read_file"},
+    )
+
+
 def _emit_live(payload: dict[str, Any], seq: int | None) -> None:
     session_id = _session_id(payload)
     generation_id = _generation_id(payload)
@@ -210,7 +224,16 @@ def _emit_live(payload: dict[str, Any], seq: int | None) -> None:
 
 def _post_tool_use(payload: dict[str, Any]) -> None:
     name = _tool_name(payload, "unknown")
-    if name.lower() in DEDICATED_TOOL_NAMES:
+    normalized_name = name.lower()
+    if normalized_name in DEDICATED_AFTER_TOOL_NAMES:
+        return
+    if normalized_name in READ_TOOL_NAMES:
+        seq = _emit(
+            payload,
+            "tool_result",
+            {"tool_name": "read_file", "cursor_tool_family": "read_file"},
+        )
+        _emit_live(payload, seq)
         return
     _instant_tool(payload, "tool_result", name)
 
@@ -231,8 +254,7 @@ def _capture_usage(config: Config, session_id: str, payload: dict[str, Any], seq
 
 def _stop(payload: dict[str, Any]) -> None:
     session_id = _session_id(payload)
-    generation_id = _generation_id(payload)
-    if not session_id or not generation_id:
+    if not session_id:
         return
     config = Config.load()
     cwd = _cwd(payload)
@@ -240,6 +262,11 @@ def _stop(payload: dict[str, Any]) -> None:
     if seq is None:
         return
     _capture_usage(config, session_id, payload, seq)
+    # `turn_stop` carries the model and token counts, so it is persisted even
+    # when Cursor omits the generation_id. Only the turn span needs the id.
+    generation_id = _generation_id(payload)
+    if not generation_id:
+        return
     try:
         from thirdeye.otel_export import export_turn
         from thirdeye.platforms.cursor.tracing import build_turn
@@ -257,6 +284,10 @@ def _stop(payload: dict[str, Any]) -> None:
         pass
 
 
+def _subagent_stop(payload: dict[str, Any]) -> None:
+    _emit(payload, "subagent_message")
+
+
 _HANDLERS: dict[str, Callable[[dict[str, Any]], None]] = {
     "sessionStart": _session_start,
     "sessionEnd": _session_end,
@@ -267,11 +298,12 @@ _HANDLERS: dict[str, Callable[[dict[str, Any]], None]] = {
     "afterShellExecution": _after_shell,
     "beforeMCPExecution": _before_mcp,
     "afterMCPExecution": _after_mcp,
-    "beforeReadFile": lambda p: _instant_tool(p, "tool_call", "read_file"),
+    "beforeReadFile": _before_read,
     "afterFileEdit": lambda p: _instant_tool(p, "tool_result", "edit_file"),
     "beforeTabFileRead": lambda p: _instant_tool(p, "tool_call", "read_file_tab"),
     "afterTabFileEdit": lambda p: _instant_tool(p, "tool_result", "edit_file_tab"),
     "postToolUse": _post_tool_use,
+    "subagentStop": _subagent_stop,
     "stop": _stop,
 }
 
@@ -281,9 +313,19 @@ def main() -> int:
     try:
         payload = _read_stdin()
         event = _event_name(payload)
-        handler = _HANDLERS.get(event)
-        if handler is not None:
-            handler(payload)
+        foreign_reason = foreign_payload_reason(payload, _PLATFORM)
+        if foreign_reason is not None:
+            log_capture_error(
+                thirdeye_home=Config.load().root,
+                phase="foreign_payload",
+                message=foreign_reason,
+                platform=_PLATFORM,
+                session_id=_session_id(payload),
+            )
+        else:
+            handler = _HANDLERS.get(event)
+            if handler is not None:
+                handler(payload)
     except Exception:
         pass
     finally:

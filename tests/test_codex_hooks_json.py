@@ -12,8 +12,9 @@ from pathlib import Path
 import pytest
 
 from thirdeye.config import Config
-from thirdeye.paths import session_dir, tags_path
+from thirdeye.paths import session_dir, tags_path, usage_log_path
 from thirdeye.platforms.codex import hooks_json
+from thirdeye.platforms.codex.interrupt_marker import has_open_marker, mark_turn_open
 from thirdeye.store import Store
 
 
@@ -32,6 +33,385 @@ def _tags_lines(env: Path, sid: str) -> list[dict]:
     if not path.exists():
         return []
     return [json.loads(line) for line in path.read_text().splitlines() if line.strip()]
+
+
+def _raw_stdin(monkeypatch, raw: str) -> None:
+    """Feed stdin verbatim, for shapes json.dumps of a dict cannot produce."""
+    monkeypatch.setattr("sys.stdin", io.StringIO(raw))
+
+
+def _events(sid: str) -> list[dict]:
+    return list(Store(Config.load()).reader(sid).iter_events())
+
+
+def _log_entries(env: Path) -> list[dict]:
+    path = usage_log_path(env)
+    if not path.exists():
+        return []
+    return [json.loads(line) for line in path.read_text().splitlines() if line.strip()]
+
+
+# -- provenance --------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    ("handler", "hook_event_name"),
+    [
+        (hooks_json.session_start, "sessionStart"),
+        (hooks_json.user_prompt_submit, "beforeSubmitPrompt"),
+        (hooks_json.subagent_start, "subagentStart"),
+        (hooks_json.subagent_stop, "subagentStop"),
+        (hooks_json.session_end, "sessionEnd"),
+    ],
+    ids=[
+        "session_start",
+        "user_prompt_submit",
+        "subagent_start",
+        "subagent_stop",
+        "session_end",
+    ],
+)
+def test_foreign_cursor_payload_writes_no_codex_event(
+    monkeypatch,
+    env: Path,
+    handler,
+    hook_event_name: str,
+):
+    """A colliding Cursor id must not create or mutate a Codex session."""
+    store = Store(Config.load())
+    store.append_event(
+        session_id="shared-session-id",
+        platform="cursor",
+        cwd="/cursor/project",
+        t="session_start",
+        data={"source": "cursor"},
+    )
+    _stdin(
+        monkeypatch,
+        {
+            "session_id": "shared-session-id",
+            "conversation_id": "shared-session-id",
+            "cwd": "/cursor/project",
+            "cursor_version": "1.2.3",
+            "hook_event_name": hook_event_name,
+            "prompt": "must not be stored #foreign",
+        },
+    )
+
+    handler()
+
+    assert list(store.list_sessions(platform="codex")) == []
+    assert not session_dir(env, "codex", "shared-session-id").exists()
+    cursor_events = list(store.reader("cursor:shared-session-id").iter_events())
+    assert [(event["t"], event["data"]) for event in cursor_events] == [
+        ("session_start", {"source": "cursor"})
+    ]
+    entries = _log_entries(env)
+    assert len(entries) == 1
+    assert entries[0]["phase"] == "foreign_payload"
+
+
+def test_foreign_subagent_event_does_not_reap_interrupt_marker(monkeypatch, env: Path):
+    calls = []
+    monkeypatch.setattr(
+        "thirdeye.platforms.codex.interrupt_marker.reap_marker_for_event",
+        lambda *args, **kwargs: calls.append((args, kwargs)),
+    )
+    _stdin(
+        monkeypatch,
+        {
+            "session_id": "shared-session-id",
+            "conversation_id": "shared-session-id",
+            "cwd": "/cursor/project",
+            "hook_event_name": "subagentStop",
+            "cursor_version": "1.2.3",
+        },
+    )
+
+    hooks_json.subagent_stop()
+
+    assert calls == []
+    assert not session_dir(env, "codex", "shared-session-id").exists()
+
+
+@pytest.mark.parametrize(
+    ("handler", "hook_event_name"),
+    [
+        (hooks_json.permission_request, "beforeShellExecution"),
+        (hooks_json.pre_compact, "preCompact"),
+        (hooks_json.post_compact, "postCompact"),
+    ],
+    ids=["permission_request", "pre_compact", "post_compact"],
+)
+def test_foreign_cursor_payload_is_rejected_by_other_emitters(
+    monkeypatch,
+    env: Path,
+    handler,
+    hook_event_name: str,
+):
+    _stdin(
+        monkeypatch,
+        {
+            "session_id": "shared-session-id",
+            "cwd": "/cursor/project",
+            "hook_event_name": hook_event_name,
+            "cursor_version": "1.2.3",
+        },
+    )
+
+    handler()
+
+    assert list(Store(Config.load()).list_sessions(platform="codex")) == []
+    assert not session_dir(env, "codex", "shared-session-id").exists()
+    entries = _log_entries(env)
+    assert len(entries) == 1
+    assert entries[0]["phase"] == "foreign_payload"
+
+
+def test_foreign_session_end_does_not_close_marker_or_session(monkeypatch, env: Path):
+    _stdin(
+        monkeypatch,
+        {"session_id": "shared-session-id", "cwd": "/codex/project"},
+    )
+    hooks_json.session_start()
+    sd = session_dir(env, "codex", "shared-session-id")
+    mark_turn_open(sd, prompt="still running")
+    exported = []
+    monkeypatch.setattr("thirdeye.otel_export.export_turn", lambda *args: exported.append(args))
+
+    _stdin(
+        monkeypatch,
+        {
+            "session_id": "shared-session-id",
+            "conversation_id": "shared-session-id",
+            "cwd": "/cursor/project",
+            "hook_event_name": "sessionEnd",
+            "composer_mode": "agent",
+        },
+    )
+    hooks_json.session_end()
+
+    sessions = list(Store(Config.load()).list_sessions(platform="codex"))
+    assert len(sessions) == 1
+    assert sessions[0].status == "open"
+    assert [event["t"] for event in _events("shared-session-id")] == ["session_start"]
+    assert has_open_marker(sd)
+    assert exported == []
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [
+        {
+            "session_id": "shared-session-id",
+            "conversation_id": "shared-session-id",
+            "cwd": "/cursor/project",
+            "hook_event_name": "beforeSubmitPrompt",
+            "cursor_version": "1.2.3",
+        },
+        # The shape Cursor actually sends: no session_id at all, the id lives
+        # under conversation_id (see tests/fixtures/cursor-subagent-stop.json).
+        {
+            "conversation_id": "shared-session-id",
+            "generation_id": "cursor-generation",
+            "hook_event_name": "beforeSubmitPrompt",
+            "cursor_version": "1.2.3",
+            "workspace_roots": [],
+        },
+        {
+            "conversationId": "shared-session-id",
+            "hookEventName": "beforeSubmitPrompt",
+            "cursor_version": "1.2.3",
+        },
+    ],
+    ids=["session_id_key", "conversation_id_key", "camel_case_key"],
+)
+def test_foreign_payload_logs_one_warning_with_reason_and_session(
+    monkeypatch,
+    env: Path,
+    payload: dict,
+):
+    _stdin(monkeypatch, payload)
+
+    hooks_json.user_prompt_submit()
+
+    entries = _log_entries(env)
+    assert len(entries) == 1
+    assert entries[0]["level"] == "warn"
+    assert entries[0]["phase"] == "foreign_payload"
+    assert entries[0]["platform"] == "codex"
+    assert entries[0]["session_id"] == "shared-session-id"
+    assert entries[0]["message"] == "Cursor marker cursor_version present"
+
+
+def test_genuine_codex_payload_records_unchanged(monkeypatch, env: Path):
+    payload = {
+        "session_id": "codex-session",
+        "cwd": "/codex/project",
+        "hook_event_name": "UserPromptSubmit",
+        "prompt": "keep this payload",
+        "prompt_id": "prompt-1",
+        "custom": {"nested": True},
+    }
+    _stdin(monkeypatch, payload)
+
+    hooks_json.user_prompt_submit()
+
+    events = _events("codex-session")
+    assert len(events) == 1
+    assert events[0]["t"] == "user_message"
+    assert events[0]["data"] == {
+        "hook_event_name": "UserPromptSubmit",
+        "prompt": "keep this payload",
+        "prompt_id": "prompt-1",
+        "custom": {"nested": True},
+    }
+
+
+def test_missing_hook_event_name_fails_open_and_records(monkeypatch, env: Path):
+    _stdin(
+        monkeypatch,
+        {
+            "session_id": "codex-session",
+            "cwd": "/codex/project",
+            "prompt": "accepted without provenance evidence",
+        },
+    )
+
+    hooks_json.user_prompt_submit()
+
+    events = _events("codex-session")
+    assert len(events) == 1
+    assert events[0]["t"] == "user_message"
+    assert events[0]["data"]["prompt"] == "accepted without provenance evidence"
+    assert _log_entries(env) == []
+
+
+@pytest.mark.parametrize(
+    "raw",
+    ["[]", '["a", "b"]', '"just a string"', "null", "123", "", "   ", "{not json"],
+    ids=[
+        "empty_list",
+        "list",
+        "string",
+        "null",
+        "number",
+        "empty",
+        "whitespace",
+        "invalid_json",
+    ],
+)
+def test_malformed_stdin_fails_open_without_foreign_breadcrumb(
+    monkeypatch,
+    env: Path,
+    raw: str,
+):
+    """Non-dict or unparseable stdin must not crash the hook binary.
+
+    The entry points are bare console scripts with no top-level try/except, so
+    a raised AttributeError here would surface as a hook failure. Malformed is
+    also not positive foreign evidence, so nothing may be logged.
+    """
+    for handler in (
+        hooks_json.session_start,
+        hooks_json.user_prompt_submit,
+        hooks_json.subagent_start,
+        hooks_json.subagent_stop,
+        hooks_json.session_end,
+        hooks_json.permission_request,
+        hooks_json.pre_compact,
+        hooks_json.post_compact,
+    ):
+        _raw_stdin(monkeypatch, raw)
+        handler()
+
+    assert list(Store(Config.load()).list_sessions()) == []
+    assert _log_entries(env) == []
+
+
+def test_deeply_nested_json_fails_open_for_every_entry_point(monkeypatch, env: Path):
+    raw = "[" * 2000 + "0" + "]" * 2000
+
+    for handler in (
+        hooks_json.session_start,
+        hooks_json.user_prompt_submit,
+        hooks_json.subagent_start,
+        hooks_json.subagent_stop,
+        hooks_json.session_end,
+        hooks_json.permission_request,
+        hooks_json.pre_compact,
+        hooks_json.post_compact,
+    ):
+        _raw_stdin(monkeypatch, raw)
+        handler()
+
+    assert list(Store(Config.load()).list_sessions()) == []
+    assert _log_entries(env) == []
+
+
+@pytest.mark.parametrize("failure", ["config", "warning"])
+def test_foreign_payload_side_effect_failures_are_fail_open_for_every_entry_point(
+    monkeypatch,
+    env: Path,
+    failure: str,
+):
+    if failure == "config":
+        monkeypatch.setattr(
+            hooks_json.Config,
+            "load",
+            lambda: (_ for _ in ()).throw(RuntimeError("config failed")),
+        )
+    else:
+        monkeypatch.setattr(
+            hooks_json,
+            "log_capture_error",
+            lambda **kwargs: (_ for _ in ()).throw(RuntimeError("warning failed")),
+        )
+
+    for handler in (
+        hooks_json.session_start,
+        hooks_json.user_prompt_submit,
+        hooks_json.subagent_start,
+        hooks_json.subagent_stop,
+        hooks_json.session_end,
+        hooks_json.permission_request,
+        hooks_json.pre_compact,
+        hooks_json.post_compact,
+    ):
+        _stdin(
+            monkeypatch,
+            {
+                "conversation_id": "foreign-session",
+                "hook_event_name": "beforeSubmitPrompt",
+                "cursor_version": "1.2.3",
+            },
+        )
+        handler()
+
+    assert not session_dir(env, "codex", "foreign-session").exists()
+
+
+def test_provenance_classification_failure_preserves_accepted_behavior(monkeypatch, env: Path):
+    monkeypatch.setattr(
+        hooks_json,
+        "foreign_payload_reason",
+        lambda *args: (_ for _ in ()).throw(RuntimeError("classification failed")),
+    )
+    _stdin(
+        monkeypatch,
+        {
+            "session_id": "codex-session",
+            "cwd": "/codex/project",
+            "prompt": "accepted when provenance cannot be classified",
+        },
+    )
+
+    hooks_json.user_prompt_submit()
+
+    events = _events("codex-session")
+    assert len(events) == 1
+    assert events[0]["data"]["prompt"] == "accepted when provenance cannot be classified"
+    assert _log_entries(env) == []
 
 
 # -- session_start ---------------------------------------------------------

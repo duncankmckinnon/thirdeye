@@ -646,7 +646,7 @@ def export_subagent_turn(
             state = json.loads(otel_state_path(session_dir_).read_text())
             trace_id = int(state["trace_id"], 16)
         except (OSError, TypeError, ValueError, KeyError, json.JSONDecodeError):
-            trace_id = trace_id_for_session(session_id)
+            trace_id = trace_id_for_session(platform, session_id)
         job_path = _write_job(
             config.root,
             {
@@ -656,7 +656,7 @@ def export_subagent_turn(
                 "platform": platform,
                 "cwd": cwd,
                 "trace_id": str(trace_id),
-                "parent_span_id": str(int(tool_span_id(session_id, tool_use_id))),
+                "parent_span_id": str(int(tool_span_id(platform, session_id, tool_use_id))),
                 "turn": turn,
             },
         )
@@ -713,8 +713,8 @@ def _export_turn_inner(
                     _identity_attributes(session_id=session_id, platform=platform, cwd=cwd)
                 )
                 derived = (
-                    trace_id_for_session(session_id),
-                    root_span_id_for_session(session_id),
+                    trace_id_for_session(platform, session_id),
+                    root_span_id_for_session(platform, session_id),
                 )
                 parent, created_root = _create_root_atomic(root_path, *derived)
                 # Another writer can win after stale-lock recovery with either
@@ -998,20 +998,26 @@ def _tool_attributes(
         semantic["gen_ai.tool.name"] = tool_name
     if tool_call_id:
         semantic["gen_ai.tool.call.id"] = tool_call_id
+    # Projected payload is moved, not copied: leaving the source key on the
+    # span would ship the same (potentially large) body twice.
+    consumed: set[str] = set()
     if "gen_ai.tool.call.arguments" not in attributes:
         for key in ("tool_input", "arguments", "input", "command"):
             if key in attributes and attributes[key] not in (None, ""):
                 semantic["gen_ai.tool.call.arguments"] = attributes[key]
+                consumed.add(key)
                 break
     if "gen_ai.tool.call.result" not in attributes:
         for key in ("tool_response", "tool_result", "result", "output"):
             if key in attributes and attributes[key] not in (None, ""):
                 semantic["gen_ai.tool.call.result"] = attributes[key]
+                consumed.add(key)
                 break
+    raw = {k: v for k, v in attributes.items() if k not in consumed} if consumed else attributes
     return _flatten_attrs(
         _merge_raw(
             semantic,
-            attributes,
+            raw,
             _identity_attributes(
                 session_id=session_id,
                 platform=platform,
@@ -1151,7 +1157,7 @@ def _export_turn_subtree(
         call_span = _start_span_with_id(
             tracer,
             f"chat {model}" if model else "chat",
-            chat_span_id(session_id, llm_call["call_id"]),
+            chat_span_id(platform, session_id, llm_call["call_id"]),
             parent_ctx=turn_parent_ctx,
             start_time=_ts_to_ns(llm_call["start_ts"]),
             attributes=_chat_attributes(
@@ -1171,7 +1177,7 @@ def _export_turn_subtree(
             tool_span = _start_span_with_id(
                 tracer,
                 f"tool: {tool_call['name']}",
-                tool_span_id(session_id, tool_call["tool_call_id"]),
+                tool_span_id(platform, session_id, tool_call["tool_call_id"]),
                 parent_ctx=call_parent_ctx,
                 kind=SpanKind.INTERNAL,
                 start_time=_ts_to_ns(tool_call["start_ts"]),
@@ -1192,12 +1198,12 @@ def _export_turn_subtree(
         parent_call_id = orphan["parent_call_id"]
         tool_call = orphan["tool_call"]
         orphan_parent_ctx = _parent_context(
-            turn_ctx.trace_id, int(chat_span_id(session_id, parent_call_id))
+            turn_ctx.trace_id, int(chat_span_id(platform, session_id, parent_call_id))
         )
         orphan_span = _start_span_with_id(
             tracer,
             f"tool: {tool_call['name']}",
-            tool_span_id(session_id, tool_call["tool_call_id"]),
+            tool_span_id(platform, session_id, tool_call["tool_call_id"]),
             parent_ctx=orphan_parent_ctx,
             kind=SpanKind.INTERNAL,
             start_time=_ts_to_ns(tool_call["start_ts"]),

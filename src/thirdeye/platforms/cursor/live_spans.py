@@ -18,12 +18,21 @@ from typing import Any
 
 from thirdeye.config import Config
 from thirdeye.otel_export import export_spans
+from thirdeye.paths import otel_state_path
 from thirdeye.platforms.cursor.tracing import tool_calls_for_generation
 from thirdeye.reader import SessionReader
 from thirdeye.span_ids import chat_span_id, tool_span_id, trace_id_for_session, turn_span_id
 from thirdeye.usage.errlog import log_capture_error
 
 _PLATFORM = "cursor"
+
+
+def _trace_id(session_dir_: Path, session_id: str) -> int:
+    try:
+        state = json.loads(otel_state_path(session_dir_).read_text())
+        return int(state["trace_id"], 16)
+    except (OSError, TypeError, ValueError, KeyError, json.JSONDecodeError):
+        return trace_id_for_session(_PLATFORM, session_id)
 
 
 def _state_path(session_dir_: Path) -> Path:
@@ -112,14 +121,14 @@ def _emit_live_tools(
             (event for event in events if event.get("t") == "user_message"), events[0]
         )
         turn_seq = int(start_event.get("seq") or 0)
-        turn_id = turn_span_id(session_id, turn_seq)
-        parent_id = chat_span_id(session_id, generation_id)
+        turn_id = turn_span_id(_PLATFORM, session_id, turn_seq)
+        parent_id = chat_span_id(_PLATFORM, session_id, generation_id)
         spans = [
             {
                 "name": f"tool: {tool['name']}",
                 "tool_name": tool["name"],
                 "tool_call_id": tool["tool_call_id"],
-                "span_id": tool_span_id(session_id, tool["tool_call_id"]),
+                "span_id": tool_span_id(_PLATFORM, session_id, tool["tool_call_id"]),
                 "parent_span_id": parent_id,
                 "turn_seq": turn_seq,
                 "turn_span_id": str(turn_id),
@@ -135,7 +144,7 @@ def _emit_live_tools(
             session_id,
             _PLATFORM,
             cwd,
-            trace_id_for_session(session_id),
+            _trace_id(session_dir_, session_id),
             spans,
         ):
             return
