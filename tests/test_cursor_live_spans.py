@@ -6,7 +6,7 @@ from thirdeye.config import Config, LogfireSettings
 from thirdeye.paths import session_dir
 from thirdeye.platforms.cursor.live_spans import emit_live_tools
 from thirdeye.platforms.cursor.tracing import build_turn
-from thirdeye.span_ids import chat_span_id, turn_span_id
+from thirdeye.span_ids import chat_span_id, tool_span_id, trace_id_for_session, turn_span_id
 from thirdeye.store import Store
 
 
@@ -65,8 +65,8 @@ def test_completed_tool_is_emitted_live_once_and_omitted_at_stop(tmp_path: Path,
 
     assert len(exported) == 1
     span = exported[0][0]
-    assert span["parent_span_id"] == chat_span_id(sid, generation)
-    assert span["turn_span_id"] == str(turn_span_id(sid, turn_seq))
+    assert span["parent_span_id"] == chat_span_id("cursor", sid, generation)
+    assert span["turn_span_id"] == str(turn_span_id("cursor", sid, turn_seq))
     assert span["tool_name"] == "shell"
     assert span["tool_call_id"] == "call-1"
     assert span["attributes"] == {
@@ -91,6 +91,66 @@ def test_completed_tool_is_emitted_live_once_and_omitted_at_stop(tmp_path: Path,
     )
     assert turn is not None
     assert turn["llm_calls"][0]["tool_calls"] == []
+
+
+def test_live_tool_parent_matches_cursor_chat_and_turn_ids(tmp_path: Path, monkeypatch):
+    config = _config(tmp_path)
+    store = Store(config)
+    sid, generation, call_id = "shared-session", "generation-1", "call-1"
+    turn_seq = _append(
+        store,
+        sid,
+        "user_message",
+        {"generation_id": generation, "prompt": "read the file"},
+    )
+    _append(
+        store,
+        sid,
+        "tool_call",
+        {
+            "generation_id": generation,
+            "tool_name": "read_file",
+            "cursor_tool_family": "read",
+            "tool_call_id": call_id,
+            "file_path": "README.md",
+        },
+    )
+    result_seq = _append(
+        store,
+        sid,
+        "tool_result",
+        {
+            "generation_id": generation,
+            "tool_name": "read_file",
+            "cursor_tool_family": "read",
+            "tool_call_id": call_id,
+            "output": "contents",
+        },
+    )
+    exports: list[tuple] = []
+
+    def capture(*args):
+        exports.append(args)
+        return True
+
+    monkeypatch.setattr("thirdeye.platforms.cursor.live_spans.export_spans", capture)
+
+    emit_live_tools(
+        config,
+        session_dir(tmp_path, "cursor", sid),
+        sid,
+        "/repo",
+        generation,
+        result_seq,
+    )
+
+    assert len(exports) == 1
+    export = exports[0]
+    span = export[-1][0]
+    assert export[-2] == trace_id_for_session("cursor", sid)
+    assert span["span_id"] == tool_span_id("cursor", sid, call_id)
+    assert span["parent_span_id"] == chat_span_id("cursor", sid, generation)
+    assert span["turn_span_id"] == str(turn_span_id("cursor", sid, turn_seq))
 
 
 def test_failed_live_dispatch_is_retried(tmp_path: Path, monkeypatch):

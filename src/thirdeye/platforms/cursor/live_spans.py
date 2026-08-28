@@ -112,14 +112,14 @@ def _emit_live_tools(
             (event for event in events if event.get("t") == "user_message"), events[0]
         )
         turn_seq = int(start_event.get("seq") or 0)
-        turn_id = turn_span_id(session_id, turn_seq)
-        parent_id = chat_span_id(session_id, generation_id)
+        turn_id = turn_span_id(_PLATFORM, session_id, turn_seq)
+        parent_id = chat_span_id(_PLATFORM, session_id, generation_id)
         spans = [
             {
                 "name": f"tool: {tool['name']}",
                 "tool_name": tool["name"],
                 "tool_call_id": tool["tool_call_id"],
-                "span_id": tool_span_id(session_id, tool["tool_call_id"]),
+                "span_id": tool_span_id(_PLATFORM, session_id, tool["tool_call_id"]),
                 "parent_span_id": parent_id,
                 "turn_seq": turn_seq,
                 "turn_span_id": str(turn_id),
@@ -135,7 +135,7 @@ def _emit_live_tools(
             session_id,
             _PLATFORM,
             cwd,
-            trace_id_for_session(session_id),
+            trace_id_for_session(_PLATFORM, session_id),
             spans,
         ):
             return
