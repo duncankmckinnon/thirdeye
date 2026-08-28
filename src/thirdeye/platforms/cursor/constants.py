@@ -38,8 +38,12 @@ READ_TOOL_NAMES = frozenset(
     }
 )
 
-# Tools in this set have a dedicated Cursor completion hook, so their generic
-# postToolUse notification would duplicate the result event.
+# Tools in this set already produce a complete record from their dedicated
+# Cursor callbacks, so their generic postToolUse notification would duplicate it.
+# Most have a real after-callback that emits the paired `tool_result`.
+# `tab_file_read` is the exception: Cursor registers `beforeTabFileRead` with no
+# matching after-event, and that before-callback emits a self-contained instant
+# event, so its postToolUse is dropped rather than paired.
 DEDICATED_AFTER_TOOL_NAMES = frozenset(
     {
         "shell",

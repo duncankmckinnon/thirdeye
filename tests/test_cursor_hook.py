@@ -127,9 +127,7 @@ def test_before_read_records_noninstant_normalized_call(tmp_path: Path, monkeypa
 
 
 @pytest.mark.parametrize("tool_name", ["Read", "read", "read_file", "view", "view_file"])
-def test_post_read_alias_records_noninstant_result(
-    tmp_path: Path, monkeypatch, tool_name: str
-):
+def test_post_read_alias_records_noninstant_result(tmp_path: Path, monkeypatch, tool_name: str):
     monkeypatch.setenv("THIRDEYE_HOME", str(tmp_path))
 
     _invoke(
@@ -199,11 +197,15 @@ def test_read_result_triggers_live_export_once(tmp_path: Path, monkeypatch):
         "write",
         "create_file",
         "delete_file",
+        "tab_file_read",
+        "tab_file_edit",
+        # Cursor is not guaranteed to send the alias lowercased.
+        "Shell",
+        "Edit",
+        "MCP",
     ],
 )
-def test_post_tool_skips_dedicated_after_aliases(
-    tmp_path: Path, monkeypatch, tool_name: str
-):
+def test_post_tool_skips_dedicated_after_aliases(tmp_path: Path, monkeypatch, tool_name: str):
     monkeypatch.setenv("THIRDEYE_HOME", str(tmp_path))
     emitted = []
     monkeypatch.setattr(
@@ -229,6 +231,11 @@ def test_post_tool_skips_dedicated_after_aliases(
 
 def test_generic_post_tool_remains_instant(tmp_path: Path, monkeypatch):
     monkeypatch.setenv("THIRDEYE_HOME", str(tmp_path))
+    emitted = []
+    monkeypatch.setattr(
+        "thirdeye.platforms.cursor.live_spans.emit_live_tools",
+        lambda *args: emitted.append(args),
+    )
 
     _invoke(
         monkeypatch,
@@ -248,6 +255,7 @@ def test_generic_post_tool_remains_instant(tmp_path: Path, monkeypatch):
     assert events[0]["data"]["tool_name"] == "search_web"
     assert events[0]["data"]["cursor_instant"] is True
     assert "cursor_tool_family" not in events[0]["data"]
+    assert len(emitted) == 1
 
 
 def test_read_without_session_is_noop(tmp_path: Path, monkeypatch, capfd):
@@ -276,9 +284,7 @@ def test_read_without_session_is_noop(tmp_path: Path, monkeypatch, capfd):
     assert emitted == []
 
 
-def test_read_without_generation_records_but_does_not_export_live(
-    tmp_path: Path, monkeypatch
-):
+def test_read_without_generation_records_but_does_not_export_live(tmp_path: Path, monkeypatch):
     monkeypatch.setenv("THIRDEYE_HOME", str(tmp_path))
     emitted = []
     monkeypatch.setattr(
