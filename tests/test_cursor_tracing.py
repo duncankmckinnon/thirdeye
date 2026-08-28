@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import json
+from datetime import datetime
 from pathlib import Path
 
 from thirdeye.config import Config
@@ -263,3 +265,199 @@ def test_unlabelled_same_family_tools_pair_in_dispatch_order(tmp_path: Path):
         ("first", "out-first"),
         ("second", "out-second"),
     ]
+
+
+# --- subagent leaves ---------------------------------------------------------
+#
+# Cursor's `subagentStop` callback is the only signal a subagent ever produced:
+# it fires once, after the child has finished, and carries no record of the
+# child's own model calls or tools. These build the same payload the hook
+# persists as a `subagent_message` event.
+
+
+def _subagent_stop(store: Store, sid: str, generation: str, **data) -> int:
+    return _append(store, sid, "subagent_message", {"generation_id": generation, **data})
+
+
+def _parse(ts: str) -> datetime:
+    return datetime.fromisoformat(ts[:-1] + "+00:00" if ts.endswith("Z") else ts)
+
+
+def _only_subagent(turn) -> dict:
+    assert len(turn["subagents"]) == 1
+    return turn["subagents"][0]
+
+
+def test_captured_subagent_stop_builds_one_leaf(tmp_path: Path):
+    fixture_path = Path(__file__).parent / "fixtures" / "cursor-subagent-stop.json"
+    captured = json.loads(fixture_path.read_text())
+    data = captured["data"]
+    sid = data["conversation_id"]
+    generation = data["generation_id"]
+    store = Store(Config(root=tmp_path))
+    _append(store, sid, "user_message", {"generation_id": generation, "prompt": "delegate"})
+    sub_seq = _append(store, sid, captured["t"], data)
+    stop_seq = _append(store, sid, "turn_stop", {"generation_id": generation})
+
+    leaf = _only_subagent(_build(tmp_path, sid, generation, stop_seq))
+
+    assert leaf["turn_span_id"] == str(turn_span_id("cursor", sid, sub_seq))
+    assert leaf["input_message"] == data["task"]
+    assert leaf["status"] == "completed"
+    assert leaf["attributes"] == {
+        "cursor.subagent.id": data["subagent_id"],
+        "cursor.subagent.type": data["subagent_type"],
+        "cursor.subagent.description": data["description"],
+        "cursor.subagent.message_count": data["message_count"],
+        "cursor.subagent.tool_call_count": data["tool_call_count"],
+        "cursor.subagent.loop_count": data["loop_count"],
+    }
+    assert (_parse(leaf["end_ts"]) - _parse(leaf["start_ts"])).total_seconds() == 16.635
+
+
+def test_subagent_leaf_uses_task_and_empty_output(tmp_path: Path):
+    """The dispatched task is the leaf's input; Cursor reports no child output."""
+    sid, generation = "cursor-session", "gen-subagent"
+    store = Store(Config(root=tmp_path))
+    _append(store, sid, "user_message", {"generation_id": generation, "prompt": "explore auth"})
+    _subagent_stop(
+        store,
+        sid,
+        generation,
+        subagent_id="agent-1",
+        task="Inspect the authentication flow",
+        summary="Located the relevant middleware",
+        status="completed",
+    )
+    stop_seq = _append(store, sid, "turn_stop", {"generation_id": generation})
+
+    leaf = _only_subagent(_build(tmp_path, sid, generation, stop_seq))
+
+    assert leaf["input_message"] == "Inspect the authentication flow"
+    assert leaf["output_message"] == ""
+    assert leaf["llm_calls"] == []
+    assert leaf["permission_requests"] == []
+    assert leaf["subagents"] == []
+
+
+def test_subagent_leaf_start_precedes_end_by_duration_ms(tmp_path: Path):
+    sid, generation = "cursor-session", "gen-duration"
+    store = Store(Config(root=tmp_path))
+    _append(store, sid, "user_message", {"generation_id": generation, "prompt": "delegate"})
+    sub_seq = _subagent_stop(
+        store, sid, generation, subagent_id="agent-1", task="Work", duration_ms=45_000
+    )
+    stop_seq = _append(store, sid, "turn_stop", {"generation_id": generation})
+
+    leaf = _only_subagent(_build(tmp_path, sid, generation, stop_seq))
+
+    events = {
+        event["seq"]: event for event in Store(Config(root=tmp_path)).reader(sid).iter_events()
+    }
+    assert leaf["end_ts"] == events[sub_seq]["ts"]
+    assert (_parse(leaf["end_ts"]) - _parse(leaf["start_ts"])).total_seconds() == 45.0
+
+
+def test_subagent_leaf_preserves_type_id_description_and_counts(tmp_path: Path):
+    sid, generation = "cursor-session", "gen-attrs"
+    store = Store(Config(root=tmp_path))
+    _append(store, sid, "user_message", {"generation_id": generation, "prompt": "delegate"})
+    _subagent_stop(
+        store,
+        sid,
+        generation,
+        subagent_id="agent-1",
+        subagent_type="generalPurpose",
+        description="Exploring authentication",
+        task="Inspect the authentication flow",
+        message_count=12,
+        tool_call_count=8,
+        loop_count=2,
+    )
+    stop_seq = _append(store, sid, "turn_stop", {"generation_id": generation})
+
+    leaf = _only_subagent(_build(tmp_path, sid, generation, stop_seq))
+
+    assert leaf["attributes"] == {
+        "cursor.subagent.id": "agent-1",
+        "cursor.subagent.type": "generalPurpose",
+        "cursor.subagent.description": "Exploring authentication",
+        "cursor.subagent.message_count": 12,
+        "cursor.subagent.tool_call_count": 8,
+        "cursor.subagent.loop_count": 2,
+    }
+
+
+def test_failed_subagent_maps_to_errored(tmp_path: Path):
+    sid, generation = "cursor-session", "gen-failed"
+    store = Store(Config(root=tmp_path))
+    _append(store, sid, "user_message", {"generation_id": generation, "prompt": "delegate"})
+    for index, status in enumerate(("error", "failed", "failure"), start=1):
+        _subagent_stop(
+            store,
+            sid,
+            generation,
+            subagent_id=f"agent-{index}",
+            task="Work",
+            status=status,
+        )
+    stop_seq = _append(store, sid, "turn_stop", {"generation_id": generation})
+
+    turn = _build(tmp_path, sid, generation, stop_seq)
+
+    assert [leaf["status"] for leaf in turn["subagents"]] == ["errored"] * 3
+
+
+def test_successful_subagent_maps_to_completed(tmp_path: Path):
+    """Only an explicitly failed status errors; anything else stays completed."""
+    sid, generation = "cursor-session", "gen-ok"
+    store = Store(Config(root=tmp_path))
+    _append(store, sid, "user_message", {"generation_id": generation, "prompt": "delegate"})
+    _subagent_stop(store, sid, generation, subagent_id="agent-1", task="Work", status="completed")
+    _subagent_stop(store, sid, generation, subagent_id="agent-2", task="More", status="aborted")
+    _subagent_stop(store, sid, generation, subagent_id="agent-3", task="Even more")
+    stop_seq = _append(store, sid, "turn_stop", {"generation_id": generation})
+
+    turn = _build(tmp_path, sid, generation, stop_seq)
+
+    assert [leaf["status"] for leaf in turn["subagents"]] == ["completed"] * 3
+
+
+def test_subagent_from_other_generation_is_ignored(tmp_path: Path):
+    sid = "cursor-session"
+    store = Store(Config(root=tmp_path))
+    _append(store, sid, "user_message", {"generation_id": "new", "prompt": "delegate"})
+    _subagent_stop(store, sid, "old", subagent_id="agent-old", task="Stale work")
+    _subagent_stop(store, sid, "new", subagent_id="agent-new", task="Current work")
+    stop_seq = _append(store, sid, "turn_stop", {"generation_id": "new"})
+
+    leaf = _only_subagent(_build(tmp_path, sid, "new", stop_seq))
+
+    assert leaf["attributes"]["cursor.subagent.id"] == "agent-new"
+
+
+def test_turn_without_subagent_keeps_empty_list(tmp_path: Path):
+    sid, generation = "cursor-session", "gen-plain"
+    store = Store(Config(root=tmp_path))
+    _append(store, sid, "user_message", {"generation_id": generation, "prompt": "no delegation"})
+    stop_seq = _append(store, sid, "turn_stop", {"generation_id": generation, "model": "gpt-5"})
+
+    assert _build(tmp_path, sid, generation, stop_seq)["subagents"] == []
+
+
+def test_subagent_turn_id_is_cursor_scoped_and_distinct_from_parent(tmp_path: Path):
+    sid, generation = "shared-session", "gen-ids"
+    store = Store(Config(root=tmp_path))
+    turn_seq = _append(store, sid, "user_message", {"generation_id": generation, "prompt": "go"})
+    sub_seq = _subagent_stop(store, sid, generation, subagent_id="agent-1", task="Work")
+    stop_seq = _append(store, sid, "turn_stop", {"generation_id": generation})
+
+    turn = _build(tmp_path, sid, generation, stop_seq)
+    leaf = _only_subagent(turn)
+
+    assert leaf["turn_span_id"] == str(turn_span_id("cursor", sid, sub_seq))
+    assert leaf["turn_span_id"] != str(turn_span_id("claude", sid, sub_seq))
+    assert (
+        leaf["turn_span_id"] != turn["turn_span_id"] == str(turn_span_id("cursor", sid, turn_seq))
+    )
+    assert leaf["turn_id"] != turn["turn_id"]
