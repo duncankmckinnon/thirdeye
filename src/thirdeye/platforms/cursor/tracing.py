@@ -16,6 +16,8 @@ from thirdeye.reader import SessionReader
 from thirdeye.span_ids import turn_span_id
 from thirdeye.tracing.model import ToolCallSpanDict, TurnSpanDict, UsageDict
 
+_PLATFORM = "cursor"
+
 
 def _data(event: dict[str, Any]) -> dict[str, Any]:
     value = event.get("data")
@@ -310,7 +312,7 @@ def build_turn(
     status = "errored" if status_value in {"error", "failed", "failure"} else "completed"
     return {
         "turn_id": str(turn_seq),
-        "turn_span_id": str(turn_span_id(session_id, turn_seq)),
+        "turn_span_id": str(turn_span_id(_PLATFORM, session_id, turn_seq)),
         "start_ts": start_ts,
         "end_ts": end_ts,
         "input_message": prompt,
