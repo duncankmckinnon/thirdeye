@@ -32,8 +32,10 @@ from thirdeye.config import Config
 from thirdeye.env_capture import capture_env, env_to_tag
 from thirdeye.meta import read_meta, write_meta
 from thirdeye.paths import meta_path, session_dir
+from thirdeye.platforms.provenance import foreign_payload_reason
 from thirdeye.store import Store
 from thirdeye.tags import TagStore, extract_hashtags
+from thirdeye.usage.errlog import log_capture_error
 
 _PLATFORM = "codex"
 
@@ -50,9 +52,24 @@ def _read_stdin() -> dict:
     if not raw:
         return {}
     try:
-        return json.loads(raw)
+        payload = json.loads(raw)
     except json.JSONDecodeError:
         return {}
+    if not isinstance(payload, dict):
+        return {}
+
+    reason = foreign_payload_reason(payload, _PLATFORM)
+    if reason is not None:
+        config = Config.load()
+        log_capture_error(
+            thirdeye_home=config.root,
+            phase="foreign_payload",
+            message=reason,
+            platform=_PLATFORM,
+            session_id=str(payload.get("session_id") or ""),
+        )
+        return {}
+    return payload
 
 
 def _strip_payload(payload: dict) -> dict:
