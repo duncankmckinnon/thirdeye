@@ -92,18 +92,40 @@ class Store:
 
     def resolve_session_id(self, prefix: str) -> tuple[str, str]:
         root = sessions_root(self.config.root)
+        platform: str | None = None
+        session_prefix = prefix
+
+        if ":" in prefix:
+            platform, session_prefix = prefix.split(":", 1)
+            if not platform:
+                raise ValueError("platform qualifier cannot be empty")
+            if not session_prefix:
+                raise ValueError("session prefix cannot be empty")
+
+            available_platforms = {
+                path.name for path in root.iterdir() if path.is_dir()
+            } if root.exists() else set()
+            if platform not in available_platforms:
+                raise ValueError(f"unknown platform qualifier {platform!r}")
+
         candidates: list[tuple[str, str]] = []
         if root.exists():
-            for pdir in root.iterdir():
+            platform_dirs = (
+                [platform_dir(self.config.root, platform)]
+                if platform is not None
+                else root.iterdir()
+            )
+            for pdir in platform_dirs:
                 if not pdir.is_dir():
                     continue
                 for sd in pdir.iterdir():
-                    if sd.is_dir() and sd.name.startswith(prefix):
+                    if sd.is_dir() and sd.name.startswith(session_prefix):
                         candidates.append((pdir.name, sd.name))
         if not candidates:
             raise ValueError(f"no session matching prefix {prefix!r}")
         if len(candidates) > 1:
-            raise ValueError(f"prefix {prefix!r} ambiguous: {[c[1] for c in candidates]}")
+            qualified = sorted(f"{candidate_platform}:{session_id}" for candidate_platform, session_id in candidates)
+            raise ValueError(f"prefix {prefix!r} ambiguous: {qualified}")
         return candidates[0]
 
     def reader(self, prefix: str) -> SessionReader:
