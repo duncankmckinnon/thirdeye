@@ -147,6 +147,72 @@ class TestResolveSessionId:
         with pytest.raises(ValueError, match="ambiguous"):
             tmp_store.resolve_session_id("AB")
 
+    def test_same_full_id_is_ambiguous_without_platform(self, tmp_store: Store):
+        session_id = "SAME_SESSION_ID"
+        for platform in ("claude", "cursor"):
+            with tmp_store.open_session(session_id, platform=platform, cwd="/p") as w:
+                w.append("x", 1)
+
+        with pytest.raises(ValueError, match="ambiguous") as exc_info:
+            tmp_store.resolve_session_id(session_id)
+
+        message = str(exc_info.value)
+        assert f"claude:{session_id}" in message
+        assert f"cursor:{session_id}" in message
+
+    def test_qualified_full_id_resolves_each_platform(self, tmp_store: Store):
+        session_id = "SAME_SESSION_ID"
+        for platform in ("claude", "cursor"):
+            with tmp_store.open_session(session_id, platform=platform, cwd="/p") as w:
+                w.append("x", 1)
+
+        assert tmp_store.resolve_session_id(f"claude:{session_id}") == (
+            "claude",
+            session_id,
+        )
+        assert tmp_store.resolve_session_id(f"cursor:{session_id}") == (
+            "cursor",
+            session_id,
+        )
+
+    def test_qualified_short_prefix_searches_one_platform(self, tmp_store: Store):
+        with tmp_store.open_session("SHARED_CLAUDE", platform="claude", cwd="/p") as w:
+            w.append("x", 1)
+        with tmp_store.open_session("SHARED_CURSOR", platform="cursor", cwd="/p") as w:
+            w.append("x", 1)
+
+        assert tmp_store.resolve_session_id("cursor:SHARED") == (
+            "cursor",
+            "SHARED_CURSOR",
+        )
+
+    def test_qualified_prefix_ambiguous_within_platform(self, tmp_store: Store):
+        for session_id in ("AB1111", "AB2222"):
+            with tmp_store.open_session(session_id, platform="cursor", cwd="/p") as w:
+                w.append("x", 1)
+        with tmp_store.open_session("AB3333", platform="claude", cwd="/p") as w:
+            w.append("x", 1)
+
+        with pytest.raises(ValueError, match="ambiguous") as exc_info:
+            tmp_store.resolve_session_id("cursor:AB")
+
+        message = str(exc_info.value)
+        assert "cursor:AB1111" in message
+        assert "cursor:AB2222" in message
+        assert "claude:AB3333" not in message
+
+    def test_unknown_platform_qualifier_raises(self, populated_store: Store):
+        with pytest.raises(ValueError, match="unknown platform qualifier.*unknown"):
+            populated_store.resolve_session_id("unknown:01J9")
+
+    def test_empty_platform_qualifier_raises(self, populated_store: Store):
+        with pytest.raises(ValueError, match="platform qualifier.*empty"):
+            populated_store.resolve_session_id(":01J9")
+
+    def test_empty_session_qualifier_raises(self, populated_store: Store):
+        with pytest.raises(ValueError, match="session (prefix|qualifier).*empty"):
+            populated_store.resolve_session_id("claude:")
+
     def test_empty_store_raises(self, tmp_store: Store):
         with pytest.raises(ValueError, match="no session matching"):
             tmp_store.resolve_session_id("anything")
