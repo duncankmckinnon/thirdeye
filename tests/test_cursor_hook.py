@@ -7,6 +7,7 @@ from pathlib import Path
 import pytest
 
 from thirdeye.config import Config
+from thirdeye.paths import usage_log_path
 from thirdeye.platforms.cursor import hook
 from thirdeye.store import Store
 
@@ -18,6 +19,130 @@ def _invoke(monkeypatch, payload: dict) -> None:
 
 def _events() -> list[dict]:
     return list(Store(Config.load()).reader("session-1").iter_events())
+
+
+def _warning_entries(home: Path) -> list[dict]:
+    log = usage_log_path(home)
+    if not log.exists():
+        return []
+    return [json.loads(line) for line in log.read_text().splitlines() if line]
+
+
+@pytest.mark.parametrize(
+    ("event_name", "handler"),
+    [
+        ("SessionStart", hook._session_start),
+        ("UserPromptSubmit", hook._before_submit),
+        ("PostToolUse", hook._post_tool_use),
+        ("SubagentStop", hook._subagent_stop),
+        ("Stop", hook._stop),
+    ],
+)
+def test_pascalcase_foreign_event_writes_nothing(
+    tmp_path: Path,
+    monkeypatch,
+    event_name: str,
+    handler,
+):
+    monkeypatch.setenv("THIRDEYE_HOME", str(tmp_path))
+    monkeypatch.setitem(hook._HANDLERS, event_name, handler)
+    monkeypatch.setattr(hook, "capture_env", lambda patterns: {})
+    exported = []
+    monkeypatch.setattr("thirdeye.otel_export.export_turn", lambda *args: exported.append(args))
+
+    _invoke(
+        monkeypatch,
+        {
+            "conversation_id": "session-1",
+            "generation_id": "generation-1",
+            "cwd": "/repo",
+            "hook_event_name": event_name,
+            "prompt": "#must-not-tag",
+            "tool_name": "search_web",
+            "result": {"matches": 3},
+        },
+    )
+
+    assert list(Store(Config.load()).list_sessions()) == []
+    assert exported == []
+
+
+def test_pascalcase_foreign_event_logs_one_warning(tmp_path: Path, monkeypatch):
+    monkeypatch.setenv("THIRDEYE_HOME", str(tmp_path))
+
+    _invoke(
+        monkeypatch,
+        {
+            "conversation_id": "session-1",
+            "hook_event_name": "SessionStart",
+        },
+    )
+
+    entries = _warning_entries(tmp_path)
+    assert len(entries) == 1
+    assert entries[0]["level"] == "warn"
+    assert entries[0]["phase"] == "foreign_payload"
+    assert entries[0]["platform"] == "cursor"
+    assert entries[0]["session_id"] == "session-1"
+    assert "SessionStart" in entries[0]["message"]
+
+
+def test_pascalcase_foreign_event_still_prints_permissive_response(
+    tmp_path: Path,
+    monkeypatch,
+    capfd,
+):
+    monkeypatch.setenv("THIRDEYE_HOME", str(tmp_path))
+
+    _invoke(
+        monkeypatch,
+        {
+            "conversation_id": "session-1",
+            "hook_event_name": "SessionStart",
+        },
+    )
+
+    assert capfd.readouterr().out == '{"continue": true}'
+
+
+def test_genuine_cursor_camelcase_event_records_unchanged(tmp_path: Path, monkeypatch):
+    monkeypatch.setenv("THIRDEYE_HOME", str(tmp_path))
+
+    _invoke(
+        monkeypatch,
+        {
+            "conversation_id": "session-1",
+            "generation_id": "generation-1",
+            "cwd": "/repo",
+            "hook_event_name": "beforeSubmitPrompt",
+            "prompt": "hello",
+        },
+    )
+
+    events = _events()
+    assert len(events) == 1
+    assert events[0]["t"] == "user_message"
+    assert events[0]["data"] == {
+        "generation_id": "generation-1",
+        "prompt": "hello",
+    }
+    assert _warning_entries(tmp_path) == []
+
+
+def test_missing_event_name_remains_noop_without_warning(tmp_path: Path, monkeypatch, capfd):
+    monkeypatch.setenv("THIRDEYE_HOME", str(tmp_path))
+
+    _invoke(
+        monkeypatch,
+        {
+            "conversation_id": "session-1",
+            "prompt": "must not be stored",
+        },
+    )
+
+    assert capfd.readouterr().out == '{"continue": true}'
+    assert list(Store(Config.load()).list_sessions()) == []
+    assert _warning_entries(tmp_path) == []
 
 
 def test_hook_captures_cursor_turn_and_dispatches_logfire_export(tmp_path: Path, monkeypatch):

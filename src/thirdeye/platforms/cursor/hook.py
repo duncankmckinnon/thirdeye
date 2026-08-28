@@ -17,8 +17,10 @@ from thirdeye.platforms.cursor.constants import (
     READ_TOOL_NAMES,
     STRIP_KEYS,
 )
+from thirdeye.platforms.provenance import foreign_payload_reason
 from thirdeye.store import Store
 from thirdeye.tags import TagStore, extract_hashtags
+from thirdeye.usage.errlog import log_capture_error
 
 _PLATFORM = "cursor"
 
@@ -311,9 +313,19 @@ def main() -> int:
     try:
         payload = _read_stdin()
         event = _event_name(payload)
-        handler = _HANDLERS.get(event)
-        if handler is not None:
-            handler(payload)
+        foreign_reason = foreign_payload_reason(payload, _PLATFORM)
+        if foreign_reason is not None:
+            log_capture_error(
+                thirdeye_home=Config.load().root,
+                phase="foreign_payload",
+                message=foreign_reason,
+                platform=_PLATFORM,
+                session_id=_session_id(payload),
+            )
+        else:
+            handler = _HANDLERS.get(event)
+            if handler is not None:
+                handler(payload)
     except Exception:
         pass
     finally:
