@@ -185,16 +185,25 @@ def _tool_span(
 def _pair_key(data: dict[str, Any], family: str, name: str) -> str:
     """Identify a tool invocation well enough to pair its before/after events.
 
-    Cursor supplies no tool call id on the shell callbacks, so fall back to the
-    payload body (the command or tool input), which the after-callback echoes
-    on some Cursor versions. Degrades to `family:name` when nothing is echoed.
+    Cursor supplies no tool call id on some callbacks, so fall back to the
+    payload body (the command, tool input, or read path), which the matching
+    after-callback may echo. Degrades to `family:name` when nothing is echoed.
     """
     explicit = _text(
         data, "tool_call_id", "toolCallId", "tool_use_id", "toolUseId", "call_id", "callId"
     )
     if explicit:
         return f"id:{explicit}"
-    signature = _text(data, "command", "tool_input", "toolInput", "arguments")
+    signature = _text(
+        data,
+        "command",
+        "tool_input",
+        "toolInput",
+        "arguments",
+        "file_path",
+        "filePath",
+        "path",
+    )
     return f"{family}:{name}:{signature}" if signature else f"{family}:{name}"
 
 
