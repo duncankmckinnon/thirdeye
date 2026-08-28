@@ -345,7 +345,7 @@ class TestUserPromptHashtagExtract:
 
 
 class TestOpenTurnCursor:
-    def test_user_prompt_submit_writes_deterministic_id_and_timestamp(self, monkeypatch, env: Path):
+    def test_user_prompt_writes_platform_scoped_turn_span_id(self, monkeypatch, env: Path):
         sid = "marker-round-trip"
         _stdin(monkeypatch, {"session_id": sid, "cwd": "/p", "prompt": "hello"})
         hooks.user_prompt_submit()
@@ -355,7 +355,7 @@ class TestOpenTurnCursor:
         assert marker is not None
         event = SessionReader(sd).get_event(marker["turn_seq"])
 
-        assert marker["turn_span_id"] == str(turn_span_id(sid, marker["turn_seq"]))
+        assert marker["turn_span_id"] == str(turn_span_id("claude", sid, marker["turn_seq"]))
         assert marker["last_frame_ts"] == event["ts"]
         assert marker["start_ts"] == event["ts"]
 
@@ -431,7 +431,7 @@ class TestOpenTurnCursor:
         assert marker is not None
         stale_seq = marker["turn_seq"]
         marker["turn_seq"] += 1
-        marker["turn_span_id"] = str(turn_span_id(sid, marker["turn_seq"]))
+        marker["turn_span_id"] = str(turn_span_id("claude", sid, marker["turn_seq"]))
         hooks._write_open_turn(sd, marker)
 
         assert hooks._delete_open_turn(sd, expected_turn_seq=stale_seq) is False
@@ -512,9 +512,9 @@ class TestLockedOpenTurnBoundedRetry:
             entered = False
             with hooks._locked_open_turn(tmp_path, fcntl.LOCK_EX):
                 entered = True
-            assert (
-                entered
-            ), "must retry and succeed once the other holder releases, not give up early"
+            assert entered, (
+                "must retry and succeed once the other holder releases, not give up early"
+            )
         finally:
             releaser.join()
 

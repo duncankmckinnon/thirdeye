@@ -492,7 +492,7 @@ def user_prompt_submit() -> None:
             sd,
             {
                 "turn_seq": seq,
-                "turn_span_id": str(turn_span_id(sid, seq)),
+                "turn_span_id": str(turn_span_id(_PLATFORM, sid, seq)),
                 "start_ts": start_ts,
                 "prompt": prompt,
                 "prompt_id": payload.get("prompt_id"),
