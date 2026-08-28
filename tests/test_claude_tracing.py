@@ -316,9 +316,7 @@ class TestBuildTurn:
         )
 
         assert turn is not None
-        assert turn["turn_span_id"] == str(
-            turn_span_id("claude", sid, marker["turn_seq"])
-        )
+        assert turn["turn_span_id"] == str(turn_span_id("claude", sid, marker["turn_seq"]))
 
     def test_orphan_tool_call_from_already_committed_group_is_recovered(
         self, monkeypatch, env: Path, tmp_path: Path
@@ -706,9 +704,7 @@ class TestBuildTurn:
 
         assert len(turn["subagents"]) == 1
         sub = turn["subagents"][0]
-        assert sub["turn_span_id"] == str(
-            turn_span_id("claude", sid, subagent_turn_seq)
-        )
+        assert sub["turn_span_id"] == str(turn_span_id("claude", sid, subagent_turn_seq))
         assert sub["input_message"] == "explore code"
         assert sub["output_message"] == "found stuff"
         assert sub["status"] == "completed"
@@ -926,16 +922,13 @@ class TestAsyncSubagentExport:
         assert len(exported) == 1
         turn, tool_use_id = exported[0]
         subagent_turn_seq = next(
-            event["seq"]
-            for event in SessionReader(sd).iter_events(types={"subagent_start"})
+            event["seq"] for event in SessionReader(sd).iter_events(types={"subagent_start"})
         )
         # Correlated back to the dispatching "Agent" tool call despite it
         # belonging to an already-closed turn -- this is what "Task"-only
         # matching, and a per-turn window, both fail to do.
         assert tool_use_id == "tu_agent1"
-        assert turn["turn_span_id"] == str(
-            turn_span_id("claude", sid, subagent_turn_seq)
-        )
+        assert turn["turn_span_id"] == str(turn_span_id("claude", sid, subagent_turn_seq))
         assert turn["input_message"] == "explore code"
         assert turn["output_message"] == "found stuff"
         assert turn["status"] == "completed"
@@ -1049,9 +1042,7 @@ class TestInterruptionHandling:
             hooks.session_end()
 
         assert len(exported) == 1
-        assert exported[0]["turn_span_id"] == str(
-            turn_span_id("claude", sid, first_turn_seq)
-        )
+        assert exported[0]["turn_span_id"] == str(turn_span_id("claude", sid, first_turn_seq))
         assert exported[0]["status"] == "interrupted"
         assert exported[0]["input_message"] == "first"
         assert exported[0]["llm_calls"] == []
@@ -1172,9 +1163,9 @@ class TestInterruptionHandling:
         hooks.notification()
 
         assert exported == [], "notification() must not export the still-running turn"
-        assert hooks._open_turn_path(
-            sd
-        ).exists(), "notification() must not delete the marker of a still-running turn"
+        assert hooks._open_turn_path(sd).exists(), (
+            "notification() must not delete the marker of a still-running turn"
+        )
 
         _stdin(monkeypatch, {"session_id": sid, "cwd": "/p", "response": "done"})
         hooks.stop()
@@ -1253,9 +1244,9 @@ class TestInterruptionHandling:
         getattr(hooks, hook_name)()
 
         assert exported == [], f"{hook_name}() must not export the still-running turn"
-        assert hooks._open_turn_path(
-            sd
-        ).exists(), f"{hook_name}() must not delete the marker of a still-running turn"
+        assert hooks._open_turn_path(sd).exists(), (
+            f"{hook_name}() must not delete the marker of a still-running turn"
+        )
 
 
 # -- stop() normal completion path -----------------------------------------------

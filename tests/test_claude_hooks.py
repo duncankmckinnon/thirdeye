@@ -512,9 +512,9 @@ class TestLockedOpenTurnBoundedRetry:
             entered = False
             with hooks._locked_open_turn(tmp_path, fcntl.LOCK_EX):
                 entered = True
-            assert (
-                entered
-            ), "must retry and succeed once the other holder releases, not give up early"
+            assert entered, (
+                "must retry and succeed once the other holder releases, not give up early"
+            )
         finally:
             releaser.join()
 
