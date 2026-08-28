@@ -106,3 +106,89 @@ def test_hook_records_turn_stop_even_without_generation_id(tmp_path: Path, monke
     assert [event["t"] for event in events] == ["turn_stop"]
     assert events[0]["data"]["model"] == "gpt-5"
     assert exported == []
+
+
+def test_subagent_stop_dispatches_to_subagent_message(tmp_path: Path, monkeypatch):
+    monkeypatch.setenv("THIRDEYE_HOME", str(tmp_path))
+    exported = []
+    monkeypatch.setattr("thirdeye.otel_export.export_turn", lambda *args: exported.append(args))
+
+    _invoke(
+        monkeypatch,
+        {
+            "conversation_id": "session-1",
+            "generation_id": "generation-1",
+            "cwd": "/repo",
+            "hook_event_name": "subagentStop",
+            "subagent_id": "agent-1",
+            "subagent_type": "explore",
+            "status": "completed",
+        },
+    )
+
+    events = list(Store(Config.load()).reader("session-1").iter_events())
+    assert len(events) == 1
+    assert events[0]["t"] == "subagent_message"
+    assert exported == []
+
+
+def test_subagent_stop_preserves_generation_and_counts(tmp_path: Path, monkeypatch):
+    monkeypatch.setenv("THIRDEYE_HOME", str(tmp_path))
+    payload = {
+        "conversation_id": "session-1",
+        "generation_id": "generation-1",
+        "cwd": "/repo",
+        "hook_event_name": "subagentStop",
+        "subagent_id": "agent-1",
+        "subagent_type": "generalPurpose",
+        "status": "completed",
+        "task": "Inspect the authentication flow",
+        "description": "Exploring authentication",
+        "summary": "Located the relevant middleware",
+        "duration_ms": 45_000,
+        "message_count": 12,
+        "tool_call_count": 8,
+        "loop_count": 2,
+        "modified_files": ["src/auth.py"],
+        "agent_transcript_path": "/tmp/subagent-transcript.txt",
+    }
+
+    _invoke(monkeypatch, payload)
+
+    events = list(Store(Config.load()).reader("session-1").iter_events())
+    assert len(events) == 1
+    assert events[0]["data"] == {
+        "generation_id": "generation-1",
+        "subagent_id": "agent-1",
+        "subagent_type": "generalPurpose",
+        "status": "completed",
+        "task": "Inspect the authentication flow",
+        "description": "Exploring authentication",
+        "summary": "Located the relevant middleware",
+        "duration_ms": 45_000,
+        "message_count": 12,
+        "tool_call_count": 8,
+        "loop_count": 2,
+        "modified_files": ["src/auth.py"],
+        "agent_transcript_path": "/tmp/subagent-transcript.txt",
+    }
+
+
+def test_subagent_stop_without_conversation_id_is_noop(tmp_path: Path, monkeypatch):
+    monkeypatch.setenv("THIRDEYE_HOME", str(tmp_path))
+
+    _invoke(
+        monkeypatch,
+        {
+            "generation_id": "generation-1",
+            "cwd": "/repo",
+            "hook_event_name": "subagentStop",
+            "subagent_id": "agent-1",
+            "subagent_type": "explore",
+            "message_count": 3,
+            "tool_call_count": 1,
+            "loop_count": 0,
+        },
+    )
+
+    assert list(Store(Config.load()).list_sessions()) == []
