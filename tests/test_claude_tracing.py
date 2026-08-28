@@ -10,6 +10,7 @@ from thirdeye.config import Config
 from thirdeye.paths import session_dir
 from thirdeye.platforms.claude import hooks, tracing
 from thirdeye.platforms.claude.usage import ParsedCalls, extract_calls_from_transcript
+from thirdeye.reader import SessionReader
 from thirdeye.span_ids import turn_span_id
 from thirdeye.store import Store
 
