@@ -102,9 +102,9 @@ class Store:
             if not session_prefix:
                 raise ValueError("session prefix cannot be empty")
 
-            available_platforms = {
-                path.name for path in root.iterdir() if path.is_dir()
-            } if root.exists() else set()
+            available_platforms = (
+                {path.name for path in root.iterdir() if path.is_dir()} if root.exists() else set()
+            )
             if platform not in available_platforms:
                 raise ValueError(f"unknown platform qualifier {platform!r}")
 
@@ -124,7 +124,10 @@ class Store:
         if not candidates:
             raise ValueError(f"no session matching prefix {prefix!r}")
         if len(candidates) > 1:
-            qualified = sorted(f"{candidate_platform}:{session_id}" for candidate_platform, session_id in candidates)
+            qualified = sorted(
+                f"{candidate_platform}:{session_id}"
+                for candidate_platform, session_id in candidates
+            )
             raise ValueError(f"prefix {prefix!r} ambiguous: {qualified}")
         return candidates[0]
 

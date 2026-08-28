@@ -329,6 +329,91 @@ def test_malformed_stdin_fails_open_without_foreign_breadcrumb(
     assert _log_entries(env) == []
 
 
+def test_deeply_nested_json_fails_open_for_every_entry_point(monkeypatch, env: Path):
+    raw = "[" * 2000 + "0" + "]" * 2000
+
+    for handler in (
+        hooks_json.session_start,
+        hooks_json.user_prompt_submit,
+        hooks_json.subagent_start,
+        hooks_json.subagent_stop,
+        hooks_json.session_end,
+        hooks_json.permission_request,
+        hooks_json.pre_compact,
+        hooks_json.post_compact,
+    ):
+        _raw_stdin(monkeypatch, raw)
+        handler()
+
+    assert list(Store(Config.load()).list_sessions()) == []
+    assert _log_entries(env) == []
+
+
+@pytest.mark.parametrize("failure", ["config", "warning"])
+def test_foreign_payload_side_effect_failures_are_fail_open_for_every_entry_point(
+    monkeypatch,
+    env: Path,
+    failure: str,
+):
+    if failure == "config":
+        monkeypatch.setattr(
+            hooks_json.Config,
+            "load",
+            lambda: (_ for _ in ()).throw(RuntimeError("config failed")),
+        )
+    else:
+        monkeypatch.setattr(
+            hooks_json,
+            "log_capture_error",
+            lambda **kwargs: (_ for _ in ()).throw(RuntimeError("warning failed")),
+        )
+
+    for handler in (
+        hooks_json.session_start,
+        hooks_json.user_prompt_submit,
+        hooks_json.subagent_start,
+        hooks_json.subagent_stop,
+        hooks_json.session_end,
+        hooks_json.permission_request,
+        hooks_json.pre_compact,
+        hooks_json.post_compact,
+    ):
+        _stdin(
+            monkeypatch,
+            {
+                "conversation_id": "foreign-session",
+                "hook_event_name": "beforeSubmitPrompt",
+                "cursor_version": "1.2.3",
+            },
+        )
+        handler()
+
+    assert not session_dir(env, "codex", "foreign-session").exists()
+
+
+def test_provenance_classification_failure_preserves_accepted_behavior(monkeypatch, env: Path):
+    monkeypatch.setattr(
+        hooks_json,
+        "foreign_payload_reason",
+        lambda *args: (_ for _ in ()).throw(RuntimeError("classification failed")),
+    )
+    _stdin(
+        monkeypatch,
+        {
+            "session_id": "codex-session",
+            "cwd": "/codex/project",
+            "prompt": "accepted when provenance cannot be classified",
+        },
+    )
+
+    hooks_json.user_prompt_submit()
+
+    events = _events("codex-session")
+    assert len(events) == 1
+    assert events[0]["data"]["prompt"] == "accepted when provenance cannot be classified"
+    assert _log_entries(env) == []
+
+
 # -- session_start ---------------------------------------------------------
 
 

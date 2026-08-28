@@ -1,9 +1,10 @@
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 from thirdeye.config import Config, LogfireSettings
-from thirdeye.paths import session_dir
+from thirdeye.paths import otel_state_path, session_dir
 from thirdeye.platforms.cursor.live_spans import committed_tool_call_ids, emit_live_tools
 from thirdeye.platforms.cursor.tracing import build_turn
 from thirdeye.span_ids import chat_span_id, tool_span_id, trace_id_for_session, turn_span_id
@@ -151,6 +152,41 @@ def test_live_tool_parent_matches_cursor_chat_and_turn_ids(tmp_path: Path, monke
     assert span["span_id"] == tool_span_id("cursor", sid, call_id)
     assert span["parent_span_id"] == chat_span_id("cursor", sid, generation)
     assert span["turn_span_id"] == str(turn_span_id("cursor", sid, turn_seq))
+
+
+def test_live_tool_uses_persisted_trace_id(tmp_path: Path, monkeypatch):
+    config = _config(tmp_path)
+    store = Store(config)
+    sid, generation = "cursor-session", "generation-1"
+    _append(store, sid, "user_message", {"generation_id": generation, "prompt": "test"})
+    result_seq = _append(
+        store,
+        sid,
+        "tool_result",
+        {
+            "generation_id": generation,
+            "tool_name": "Grep",
+            "tool_use_id": "call-1",
+            "cursor_instant": True,
+            "tool_input": {"pattern": "TODO"},
+            "tool_output": "match",
+        },
+    )
+    sd = session_dir(tmp_path, "cursor", sid)
+    persisted_trace_id = "0123456789abcdef0123456789abcdef"
+    otel_state_path(sd).write_text(json.dumps({"trace_id": persisted_trace_id}))
+    exports: list[tuple] = []
+
+    def capture(*args):
+        exports.append(args)
+        return True
+
+    monkeypatch.setattr("thirdeye.platforms.cursor.live_spans.export_spans", capture)
+
+    emit_live_tools(config, sd, sid, "/repo", generation, result_seq)
+
+    assert len(exports) == 1
+    assert exports[0][-2] == int(persisted_trace_id, 16)
 
 
 def test_live_read_commit_prevents_stop_duplicate(tmp_path: Path, monkeypatch):

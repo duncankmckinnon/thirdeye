@@ -255,9 +255,9 @@ class TestResolveSessionId:
             data="from cursor",
         )
 
-        assert list(tmp_store.reader(f"claude:{session_id}").iter_events())[0][
-            "data"
-        ] == "from claude"
+        assert (
+            list(tmp_store.reader(f"claude:{session_id}").iter_events())[0]["data"] == "from claude"
+        )
         assert tmp_store.get_meta(f"cursor:{session_id}").cwd == "/cursor"
         assert tmp_store.stats(session_id=f"cursor:{session_id}")["platform"] == "cursor"
 

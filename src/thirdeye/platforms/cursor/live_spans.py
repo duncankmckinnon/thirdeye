@@ -18,12 +18,21 @@ from typing import Any
 
 from thirdeye.config import Config
 from thirdeye.otel_export import export_spans
+from thirdeye.paths import otel_state_path
 from thirdeye.platforms.cursor.tracing import tool_calls_for_generation
 from thirdeye.reader import SessionReader
 from thirdeye.span_ids import chat_span_id, tool_span_id, trace_id_for_session, turn_span_id
 from thirdeye.usage.errlog import log_capture_error
 
 _PLATFORM = "cursor"
+
+
+def _trace_id(session_dir_: Path, session_id: str) -> int:
+    try:
+        state = json.loads(otel_state_path(session_dir_).read_text())
+        return int(state["trace_id"], 16)
+    except (OSError, TypeError, ValueError, KeyError, json.JSONDecodeError):
+        return trace_id_for_session(_PLATFORM, session_id)
 
 
 def _state_path(session_dir_: Path) -> Path:
@@ -135,7 +144,7 @@ def _emit_live_tools(
             session_id,
             _PLATFORM,
             cwd,
-            trace_id_for_session(_PLATFORM, session_id),
+            _trace_id(session_dir_, session_id),
             spans,
         ):
             return

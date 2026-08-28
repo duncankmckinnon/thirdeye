@@ -74,23 +74,29 @@ def _read_stdin() -> dict:
         return {}
     try:
         payload = json.loads(raw)
-    except json.JSONDecodeError:
+    except (json.JSONDecodeError, RecursionError):
         return {}
     # Malformed shapes (a JSON list, string, null) are not foreign evidence —
     # drop them silently rather than logging a foreign_payload breadcrumb.
     if not isinstance(payload, dict):
         return {}
 
-    reason = foreign_payload_reason(payload, _PLATFORM)
+    try:
+        reason = foreign_payload_reason(payload, _PLATFORM)
+    except Exception:
+        return payload
     if reason is not None:
-        config = Config.load()
-        log_capture_error(
-            thirdeye_home=config.root,
-            phase="foreign_payload",
-            message=reason,
-            platform=_PLATFORM,
-            session_id=_payload_session_id(payload),
-        )
+        try:
+            config = Config.load()
+            log_capture_error(
+                thirdeye_home=config.root,
+                phase="foreign_payload",
+                message=reason,
+                platform=_PLATFORM,
+                session_id=_payload_session_id(payload),
+            )
+        except Exception:
+            pass
         return {}
     return payload
 
