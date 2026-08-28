@@ -358,6 +358,50 @@ def test_concurrent_reads_pair_by_file_path(tmp_path: Path):
     ]
 
 
+def test_read_paths_pair_across_supported_key_spellings(tmp_path: Path):
+    sid, generation = "cursor-session", "gen-read-path-spellings"
+    store = Store(Config(root=tmp_path))
+    _read_call(store, sid, generation, file_path="src/first.py")
+    _read_call(store, sid, generation, filePath="src/second.py")
+    _read_result(store, sid, generation, path="src/second.py", output="second contents")
+    _read_result(store, sid, generation, path="src/first.py", output="first contents")
+    stop_seq = _append(store, sid, "turn_stop", {"generation_id": generation})
+
+    assert _pairs(_build(tmp_path, sid, generation, stop_seq)) == [
+        ("src/second.py", "second contents"),
+        ("src/first.py", "first contents"),
+    ]
+
+
+def test_read_explicit_call_id_takes_precedence_over_path(tmp_path: Path):
+    sid, generation = "cursor-session", "gen-read-call-id-precedence"
+    store = Store(Config(root=tmp_path))
+    _read_call(store, sid, generation, tool_call_id="call-1", path="src/first.py")
+    _read_call(store, sid, generation, tool_call_id="call-2", path="src/second.py")
+    _read_result(
+        store,
+        sid,
+        generation,
+        tool_call_id="call-2",
+        path="src/first.py",
+        output="second contents",
+    )
+    _read_result(
+        store,
+        sid,
+        generation,
+        tool_call_id="call-1",
+        path="src/second.py",
+        output="first contents",
+    )
+    stop_seq = _append(store, sid, "turn_stop", {"generation_id": generation})
+
+    assert _pairs(_build(tmp_path, sid, generation, stop_seq)) == [
+        ("src/second.py", "second contents"),
+        ("src/first.py", "first contents"),
+    ]
+
+
 def test_reads_without_echoed_path_pair_fifo(tmp_path: Path):
     sid, generation = "cursor-session", "gen-read-fifo"
     store = Store(Config(root=tmp_path))
