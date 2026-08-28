@@ -5,6 +5,7 @@ from pathlib import Path
 from thirdeye.config import Config
 from thirdeye.paths import session_dir
 from thirdeye.platforms.cursor.tracing import build_turn, usage_from_payload
+from thirdeye.span_ids import turn_span_id
 from thirdeye.store import Store
 
 
@@ -94,6 +95,28 @@ def test_build_turn_uses_otel_gen_ai_tool_conventions(tmp_path: Path):
     assert tool["attributes"]["gen_ai.tool.call.arguments"] == "pytest"
     assert tool["attributes"]["gen_ai.tool.call.result"] == "passed"
     assert not any(key.startswith("openinference") for key in tool["attributes"])
+
+
+def test_build_turn_uses_cursor_scoped_turn_id(tmp_path: Path):
+    sid, generation = "shared-session", "gen-1"
+    store = Store(Config(root=tmp_path))
+    turn_seq = _append(
+        store,
+        sid,
+        "user_message",
+        {"generation_id": generation, "prompt": "scope this turn"},
+    )
+    stop_seq = _append(store, sid, "turn_stop", {"generation_id": generation})
+
+    turn = build_turn(
+        session_dir_=session_dir(tmp_path, "cursor", sid),
+        session_id=sid,
+        generation_id=generation,
+        stop_seq=stop_seq,
+    )
+
+    assert turn is not None
+    assert turn["turn_span_id"] == str(turn_span_id("cursor", sid, turn_seq))
 
 
 def test_build_turn_ignores_other_generations(tmp_path: Path):
