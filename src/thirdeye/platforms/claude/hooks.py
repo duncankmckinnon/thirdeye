@@ -41,7 +41,7 @@ def _read_stdin() -> dict:
         return {}
     try:
         value = json.loads(raw)
-    except json.JSONDecodeError:
+    except (json.JSONDecodeError, RecursionError):
         return {}
     # Valid JSON that is not an object (array, scalar, null) would make every
     # caller's payload.get() raise; fail open with an empty payload instead.
@@ -85,6 +85,7 @@ def _reject_foreign_payload(payload: dict) -> bool:
             platform=_PLATFORM,
             session_id=_foreign_session_id(payload),
             message=reason,
+            silent_fallback=True,
         )
     except Exception:
         pass

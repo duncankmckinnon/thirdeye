@@ -1098,20 +1098,17 @@ def test_foreign_payload_skips_lifecycle_and_export_side_effects(monkeypatch, en
         handler()
 
 
-def test_foreign_payload_stays_rejected_when_warning_write_fails(monkeypatch, env: Path):
-    def broken_warning(**kwargs):
-        raise OSError("read-only log directory")
-
-    sid = "foreign-warning-failure"
-    _stdin(monkeypatch, {"session_id": sid, "cwd": "/claude/project"})
-    hooks.session_start()
-    before = list(Store(Config.load()).reader(f"claude:{sid}").iter_events())
-
-    monkeypatch.setattr(hooks, "log_capture_error", broken_warning)
+def test_foreign_payload_warning_write_failure_is_silent(monkeypatch, tmp_path: Path, capsys):
+    # A regular file cannot contain the logs/ directory. This exercises the
+    # logger's real filesystem fallback instead of replacing it with a mock
+    # that raises before its stderr behavior can run.
+    blocked_home = tmp_path / "not-a-directory"
+    blocked_home.write_text("occupied")
+    monkeypatch.setenv("THIRDEYE_HOME", str(blocked_home))
     _stdin(
         monkeypatch,
         {
-            "session_id": sid,
+            "session_id": "foreign-warning-failure",
             "cwd": "/cursor/project",
             "hook_event_name": "beforeShellExecution",
         },
@@ -1119,8 +1116,19 @@ def test_foreign_payload_stays_rejected_when_warning_write_fails(monkeypatch, en
 
     hooks.pre_tool_use()
 
-    after = list(Store(Config.load()).reader(f"claude:{sid}").iter_events())
-    assert after == before
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    assert captured.err == ""
+
+
+def test_excessively_nested_json_fails_open(monkeypatch, env: Path):
+    # CPython's JSON decoder raises RecursionError before it can classify this
+    # as ordinary invalid JSON. Hook input must still never escape to the host.
+    monkeypatch.setattr("sys.stdin", io.StringIO("[" * 10_000))
+
+    hooks.pre_tool_use()
+
+    assert list(Store(Config.load()).list_sessions()) == []
 
 
 def test_provenance_classifier_failure_fails_open_and_records(monkeypatch, env: Path):
