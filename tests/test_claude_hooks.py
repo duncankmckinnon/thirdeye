@@ -970,6 +970,32 @@ def test_rejection_writes_nothing_to_stdout_or_stderr(monkeypatch, env: Path, ca
     assert captured.err == ""
 
 
+@pytest.mark.parametrize(
+    "handler_name",
+    [
+        "pre_tool_use",
+        "post_tool_use",
+        "user_prompt_submit",
+        "stop",
+        "subagent_stop",
+        "stop_failure",
+    ],
+)
+@pytest.mark.parametrize("decoded_payload", [[], "not-an-object", 1, True, None])
+def test_non_object_json_payload_fails_open_without_side_effects(
+    monkeypatch,
+    env: Path,
+    handler_name: str,
+    decoded_payload: object,
+):
+    monkeypatch.setattr("sys.stdin", io.StringIO(json.dumps(decoded_payload)))
+
+    getattr(hooks, handler_name)()
+
+    assert list(Store(Config.load()).list_sessions()) == []
+    assert _error_log_entries(env) == []
+
+
 def test_foreign_payload_skips_lifecycle_and_export_side_effects(monkeypatch, env: Path):
     def unexpected(*args, **kwargs):
         pytest.fail("foreign payload reached a Claude lifecycle or export side effect")
