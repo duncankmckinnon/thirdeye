@@ -4,7 +4,7 @@ from pathlib import Path
 
 from thirdeye.config import Config, LogfireSettings
 from thirdeye.paths import session_dir
-from thirdeye.platforms.cursor.live_spans import emit_live_tools
+from thirdeye.platforms.cursor.live_spans import committed_tool_call_ids, emit_live_tools
 from thirdeye.platforms.cursor.tracing import build_turn
 from thirdeye.span_ids import chat_span_id, tool_span_id, trace_id_for_session, turn_span_id
 from thirdeye.store import Store
@@ -151,6 +151,70 @@ def test_live_tool_parent_matches_cursor_chat_and_turn_ids(tmp_path: Path, monke
     assert span["span_id"] == tool_span_id("cursor", sid, call_id)
     assert span["parent_span_id"] == chat_span_id("cursor", sid, generation)
     assert span["turn_span_id"] == str(turn_span_id("cursor", sid, turn_seq))
+
+
+def test_live_read_commit_prevents_stop_duplicate(tmp_path: Path, monkeypatch):
+    config = _config(tmp_path)
+    store = Store(config)
+    sid, generation = "cursor-session", "generation-read"
+    _append(
+        store,
+        sid,
+        "user_message",
+        {"generation_id": generation, "prompt": "read both files"},
+    )
+    _append(
+        store,
+        sid,
+        "tool_call",
+        {
+            "generation_id": generation,
+            "tool_name": "read_file",
+            "cursor_tool_family": "read",
+            "file_path": "src/thirdeye/store.py",
+        },
+    )
+    result_seq = _append(
+        store,
+        sid,
+        "tool_result",
+        {
+            "generation_id": generation,
+            "tool_name": "read_file",
+            "cursor_tool_family": "read",
+            "file_path": "src/thirdeye/store.py",
+            "output": "class Store: ...",
+        },
+    )
+    exported: list[list[dict]] = []
+
+    def capture(*args):
+        exported.append(args[-1])
+        return True
+
+    monkeypatch.setattr("thirdeye.platforms.cursor.live_spans.export_spans", capture)
+    sd = session_dir(tmp_path, "cursor", sid)
+
+    emit_live_tools(config, sd, sid, "/repo", generation, result_seq)
+
+    assert len(exported) == 1
+    assert len(exported[0]) == 1
+    live_tool = exported[0][0]
+    assert live_tool["tool_name"] == "read_file"
+    assert live_tool["attributes"]["gen_ai.tool.call.arguments"] == "src/thirdeye/store.py"
+    assert live_tool["attributes"]["gen_ai.tool.call.result"] == "class Store: ..."
+    assert committed_tool_call_ids(sd, generation) == {live_tool["tool_call_id"]}
+
+    stop_seq = _append(store, sid, "turn_stop", {"generation_id": generation})
+    turn = build_turn(
+        session_dir_=sd,
+        session_id=sid,
+        generation_id=generation,
+        stop_seq=stop_seq,
+    )
+
+    assert turn is not None
+    assert turn["llm_calls"][0]["tool_calls"] == []
 
 
 def test_failed_live_dispatch_is_retried(tmp_path: Path, monkeypatch):

@@ -210,6 +210,34 @@ def _shell_result(store: Store, sid: str, generation: str, **data) -> int:
     )
 
 
+def _read_call(store: Store, sid: str, generation: str, **data) -> int:
+    return _append(
+        store,
+        sid,
+        "tool_call",
+        {
+            "generation_id": generation,
+            "tool_name": "read_file",
+            "cursor_tool_family": "read",
+            **data,
+        },
+    )
+
+
+def _read_result(store: Store, sid: str, generation: str, **data) -> int:
+    return _append(
+        store,
+        sid,
+        "tool_result",
+        {
+            "generation_id": generation,
+            "tool_name": "read_file",
+            "cursor_tool_family": "read",
+            **data,
+        },
+    )
+
+
 def _pairs(turn) -> list[tuple]:
     return [
         (
@@ -264,6 +292,84 @@ def test_unlabelled_same_family_tools_pair_in_dispatch_order(tmp_path: Path):
     assert _pairs(_build(tmp_path, sid, generation, stop_seq)) == [
         ("first", "out-first"),
         ("second", "out-second"),
+    ]
+
+
+def test_read_pair_builds_exactly_one_tool_span(tmp_path: Path):
+    sid, generation = "cursor-session", "gen-read"
+    store = Store(Config(root=tmp_path))
+    _read_call(store, sid, generation, file_path="src/thirdeye/store.py")
+    _read_result(
+        store,
+        sid,
+        generation,
+        file_path="src/thirdeye/store.py",
+        output="file contents",
+    )
+    stop_seq = _append(store, sid, "turn_stop", {"generation_id": generation})
+
+    tools = _build(tmp_path, sid, generation, stop_seq)["llm_calls"][0]["tool_calls"]
+
+    assert len(tools) == 1
+    assert tools[0]["name"] == "read_file"
+
+
+def test_read_pair_contains_arguments_and_result(tmp_path: Path):
+    sid, generation = "cursor-session", "gen-read-values"
+    store = Store(Config(root=tmp_path))
+    _read_call(store, sid, generation, filePath="docs/architecture.md")
+    _read_result(
+        store,
+        sid,
+        generation,
+        filePath="docs/architecture.md",
+        result={"contents": "# Architecture\n", "truncated": False},
+    )
+    stop_seq = _append(store, sid, "turn_stop", {"generation_id": generation})
+
+    tool = _build(tmp_path, sid, generation, stop_seq)["llm_calls"][0]["tool_calls"][0]
+
+    assert tool["attributes"]["gen_ai.tool.call.arguments"] == "docs/architecture.md"
+    assert tool["attributes"]["gen_ai.tool.call.result"] == {
+        "contents": "# Architecture\n",
+        "truncated": False,
+    }
+
+
+def test_concurrent_reads_pair_by_file_path(tmp_path: Path):
+    """Every supported path spelling disambiguates reversed read completions."""
+    sid, generation = "cursor-session", "gen-concurrent-reads"
+    store = Store(Config(root=tmp_path))
+    reads = [
+        ("file_path", "src/first.py", "first contents"),
+        ("filePath", "src/second.py", "second contents"),
+        ("path", "src/third.py", "third contents"),
+    ]
+    for key, path, _result in reads:
+        _read_call(store, sid, generation, **{key: path})
+    for key, path, result in reversed(reads):
+        _read_result(store, sid, generation, output=result, **{key: path})
+    stop_seq = _append(store, sid, "turn_stop", {"generation_id": generation})
+
+    assert _pairs(_build(tmp_path, sid, generation, stop_seq)) == [
+        ("src/third.py", "third contents"),
+        ("src/second.py", "second contents"),
+        ("src/first.py", "first contents"),
+    ]
+
+
+def test_reads_without_echoed_path_pair_fifo(tmp_path: Path):
+    sid, generation = "cursor-session", "gen-read-fifo"
+    store = Store(Config(root=tmp_path))
+    _read_call(store, sid, generation, file_path="src/first.py")
+    _read_call(store, sid, generation, file_path="src/second.py")
+    _read_result(store, sid, generation, output="first contents")
+    _read_result(store, sid, generation, output="second contents")
+    stop_seq = _append(store, sid, "turn_stop", {"generation_id": generation})
+
+    assert _pairs(_build(tmp_path, sid, generation, stop_seq)) == [
+        ("src/first.py", "first contents"),
+        ("src/second.py", "second contents"),
     ]
 
 
