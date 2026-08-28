@@ -35,8 +35,20 @@ def _tags_lines(env: Path, sid: str) -> list[dict]:
     return [json.loads(line) for line in path.read_text().splitlines() if line.strip()]
 
 
+def _raw_stdin(monkeypatch, raw: str) -> None:
+    """Feed stdin verbatim, for shapes json.dumps of a dict cannot produce."""
+    monkeypatch.setattr("sys.stdin", io.StringIO(raw))
+
+
 def _events(sid: str) -> list[dict]:
     return list(Store(Config.load()).reader(sid).iter_events())
+
+
+def _log_entries(env: Path) -> list[dict]:
+    path = usage_log_path(env)
+    if not path.exists():
+        return []
+    return [json.loads(line) for line in path.read_text().splitlines() if line.strip()]
 
 
 # -- provenance --------------------------------------------------------------
@@ -94,6 +106,9 @@ def test_foreign_cursor_payload_writes_no_codex_event(
     assert [(event["t"], event["data"]) for event in cursor_events] == [
         ("session_start", {"source": "cursor"})
     ]
+    entries = _log_entries(env)
+    assert len(entries) == 1
+    assert entries[0]["phase"] == "foreign_payload"
 
 
 def test_foreign_subagent_event_does_not_reap_interrupt_marker(monkeypatch, env: Path):
@@ -148,6 +163,9 @@ def test_foreign_cursor_payload_is_rejected_by_other_emitters(
 
     assert list(Store(Config.load()).list_sessions(platform="codex")) == []
     assert not session_dir(env, "codex", "shared-session-id").exists()
+    entries = _log_entries(env)
+    assert len(entries) == 1
+    assert entries[0]["phase"] == "foreign_payload"
 
 
 def test_foreign_session_end_does_not_close_marker_or_session(monkeypatch, env: Path):
@@ -173,16 +191,17 @@ def test_foreign_session_end_does_not_close_marker_or_session(monkeypatch, env: 
     )
     hooks_json.session_end()
 
-    meta = next(Store(Config.load()).list_sessions())
-    assert meta.status == "open"
+    sessions = list(Store(Config.load()).list_sessions(platform="codex"))
+    assert len(sessions) == 1
+    assert sessions[0].status == "open"
     assert [event["t"] for event in _events("shared-session-id")] == ["session_start"]
     assert has_open_marker(sd)
     assert exported == []
 
 
-def test_foreign_payload_logs_one_warning_with_reason_and_session(monkeypatch, env: Path):
-    _stdin(
-        monkeypatch,
+@pytest.mark.parametrize(
+    "payload",
+    [
         {
             "session_id": "shared-session-id",
             "conversation_id": "shared-session-id",
@@ -190,11 +209,33 @@ def test_foreign_payload_logs_one_warning_with_reason_and_session(monkeypatch, e
             "hook_event_name": "beforeSubmitPrompt",
             "cursor_version": "1.2.3",
         },
-    )
+        # The shape Cursor actually sends: no session_id at all, the id lives
+        # under conversation_id (see tests/fixtures/cursor-subagent-stop.json).
+        {
+            "conversation_id": "shared-session-id",
+            "generation_id": "cursor-generation",
+            "hook_event_name": "beforeSubmitPrompt",
+            "cursor_version": "1.2.3",
+            "workspace_roots": [],
+        },
+        {
+            "conversationId": "shared-session-id",
+            "hookEventName": "beforeSubmitPrompt",
+            "cursor_version": "1.2.3",
+        },
+    ],
+    ids=["session_id_key", "conversation_id_key", "camel_case_key"],
+)
+def test_foreign_payload_logs_one_warning_with_reason_and_session(
+    monkeypatch,
+    env: Path,
+    payload: dict,
+):
+    _stdin(monkeypatch, payload)
 
     hooks_json.user_prompt_submit()
 
-    entries = [json.loads(line) for line in usage_log_path(env).read_text().splitlines()]
+    entries = _log_entries(env)
     assert len(entries) == 1
     assert entries[0]["level"] == "warn"
     assert entries[0]["phase"] == "foreign_payload"
@@ -243,6 +284,49 @@ def test_missing_hook_event_name_fails_open_and_records(monkeypatch, env: Path):
     assert len(events) == 1
     assert events[0]["t"] == "user_message"
     assert events[0]["data"]["prompt"] == "accepted without provenance evidence"
+    assert _log_entries(env) == []
+
+
+@pytest.mark.parametrize(
+    "raw",
+    ["[]", '["a", "b"]', '"just a string"', "null", "123", "", "   ", "{not json"],
+    ids=[
+        "empty_list",
+        "list",
+        "string",
+        "null",
+        "number",
+        "empty",
+        "whitespace",
+        "invalid_json",
+    ],
+)
+def test_malformed_stdin_fails_open_without_foreign_breadcrumb(
+    monkeypatch,
+    env: Path,
+    raw: str,
+):
+    """Non-dict or unparseable stdin must not crash the hook binary.
+
+    The entry points are bare console scripts with no top-level try/except, so
+    a raised AttributeError here would surface as a hook failure. Malformed is
+    also not positive foreign evidence, so nothing may be logged.
+    """
+    for handler in (
+        hooks_json.session_start,
+        hooks_json.user_prompt_submit,
+        hooks_json.subagent_start,
+        hooks_json.subagent_stop,
+        hooks_json.session_end,
+        hooks_json.permission_request,
+        hooks_json.pre_compact,
+        hooks_json.post_compact,
+    ):
+        _raw_stdin(monkeypatch, raw)
+        handler()
+
+    assert list(Store(Config.load()).list_sessions()) == []
+    assert _log_entries(env) == []
 
 
 # -- session_start ---------------------------------------------------------
