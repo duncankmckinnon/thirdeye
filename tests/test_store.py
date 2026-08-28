@@ -205,6 +205,10 @@ class TestResolveSessionId:
         with pytest.raises(ValueError, match="unknown platform qualifier.*unknown"):
             populated_store.resolve_session_id("unknown:01J9")
 
+    def test_known_platform_with_no_matching_session_raises(self, populated_store: Store):
+        with pytest.raises(ValueError, match="no session matching.*claude:ZZZZZ"):
+            populated_store.resolve_session_id("claude:ZZZZZ")
+
     def test_empty_platform_qualifier_raises(self, populated_store: Store):
         with pytest.raises(ValueError, match="platform qualifier.*empty"):
             populated_store.resolve_session_id(":01J9")
@@ -229,6 +233,29 @@ class TestResolveSessionId:
         platform, sid = result
         assert platform == "claude"
         assert sid == "01J9G7XK4P"
+
+    def test_qualified_reference_supported_by_store_consumers(self, tmp_store: Store):
+        session_id = "SAME_SESSION_ID"
+        tmp_store.append_event(
+            session_id=session_id,
+            platform="claude",
+            cwd="/claude",
+            t="message",
+            data="from claude",
+        )
+        tmp_store.append_event(
+            session_id=session_id,
+            platform="cursor",
+            cwd="/cursor",
+            t="message",
+            data="from cursor",
+        )
+
+        assert list(tmp_store.reader(f"claude:{session_id}").iter_events())[0][
+            "data"
+        ] == "from claude"
+        assert tmp_store.get_meta(f"cursor:{session_id}").cwd == "/cursor"
+        assert tmp_store.stats(session_id=f"cursor:{session_id}")["platform"] == "cursor"
 
 
 # -- reader --------------------------------------------------------------------
