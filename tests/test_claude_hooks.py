@@ -205,7 +205,6 @@ class TestSessionStartEnvTags:
         return [json.loads(line) for line in path.read_text().splitlines() if line.strip()]
 
     def test_no_patterns_set_writes_no_tags(self, monkeypatch, env: Path):
-        monkeypatch.delenv("THIRDEYE_CAPTURE_ENV", raising=False)
         monkeypatch.setenv("WB_PLAN", "p")
         monkeypatch.setenv("WB_STEP", "test#1")
         _stdin(monkeypatch, {"session_id": "s1", "cwd": "/p"})
@@ -875,17 +874,26 @@ def test_foreign_payload_does_not_change_open_turn_marker(monkeypatch, env: Path
     assert [event["t"] for event in events] == ["user_message"]
 
 
-def test_foreign_payload_logs_one_warning_with_reason_and_session(monkeypatch, env: Path):
+# post_tool_use is the only handler with two guards -- its own and the one
+# inside _emit -- so it is the only one that could ever double-log. pre_tool_use
+# covers the ordinary single-guard shape.
+@pytest.mark.parametrize("handler_name", ["pre_tool_use", "post_tool_use"])
+def test_foreign_payload_logs_one_warning_with_reason_and_session(
+    monkeypatch,
+    env: Path,
+    handler_name: str,
+):
     payload = {
         "session_id": "foreign-warning-session",
         "cwd": "/cursor/project",
         "hook_event_name": "beforeShellExecution",
+        "tool_use_id": "foreign-tool-use",
     }
     expected_reason = foreign_payload_reason(payload, expected="claude")
     assert expected_reason is not None
     _stdin(monkeypatch, payload)
 
-    hooks.pre_tool_use()
+    getattr(hooks, handler_name)()
 
     entries = _error_log_entries(env)
     assert len(entries) == 1
@@ -894,6 +902,50 @@ def test_foreign_payload_logs_one_warning_with_reason_and_session(monkeypatch, e
     assert entries[0]["platform"] == "claude"
     assert entries[0]["session_id"] == "foreign-warning-session"
     assert expected_reason in entries[0]["message"]
+
+
+def test_native_cursor_payload_shape_is_rejected_with_correlatable_session(
+    monkeypatch,
+    env: Path,
+):
+    # The shape Cursor actually sends: conversation_id rather than session_id,
+    # camelCase event key, and a cursor_version marker. The breadcrumb has to
+    # name the offending conversation or an operator cannot correlate it.
+    _stdin(
+        monkeypatch,
+        {
+            "conversation_id": "cursor-conversation-1",
+            "hookEventName": "beforeShellExecution",
+            "cursor_version": "1.7.0",
+            "workspace_roots": ["/cursor/project"],
+            "command": "rm -rf /",
+        },
+    )
+
+    hooks.pre_tool_use()
+
+    assert list(Store(Config.load()).list_sessions()) == []
+    entries = _error_log_entries(env)
+    assert len(entries) == 1
+    assert entries[0]["phase"] == "foreign_payload"
+    assert entries[0]["session_id"] == "cursor-conversation-1"
+
+
+def test_native_cursor_camel_case_session_key_is_correlatable(monkeypatch, env: Path):
+    _stdin(
+        monkeypatch,
+        {
+            "conversationId": "cursor-conversation-2",
+            "hookEventName": "afterShellExecution",
+            "composer_mode": "agent",
+        },
+    )
+
+    hooks.post_tool_use()
+
+    entries = _error_log_entries(env)
+    assert [entry["phase"] for entry in entries] == ["foreign_payload"]
+    assert entries[0]["session_id"] == "cursor-conversation-2"
 
 
 def test_foreign_payload_emits_no_hook_invoked_info_breadcrumb(monkeypatch, env: Path):
@@ -909,10 +961,8 @@ def test_foreign_payload_emits_no_hook_invoked_info_breadcrumb(monkeypatch, env:
     hooks.pre_tool_use()
 
     entries = _error_log_entries(env)
-    assert len(entries) == 1
-    assert entries[0]["phase"] == "foreign_payload"
-    assert not any(entry["phase"] == "hook_invoked" for entry in entries)
-    assert not any(entry["level"] == "info" for entry in entries)
+    assert [entry["phase"] for entry in entries] == ["foreign_payload"]
+    assert entries[0]["level"] == "warn"
 
 
 def test_genuine_claude_payload_records_unchanged(monkeypatch, env: Path):
@@ -934,7 +984,13 @@ def test_genuine_claude_payload_records_unchanged(monkeypatch, env: Path):
     assert events[0]["data"] == {
         key: value for key, value in payload.items() if key not in {"session_id", "cwd"}
     }
-    assert not any(entry["phase"] == "foreign_payload" for entry in _error_log_entries(env))
+    # An accepted payload keeps its hook_invoked breadcrumb, and gets no
+    # foreign_payload entry.
+    entries = _error_log_entries(env)
+    assert [entry["phase"] for entry in entries] == ["hook_invoked"]
+    assert entries[0]["level"] == "info"
+    assert entries[0]["session_id"] == "genuine-claude"
+    assert "tool-1" in entries[0]["message"]
 
 
 def test_missing_hook_event_name_fails_open_and_records(monkeypatch, env: Path):
