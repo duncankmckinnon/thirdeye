@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from datetime import datetime
 from pathlib import Path
 
@@ -285,6 +286,33 @@ def _parse(ts: str) -> datetime:
 def _only_subagent(turn) -> dict:
     assert len(turn["subagents"]) == 1
     return turn["subagents"][0]
+
+
+def test_captured_subagent_stop_builds_one_leaf(tmp_path: Path):
+    fixture_path = Path(__file__).parent / "fixtures" / "cursor-subagent-stop.json"
+    captured = json.loads(fixture_path.read_text())
+    data = captured["data"]
+    sid = data["conversation_id"]
+    generation = data["generation_id"]
+    store = Store(Config(root=tmp_path))
+    _append(store, sid, "user_message", {"generation_id": generation, "prompt": "delegate"})
+    sub_seq = _append(store, sid, captured["t"], data)
+    stop_seq = _append(store, sid, "turn_stop", {"generation_id": generation})
+
+    leaf = _only_subagent(_build(tmp_path, sid, generation, stop_seq))
+
+    assert leaf["turn_span_id"] == str(turn_span_id("cursor", sid, sub_seq))
+    assert leaf["input_message"] == data["task"]
+    assert leaf["status"] == "completed"
+    assert leaf["attributes"] == {
+        "cursor.subagent.id": data["subagent_id"],
+        "cursor.subagent.type": data["subagent_type"],
+        "cursor.subagent.description": data["description"],
+        "cursor.subagent.message_count": data["message_count"],
+        "cursor.subagent.tool_call_count": data["tool_call_count"],
+        "cursor.subagent.loop_count": data["loop_count"],
+    }
+    assert (_parse(leaf["end_ts"]) - _parse(leaf["start_ts"])).total_seconds() == 16.635
 
 
 def test_subagent_leaf_uses_task_and_empty_output(tmp_path: Path):
