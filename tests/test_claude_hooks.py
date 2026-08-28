@@ -12,6 +12,7 @@ import pytest
 from thirdeye.config import Config
 from thirdeye.paths import session_dir, tags_path
 from thirdeye.platforms.claude import hooks
+from thirdeye.platforms.provenance import foreign_payload_reason
 from thirdeye.reader import SessionReader
 from thirdeye.span_ids import turn_span_id
 from thirdeye.store import Store
@@ -793,6 +794,180 @@ def _error_log_entries(home: Path) -> list[dict]:
     if not log.exists():
         return []
     return [json.loads(line) for line in log.read_text().splitlines() if line]
+
+
+# -- foreign payload provenance ------------------------------------------------
+
+
+_FOREIGN_CURSOR_HOOKS = [
+    ("pre_tool_use", "beforeShellExecution"),
+    ("user_prompt_submit", "beforeSubmitPrompt"),
+    ("stop", "stop"),
+    ("subagent_stop", "subagentStop"),
+    ("stop_failure", "afterAgentResponse"),
+]
+
+
+@pytest.mark.parametrize("handler_name,hook_event_name", _FOREIGN_CURSOR_HOOKS)
+def test_foreign_cursor_payload_writes_no_claude_event(
+    monkeypatch,
+    env: Path,
+    handler_name: str,
+    hook_event_name: str,
+):
+    sid = f"foreign-{handler_name}"
+    _stdin(monkeypatch, {"session_id": sid, "cwd": "/claude/project"})
+    hooks.session_start()
+    before = list(Store(Config.load()).reader(f"claude:{sid}").iter_events())
+
+    _stdin(
+        monkeypatch,
+        {
+            "session_id": sid,
+            "cwd": "/cursor/project",
+            "hook_event_name": hook_event_name,
+            "cursor_version": "1.7.0",
+            "prompt": "must not be stored",
+            "response": "must not be stored",
+            "error": "must not be stored",
+        },
+    )
+    getattr(hooks, handler_name)()
+
+    after = list(Store(Config.load()).reader(f"claude:{sid}").iter_events())
+    assert after == before
+
+
+def test_foreign_payload_does_not_change_open_turn_marker(monkeypatch, env: Path):
+    sid = "foreign-marker"
+    _stdin(
+        monkeypatch,
+        {
+            "session_id": sid,
+            "cwd": "/claude/project",
+            "hook_event_name": "UserPromptSubmit",
+            "prompt": "genuine Claude turn",
+        },
+    )
+    hooks.user_prompt_submit()
+    marker_path = hooks._open_turn_path(session_dir(env, "claude", sid))
+    marker_before = marker_path.read_bytes()
+
+    _stdin(
+        monkeypatch,
+        {
+            "session_id": sid,
+            "cwd": "/cursor/project",
+            "hook_event_name": "stop",
+            "cursor_version": "1.7.0",
+            "response": "foreign completion",
+        },
+    )
+    hooks.stop()
+
+    assert marker_path.exists(), "foreign Stop must not close the genuine Claude turn"
+    assert marker_path.read_bytes() == marker_before
+    events = list(Store(Config.load()).reader(f"claude:{sid}").iter_events())
+    assert [event["t"] for event in events] == ["user_message"]
+
+
+def test_foreign_payload_logs_one_warning_with_reason_and_session(monkeypatch, env: Path):
+    payload = {
+        "session_id": "foreign-warning-session",
+        "cwd": "/cursor/project",
+        "hook_event_name": "beforeShellExecution",
+    }
+    expected_reason = foreign_payload_reason(payload, expected="claude")
+    assert expected_reason is not None
+    _stdin(monkeypatch, payload)
+
+    hooks.pre_tool_use()
+
+    entries = _error_log_entries(env)
+    assert len(entries) == 1
+    assert entries[0]["level"] == "warn"
+    assert entries[0]["phase"] == "foreign_payload"
+    assert entries[0]["platform"] == "claude"
+    assert entries[0]["session_id"] == "foreign-warning-session"
+    assert expected_reason in entries[0]["message"]
+
+
+def test_foreign_payload_emits_no_hook_invoked_info_breadcrumb(monkeypatch, env: Path):
+    _stdin(
+        monkeypatch,
+        {
+            "session_id": "foreign-no-info",
+            "cwd": "/cursor/project",
+            "composer_mode": "agent",
+        },
+    )
+
+    hooks.pre_tool_use()
+
+    entries = _error_log_entries(env)
+    assert len(entries) == 1
+    assert entries[0]["phase"] == "foreign_payload"
+    assert not any(entry["phase"] == "hook_invoked" for entry in entries)
+    assert not any(entry["level"] == "info" for entry in entries)
+
+
+def test_genuine_claude_payload_records_unchanged(monkeypatch, env: Path):
+    payload = {
+        "session_id": "genuine-claude",
+        "cwd": "/claude/project",
+        "hook_event_name": "PreToolUse",
+        "tool_name": "Read",
+        "tool_use_id": "tool-1",
+        "tool_input": {"file_path": "README.md"},
+    }
+    _stdin(monkeypatch, payload)
+
+    hooks.pre_tool_use()
+
+    events = list(Store(Config.load()).reader("claude:genuine-claude").iter_events())
+    assert len(events) == 1
+    assert events[0]["t"] == "tool_call"
+    assert events[0]["data"] == {
+        key: value for key, value in payload.items() if key not in {"session_id", "cwd"}
+    }
+    assert not any(entry["phase"] == "foreign_payload" for entry in _error_log_entries(env))
+
+
+def test_missing_hook_event_name_fails_open_and_records(monkeypatch, env: Path):
+    _stdin(
+        monkeypatch,
+        {
+            "session_id": "missing-event-name",
+            "cwd": "/claude/project",
+            "tool_name": "Read",
+            "tool_use_id": "tool-without-event-name",
+        },
+    )
+
+    hooks.pre_tool_use()
+
+    events = list(Store(Config.load()).reader("claude:missing-event-name").iter_events())
+    assert len(events) == 1
+    assert events[0]["t"] == "tool_call"
+    assert events[0]["data"]["tool_use_id"] == "tool-without-event-name"
+    assert not any(entry["phase"] == "foreign_payload" for entry in _error_log_entries(env))
+
+
+def test_rejection_writes_nothing_to_stdout_or_stderr(monkeypatch, env: Path, capsys):
+    _stdin(
+        monkeypatch,
+        {
+            "session_id": "foreign-silent",
+            "cwd": "/cursor/project",
+            "hook_event_name": "beforeSubmitPrompt",
+        },
+    )
+
+    hooks.user_prompt_submit()
+
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    assert captured.err == ""
 
 
 class TestHookInvocationBreadcrumbs:
