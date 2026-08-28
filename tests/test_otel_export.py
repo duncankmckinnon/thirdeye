@@ -759,7 +759,7 @@ class TestExportSpansBatch:
         )
 
         [tool_span] = exporter.exported_spans_as_dict()
-        assert tool_span["attributes"]["command"] == "pwd"
+        assert tool_span["attributes"]["gen_ai.tool.call.arguments"] == "pwd"
         assert tool_span["attributes"]["gen_ai.conversation.id"] == "s1"
         assert tool_span["attributes"]["thirdeye.platform"] == "claude"
         assert tool_span["attributes"]["thirdeye.cwd"] == "/proj"
@@ -779,7 +779,7 @@ class TestExportSpansBatch:
         )
 
         [tool_span] = exporter.exported_spans_as_dict()
-        assert tool_span["attributes"]["command"] == "x"
+        assert tool_span["attributes"]["gen_ai.tool.call.arguments"] == "x"
         assert json.loads(tool_span["attributes"]["attributes"]) == {"mode": "safe"}
 
 
@@ -1075,7 +1075,7 @@ class TestExportTurnInner:
         assert tool_span["parent"]["span_id"] == chat_span["context"]["span_id"]
         assert chat_span["attributes"]["gen_ai.usage.input_tokens"] == 100
         assert chat_span["attributes"]["gen_ai.usage.output_tokens"] == 50
-        assert tool_span["attributes"]["command"] == "ls"
+        assert tool_span["attributes"]["gen_ai.tool.call.arguments"] == "ls"
         assert tool_span["attributes"]["gen_ai.conversation.id"] == "s1"
 
     def test_permission_request_is_a_point_in_time_span_under_the_turn(
@@ -1640,3 +1640,36 @@ class TestProviderAttribution:
         )
 
         assert "gen_ai.provider.name" not in attributes
+
+    def test_projected_tool_payload_is_moved_not_copied(self):
+        """The GenAI projection must not ship the same body twice.
+
+        `command`/`output` are projected onto `gen_ai.tool.call.*`; leaving the
+        source key on the span doubles every tool span's wire size.
+        """
+        attributes = otel_export._tool_attributes(
+            {"command": "ls -la", "output": "README.md", "exit_code": 0},
+            session_id="s1",
+            platform="claude",
+            cwd="/proj",
+        )
+
+        assert attributes["gen_ai.tool.call.arguments"] == "ls -la"
+        assert attributes["gen_ai.tool.call.result"] == "README.md"
+        assert "command" not in attributes
+        assert "output" not in attributes
+        # Unprojected raw fields still ride along for local fidelity.
+        assert attributes["exit_code"] == 0
+
+    def test_adapter_supplied_tool_payload_keeps_its_raw_fields(self):
+        """Nothing is consumed when the adapter already set the semantic keys,
+        so the raw payload is left exactly as the adapter built it."""
+        attributes = otel_export._tool_attributes(
+            {"gen_ai.tool.call.arguments": "already-set", "command": "ls"},
+            session_id="s1",
+            platform="claude",
+            cwd="/proj",
+        )
+
+        assert attributes["gen_ai.tool.call.arguments"] == "already-set"
+        assert attributes["command"] == "ls"

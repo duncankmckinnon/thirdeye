@@ -176,10 +176,43 @@ def _tool_span(
     }
 
 
+def _pair_key(data: dict[str, Any], family: str, name: str) -> str:
+    """Identify a tool invocation well enough to pair its before/after events.
+
+    Cursor supplies no tool call id on the shell callbacks, so fall back to the
+    payload body (the command or tool input), which the after-callback echoes
+    on some Cursor versions. Degrades to `family:name` when nothing is echoed.
+    """
+    explicit = _text(
+        data, "tool_call_id", "toolCallId", "tool_use_id", "toolUseId", "call_id", "callId"
+    )
+    if explicit:
+        return f"id:{explicit}"
+    signature = _text(data, "command", "tool_input", "toolInput", "arguments")
+    return f"{family}:{name}:{signature}" if signature else f"{family}:{name}"
+
+
+def _take_open_call(
+    open_calls: list[tuple[str, str, dict[str, Any]]], key: str, family: str
+) -> dict[str, Any] | None:
+    """Claim the open call matching `key`, else the oldest of the same family.
+
+    Both passes take the earliest match: tools that complete in dispatch order
+    are the common case, and a LIFO match would reverse exactly those.
+    """
+    for index, (open_key, _, _event) in enumerate(open_calls):
+        if open_key == key:
+            return open_calls.pop(index)[2]
+    for index, (_, open_family, _event) in enumerate(open_calls):
+        if open_family == family:
+            return open_calls.pop(index)[2]
+    return None
+
+
 def tool_calls_for_generation(
     events: list[dict[str, Any]], session_id: str, generation_id: str
 ) -> list[ToolCallSpanDict]:
-    open_tools: dict[str, list[dict[str, Any]]] = {}
+    open_calls: list[tuple[str, str, dict[str, Any]]] = []
     completed: list[ToolCallSpanDict] = []
     for event in events:
         event_type = str(event.get("t") or "")
@@ -187,11 +220,10 @@ def tool_calls_for_generation(
         name = _text(data, "tool_name", "toolName", "name", "tool") or "unknown"
         family = str(data.get("cursor_tool_family") or name)
         if event_type == "tool_call" and not data.get("cursor_instant"):
-            open_tools.setdefault(family, []).append(event)
+            open_calls.append((_pair_key(data, family, name), family, event))
             continue
         if event_type == "tool_result" and not data.get("cursor_instant"):
-            stack = open_tools.get(family) or []
-            start = stack.pop() if stack else event
+            start = _take_open_call(open_calls, _pair_key(data, family, name), family) or event
             completed.append(
                 _tool_span(
                     session_id=session_id,
@@ -251,7 +283,7 @@ def build_turn(
     committed_tools = committed_tool_call_ids(session_dir_, generation_id)
     tools = [tool for tool in tools if tool["tool_call_id"] not in committed_tools]
     llm_calls = []
-    if prompt or response or model or usage:
+    if prompt or response or model or usage or tools:
         llm_calls.append(
             {
                 "call_id": generation_id,

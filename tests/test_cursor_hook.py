@@ -79,3 +79,30 @@ def test_hook_fires_live_export_only_when_shell_tool_completes(tmp_path: Path, m
         {**common, "hook_event_name": "afterShellExecution", "output": "passed"},
     )
     assert len(emitted) == 1
+
+
+def test_hook_records_turn_stop_even_without_generation_id(tmp_path: Path, monkeypatch):
+    """A `stop` with no generation_id still belongs in the event log.
+
+    It is the only payload carrying the model and token counts. Without a
+    generation_id there is nothing to correlate a turn span to, but dropping
+    the event loses that data from local history too.
+    """
+    monkeypatch.setenv("THIRDEYE_HOME", str(tmp_path))
+    exported = []
+    monkeypatch.setattr("thirdeye.otel_export.export_turn", lambda *args: exported.append(args))
+    _invoke(
+        monkeypatch,
+        {
+            "conversation_id": "session-1",
+            "cwd": "/repo",
+            "hook_event_name": "stop",
+            "model": "gpt-5",
+            "input_tokens": 2,
+            "output_tokens": 1,
+        },
+    )
+    events = list(Store(Config.load()).reader("session-1").iter_events())
+    assert [event["t"] for event in events] == ["turn_stop"]
+    assert events[0]["data"]["model"] == "gpt-5"
+    assert exported == []

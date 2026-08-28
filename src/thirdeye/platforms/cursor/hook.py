@@ -231,8 +231,7 @@ def _capture_usage(config: Config, session_id: str, payload: dict[str, Any], seq
 
 def _stop(payload: dict[str, Any]) -> None:
     session_id = _session_id(payload)
-    generation_id = _generation_id(payload)
-    if not session_id or not generation_id:
+    if not session_id:
         return
     config = Config.load()
     cwd = _cwd(payload)
@@ -240,6 +239,11 @@ def _stop(payload: dict[str, Any]) -> None:
     if seq is None:
         return
     _capture_usage(config, session_id, payload, seq)
+    # `turn_stop` carries the model and token counts, so it is persisted even
+    # when Cursor omits the generation_id. Only the turn span needs the id.
+    generation_id = _generation_id(payload)
+    if not generation_id:
+        return
     try:
         from thirdeye.otel_export import export_turn
         from thirdeye.platforms.cursor.tracing import build_turn

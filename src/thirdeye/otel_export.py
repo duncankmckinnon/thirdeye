@@ -998,20 +998,26 @@ def _tool_attributes(
         semantic["gen_ai.tool.name"] = tool_name
     if tool_call_id:
         semantic["gen_ai.tool.call.id"] = tool_call_id
+    # Projected payload is moved, not copied: leaving the source key on the
+    # span would ship the same (potentially large) body twice.
+    consumed: set[str] = set()
     if "gen_ai.tool.call.arguments" not in attributes:
         for key in ("tool_input", "arguments", "input", "command"):
             if key in attributes and attributes[key] not in (None, ""):
                 semantic["gen_ai.tool.call.arguments"] = attributes[key]
+                consumed.add(key)
                 break
     if "gen_ai.tool.call.result" not in attributes:
         for key in ("tool_response", "tool_result", "result", "output"):
             if key in attributes and attributes[key] not in (None, ""):
                 semantic["gen_ai.tool.call.result"] = attributes[key]
+                consumed.add(key)
                 break
+    raw = {k: v for k, v in attributes.items() if k not in consumed} if consumed else attributes
     return _flatten_attrs(
         _merge_raw(
             semantic,
-            attributes,
+            raw,
             _identity_attributes(
                 session_id=session_id,
                 platform=platform,
