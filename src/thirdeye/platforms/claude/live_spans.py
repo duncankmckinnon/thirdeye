@@ -106,7 +106,7 @@ def _trace_id(session_dir_: Path, session_id: str) -> int:
         state = json.loads(otel_state_path(session_dir_).read_text())
         return int(state["trace_id"], 16)
     except (OSError, TypeError, ValueError, KeyError, json.JSONDecodeError):
-        return trace_id_for_session(session_id)
+        return trace_id_for_session(_PLATFORM, session_id)
 
 
 def _chat_span(
@@ -115,7 +115,7 @@ def _chat_span(
     model = call.get("model") or ""
     return {
         "name": f"chat {model}" if model else "chat",
-        "span_id": chat_span_id(session_id, call["call_id"]),
+        "span_id": chat_span_id(_PLATFORM, session_id, call["call_id"]),
         "parent_span_id": turn_id,
         # A live span's `agent-turn` parent is not exported until Stop, so
         # until then it has no parent row to inherit turn identity from. Carry
@@ -141,7 +141,7 @@ def _tool_span(
         "name": f"tool: {tool_call['name']}",
         "tool_name": tool_call["name"],
         "tool_call_id": tool_use_id,
-        "span_id": tool_span_id(session_id, tool_use_id),
+        "span_id": tool_span_id(_PLATFORM, session_id, tool_use_id),
         "parent_span_id": parent_span_id,
         "turn_seq": turn_seq,
         "turn_span_id": str(turn_id),
@@ -231,7 +231,7 @@ def _emit_live_spans(
                         _tool_span(
                             session_id,
                             sibling_id,
-                            chat_span_id(session_id, call["call_id"]),
+                            chat_span_id(_PLATFORM, session_id, call["call_id"]),
                             turn_id,
                             turn_seq,
                             sibling_tool_call,
@@ -249,7 +249,7 @@ def _emit_live_spans(
                 _tool_span(
                     session_id,
                     tool_use_id,
-                    chat_span_id(session_id, requesting_call_id),
+                    chat_span_id(_PLATFORM, session_id, requesting_call_id),
                     turn_id,
                     turn_seq,
                     tool_call,
