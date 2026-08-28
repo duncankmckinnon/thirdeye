@@ -261,6 +261,10 @@ def _stop(payload: dict[str, Any]) -> None:
         pass
 
 
+def _subagent_stop(payload: dict[str, Any]) -> None:
+    _emit(payload, "subagent_message")
+
+
 _HANDLERS: dict[str, Callable[[dict[str, Any]], None]] = {
     "sessionStart": _session_start,
     "sessionEnd": _session_end,
@@ -276,6 +280,7 @@ _HANDLERS: dict[str, Callable[[dict[str, Any]], None]] = {
     "beforeTabFileRead": lambda p: _instant_tool(p, "tool_call", "read_file_tab"),
     "afterTabFileEdit": lambda p: _instant_tool(p, "tool_result", "edit_file_tab"),
     "postToolUse": _post_tool_use,
+    "subagentStop": _subagent_stop,
     "stop": _stop,
 }
 
