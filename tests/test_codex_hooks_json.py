@@ -66,6 +66,14 @@ def test_foreign_cursor_payload_writes_no_codex_event(
     hook_event_name: str,
 ):
     """A colliding Cursor id must not create or mutate a Codex session."""
+    store = Store(Config.load())
+    store.append_event(
+        session_id="shared-session-id",
+        platform="cursor",
+        cwd="/cursor/project",
+        t="session_start",
+        data={"source": "cursor"},
+    )
     _stdin(
         monkeypatch,
         {
@@ -80,8 +88,12 @@ def test_foreign_cursor_payload_writes_no_codex_event(
 
     handler()
 
-    assert list(Store(Config.load()).list_sessions()) == []
-    assert _events("shared-session-id") == []
+    assert list(store.list_sessions(platform="codex")) == []
+    assert not session_dir(env, "codex", "shared-session-id").exists()
+    cursor_events = list(store.reader("cursor:shared-session-id").iter_events())
+    assert [(event["t"], event["data"]) for event in cursor_events] == [
+        ("session_start", {"source": "cursor"})
+    ]
 
 
 def test_foreign_subagent_event_does_not_reap_interrupt_marker(monkeypatch, env: Path):
@@ -104,7 +116,38 @@ def test_foreign_subagent_event_does_not_reap_interrupt_marker(monkeypatch, env:
     hooks_json.subagent_stop()
 
     assert calls == []
-    assert _events("shared-session-id") == []
+    assert not session_dir(env, "codex", "shared-session-id").exists()
+
+
+@pytest.mark.parametrize(
+    ("handler", "hook_event_name"),
+    [
+        (hooks_json.permission_request, "beforeShellExecution"),
+        (hooks_json.pre_compact, "preCompact"),
+        (hooks_json.post_compact, "postCompact"),
+    ],
+    ids=["permission_request", "pre_compact", "post_compact"],
+)
+def test_foreign_cursor_payload_is_rejected_by_other_emitters(
+    monkeypatch,
+    env: Path,
+    handler,
+    hook_event_name: str,
+):
+    _stdin(
+        monkeypatch,
+        {
+            "session_id": "shared-session-id",
+            "cwd": "/cursor/project",
+            "hook_event_name": hook_event_name,
+            "cursor_version": "1.2.3",
+        },
+    )
+
+    handler()
+
+    assert list(Store(Config.load()).list_sessions(platform="codex")) == []
+    assert not session_dir(env, "codex", "shared-session-id").exists()
 
 
 def test_foreign_session_end_does_not_close_marker_or_session(monkeypatch, env: Path):
