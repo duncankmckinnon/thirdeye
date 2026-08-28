@@ -40,9 +40,12 @@ def _read_stdin() -> dict:
     if not raw:
         return {}
     try:
-        return json.loads(raw)
+        value = json.loads(raw)
     except json.JSONDecodeError:
         return {}
+    # Valid JSON that is not an object (array, scalar, null) would make every
+    # caller's payload.get() raise; fail open with an empty payload instead.
+    return value if isinstance(value, dict) else {}
 
 
 def _strip_payload(payload: dict) -> dict:

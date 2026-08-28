@@ -22,6 +22,10 @@ from thirdeye.usage.store import UsageStore
 @pytest.fixture
 def env(monkeypatch, tmp_path: Path):
     monkeypatch.setenv("THIRDEYE_HOME", str(tmp_path))
+    # Running the suite under a harness that exports WB_*/THIRDEYE_CAPTURE_ENV
+    # would otherwise leak ambient env auto-tags into tag-store assertions.
+    # Tests that exercise env capture set the variable themselves.
+    monkeypatch.delenv("THIRDEYE_CAPTURE_ENV", raising=False)
     return tmp_path
 
 
@@ -993,7 +997,12 @@ def test_non_object_json_payload_fails_open_without_side_effects(
     getattr(hooks, handler_name)()
 
     assert list(Store(Config.load()).list_sessions()) == []
-    assert _error_log_entries(env) == []
+    # A non-object payload is handled exactly like an empty one: handlers that
+    # always breadcrumb still log their info-level "hook_invoked" entry, but
+    # nothing is stored and nothing is rejected as a foreign payload.
+    entries = _error_log_entries(env)
+    assert {entry["phase"] for entry in entries} <= {"hook_invoked"}
+    assert all(entry["level"] == "info" for entry in entries)
 
 
 def test_foreign_payload_skips_lifecycle_and_export_side_effects(monkeypatch, env: Path):

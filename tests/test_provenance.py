@@ -4,6 +4,7 @@ from copy import deepcopy
 from typing import Any
 
 import pytest
+
 from thirdeye.platforms.provenance import foreign_payload_reason
 
 _PASCAL_CASE_EVENTS = [
