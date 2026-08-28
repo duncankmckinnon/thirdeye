@@ -26,28 +26,59 @@ def expected_id(value: str, digest_size: int) -> int:
 @pytest.mark.parametrize(
     ("derive", "expected_input", "digest_size"),
     [
-        (lambda: trace_id_for_session("session-123"), "session-123", 16),
-        (lambda: root_span_id_for_session("session-123"), "session-123/root", 8),
-        (lambda: turn_span_id("session-123", 42), "session-123/turn/42", 8),
-        (lambda: chat_span_id("session-123", "message-456"), "session-123/call/message-456", 8),
-        (lambda: tool_span_id("session-123", "tool-789"), "session-123/tool/tool-789", 8),
+        (lambda: trace_id_for_session("claude", "session-123"), "claude/session-123", 16),
+        (lambda: root_span_id_for_session("claude", "session-123"), "claude/session-123/root", 8),
+        (lambda: turn_span_id("claude", "session-123", 42), "claude/session-123/turn/42", 8),
+        (
+            lambda: chat_span_id("claude", "session-123", "message-456"),
+            "claude/session-123/call/message-456",
+            8,
+        ),
+        (
+            lambda: tool_span_id("claude", "session-123", "tool-789"),
+            "claude/session-123/tool/tool-789",
+            8,
+        ),
     ],
 )
-def test_ids_follow_the_blake2b_derivation_contract(derive, expected_input, digest_size):
+def test_ids_follow_platform_scoped_derivation_contract(derive, expected_input, digest_size):
     assert derive() == expected_id(expected_input, digest_size)
 
 
+def test_same_session_id_differs_across_platforms():
+    claude_ids = (
+        trace_id_for_session("claude", "shared-session"),
+        root_span_id_for_session("claude", "shared-session"),
+        turn_span_id("claude", "shared-session", 7),
+        chat_span_id("claude", "shared-session", "message"),
+        tool_span_id("claude", "shared-session", "tool"),
+    )
+    cursor_ids = (
+        trace_id_for_session("cursor", "shared-session"),
+        root_span_id_for_session("cursor", "shared-session"),
+        turn_span_id("cursor", "shared-session", 7),
+        chat_span_id("cursor", "shared-session", "message"),
+        tool_span_id("cursor", "shared-session", "tool"),
+    )
+
+    assert all(
+        claude_id != cursor_id for claude_id, cursor_id in zip(claude_ids, cursor_ids, strict=True)
+    )
+
+
 def test_non_ascii_inputs_are_encoded_as_utf8():
-    assert chat_span_id("sessiøn-👁", "méssage-雪") == expected_id("sessiøn-👁/call/méssage-雪", 8)
+    assert chat_span_id("cursør-🖱", "sessiøn-👁", "méssage-雪") == expected_id(
+        "cursør-🖱/sessiøn-👁/call/méssage-雪", 8
+    )
 
 
-def test_same_inputs_are_deterministic():
+def test_same_platform_inputs_are_deterministic():
     calls = [
-        lambda: trace_id_for_session("session"),
-        lambda: root_span_id_for_session("session"),
-        lambda: turn_span_id("session", 7),
-        lambda: chat_span_id("session", "message"),
-        lambda: tool_span_id("session", "tool"),
+        lambda: trace_id_for_session("claude", "session"),
+        lambda: root_span_id_for_session("claude", "session"),
+        lambda: turn_span_id("claude", "session", 7),
+        lambda: chat_span_id("claude", "session", "message"),
+        lambda: tool_span_id("claude", "session", "tool"),
     ]
 
     for derive in calls:
@@ -66,11 +97,11 @@ from thirdeye.span_ids import (
 )
 
 print(json.dumps([
-    trace_id_for_session("session"),
-    root_span_id_for_session("session"),
-    turn_span_id("session", 7),
-    chat_span_id("session", "message"),
-    tool_span_id("session", "tool"),
+    trace_id_for_session("claude", "session"),
+    root_span_id_for_session("claude", "session"),
+    turn_span_id("claude", "session", 7),
+    chat_span_id("claude", "session", "message"),
+    tool_span_id("claude", "session", "tool"),
 ]))
 """
 
@@ -91,36 +122,69 @@ print(json.dumps([
 
 
 @pytest.mark.parametrize(
-    "first, second",
+    ("first", "second"),
     [
-        (trace_id_for_session("session-a"), trace_id_for_session("session-b")),
-        (root_span_id_for_session("session-a"), root_span_id_for_session("session-b")),
-        (turn_span_id("session-a", 1), turn_span_id("session-b", 1)),
-        (chat_span_id("session-a", "1"), chat_span_id("session-b", "1")),
-        (tool_span_id("session-a", "1"), tool_span_id("session-b", "1")),
-        (turn_span_id("session", 1), turn_span_id("session", 2)),
-        (chat_span_id("session", "message-a"), chat_span_id("session", "message-b")),
-        (tool_span_id("session", "tool-a"), tool_span_id("session", "tool-b")),
-        (turn_span_id("session", 1), chat_span_id("session", "1")),
-        (turn_span_id("session", 1), tool_span_id("session", "1")),
-        (chat_span_id("session", "1"), tool_span_id("session", "1")),
+        (
+            lambda: trace_id_for_session("claude", "session-a"),
+            lambda: trace_id_for_session("claude", "session-b"),
+        ),
+        (
+            lambda: root_span_id_for_session("claude", "session-a"),
+            lambda: root_span_id_for_session("claude", "session-b"),
+        ),
+        (
+            lambda: turn_span_id("claude", "session-a", 1),
+            lambda: turn_span_id("claude", "session-b", 1),
+        ),
+        (
+            lambda: chat_span_id("claude", "session-a", "1"),
+            lambda: chat_span_id("claude", "session-b", "1"),
+        ),
+        (
+            lambda: tool_span_id("claude", "session-a", "1"),
+            lambda: tool_span_id("claude", "session-b", "1"),
+        ),
+        (
+            lambda: turn_span_id("claude", "session", 1),
+            lambda: turn_span_id("claude", "session", 2),
+        ),
+        (
+            lambda: chat_span_id("claude", "session", "message-a"),
+            lambda: chat_span_id("claude", "session", "message-b"),
+        ),
+        (
+            lambda: tool_span_id("claude", "session", "tool-a"),
+            lambda: tool_span_id("claude", "session", "tool-b"),
+        ),
+        (
+            lambda: turn_span_id("claude", "session", 1),
+            lambda: chat_span_id("claude", "session", "1"),
+        ),
+        (
+            lambda: turn_span_id("claude", "session", 1),
+            lambda: tool_span_id("claude", "session", "1"),
+        ),
+        (
+            lambda: chat_span_id("claude", "session", "1"),
+            lambda: tool_span_id("claude", "session", "1"),
+        ),
     ],
 )
 def test_ids_are_distinct_across_inputs_and_domains(first, second):
-    assert first != second
+    assert first() != second()
 
 
 def test_ids_are_nonzero_and_fit_otel_widths():
-    trace_ids = [trace_id_for_session(value) for value in ("", "session-a", "session-b")]
+    trace_ids = [trace_id_for_session("claude", value) for value in ("", "session-a", "session-b")]
     span_ids = [
-        root_span_id_for_session(""),
-        root_span_id_for_session("session"),
-        turn_span_id("session", 0),
-        turn_span_id("session", 2**63),
-        chat_span_id("session", ""),
-        chat_span_id("session", "message"),
-        tool_span_id("session", ""),
-        tool_span_id("session", "tool"),
+        root_span_id_for_session("claude", ""),
+        root_span_id_for_session("claude", "session"),
+        turn_span_id("claude", "session", 0),
+        turn_span_id("claude", "session", 2**63),
+        chat_span_id("claude", "session", ""),
+        chat_span_id("claude", "session", "message"),
+        tool_span_id("claude", "session", ""),
+        tool_span_id("claude", "session", "tool"),
     ]
 
     assert all(0 < value < 2**128 for value in trace_ids)
@@ -142,8 +206,23 @@ def test_all_zero_digest_is_replaced_with_one(monkeypatch):
 
     monkeypatch.setattr(span_ids.hashlib, "blake2b", fake_blake2b)
 
-    assert trace_id_for_session("session") == 1
-    assert root_span_id_for_session("session") == 1
-    assert turn_span_id("session", 1) == 1
-    assert chat_span_id("session", "message") == 1
-    assert tool_span_id("session", "tool") == 1
+    assert trace_id_for_session("claude", "session") == 1
+    assert root_span_id_for_session("claude", "session") == 1
+    assert turn_span_id("claude", "session", 1) == 1
+    assert chat_span_id("claude", "session", "message") == 1
+    assert tool_span_id("claude", "session", "tool") == 1
+
+
+@pytest.mark.parametrize(
+    ("derive", "legacy_args"),
+    [
+        (trace_id_for_session, ("session",)),
+        (root_span_id_for_session, ("session",)),
+        (turn_span_id, ("session", 1)),
+        (chat_span_id, ("session", "message")),
+        (tool_span_id, ("session", "tool")),
+    ],
+)
+def test_platform_argument_is_required(derive, legacy_args):
+    with pytest.raises(TypeError):
+        derive(*legacy_args)
