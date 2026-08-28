@@ -29,17 +29,24 @@ TRACED_EVENTS: tuple[str, ...] = (
     "stop",
 )
 
-DEDICATED_TOOL_NAMES = frozenset(
+READ_TOOL_NAMES = frozenset(
+    {
+        "read_file",
+        "read",
+        "view_file",
+        "view",
+    }
+)
+
+# Tools in this set have a dedicated Cursor completion hook, so their generic
+# postToolUse notification would duplicate the result event.
+DEDICATED_AFTER_TOOL_NAMES = frozenset(
     {
         "shell",
         "terminal",
         "bash",
         "run_command",
         "run_shell",
-        "read_file",
-        "read",
-        "view_file",
-        "view",
         "edit_file",
         "edit",
         "write_file",

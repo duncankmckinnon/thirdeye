@@ -12,7 +12,11 @@ from thirdeye.config import Config
 from thirdeye.env_capture import capture_env, env_to_tag
 from thirdeye.meta import read_meta, write_meta
 from thirdeye.paths import meta_path, session_dir
-from thirdeye.platforms.cursor.constants import DEDICATED_TOOL_NAMES, STRIP_KEYS
+from thirdeye.platforms.cursor.constants import (
+    DEDICATED_AFTER_TOOL_NAMES,
+    READ_TOOL_NAMES,
+    STRIP_KEYS,
+)
 from thirdeye.store import Store
 from thirdeye.tags import TagStore, extract_hashtags
 
@@ -187,6 +191,14 @@ def _instant_tool(payload: dict[str, Any], event_type: str, name: str) -> None:
     _emit_live(payload, seq)
 
 
+def _before_read(payload: dict[str, Any]) -> None:
+    _emit(
+        payload,
+        "tool_call",
+        {"tool_name": "read_file", "cursor_tool_family": "read_file"},
+    )
+
+
 def _emit_live(payload: dict[str, Any], seq: int | None) -> None:
     session_id = _session_id(payload)
     generation_id = _generation_id(payload)
@@ -210,7 +222,16 @@ def _emit_live(payload: dict[str, Any], seq: int | None) -> None:
 
 def _post_tool_use(payload: dict[str, Any]) -> None:
     name = _tool_name(payload, "unknown")
-    if name.lower() in DEDICATED_TOOL_NAMES:
+    normalized_name = name.lower()
+    if normalized_name in DEDICATED_AFTER_TOOL_NAMES:
+        return
+    if normalized_name in READ_TOOL_NAMES:
+        seq = _emit(
+            payload,
+            "tool_result",
+            {"tool_name": "read_file", "cursor_tool_family": "read_file"},
+        )
+        _emit_live(payload, seq)
         return
     _instant_tool(payload, "tool_result", name)
 
@@ -275,7 +296,7 @@ _HANDLERS: dict[str, Callable[[dict[str, Any]], None]] = {
     "afterShellExecution": _after_shell,
     "beforeMCPExecution": _before_mcp,
     "afterMCPExecution": _after_mcp,
-    "beforeReadFile": lambda p: _instant_tool(p, "tool_call", "read_file"),
+    "beforeReadFile": _before_read,
     "afterFileEdit": lambda p: _instant_tool(p, "tool_result", "edit_file"),
     "beforeTabFileRead": lambda p: _instant_tool(p, "tool_call", "read_file_tab"),
     "afterTabFileEdit": lambda p: _instant_tool(p, "tool_result", "edit_file_tab"),
