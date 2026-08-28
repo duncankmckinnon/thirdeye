@@ -970,6 +970,89 @@ def test_rejection_writes_nothing_to_stdout_or_stderr(monkeypatch, env: Path, ca
     assert captured.err == ""
 
 
+def test_foreign_payload_skips_lifecycle_and_export_side_effects(monkeypatch, env: Path):
+    def unexpected(*args, **kwargs):
+        pytest.fail("foreign payload reached a Claude lifecycle or export side effect")
+
+    from thirdeye import otel_export
+    from thirdeye.platforms.claude import live_spans, usage
+
+    monkeypatch.setattr(hooks, "capture_env", unexpected)
+    monkeypatch.setattr(hooks, "_close_stale_turn_if_open", unexpected)
+    monkeypatch.setattr(Store, "close_session", unexpected)
+    monkeypatch.setattr(usage, "capture_usage_claude", unexpected)
+    monkeypatch.setattr(live_spans, "emit_live_spans", unexpected)
+    monkeypatch.setattr(otel_export, "export_turn", unexpected)
+    monkeypatch.setattr(otel_export, "export_subagent_turn", unexpected)
+
+    handlers = (
+        hooks.session_start,
+        hooks.post_tool_use,
+        hooks.stop,
+        hooks.subagent_stop,
+        hooks.stop_failure,
+        hooks.session_end,
+    )
+    for handler in handlers:
+        _stdin(
+            monkeypatch,
+            {
+                "session_id": f"foreign-side-effect-{handler.__name__}",
+                "cwd": "/cursor/project",
+                "hook_event_name": "stop",
+                "cursor_version": "1.7.0",
+                "tool_use_id": "foreign-tool",
+            },
+        )
+        handler()
+
+
+def test_foreign_payload_stays_rejected_when_warning_write_fails(monkeypatch, env: Path):
+    def broken_warning(**kwargs):
+        raise OSError("read-only log directory")
+
+    sid = "foreign-warning-failure"
+    _stdin(monkeypatch, {"session_id": sid, "cwd": "/claude/project"})
+    hooks.session_start()
+    before = list(Store(Config.load()).reader(f"claude:{sid}").iter_events())
+
+    monkeypatch.setattr(hooks, "log_capture_error", broken_warning)
+    _stdin(
+        monkeypatch,
+        {
+            "session_id": sid,
+            "cwd": "/cursor/project",
+            "hook_event_name": "beforeShellExecution",
+        },
+    )
+
+    hooks.pre_tool_use()
+
+    after = list(Store(Config.load()).reader(f"claude:{sid}").iter_events())
+    assert after == before
+
+
+def test_provenance_classifier_failure_fails_open_and_records(monkeypatch, env: Path):
+    def broken_classifier(payload, expected):
+        raise ValueError("unexpected payload shape")
+
+    monkeypatch.setattr(hooks, "foreign_payload_reason", broken_classifier)
+    _stdin(
+        monkeypatch,
+        {
+            "session_id": "classifier-failure",
+            "cwd": "/claude/project",
+            "hook_event_name": "PreToolUse",
+            "tool_name": "Read",
+        },
+    )
+
+    hooks.pre_tool_use()
+
+    events = list(Store(Config.load()).reader("claude:classifier-failure").iter_events())
+    assert [event["t"] for event in events] == ["tool_call"]
+
+
 class TestHookInvocationBreadcrumbs:
     def test_post_tool_use_logs_breadcrumb_even_without_session_id(self, monkeypatch, env: Path):
         _stdin(monkeypatch, {"cwd": "/p", "tool_use_id": "tu_missing_session"})
