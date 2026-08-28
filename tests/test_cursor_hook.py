@@ -56,6 +56,22 @@ def test_hook_always_prints_permissive_response(monkeypatch, capfd):
     assert '"permission": "allow"' in capfd.readouterr().out
 
 
+def test_unknown_event_is_permissive_and_noop(tmp_path: Path, monkeypatch, capfd):
+    monkeypatch.setenv("THIRDEYE_HOME", str(tmp_path))
+
+    _invoke(
+        monkeypatch,
+        {
+            "conversation_id": "session-1",
+            "hook_event_name": "futureCursorEvent",
+            "payload": "must not be stored",
+        },
+    )
+
+    assert capfd.readouterr().out == '{"continue": true}'
+    assert list(Store(Config.load()).list_sessions()) == []
+
+
 def test_hook_fires_live_export_only_when_shell_tool_completes(tmp_path: Path, monkeypatch):
     monkeypatch.setenv("THIRDEYE_HOME", str(tmp_path))
     emitted = []
