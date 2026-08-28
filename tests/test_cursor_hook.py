@@ -4,6 +4,8 @@ import io
 import json
 from pathlib import Path
 
+import pytest
+
 from thirdeye.config import Config
 from thirdeye.platforms.cursor import hook
 from thirdeye.store import Store
@@ -12,6 +14,10 @@ from thirdeye.store import Store
 def _invoke(monkeypatch, payload: dict) -> None:
     monkeypatch.setattr("sys.stdin", io.StringIO(json.dumps(payload)))
     assert hook.main() == 0
+
+
+def _events() -> list[dict]:
+    return list(Store(Config.load()).reader("session-1").iter_events())
 
 
 def test_hook_captures_cursor_turn_and_dispatches_logfire_export(tmp_path: Path, monkeypatch):
@@ -95,6 +101,212 @@ def test_hook_fires_live_export_only_when_shell_tool_completes(tmp_path: Path, m
         {**common, "hook_event_name": "afterShellExecution", "output": "passed"},
     )
     assert len(emitted) == 1
+
+
+def test_before_read_records_noninstant_normalized_call(tmp_path: Path, monkeypatch):
+    monkeypatch.setenv("THIRDEYE_HOME", str(tmp_path))
+
+    _invoke(
+        monkeypatch,
+        {
+            "conversation_id": "session-1",
+            "generation_id": "generation-1",
+            "cwd": "/repo",
+            "hook_event_name": "beforeReadFile",
+            "tool_name": "Read",
+            "path": "src/app.py",
+        },
+    )
+
+    events = _events()
+    assert len(events) == 1
+    assert events[0]["t"] == "tool_call"
+    assert events[0]["data"]["tool_name"] == "read_file"
+    assert events[0]["data"]["cursor_tool_family"] == "read_file"
+    assert "cursor_instant" not in events[0]["data"]
+
+
+@pytest.mark.parametrize("tool_name", ["Read", "read", "read_file", "view", "view_file"])
+def test_post_read_alias_records_noninstant_result(
+    tmp_path: Path, monkeypatch, tool_name: str
+):
+    monkeypatch.setenv("THIRDEYE_HOME", str(tmp_path))
+
+    _invoke(
+        monkeypatch,
+        {
+            "conversation_id": "session-1",
+            "generation_id": "generation-1",
+            "cwd": "/repo",
+            "hook_event_name": "postToolUse",
+            "tool_name": tool_name,
+            "result": "file contents",
+        },
+    )
+
+    events = _events()
+    assert len(events) == 1
+    assert events[0]["t"] == "tool_result"
+    assert events[0]["data"]["tool_name"] == "read_file"
+    assert events[0]["data"]["cursor_tool_family"] == "read_file"
+    assert "cursor_instant" not in events[0]["data"]
+
+
+def test_read_result_triggers_live_export_once(tmp_path: Path, monkeypatch):
+    monkeypatch.setenv("THIRDEYE_HOME", str(tmp_path))
+    emitted = []
+    monkeypatch.setattr(
+        "thirdeye.platforms.cursor.live_spans.emit_live_tools",
+        lambda *args: emitted.append(args),
+    )
+    common = {
+        "conversation_id": "session-1",
+        "generation_id": "generation-1",
+        "cwd": "/repo",
+    }
+
+    _invoke(
+        monkeypatch,
+        {**common, "hook_event_name": "beforeReadFile", "path": "src/app.py"},
+    )
+    assert emitted == []
+
+    _invoke(
+        monkeypatch,
+        {
+            **common,
+            "hook_event_name": "postToolUse",
+            "tool_name": "Read",
+            "result": "file contents",
+        },
+    )
+    assert len(emitted) == 1
+
+
+@pytest.mark.parametrize(
+    "tool_name",
+    [
+        "shell",
+        "terminal",
+        "bash",
+        "run_command",
+        "run_shell",
+        "mcp",
+        "mcp_execution",
+        "edit_file",
+        "edit",
+        "write_file",
+        "write",
+        "create_file",
+        "delete_file",
+    ],
+)
+def test_post_tool_skips_dedicated_after_aliases(
+    tmp_path: Path, monkeypatch, tool_name: str
+):
+    monkeypatch.setenv("THIRDEYE_HOME", str(tmp_path))
+    emitted = []
+    monkeypatch.setattr(
+        "thirdeye.platforms.cursor.live_spans.emit_live_tools",
+        lambda *args: emitted.append(args),
+    )
+
+    _invoke(
+        monkeypatch,
+        {
+            "conversation_id": "session-1",
+            "generation_id": "generation-1",
+            "cwd": "/repo",
+            "hook_event_name": "postToolUse",
+            "tool_name": tool_name,
+            "result": "ignored duplicate",
+        },
+    )
+
+    assert list(Store(Config.load()).list_sessions()) == []
+    assert emitted == []
+
+
+def test_generic_post_tool_remains_instant(tmp_path: Path, monkeypatch):
+    monkeypatch.setenv("THIRDEYE_HOME", str(tmp_path))
+
+    _invoke(
+        monkeypatch,
+        {
+            "conversation_id": "session-1",
+            "generation_id": "generation-1",
+            "cwd": "/repo",
+            "hook_event_name": "postToolUse",
+            "tool_name": "search_web",
+            "result": {"matches": 3},
+        },
+    )
+
+    events = _events()
+    assert len(events) == 1
+    assert events[0]["t"] == "tool_result"
+    assert events[0]["data"]["tool_name"] == "search_web"
+    assert events[0]["data"]["cursor_instant"] is True
+    assert "cursor_tool_family" not in events[0]["data"]
+
+
+def test_read_without_session_is_noop(tmp_path: Path, monkeypatch, capfd):
+    monkeypatch.setenv("THIRDEYE_HOME", str(tmp_path))
+    emitted = []
+    monkeypatch.setattr(
+        "thirdeye.platforms.cursor.live_spans.emit_live_tools",
+        lambda *args: emitted.append(args),
+    )
+
+    _invoke(
+        monkeypatch,
+        {"hook_event_name": "beforeReadFile", "generation_id": "generation-1"},
+    )
+    _invoke(
+        monkeypatch,
+        {
+            "hook_event_name": "postToolUse",
+            "generation_id": "generation-1",
+            "tool_name": "Read",
+        },
+    )
+
+    assert capfd.readouterr().out == '{"permission": "allow"}{"continue": true}'
+    assert list(Store(Config.load()).list_sessions()) == []
+    assert emitted == []
+
+
+def test_read_without_generation_records_but_does_not_export_live(
+    tmp_path: Path, monkeypatch
+):
+    monkeypatch.setenv("THIRDEYE_HOME", str(tmp_path))
+    emitted = []
+    monkeypatch.setattr(
+        "thirdeye.platforms.cursor.live_spans.emit_live_tools",
+        lambda *args: emitted.append(args),
+    )
+    common = {"conversation_id": "session-1", "cwd": "/repo"}
+
+    _invoke(
+        monkeypatch,
+        {**common, "hook_event_name": "beforeReadFile", "path": "src/app.py"},
+    )
+    _invoke(
+        monkeypatch,
+        {
+            **common,
+            "hook_event_name": "postToolUse",
+            "tool_name": "view_file",
+            "result": "file contents",
+        },
+    )
+
+    events = _events()
+    assert [event["t"] for event in events] == ["tool_call", "tool_result"]
+    assert all(event["data"]["tool_name"] == "read_file" for event in events)
+    assert all(event["data"]["cursor_tool_family"] == "read_file" for event in events)
+    assert all("cursor_instant" not in event["data"] for event in events)
+    assert emitted == []
 
 
 def test_hook_records_turn_stop_even_without_generation_id(tmp_path: Path, monkeypatch):
