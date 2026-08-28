@@ -364,10 +364,20 @@ def test_failed_subagent_maps_to_errored(tmp_path: Path):
     sid, generation = "cursor-session", "gen-failed"
     store = Store(Config(root=tmp_path))
     _append(store, sid, "user_message", {"generation_id": generation, "prompt": "delegate"})
-    _subagent_stop(store, sid, generation, subagent_id="agent-1", task="Work", status="failed")
+    for index, status in enumerate(("error", "failed", "failure"), start=1):
+        _subagent_stop(
+            store,
+            sid,
+            generation,
+            subagent_id=f"agent-{index}",
+            task="Work",
+            status=status,
+        )
     stop_seq = _append(store, sid, "turn_stop", {"generation_id": generation})
 
-    assert _only_subagent(_build(tmp_path, sid, generation, stop_seq))["status"] == "errored"
+    turn = _build(tmp_path, sid, generation, stop_seq)
+
+    assert [leaf["status"] for leaf in turn["subagents"]] == ["errored"] * 3
 
 
 def test_successful_subagent_maps_to_completed(tmp_path: Path):
