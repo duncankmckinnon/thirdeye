@@ -6,9 +6,11 @@ from pathlib import Path
 
 import pytest
 
-from thirdeye.config import Config
+from thirdeye.config import Config, LogfireSettings
 from thirdeye.paths import usage_log_path
 from thirdeye.platforms.cursor import hook
+from thirdeye.platforms.cursor.subagents import cursor_subagent_generation_id
+from thirdeye.span_ids import tool_span_id, turn_span_id
 from thirdeye.store import Store
 
 FIXTURES = Path(__file__).parent / "fixtures"
@@ -28,6 +30,30 @@ def _warning_entries(home: Path) -> list[dict]:
     if not log.exists():
         return []
     return [json.loads(line) for line in log.read_text().splitlines() if line]
+
+
+def _capture_detached_jobs(tmp_path: Path, monkeypatch) -> list[Path]:
+    monkeypatch.setenv("THIRDEYE_HOME", str(tmp_path))
+    Config(root=tmp_path).write_logfire_settings(
+        LogfireSettings(enabled=True, token="test-token")
+    )
+    jobs: list[Path] = []
+    monkeypatch.setattr("thirdeye.otel_export._spawn", jobs.append)
+    return jobs
+
+
+def _cursor_payload(event: str, generation_id: str = "parent-gen", **values) -> dict:
+    return {
+        "conversation_id": "session-1",
+        "generation_id": generation_id,
+        "cwd": "/repo",
+        "hook_event_name": event,
+        **values,
+    }
+
+
+def _job(path: Path) -> dict:
+    return json.loads(path.read_text())
 
 
 @pytest.mark.parametrize(
@@ -724,3 +750,237 @@ def test_subagent_stop_without_conversation_id_is_noop(tmp_path: Path, monkeypat
     )
 
     assert list(Store(Config.load()).list_sessions()) == []
+
+
+def test_subagent_stop_exports_under_dispatching_task(tmp_path: Path, monkeypatch):
+    jobs = _capture_detached_jobs(tmp_path, monkeypatch)
+    child_generation = cursor_subagent_generation_id("call-123")
+
+    _invoke(monkeypatch, _cursor_payload("beforeSubmitPrompt", prompt="turn A"))
+    _invoke(
+        monkeypatch,
+        _cursor_payload(
+            "preToolUse", tool_name="Task", tool_use_id="call-123", tool_input={"task": "go"}
+        ),
+    )
+    _invoke(
+        monkeypatch,
+        _cursor_payload(
+            "subagentStart", subagent_id="child-1", tool_call_id="call-123", task="go"
+        ),
+    )
+    _invoke(
+        monkeypatch,
+        _cursor_payload(
+            "preToolUse",
+            child_generation,
+            tool_name="search_web",
+            tool_use_id="child-tool",
+        ),
+    )
+    start_seq = next(event["seq"] for event in _events() if event["t"] == "subagent_start")
+    _invoke(monkeypatch, _cursor_payload("subagentStop", subagent_id="child-1"))
+
+    assert len(jobs) == 1
+    job = _job(jobs[0])
+    assert job["kind"] == "subagent_turn"
+    assert int(job["parent_span_id"]) == tool_span_id("cursor", "session-1", "call-123")
+    assert job["turn"]["turn_id"] == str(start_seq)
+
+
+def test_background_subagent_ignores_new_open_turn(tmp_path: Path, monkeypatch):
+    jobs = _capture_detached_jobs(tmp_path, monkeypatch)
+
+    _invoke(monkeypatch, _cursor_payload("beforeSubmitPrompt", prompt="turn A"))
+    turn_a_seq = _events()[-1]["seq"]
+    _invoke(
+        monkeypatch,
+        _cursor_payload("preToolUse", tool_name="Task", tool_use_id="call-A"),
+    )
+    _invoke(
+        monkeypatch,
+        _cursor_payload("subagentStart", subagent_id="child-A", tool_call_id="call-A"),
+    )
+    _invoke(monkeypatch, _cursor_payload("stop", model="gpt-5"))
+    _invoke(
+        monkeypatch,
+        _cursor_payload("beforeSubmitPrompt", "turn-B-gen", prompt="turn B"),
+    )
+    turn_b_seq = _events()[-1]["seq"]
+    _invoke(monkeypatch, _cursor_payload("subagentStop", subagent_id="child-A"))
+
+    job = next(_job(path) for path in jobs if _job(path)["kind"] == "subagent_turn")
+    parent_id = int(job["parent_span_id"])
+    assert parent_id == tool_span_id("cursor", "session-1", "call-A")
+    assert parent_id != turn_span_id("cursor", "session-1", turn_a_seq)
+    assert parent_id != turn_span_id("cursor", "session-1", turn_b_seq)
+
+
+def test_subagent_stop_can_precede_parent_task_post(tmp_path: Path, monkeypatch):
+    jobs = _capture_detached_jobs(tmp_path, monkeypatch)
+
+    _invoke(monkeypatch, _cursor_payload("beforeSubmitPrompt", prompt="turn A"))
+    _invoke(
+        monkeypatch,
+        _cursor_payload("preToolUse", tool_name="Task", tool_use_id="call-A"),
+    )
+    _invoke(
+        monkeypatch,
+        _cursor_payload("subagentStart", subagent_id="child-A", tool_call_id="call-A"),
+    )
+    _invoke(monkeypatch, _cursor_payload("subagentStop", subagent_id="child-A"))
+
+    assert len(jobs) == 1
+    recorded_parent = int(_job(jobs[0])["parent_span_id"])
+    _invoke(
+        monkeypatch,
+        _cursor_payload(
+            "postToolUse", tool_name="Task", tool_use_id="call-A", result={"status": "done"}
+        ),
+    )
+    task_job = next(_job(path) for path in jobs if _job(path)["kind"] == "spans")
+    [task_span] = task_job["spans"]
+    assert int(task_span["span_id"]) == recorded_parent
+    assert recorded_parent == tool_span_id("cursor", "session-1", "call-A")
+
+
+def test_nested_subagent_uses_nested_task_parent(tmp_path: Path, monkeypatch):
+    jobs = _capture_detached_jobs(tmp_path, monkeypatch)
+    outer_generation = cursor_subagent_generation_id("call-A")
+
+    _invoke(monkeypatch, _cursor_payload("beforeSubmitPrompt", prompt="turn A"))
+    _invoke(
+        monkeypatch,
+        _cursor_payload("preToolUse", tool_name="Task", tool_use_id="call-A"),
+    )
+    _invoke(
+        monkeypatch,
+        _cursor_payload("subagentStart", subagent_id="outer", tool_call_id="call-A"),
+    )
+    _invoke(
+        monkeypatch,
+        _cursor_payload(
+            "preToolUse", outer_generation, tool_name="Task", tool_use_id="call-N"
+        ),
+    )
+    _invoke(
+        monkeypatch,
+        _cursor_payload(
+            "subagentStart",
+            outer_generation,
+            subagent_id="nested",
+            tool_call_id="call-N",
+        ),
+    )
+    _invoke(monkeypatch, _cursor_payload("subagentStop", subagent_id="nested"))
+
+    assert len(jobs) == 1
+    parent_id = int(_job(jobs[0])["parent_span_id"])
+    assert parent_id == tool_span_id("cursor", "session-1", "call-N")
+    assert parent_id != tool_span_id("cursor", "session-1", "call-A")
+
+
+def test_start_without_task_id_uses_exact_parent_generation_turn(tmp_path: Path, monkeypatch):
+    monkeypatch.setenv("THIRDEYE_HOME", str(tmp_path))
+    exported = []
+    monkeypatch.setattr(
+        "thirdeye.otel_export.export_subagent_turn",
+        lambda *args, **kwargs: exported.append((args, kwargs)),
+    )
+
+    _invoke(monkeypatch, _cursor_payload("beforeSubmitPrompt", prompt="turn A"))
+    parent_turn_seq = _events()[-1]["seq"]
+    _invoke(monkeypatch, _cursor_payload("subagentStart", subagent_id="child-A"))
+    _invoke(monkeypatch, _cursor_payload("subagentStop", subagent_id="child-A"))
+
+    assert len(exported) == 1
+    _, kwargs = exported[0]
+    assert kwargs == {
+        "parent_span_id": str(turn_span_id("cursor", "session-1", parent_turn_seq))
+    }
+
+
+def test_unresolved_modern_parent_logs_sanitized_diagnostic(tmp_path: Path, monkeypatch):
+    monkeypatch.setenv("THIRDEYE_HOME", str(tmp_path))
+    sensitive_task = "secret task contents"
+    sensitive_path = "/private/secret/transcript.jsonl"
+
+    _invoke(
+        monkeypatch,
+        _cursor_payload(
+            "subagentStart",
+            "unknown-generation",
+            subagent_id="child-unparented",
+            task=sensitive_task,
+        ),
+    )
+    _invoke(
+        monkeypatch,
+        _cursor_payload(
+            "subagentStop",
+            subagent_id="child-unparented",
+            agent_transcript_path=sensitive_path,
+        ),
+    )
+
+    entries = _warning_entries(tmp_path)
+    assert len(entries) == 1
+    assert entries[0]["phase"] == "cursor_subagent_parent_resolution"
+    assert entries[0]["platform"] == "cursor"
+    assert entries[0]["session_id"] == "session-1"
+    assert "child-unparented" in entries[0]["message"]
+    assert sensitive_task not in entries[0]["message"]
+    assert sensitive_path not in entries[0]["message"]
+
+
+def test_duplicate_stop_writes_raw_event_but_spawns_one_job(tmp_path: Path, monkeypatch):
+    jobs = _capture_detached_jobs(tmp_path, monkeypatch)
+    _invoke(
+        monkeypatch,
+        _cursor_payload("subagentStart", subagent_id="child-A", tool_call_id="call-A"),
+    )
+    stop = _cursor_payload("subagentStop", subagent_id="child-A")
+
+    _invoke(monkeypatch, stop)
+    _invoke(monkeypatch, stop)
+
+    assert [event["t"] for event in _events()] == [
+        "subagent_start",
+        "subagent_message",
+        "subagent_message",
+    ]
+    assert len(jobs) == 1
+
+
+def test_resolver_exception_is_fail_open(tmp_path: Path, monkeypatch, capfd):
+    monkeypatch.setenv("THIRDEYE_HOME", str(tmp_path))
+    _invoke(
+        monkeypatch,
+        _cursor_payload("subagentStart", subagent_id="child-A", tool_call_id="call-A"),
+    )
+    monkeypatch.setattr(
+        "thirdeye.platforms.cursor.tracing.resolve_subagent_export",
+        lambda *_args: (_ for _ in ()).throw(OSError("unreadable event log")),
+    )
+
+    _invoke(monkeypatch, _cursor_payload("subagentStop", subagent_id="child-A"))
+
+    assert capfd.readouterr().out == '{"continue": true}{"continue": true}'
+    assert [event["t"] for event in _events()] == ["subagent_start", "subagent_message"]
+
+
+def test_subagent_exporter_exception_is_fail_open(tmp_path: Path, monkeypatch, capfd):
+    monkeypatch.setenv("THIRDEYE_HOME", str(tmp_path))
+    _invoke(
+        monkeypatch,
+        _cursor_payload("subagentStart", subagent_id="child-A", tool_call_id="call-A"),
+    )
+    monkeypatch.setattr(
+        "thirdeye.otel_export.export_subagent_turn",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(RuntimeError("export failed")),
+    )
+
+    _invoke(monkeypatch, _cursor_payload("subagentStop", subagent_id="child-A"))
+
+    assert capfd.readouterr().out == '{"continue": true}{"continue": true}'
+    assert _events()[-1]["t"] == "subagent_message"

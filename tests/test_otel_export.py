@@ -430,6 +430,32 @@ class TestExportTurnDispatch:
 
 
 class TestExportSubagentTurnDispatch:
+    def test_cursor_subagent_job_uses_deterministic_task_span_id(
+        self, tmp_path: Path, enabled_config: Config, monkeypatch: pytest.MonkeyPatch
+    ):
+        spawned = []
+        monkeypatch.setattr(otel_export, "_spawn", spawned.append)
+        session_id = "cursor-session-1"
+        turn = _turn(turn_id="12")
+
+        otel_export.export_subagent_turn(
+            enabled_config,
+            tmp_path / "traces" / "cursor" / session_id,
+            session_id,
+            "cursor",
+            "/proj",
+            turn,
+            tool_use_id="call-123",
+        )
+
+        assert len(spawned) == 1
+        job = json.loads(spawned[0].read_text())
+        assert job["kind"] == "subagent_turn"
+        assert int(job["parent_span_id"]) == tool_span_id(
+            "cursor", session_id, "call-123"
+        )
+        assert job["turn"]["turn_id"] == "12"
+
     def test_fallback_trace_and_subagent_parent_are_scoped_by_platform(
         self, tmp_path: Path, enabled_config: Config, monkeypatch: pytest.MonkeyPatch
     ):
@@ -453,6 +479,30 @@ class TestExportSubagentTurnDispatch:
         payload = json.loads(job_path.read_text())
         assert payload["trace_id"] == str(trace_id_for_session("cursor", session_id))
         assert payload["parent_span_id"] == str(tool_span_id("cursor", session_id, tool_use_id))
+
+    def test_subagent_worker_claim_is_first_wins(
+        self, tmp_path: Path, enabled_config: Config, wired_instance, exporter
+    ):
+        session_dir = tmp_path / "traces" / "cursor" / "s1"
+        turn = _turn(turn_id="12")
+        kwargs = {
+            "config": enabled_config,
+            "session_dir_": session_dir,
+            "session_id": "s1",
+            "platform": "cursor",
+            "cwd": "/proj",
+            "trace_id": trace_id_for_session("cursor", "s1"),
+            "parent_span_id": tool_span_id("cursor", "s1", "call-123"),
+            "turn": turn,
+        }
+
+        otel_export._export_subagent_turn_inner(**kwargs)
+        first_export = exporter.exported_spans_as_dict()
+        otel_export._export_subagent_turn_inner(**kwargs)
+
+        assert len(first_export) == 1
+        assert exporter.exported_spans_as_dict() == first_export
+        assert otel_export._turn_claim_path(session_dir, "subagent:12").read_text() == "sent"
 
 
 class TestExportSpansDispatch:
