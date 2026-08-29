@@ -1,0 +1,14 @@
+{
+  "hook_event_name": "subagentStart",
+  "conversation_id": "cursor-session-1",
+  "generation_id": "parent-generation-1",
+  "model": "claude-4-sonnet",
+  "subagent_id": "subagent-1",
+  "subagent_type": "explore",
+  "task": "Inspect the sample module",
+  "parent_conversation_id": "cursor-session-1",
+  "tool_call_id": "call-123",
+  "subagent_model": "claude-4-sonnet",
+  "is_parallel_worker": true,
+  "git_branch": "fixture-branch"
+}

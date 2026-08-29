@@ -229,6 +229,16 @@ def _emit_live(payload: dict[str, Any], seq: int | None) -> None:
         pass
 
 
+def _pre_tool_use(payload: dict[str, Any]) -> None:
+    name = _tool_name(payload, "unknown")
+    normalized_name = name.lower()
+    if normalized_name in DEDICATED_AFTER_TOOL_NAMES:
+        return
+    if normalized_name in READ_TOOL_NAMES:
+        return
+    _emit(payload, "tool_call", {"tool_name": name})
+
+
 def _post_tool_use(payload: dict[str, Any]) -> None:
     name = _tool_name(payload, "unknown")
     normalized_name = name.lower()
@@ -242,7 +252,8 @@ def _post_tool_use(payload: dict[str, Any]) -> None:
         )
         _emit_live(payload, seq)
         return
-    _instant_tool(payload, "tool_result", name)
+    seq = _emit(payload, "tool_result", {"tool_name": name})
+    _emit_live(payload, seq)
 
 
 def _capture_usage(config: Config, session_id: str, payload: dict[str, Any], seq: int) -> None:
@@ -289,6 +300,10 @@ def _stop(payload: dict[str, Any]) -> None:
             export_turn(config, sd, session_id, _PLATFORM, cwd, turn)
     except Exception:
         pass
+
+
+def _subagent_start(payload: dict[str, Any]) -> None:
+    _emit(payload, "subagent_start")
 
 
 def _subagent_stop(payload: dict[str, Any]) -> None:
@@ -348,7 +363,9 @@ _HANDLERS: dict[str, Callable[[dict[str, Any]], None]] = {
     "afterFileEdit": lambda p: _instant_tool(p, "tool_result", "edit_file"),
     "beforeTabFileRead": lambda p: _instant_tool(p, "tool_call", "read_file_tab"),
     "afterTabFileEdit": lambda p: _instant_tool(p, "tool_result", "edit_file_tab"),
+    "preToolUse": _pre_tool_use,
     "postToolUse": _post_tool_use,
+    "subagentStart": _subagent_start,
     "subagentStop": _subagent_stop,
     "stop": _stop,
 }
