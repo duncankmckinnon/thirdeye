@@ -94,14 +94,16 @@ def _provider(model: str) -> str:
 
 
 def usage_from_payload(data: dict[str, Any]) -> UsageDict:
-    uncached = _integer(data, "input_tokens", "inputTokens")
+    input_total = _integer(data, "input_tokens", "inputTokens")
     cache_read = _integer(data, "cache_read_tokens", "cacheReadTokens")
     cache_write = _integer(data, "cache_write_tokens", "cacheWriteTokens")
     output = _integer(data, "output_tokens", "outputTokens")
     usage: UsageDict = {}
-    if uncached is not None:
-        # OTel requires input_tokens to include cached and cache-creation tokens.
-        usage["input_tokens"] = uncached + (cache_read or 0) + (cache_write or 0)
+    if input_total is not None:
+        # Cursor's stop/afterAgentResponse hooks report input_tokens as the turn
+        # total, already including cache read and write buckets (unlike Anthropic's
+        # API, which reports input_tokens excluding cache).
+        usage["input_tokens"] = input_total
     if output is not None:
         usage["output_tokens"] = output
     if cache_read is not None:

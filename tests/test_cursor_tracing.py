@@ -17,19 +17,27 @@ def _append(store: Store, sid: str, event_type: str, data: dict) -> int:
     )
 
 
-def test_usage_includes_cache_buckets_in_otel_input_total():
+def test_usage_from_payload_treats_cursor_input_tokens_as_cache_inclusive():
+    """Cursor ``stop`` reports ``input_tokens`` as the turn total, cache included."""
     assert usage_from_payload(
         {
-            "input_tokens": 10,
-            "output_tokens": 4,
-            "cache_read_tokens": 20,
-            "cache_write_tokens": 3,
+            "input_tokens": 1_180_993,
+            "output_tokens": 8146,
+            "cache_read_tokens": 1_007_022,
+            "cache_write_tokens": 173_957,
         }
     ) == {
-        "input_tokens": 33,
-        "output_tokens": 4,
-        "cache_read_input_tokens": 20,
-        "cache_creation_input_tokens": 3,
+        "input_tokens": 1_180_993,
+        "output_tokens": 8146,
+        "cache_read_input_tokens": 1_007_022,
+        "cache_creation_input_tokens": 173_957,
+    }
+
+
+def test_usage_from_payload_without_cache_fields_passes_input_through():
+    assert usage_from_payload({"input_tokens": 42, "output_tokens": 7}) == {
+        "input_tokens": 42,
+        "output_tokens": 7,
     }
 
 
@@ -74,9 +82,10 @@ def test_build_turn_uses_otel_gen_ai_tool_conventions(tmp_path: Path):
         {
             "generation_id": generation,
             "model": "claude-4",
-            "input_tokens": 10,
+            "input_tokens": 33,
             "output_tokens": 5,
             "cache_read_tokens": 20,
+            "cache_write_tokens": 3,
         },
     )
     turn = build_turn(
@@ -90,7 +99,7 @@ def test_build_turn_uses_otel_gen_ai_tool_conventions(tmp_path: Path):
     assert turn["output_message"] == "All tests passed"
     call = turn["llm_calls"][0]
     assert call["provider"] == "anthropic"
-    assert call["usage"]["input_tokens"] == 30
+    assert call["usage"]["input_tokens"] == 33
     tool = call["tool_calls"][0]
     assert tool["attributes"]["gen_ai.operation.name"] == "execute_tool"
     assert tool["attributes"]["gen_ai.tool.name"] == "shell"
