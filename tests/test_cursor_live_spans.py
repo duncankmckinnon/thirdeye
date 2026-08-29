@@ -4,6 +4,8 @@ import json
 import threading
 from pathlib import Path
 
+import pytest
+
 from thirdeye import otel_export
 from thirdeye.config import Config, LogfireSettings
 from thirdeye.paths import otel_state_path, session_dir
@@ -352,9 +354,7 @@ def test_live_export_skips_when_prompt_generation_mismatches_tools(tmp_path: Pat
 def _hook_env(tmp_path: Path, monkeypatch) -> list[Path]:
     """Wire a logfire-enabled home and capture detached OTel jobs as files."""
     monkeypatch.setenv("THIRDEYE_HOME", str(tmp_path))
-    Config(root=tmp_path).write_logfire_settings(
-        LogfireSettings(enabled=True, token="test-token")
-    )
+    Config(root=tmp_path).write_logfire_settings(LogfireSettings(enabled=True, token="test-token"))
     jobs: list[Path] = []
     monkeypatch.setattr("thirdeye.otel_export._spawn", jobs.append)
     return jobs
@@ -393,6 +393,43 @@ def _run_aligned(fns, timeout: float = 5.0) -> None:
         thread.join(timeout=timeout)
         assert not thread.is_alive(), "aligned thread did not terminate"
     assert errors == [], f"aligned thread raised: {errors!r}"
+
+
+def _worker_exporter(monkeypatch):
+    """Configure a local OTel exporter for exercising queued child jobs."""
+    logfire = pytest.importorskip("logfire")
+    from logfire.testing import TestExporter
+    from opentelemetry.sdk.trace.export import SimpleSpanProcessor
+
+    otel_export._state["id_generator"] = None
+    exporter = TestExporter()
+    instance = logfire.configure(
+        send_to_logfire=False,
+        console=False,
+        additional_span_processors=[SimpleSpanProcessor(exporter)],
+        advanced=logfire.AdvancedOptions(id_generator=otel_export._id_generator()),
+    )
+    monkeypatch.setattr(otel_export, "_get_instance", lambda config, platform: instance)
+    return exporter
+
+
+def _run_subagent_job(job: dict) -> None:
+    otel_export._export_subagent_turn_inner(
+        config=Config.load(),
+        session_dir_=Path(job["session_dir"]),
+        session_id=job["session_id"],
+        platform=job["platform"],
+        cwd=job["cwd"],
+        trace_id=job["trace_id"],
+        parent_span_id=job["parent_span_id"],
+        turn=job["turn"],
+    )
+
+
+def _span_with_id(spans: list[dict], span_id: int) -> dict:
+    matches = [span for span in spans if span["context"]["span_id"] == span_id]
+    assert len(matches) == 1
+    return matches[0]
 
 
 def test_child_generation_is_not_live_committed_without_user_turn(tmp_path: Path, monkeypatch):
@@ -458,13 +495,19 @@ def test_child_generation_is_not_live_committed_without_user_turn(tmp_path: Path
     sd = session_dir(tmp_path, "cursor", sid)
 
     exported: list = []
+    state_writes: list = []
     monkeypatch.setattr(
         "thirdeye.platforms.cursor.live_spans.export_spans",
         lambda *args: exported.append(args[-1]) or True,
     )
+    monkeypatch.setattr(
+        "thirdeye.platforms.cursor.live_spans._write_state",
+        lambda *args: state_writes.append(args),
+    )
     emit_live_tools(config, sd, sid, "/repo", child_generation, result_seq)
 
     assert exported == []
+    assert state_writes == []
     assert committed_tool_call_ids(sd, child_generation) == set()
 
     resolved = resolve_subagent_export(sd, sid, _event_at(sd, stop_seq))
@@ -475,20 +518,29 @@ def test_child_generation_is_not_live_committed_without_user_turn(tmp_path: Path
     llm_call = resolved.turn["llm_calls"][0]
     assert llm_call["call_id"] == child_generation
     assert [t["tool_call_id"] for t in llm_call["tool_calls"]] == ["child-tool"]
-    # The child turn, its aggregate chat span, and its one tool span all derive
-    # distinct deterministic ids from that lifecycle.
-    assert len(
-        {
-            turn_span_id("cursor", sid, start_seq),
-            chat_span_id("cursor", sid, child_generation),
-            tool_span_id("cursor", sid, "child-tool"),
-        }
-    ) == 3
+
+    exporter = _worker_exporter(monkeypatch)
+    parent_id = tool_span_id("cursor", sid, "call-123")
+    otel_export._export_subagent_turn_inner(
+        config=config,
+        session_dir_=sd,
+        session_id=sid,
+        platform="cursor",
+        cwd="/repo",
+        trace_id=trace_id_for_session("cursor", sid),
+        parent_span_id=parent_id,
+        turn=resolved.turn,
+    )
+    spans = exporter.exported_spans_as_dict()
+    turn_span = _span_with_id(spans, turn_span_id("cursor", sid, start_seq))
+    chat_span = _span_with_id(spans, chat_span_id("cursor", sid, child_generation))
+    tool_span = _span_with_id(spans, tool_span_id("cursor", sid, "child-tool"))
+    assert turn_span["parent"]["span_id"] == parent_id
+    assert chat_span["parent"]["span_id"] == turn_span["context"]["span_id"]
+    assert tool_span["parent"]["span_id"] == chat_span["context"]["span_id"]
 
 
-def test_parent_task_post_racing_child_stop_keeps_deterministic_parent(
-    tmp_path: Path, monkeypatch
-):
+def test_parent_task_post_racing_child_stop_keeps_deterministic_parent(tmp_path: Path, monkeypatch):
     """Script 2: the dispatching Task's live export and the child stop run on
     aligned threads. One Task tool span id is produced and the child-turn job's
     parent id equals it, regardless of job creation order.
@@ -567,6 +619,16 @@ def test_parent_task_post_racing_child_stop_keeps_deterministic_parent(
     assert child_turn["turn_span_id"] == str(turn_span_id("cursor", sid, start_seq))
     assert child_turn["llm_calls"][0]["call_id"] == child_gen
     assert [t["tool_call_id"] for t in child_turn["llm_calls"][0]["tool_calls"]] == ["child-tool"]
+
+    exporter = _worker_exporter(monkeypatch)
+    _run_subagent_job(sub_jobs[0])
+    emitted = exporter.exported_spans_as_dict()
+    child_turn_span = _span_with_id(emitted, turn_span_id("cursor", sid, start_seq))
+    child_chat_span = _span_with_id(emitted, chat_span_id("cursor", sid, child_gen))
+    child_tool_span = _span_with_id(emitted, tool_span_id("cursor", sid, "child-tool"))
+    assert child_turn_span["parent"]["span_id"] == task_tool_id
+    assert child_chat_span["parent"]["span_id"] == child_turn_span["context"]["span_id"]
+    assert child_tool_span["parent"]["span_id"] == child_chat_span["context"]["span_id"]
 
     assert committed_tool_call_ids(sd, "parent-gen") == {"call-A"}
     assert committed_tool_call_ids(sd, child_gen) == set()
@@ -668,6 +730,21 @@ def test_parallel_child_stops_do_not_cross_attribute_tools(tmp_path: Path, monke
     assert start_a != start_b
     assert turn_span_id("cursor", sid, start_a) != turn_span_id("cursor", sid, start_b)
 
+    exporter = _worker_exporter(monkeypatch)
+    for job in sub_jobs:
+        _run_subagent_job(job)
+    emitted = exporter.exported_spans_as_dict()
+    for start_seq, generation, task_id, child_tool_id in (
+        (start_a, gen_a, "call-A", "tool-A"),
+        (start_b, gen_b, "call-B", "tool-B"),
+    ):
+        turn_span = _span_with_id(emitted, turn_span_id("cursor", sid, start_seq))
+        chat_span = _span_with_id(emitted, chat_span_id("cursor", sid, generation))
+        tool_span = _span_with_id(emitted, tool_span_id("cursor", sid, child_tool_id))
+        assert turn_span["parent"]["span_id"] == tool_span_id("cursor", sid, task_id)
+        assert chat_span["parent"]["span_id"] == turn_span["context"]["span_id"]
+        assert tool_span["parent"]["span_id"] == chat_span["context"]["span_id"]
+
 
 def test_nested_and_outer_stop_race_have_independent_claims(tmp_path: Path, monkeypatch):
     """Script 4: the full nested lifecycle is stored, then the nested and outer
@@ -751,6 +828,17 @@ def test_nested_and_outer_stop_race_have_independent_claims(tmp_path: Path, monk
             "tool_output": "z",
         },
     )
+    _append(
+        store,
+        sid,
+        "tool_result",
+        {
+            "generation_id": gen_a,
+            "tool_name": "Task",
+            "tool_call_id": "call-N",
+            "tool_output": "nested done",
+        },
+    )
     sd = session_dir(tmp_path, "cursor", sid)
 
     _run_aligned(
@@ -777,24 +865,42 @@ def test_nested_and_outer_stop_race_have_independent_claims(tmp_path: Path, monk
     assert outer_job["turn"]["turn_id"] == str(outer_start)
     assert outer_job["turn"]["turn_span_id"] == str(turn_span_id("cursor", sid, outer_start))
     assert outer_job["turn"]["llm_calls"][0]["call_id"] == gen_a
-    assert [
-        t["tool_call_id"] for t in outer_job["turn"]["llm_calls"][0]["tool_calls"]
-    ] == ["read-A"]
+    assert [t["tool_call_id"] for t in outer_job["turn"]["llm_calls"][0]["tool_calls"]] == [
+        "read-A",
+        "call-N",
+    ]
 
     assert nested_job["turn"]["turn_id"] == str(nested_start)
     assert nested_job["turn"]["turn_span_id"] == str(turn_span_id("cursor", sid, nested_start))
     assert nested_job["turn"]["llm_calls"][0]["call_id"] == gen_n
-    assert [
-        t["tool_call_id"] for t in nested_job["turn"]["llm_calls"][0]["tool_calls"]
-    ] == ["nested-read"]
+    assert [t["tool_call_id"] for t in nested_job["turn"]["llm_calls"][0]["tool_calls"]] == [
+        "nested-read"
+    ]
 
     outer_claim = f"subagent:{outer_start}"
     nested_claim = f"subagent:{nested_start}"
-    assert otel_export._turn_claim_path(sd, outer_claim) != otel_export._turn_claim_path(
-        sd, nested_claim
-    )
-    assert otel_export._claim_turn_export(sd, outer_claim) is True
-    assert otel_export._claim_turn_export(sd, nested_claim) is True
+    exporter = _worker_exporter(monkeypatch)
+    for job in sub_jobs:
+        _run_subagent_job(job)
+
+    assert otel_export._turn_claim_path(sd, outer_claim).read_text() == "sent"
+    assert otel_export._turn_claim_path(sd, nested_claim).read_text() == "sent"
+    emitted = exporter.exported_spans_as_dict()
+    outer_turn_span = _span_with_id(emitted, turn_span_id("cursor", sid, outer_start))
+    outer_chat_span = _span_with_id(emitted, chat_span_id("cursor", sid, gen_a))
+    read_a_span = _span_with_id(emitted, tool_span_id("cursor", sid, "read-A"))
+    nested_task_span = _span_with_id(emitted, nested_tool_id)
+    nested_turn_span = _span_with_id(emitted, turn_span_id("cursor", sid, nested_start))
+    nested_chat_span = _span_with_id(emitted, chat_span_id("cursor", sid, gen_n))
+    nested_read_span = _span_with_id(emitted, tool_span_id("cursor", sid, "nested-read"))
+
+    assert outer_turn_span["parent"]["span_id"] == outer_tool_id
+    assert outer_chat_span["parent"]["span_id"] == outer_turn_span["context"]["span_id"]
+    assert read_a_span["parent"]["span_id"] == outer_chat_span["context"]["span_id"]
+    assert nested_task_span["parent"]["span_id"] == outer_chat_span["context"]["span_id"]
+    assert nested_turn_span["parent"]["span_id"] == nested_tool_id
+    assert nested_chat_span["parent"]["span_id"] == nested_turn_span["context"]["span_id"]
+    assert nested_read_span["parent"]["span_id"] == nested_chat_span["context"]["span_id"]
 
 
 def test_failed_child_job_dispatch_is_retryable(tmp_path: Path, monkeypatch):
@@ -880,11 +986,20 @@ def test_failed_child_job_dispatch_is_retryable(tmp_path: Path, monkeypatch):
     assert job["turn"]["turn_id"] == str(start_seq)
     assert job["turn"]["turn_span_id"] == str(turn_span_id("cursor", sid, start_seq))
     assert job["turn"]["llm_calls"][0]["call_id"] == child_gen
-    assert [
-        t["tool_call_id"] for t in job["turn"]["llm_calls"][0]["tool_calls"]
-    ] == ["child-tool"]
+    assert [t["tool_call_id"] for t in job["turn"]["llm_calls"][0]["tool_calls"]] == ["child-tool"]
     assert not otel_export.turn_export_sent(sd, claim_id)
     assert not otel_export._turn_claim_path(sd, claim_id).exists()
+
+    exporter = _worker_exporter(monkeypatch)
+    _run_subagent_job(job)
+    assert otel_export.turn_export_sent(sd, claim_id)
+    emitted = exporter.exported_spans_as_dict()
+    turn_span = _span_with_id(emitted, turn_span_id("cursor", sid, start_seq))
+    chat_span = _span_with_id(emitted, chat_span_id("cursor", sid, child_gen))
+    tool_span = _span_with_id(emitted, tool_span_id("cursor", sid, "child-tool"))
+    assert turn_span["parent"]["span_id"] == tool_span_id("cursor", sid, "call-A")
+    assert chat_span["parent"]["span_id"] == turn_span["context"]["span_id"]
+    assert tool_span["parent"]["span_id"] == chat_span["context"]["span_id"]
 
     # The dispatching Task's live tool commit is likewise retried, never marked
     # committed by the failed attempt.
