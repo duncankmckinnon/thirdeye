@@ -17,6 +17,7 @@ from thirdeye.platforms.cursor.constants import (
     READ_TOOL_NAMES,
     STRIP_KEYS,
 )
+from thirdeye.platforms.cursor.tracing import bogus_generation_id, subagent_turn_from_event
 from thirdeye.platforms.provenance import foreign_payload_reason
 from thirdeye.store import Store
 from thirdeye.tags import TagStore, extract_hashtags
@@ -70,9 +71,15 @@ def _cwd(payload: dict[str, Any]) -> str:
 
 
 def _strip(payload: dict[str, Any]) -> dict[str, Any]:
-    data = {key: value for key, value in payload.items() if key not in STRIP_KEYS}
+    session_id = _session_id(payload)
     generation_id = _generation_id(payload)
-    if generation_id:
+    omit_gen = {"generation_id", "generationId"}
+    data = {
+        key: value
+        for key, value in payload.items()
+        if key not in STRIP_KEYS and key not in omit_gen
+    }
+    if generation_id and not bogus_generation_id(generation_id, session_id):
         data["generation_id"] = generation_id
     return data
 
@@ -285,7 +292,46 @@ def _stop(payload: dict[str, Any]) -> None:
 
 
 def _subagent_stop(payload: dict[str, Any]) -> None:
-    _emit(payload, "subagent_message")
+    session_id = _session_id(payload)
+    if not session_id:
+        return
+    cwd = _cwd(payload)
+    seq = _emit(payload, "subagent_message")
+    if seq is None:
+        return
+    try:
+        from thirdeye.otel_export import export_subagent_turn, turn_export_sent
+        from thirdeye.reader import SessionReader
+        from thirdeye.span_ids import turn_span_id
+
+        config = Config.load()
+        sd = session_dir(config.root, _PLATFORM, session_id)
+        all_events = list(SessionReader(sd).iter_events(seq_range=(0, seq + 1)))
+        stop_ev = all_events[-1]
+        subagent = subagent_turn_from_event(session_id, stop_ev)
+        # Attach to the user turn that was open when the subagent finished.
+        # Walk backward for the nearest user_message before this stop.
+        turn_seq = None
+        for event in reversed(all_events[:-1]):
+            if event.get("t") == "user_message":
+                turn_seq = int(event.get("seq") or 0)
+                break
+        if turn_seq is None:
+            return
+        turn_id = str(turn_seq)
+        if not turn_export_sent(sd, turn_id):
+            return
+        export_subagent_turn(
+            config,
+            sd,
+            session_id,
+            _PLATFORM,
+            cwd,
+            subagent,
+            parent_span_id=str(turn_span_id(_PLATFORM, session_id, turn_seq)),
+        )
+    except Exception:
+        pass
 
 
 _HANDLERS: dict[str, Callable[[dict[str, Any]], None]] = {

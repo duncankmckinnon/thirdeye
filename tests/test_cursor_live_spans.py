@@ -290,3 +290,45 @@ def test_failed_live_dispatch_is_retried(tmp_path: Path, monkeypatch):
     assert span["attributes"]["gen_ai.tool.call.arguments"] == {"pattern": "TODO"}
     assert span["attributes"]["gen_ai.tool.call.result"] == {"matches": 3}
     assert span["start_ts"] < span["end_ts"]
+
+
+def test_live_export_skips_when_prompt_generation_mismatches_tools(tmp_path: Path, monkeypatch):
+    """Tools must not create an agent-turn anchor when no user_message shares their generation."""
+    config = _config(tmp_path)
+    store = Store(config)
+    sid = "cursor-session"
+    prompt_gen, tool_gen = "gen-prompt", "gen-tools"
+    _append(store, sid, "user_message", {"generation_id": prompt_gen, "prompt": "go"})
+    tool_seq = _append(
+        store,
+        sid,
+        "tool_call",
+        {
+            "generation_id": tool_gen,
+            "tool_name": "shell",
+            "cursor_tool_family": "shell",
+            "command": "ls",
+        },
+    )
+    result_seq = _append(
+        store,
+        sid,
+        "tool_result",
+        {
+            "generation_id": tool_gen,
+            "tool_name": "shell",
+            "cursor_tool_family": "shell",
+            "output": "ok",
+        },
+    )
+    exported: list[list[dict]] = []
+    monkeypatch.setattr(
+        "thirdeye.platforms.cursor.live_spans.export_spans",
+        lambda *args: exported.append(args[-1]) or True,
+    )
+    sd = session_dir(tmp_path, "cursor", sid)
+    emit_live_tools(config, sd, sid, "/repo", tool_gen, result_seq)
+
+    assert exported == []
+    assert committed_tool_call_ids(sd, tool_gen) == set()
+    assert tool_seq < result_seq

@@ -533,6 +533,25 @@ def test_subagent_stop_preserves_generation_and_counts(tmp_path: Path, monkeypat
     }
 
 
+def test_subagent_stop_strips_bogus_session_generation_id(tmp_path: Path, monkeypatch):
+    monkeypatch.setenv("THIRDEYE_HOME", str(tmp_path))
+    payload = {
+        "conversation_id": "session-1",
+        "generation_id": "session-1",
+        "cwd": "/repo",
+        "hook_event_name": "subagentStop",
+        "subagent_id": "agent-1",
+        "subagent_type": "explore",
+        "task": "work",
+    }
+
+    _invoke(monkeypatch, payload)
+
+    events = list(Store(Config.load()).reader("session-1").iter_events())
+    assert len(events) == 1
+    assert "generation_id" not in events[0]["data"]
+
+
 def test_subagent_stop_without_conversation_id_is_noop(tmp_path: Path, monkeypatch):
     monkeypatch.setenv("THIRDEYE_HOME", str(tmp_path))
 

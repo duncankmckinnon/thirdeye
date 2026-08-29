@@ -94,14 +94,16 @@ def _provider(model: str) -> str:
 
 
 def usage_from_payload(data: dict[str, Any]) -> UsageDict:
-    uncached = _integer(data, "input_tokens", "inputTokens")
+    input_total = _integer(data, "input_tokens", "inputTokens")
     cache_read = _integer(data, "cache_read_tokens", "cacheReadTokens")
     cache_write = _integer(data, "cache_write_tokens", "cacheWriteTokens")
     output = _integer(data, "output_tokens", "outputTokens")
     usage: UsageDict = {}
-    if uncached is not None:
-        # OTel requires input_tokens to include cached and cache-creation tokens.
-        usage["input_tokens"] = uncached + (cache_read or 0) + (cache_write or 0)
+    if input_total is not None:
+        # Cursor's stop/afterAgentResponse hooks report input_tokens as the turn
+        # total, already including cache read and write buckets (unlike Anthropic's
+        # API, which reports input_tokens excluding cache).
+        usage["input_tokens"] = input_total
     if output is not None:
         usage["output_tokens"] = output
     if cache_read is not None:
@@ -287,6 +289,64 @@ def _status(data: dict[str, Any]) -> TurnStatus:
     return "errored" if _text(data, "status", "reason").lower() in _ERROR_STATUSES else "completed"
 
 
+def _event_generation_id(event: dict[str, Any]) -> str:
+    return str(_data(event).get("generation_id") or _data(event).get("generationId") or "")
+
+
+def bogus_generation_id(generation_id: str, session_id: str) -> bool:
+    """Cursor sometimes sets ``generation_id`` to the conversation/session id.
+
+    ``subagentStop`` is the main offender; treating that value as a real
+    generation key would orphan subagents from their dispatching turn.
+    """
+    return bool(generation_id) and generation_id == session_id
+
+
+def resolve_turn_seq(
+    events: list[dict[str, Any]], *, generation_id: str, session_id: str, through_seq: int
+) -> int | None:
+    """Return the ``user_message`` seq anchoring ``generation_id``'s turn.
+
+    Live tool export and turn reconstruction both need the same turn anchor.
+    Never fall back to ``events[0]`` when it is not a user prompt — that
+    produced orphan ``agent-turn`` spans keyed to arbitrary tool seqs.
+    """
+    prompt: dict[str, Any] | None = None
+    for event in events:
+        seq = int(event.get("seq") or 0)
+        if seq > through_seq:
+            break
+        if event.get("t") != "user_message":
+            continue
+        if _event_generation_id(event) == generation_id:
+            prompt = event
+    if prompt is None:
+        return None
+    return int(prompt.get("seq") or 0)
+
+
+def _subagents_in_turn(
+    events: list[dict[str, Any]],
+    *,
+    turn_seq: int,
+    stop_seq: int,
+    session_id: str,
+    generation_id: str,
+) -> list[TurnSpanDict]:
+    subagents: list[TurnSpanDict] = []
+    for event in events:
+        if event.get("t") != "subagent_message":
+            continue
+        seq = int(event.get("seq") or 0)
+        if not (turn_seq < seq <= stop_seq):
+            continue
+        gen = _event_generation_id(event)
+        if gen and gen != generation_id and not bogus_generation_id(gen, session_id):
+            continue
+        subagents.append(_subagent_turn(session_id, event))
+    return subagents
+
+
 def _subagent_turn(session_id: str, event: dict[str, Any]) -> TurnSpanDict:
     """Project one Cursor `subagentStop` callback into a leaf subagent turn.
 
@@ -325,18 +385,26 @@ def _subagent_turn(session_id: str, event: dict[str, Any]) -> TurnSpanDict:
     }
 
 
+def subagent_turn_from_event(session_id: str, event: dict[str, Any]) -> TurnSpanDict:
+    """Public wrapper for ``_subagent_turn`` used by hooks."""
+    return _subagent_turn(session_id, event)
+
+
 def build_turn(
     *, session_dir_: Path, session_id: str, generation_id: str, stop_seq: int
 ) -> TurnSpanDict | None:
+    if bogus_generation_id(generation_id, session_id):
+        return None
     all_events = list(SessionReader(session_dir_).iter_events(seq_range=(0, stop_seq + 1)))
-    events = [
-        event
-        for event in all_events
-        if str(_data(event).get("generation_id") or _data(event).get("generationId") or "")
-        == generation_id
-    ]
+    turn_seq = resolve_turn_seq(
+        all_events, generation_id=generation_id, session_id=session_id, through_seq=stop_seq
+    )
+    events = [event for event in all_events if _event_generation_id(event) == generation_id]
     if not events:
         return None
+    if turn_seq is None:
+        # Tool-only generations have no user_message; anchor on the first observed event.
+        turn_seq = int(events[0].get("seq") or 0)
     prompt_event = next((event for event in events if event.get("t") == "user_message"), None)
     response_events = [event for event in events if event.get("t") == "assistant_message"]
     stop_event = next(
@@ -383,12 +451,15 @@ def build_turn(
                 "tool_calls": tools,
             }
         )
-    turn_seq = int(start_event.get("seq") or 0)
-    subagents = [
-        _subagent_turn(session_id, event)
-        for event in events
-        if event.get("t") == "subagent_message"
-    ]
+    subagents = _subagents_in_turn(
+        all_events,
+        turn_seq=turn_seq,
+        stop_seq=stop_seq,
+        session_id=session_id,
+        generation_id=generation_id,
+    )
+    if not llm_calls and not subagents:
+        return None
     return {
         "turn_id": str(turn_seq),
         "turn_span_id": str(turn_span_id(_PLATFORM, session_id, turn_seq)),
