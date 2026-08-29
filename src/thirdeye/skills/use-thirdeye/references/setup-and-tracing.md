@@ -29,6 +29,26 @@ uses `~/.claude/settings.json`, Codex uses `~/.codex/config.toml`, and
 Cursor uses `~/.cursor/hooks.json`
 (covering both the IDE chat and the `cursor-agent` CLI).
 
+### Cursor subagent hooks
+
+Alongside its shell, file, and MCP callbacks, `thirdeye add --cursor` registers
+the hooks that let local Cursor IDE and CLI sessions trace subagents:
+
+| Hook            | Role                                                            |
+| --------------- | ------------------------------------------------------------- |
+| `preToolUse`    | Call event for every generic tool, including the dispatching `Task`. |
+| `subagentStart` | Subagent lifecycle start; carries the dispatching Task call id. |
+| `subagentStop`  | Subagent lifecycle stop.                                        |
+
+`preToolUse` and `subagentStart` are newly added; `subagentStop` was already
+present in older installs. Rerunning `thirdeye add --cursor` upgrades an older
+`~/.cursor/hooks.json` in place — it adds the missing entries idempotently and
+leaves unrelated hooks and existing thirdeye entries untouched.
+
+This command configures user-level hooks for local Cursor IDE and CLI sessions.
+Project and team hook deployment are separate scopes that it does not configure,
+and this user-level setup does not promise remote capture.
+
 ## Detach
 
 ```bash
