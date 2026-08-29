@@ -17,7 +17,7 @@ from thirdeye.platforms.cursor.constants import (
     READ_TOOL_NAMES,
     STRIP_KEYS,
 )
-from thirdeye.platforms.cursor.tracing import bogus_generation_id, subagent_turn_from_event
+from thirdeye.platforms.cursor.tracing import bogus_generation_id
 from thirdeye.platforms.provenance import foreign_payload_reason
 from thirdeye.store import Store
 from thirdeye.tags import TagStore, extract_hashtags
@@ -310,40 +310,57 @@ def _subagent_stop(payload: dict[str, Any]) -> None:
     session_id = _session_id(payload)
     if not session_id:
         return
-    cwd = _cwd(payload)
     seq = _emit(payload, "subagent_message")
     if seq is None:
         return
     try:
-        from thirdeye.otel_export import export_subagent_turn, turn_export_sent
+        from thirdeye.otel_export import export_subagent_turn
+        from thirdeye.platforms.cursor.tracing import resolve_subagent_export
         from thirdeye.reader import SessionReader
         from thirdeye.span_ids import turn_span_id
 
         config = Config.load()
         sd = session_dir(config.root, _PLATFORM, session_id)
-        all_events = list(SessionReader(sd).iter_events(seq_range=(0, seq + 1)))
-        stop_ev = all_events[-1]
-        subagent = subagent_turn_from_event(session_id, stop_ev)
-        # Attach to the user turn that was open when the subagent finished.
-        # Walk backward for the nearest user_message before this stop.
-        turn_seq = None
-        for event in reversed(all_events[:-1]):
-            if event.get("t") == "user_message":
-                turn_seq = int(event.get("seq") or 0)
-                break
-        if turn_seq is None:
+        stop_events = list(SessionReader(sd).iter_events(seq_range=(seq, seq + 1)))
+        stop_event = stop_events[0] if stop_events else None
+        if stop_event is None:
             return
-        turn_id = str(turn_seq)
-        if not turn_export_sent(sd, turn_id):
+        resolved = resolve_subagent_export(sd, session_id, stop_event)
+        if resolved is None:
             return
-        export_subagent_turn(
-            config,
-            sd,
-            session_id,
-            _PLATFORM,
-            cwd,
-            subagent,
-            parent_span_id=str(turn_span_id(_PLATFORM, session_id, turn_seq)),
+        if resolved.tool_call_id:
+            export_subagent_turn(
+                config,
+                sd,
+                session_id,
+                _PLATFORM,
+                _cwd(payload),
+                resolved.turn,
+                tool_use_id=resolved.tool_call_id,
+            )
+            return
+        if resolved.parent_turn_seq is not None:
+            export_subagent_turn(
+                config,
+                sd,
+                session_id,
+                _PLATFORM,
+                _cwd(payload),
+                resolved.turn,
+                parent_span_id=str(
+                    turn_span_id(_PLATFORM, session_id, resolved.parent_turn_seq)
+                ),
+            )
+            return
+        log_capture_error(
+            thirdeye_home=config.root,
+            phase="cursor_subagent_parent_resolution",
+            platform=_PLATFORM,
+            session_id=session_id,
+            message=(
+                "No proven parent for Cursor subagent "
+                f"{resolved.turn['attributes'].get('cursor.subagent.id', '')!r}"
+            ),
         )
     except Exception:
         pass
