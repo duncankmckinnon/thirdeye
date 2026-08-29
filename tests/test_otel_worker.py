@@ -309,3 +309,117 @@ class TestWorkerFailureLogging:
         matches = [e for e in entries if e["phase"] == "otel_worker_export_failed"]
         assert len(matches) == 1
         assert "kind=job_read" in matches[0]["message"]
+
+
+class TestDuplicateChildDeliveryFirstWins:
+    """Script 6: two workers pick up the same completed Cursor subagent stop.
+    Raw duplicate capture upstream is allowed, but only one
+    `subagent:<turn_id>` worker claim may ever reach "sent", and the span tree
+    is emitted once with deterministic ids -- no assertion depends on which
+    aligned thread wins.
+    """
+
+    def test_duplicate_child_delivery_is_first_wins_at_worker(
+        self, home: Path, enabled: None, monkeypatch: pytest.MonkeyPatch
+    ):
+        import threading
+
+        import logfire
+
+        from thirdeye.platforms.cursor.subagents import cursor_subagent_generation_id
+        from thirdeye.span_ids import (
+            chat_span_id,
+            tool_span_id,
+            trace_id_for_session,
+            turn_span_id,
+        )
+
+        otel_export._state["id_generator"] = None
+        exporter = TestExporter()
+        instance = logfire.configure(
+            send_to_logfire=False,
+            console=False,
+            additional_span_processors=[SimpleSpanProcessor(exporter)],
+            advanced=logfire.AdvancedOptions(id_generator=otel_export._id_generator()),
+        )
+        monkeypatch.setattr(otel_export, "_get_instance", lambda config, platform: instance)
+
+        session_dir = home / "traces" / "cursor" / "s1"
+        session_dir.mkdir(parents=True)
+        start_seq = 12
+        child_generation = cursor_subagent_generation_id("call-A")
+        turn = _turn(
+            turn_id=str(start_seq),
+            turn_span_id=str(turn_span_id("cursor", "s1", start_seq)),
+            input_message="do the thing",
+            output_message="done",
+            llm_calls=[
+                {
+                    "call_id": child_generation,
+                    "provider": "",
+                    "model": "",
+                    "start_ts": "2026-01-01T00:00:00.000Z",
+                    "end_ts": "2026-01-01T00:00:02.000Z",
+                    "input_messages": [],
+                    "output_messages": [],
+                    "usage": {},
+                    "tool_calls": [
+                        {
+                            "tool_call_id": "child-tool",
+                            "name": "search_web",
+                            "start_ts": "2026-01-01T00:00:00.500Z",
+                            "end_ts": "2026-01-01T00:00:01.500Z",
+                            "attributes": {"gen_ai.operation.name": "execute_tool"},
+                        }
+                    ],
+                }
+            ],
+        )
+        kwargs: dict[str, Any] = dict(
+            config=Config.load(),
+            session_dir_=session_dir,
+            session_id="s1",
+            platform="cursor",
+            cwd="/proj",
+            trace_id=trace_id_for_session("cursor", "s1"),
+            parent_span_id=tool_span_id("cursor", "s1", "call-A"),
+            turn=turn,
+        )
+
+        barrier = threading.Barrier(2)
+        errors: list[BaseException] = []
+
+        def deliver() -> None:
+            try:
+                barrier.wait(timeout=5)
+                otel_export._export_subagent_turn_inner(**kwargs)
+            except BaseException as exc:  # noqa: BLE001 -- surfaced via assert below
+                errors.append(exc)
+
+        threads = [threading.Thread(target=deliver) for _ in range(2)]
+        for thread in threads:
+            thread.start()
+        for thread in threads:
+            thread.join(timeout=5)
+            assert not thread.is_alive()
+        assert errors == []
+
+        claim = otel_export._turn_claim_path(session_dir, f"subagent:{start_seq}")
+        assert claim.read_text() == "sent"
+
+        spans = exporter.exported_spans_as_dict()
+        turn_spans = [s for s in spans if s["name"] == "agent-turn (subagent)"]
+        chat_spans = [s for s in spans if s["name"] == "chat" or s["name"].startswith("chat ")]
+        tool_spans = [s for s in spans if s["name"].startswith("tool:")]
+        assert len(turn_spans) == 1
+        assert len(chat_spans) == 1
+        assert len(tool_spans) == 1
+
+        assert turn_spans[0]["context"]["span_id"] == turn_span_id("cursor", "s1", start_seq)
+        assert chat_spans[0]["context"]["span_id"] == chat_span_id(
+            "cursor", "s1", child_generation
+        )
+        assert tool_spans[0]["context"]["span_id"] == tool_span_id("cursor", "s1", "child-tool")
+        assert turn_spans[0]["parent"]["span_id"] == tool_span_id("cursor", "s1", "call-A")
+        assert chat_spans[0]["parent"]["span_id"] == turn_spans[0]["context"]["span_id"]
+        assert tool_spans[0]["parent"]["span_id"] == chat_spans[0]["context"]["span_id"]
