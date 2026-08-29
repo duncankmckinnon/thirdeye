@@ -19,7 +19,11 @@ from typing import Any
 from thirdeye.config import Config
 from thirdeye.otel_export import export_spans
 from thirdeye.paths import otel_state_path
-from thirdeye.platforms.cursor.tracing import tool_calls_for_generation
+from thirdeye.platforms.cursor.tracing import (
+    bogus_generation_id,
+    resolve_turn_seq,
+    tool_calls_for_generation,
+)
 from thirdeye.reader import SessionReader
 from thirdeye.span_ids import chat_span_id, tool_span_id, trace_id_for_session, turn_span_id
 from thirdeye.usage.errlog import log_capture_error
@@ -115,12 +119,17 @@ def _emit_live_tools(
         ]
         if not fresh:
             return
-        # Match ``build_turn`` so live children join the same deterministic
-        # agent-turn even if another generation-scoped hook preceded submit.
-        start_event = next(
-            (event for event in events if event.get("t") == "user_message"), events[0]
+        all_events = list(
+            SessionReader(session_dir_).iter_events(seq_range=(0, through_seq + 1))
         )
-        turn_seq = int(start_event.get("seq") or 0)
+        turn_seq = resolve_turn_seq(
+            all_events,
+            generation_id=generation_id,
+            session_id=session_id,
+            through_seq=through_seq,
+        )
+        if turn_seq is None:
+            return
         turn_id = turn_span_id(_PLATFORM, session_id, turn_seq)
         parent_id = chat_span_id(_PLATFORM, session_id, generation_id)
         spans = [

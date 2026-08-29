@@ -498,6 +498,14 @@ def _turn_claim_path(session_dir_: Path, turn_id: str) -> Path:
     return session_dir_ / "otel-turns-sent" / f"{digest}.json"
 
 
+def turn_export_sent(session_dir_: Path, turn_id: str) -> bool:
+    """Whether a turn's span tree was fully exported to Logfire."""
+    try:
+        return _turn_claim_path(session_dir_, turn_id).read_text() == "sent"
+    except OSError:
+        return False
+
+
 def _claim_turn_export(session_dir_: Path, turn_id: str) -> bool:
     """First-wins claim on exporting this turn's span tree, ever, for this
     session. A replayed/duplicate hook invocation for the same turn (e.g. the
@@ -622,7 +630,9 @@ def export_subagent_turn(
     platform: str,
     cwd: str,
     turn: TurnSpanDict,
-    tool_use_id: str,
+    tool_use_id: str = "",
+    *,
+    parent_span_id: str | None = None,
 ) -> None:
     """Hand a completed subagent turn off for background export, nested
     under the tool span (already exported, live, when the dispatching tool
@@ -647,6 +657,10 @@ def export_subagent_turn(
             trace_id = int(state["trace_id"], 16)
         except (OSError, TypeError, ValueError, KeyError, json.JSONDecodeError):
             trace_id = trace_id_for_session(platform, session_id)
+        if parent_span_id is None:
+            if not tool_use_id:
+                return
+            parent_span_id = str(int(tool_span_id(platform, session_id, tool_use_id)))
         job_path = _write_job(
             config.root,
             {
@@ -656,7 +670,7 @@ def export_subagent_turn(
                 "platform": platform,
                 "cwd": cwd,
                 "trace_id": str(trace_id),
-                "parent_span_id": str(int(tool_span_id(platform, session_id, tool_use_id))),
+                "parent_span_id": str(int(parent_span_id)),
                 "turn": turn,
             },
         )

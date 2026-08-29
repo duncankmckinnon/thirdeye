@@ -611,3 +611,71 @@ def test_subagent_turn_id_is_cursor_scoped_and_distinct_from_parent(tmp_path: Pa
         leaf["turn_span_id"] != turn["turn_span_id"] == str(turn_span_id("cursor", sid, turn_seq))
     )
     assert leaf["turn_id"] != turn["turn_id"]
+
+
+def test_subagent_with_session_id_generation_attaches_via_turn_window(tmp_path: Path):
+    """Cursor ``subagentStop`` often repeats the conversation id as ``generation_id``."""
+    sid, generation = "cursor-session", "gen-live"
+    store = Store(Config(root=tmp_path))
+    turn_seq = _append(store, sid, "user_message", {"generation_id": generation, "prompt": "delegate"})
+    _append(store, sid, "tool_call", {"generation_id": generation, "tool_name": "shell", "command": "ls"})
+    sub_seq = _append(
+        store,
+        sid,
+        "subagent_message",
+        {
+            "generation_id": sid,
+            "subagent_id": "agent-1",
+            "subagent_type": "explore",
+            "task": "smoke test",
+            "duration_ms": 1000,
+        },
+    )
+    stop_seq = _append(store, sid, "turn_stop", {"generation_id": generation, "model": "composer-2.5"})
+
+    turn = _build(tmp_path, sid, generation, stop_seq)
+
+    assert turn is not None
+    assert len(turn["subagents"]) == 1
+    assert turn["subagents"][0]["attributes"]["cursor.subagent.id"] == "agent-1"
+    assert turn["subagents"][0]["turn_span_id"] == str(turn_span_id("cursor", sid, sub_seq))
+    assert turn["turn_span_id"] == str(turn_span_id("cursor", sid, turn_seq))
+
+
+def test_build_turn_without_user_message_returns_none(tmp_path: Path):
+    sid, generation = "cursor-session", "gen-tools-only"
+    store = Store(Config(root=tmp_path))
+    _append(
+        store,
+        sid,
+        "tool_call",
+        {"generation_id": generation, "tool_name": "shell", "command": "ls"},
+    )
+    stop_seq = _append(store, sid, "turn_stop", {"generation_id": generation})
+
+    assert (
+        build_turn(
+            session_dir_=session_dir(tmp_path, "cursor", sid),
+            session_id=sid,
+            generation_id=generation,
+            stop_seq=stop_seq,
+        )
+        is None
+    )
+
+
+def test_build_turn_skips_bogus_stop_generation_id(tmp_path: Path):
+    sid = "cursor-session"
+    store = Store(Config(root=tmp_path))
+    _append(store, sid, "user_message", {"generation_id": "real-gen", "prompt": "hi"})
+    stop_seq = _append(store, sid, "turn_stop", {"generation_id": sid})
+
+    assert (
+        build_turn(
+            session_dir_=session_dir(tmp_path, "cursor", sid),
+            session_id=sid,
+            generation_id=sid,
+            stop_seq=stop_seq,
+        )
+        is None
+    )
