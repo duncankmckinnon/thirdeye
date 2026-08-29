@@ -626,8 +626,15 @@ def test_subagent_with_session_id_generation_attaches_via_turn_window(tmp_path: 
     """Cursor ``subagentStop`` often repeats the conversation id as ``generation_id``."""
     sid, generation = "cursor-session", "gen-live"
     store = Store(Config(root=tmp_path))
-    turn_seq = _append(store, sid, "user_message", {"generation_id": generation, "prompt": "delegate"})
-    _append(store, sid, "tool_call", {"generation_id": generation, "tool_name": "shell", "command": "ls"})
+    turn_seq = _append(
+        store, sid, "user_message", {"generation_id": generation, "prompt": "delegate"}
+    )
+    _append(
+        store,
+        sid,
+        "tool_call",
+        {"generation_id": generation, "tool_name": "shell", "command": "ls"},
+    )
     sub_seq = _append(
         store,
         sid,
@@ -640,7 +647,9 @@ def test_subagent_with_session_id_generation_attaches_via_turn_window(tmp_path: 
             "duration_ms": 1000,
         },
     )
-    stop_seq = _append(store, sid, "turn_stop", {"generation_id": generation, "model": "composer-2.5"})
+    stop_seq = _append(
+        store, sid, "turn_stop", {"generation_id": generation, "model": "composer-2.5"}
+    )
 
     turn = _build(tmp_path, sid, generation, stop_seq)
 

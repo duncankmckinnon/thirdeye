@@ -20,7 +20,6 @@ from thirdeye.config import Config
 from thirdeye.otel_export import export_spans
 from thirdeye.paths import otel_state_path
 from thirdeye.platforms.cursor.tracing import (
-    bogus_generation_id,
     resolve_turn_seq,
     tool_calls_for_generation,
 )
@@ -119,9 +118,7 @@ def _emit_live_tools(
         ]
         if not fresh:
             return
-        all_events = list(
-            SessionReader(session_dir_).iter_events(seq_range=(0, through_seq + 1))
-        )
+        all_events = list(SessionReader(session_dir_).iter_events(seq_range=(0, through_seq + 1)))
         turn_seq = resolve_turn_seq(
             all_events,
             generation_id=generation_id,
