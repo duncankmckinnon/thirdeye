@@ -5,8 +5,10 @@ from thirdeye.platforms.cursor.constants import (
 )
 
 
-def test_traced_events_contains_subagent_stop_once():
-    assert TRACED_EVENTS.count("subagentStop") == 1
+def test_traced_events_include_pre_tool_and_both_subagent_edges_once():
+    for event_name in ("preToolUse", "subagentStart", "subagentStop"):
+        assert event_name in TRACED_EVENTS
+        assert TRACED_EVENTS.count(event_name) == 1
 
 
 def test_read_aliases_are_not_skipped_by_the_dedicated_after_set():

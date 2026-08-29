@@ -11,6 +11,8 @@ from thirdeye.paths import usage_log_path
 from thirdeye.platforms.cursor import hook
 from thirdeye.store import Store
 
+FIXTURES = Path(__file__).parent / "fixtures"
+
 
 def _invoke(monkeypatch, payload: dict) -> None:
     monkeypatch.setattr("sys.stdin", io.StringIO(json.dumps(payload)))
@@ -354,22 +356,94 @@ def test_post_tool_skips_dedicated_after_aliases(tmp_path: Path, monkeypatch, to
     assert emitted == []
 
 
-def test_generic_post_tool_remains_instant(tmp_path: Path, monkeypatch):
+def test_pre_tool_task_records_noninstant_call(tmp_path: Path, monkeypatch):
     monkeypatch.setenv("THIRDEYE_HOME", str(tmp_path))
-    emitted = []
-    monkeypatch.setattr(
-        "thirdeye.platforms.cursor.live_spans.emit_live_tools",
-        lambda *args: emitted.append(args),
-    )
+    payload = json.loads((FIXTURES / "cursor-pre-tool-use.json").read_text())
+
+    _invoke(monkeypatch, payload)
+
+    events = list(Store(Config.load()).reader("cursor-session-1").iter_events())
+    assert len(events) == 1
+    assert events[0]["t"] == "tool_call"
+    assert events[0]["data"]["tool_name"] == "Task"
+    assert events[0]["data"]["tool_use_id"] == "call-123"
+    assert events[0]["data"]["tool_input"] == payload["tool_input"]
+    assert events[0]["data"]["generation_id"] == "parent-generation-1"
+    assert "cursor_instant" not in events[0]["data"]
+
+
+@pytest.mark.parametrize(
+    "tool_name", ["shell", "Shell", "read_file", "view", "edit_file", "mcp", "mcp_execution"]
+)
+def test_pre_tool_skips_dedicated_callbacks(tmp_path: Path, monkeypatch, tool_name: str):
+    monkeypatch.setenv("THIRDEYE_HOME", str(tmp_path))
 
     _invoke(
         monkeypatch,
         {
             "conversation_id": "session-1",
             "generation_id": "generation-1",
-            "cwd": "/repo",
+            "hook_event_name": "preToolUse",
+            "tool_name": tool_name,
+            "tool_use_id": "tool-1",
+        },
+    )
+
+    assert list(Store(Config.load()).list_sessions()) == []
+
+
+def test_generic_pre_post_tool_builds_pair(tmp_path: Path, monkeypatch):
+    monkeypatch.setenv("THIRDEYE_HOME", str(tmp_path))
+    live_event_counts = []
+    monkeypatch.setattr(hook, "_emit_live", lambda *_args: live_event_counts.append(len(_events())))
+    common = {
+        "conversation_id": "session-1",
+        "generation_id": "generation-1",
+        "cwd": "/repo",
+        "tool_name": "search_web",
+        "tool_use_id": "search-1",
+    }
+
+    _invoke(
+        monkeypatch,
+        {
+            **common,
+            "hook_event_name": "preToolUse",
+            "tool_input": {"query": "sample"},
+        },
+    )
+    assert live_event_counts == []
+
+    _invoke(
+        monkeypatch,
+        {
+            **common,
+            "hook_event_name": "postToolUse",
+            "result": {"matches": 3},
+        },
+    )
+
+    events = _events()
+    assert [event["t"] for event in events] == ["tool_call", "tool_result"]
+    assert all(event["data"]["generation_id"] == "generation-1" for event in events)
+    assert all(event["data"]["tool_use_id"] == "search-1" for event in events)
+    assert all("cursor_instant" not in event["data"] for event in events)
+    assert live_event_counts == [2]
+
+
+def test_generic_post_without_pre_is_noninstant_result(tmp_path: Path, monkeypatch):
+    monkeypatch.setenv("THIRDEYE_HOME", str(tmp_path))
+    emitted = []
+    monkeypatch.setattr(hook, "_emit_live", lambda *args: emitted.append(args))
+
+    _invoke(
+        monkeypatch,
+        {
+            "conversation_id": "session-1",
+            "generation_id": "generation-1",
             "hook_event_name": "postToolUse",
             "tool_name": "search_web",
+            "tool_use_id": "search-1",
             "result": {"matches": 3},
         },
     )
@@ -377,9 +451,8 @@ def test_generic_post_tool_remains_instant(tmp_path: Path, monkeypatch):
     events = _events()
     assert len(events) == 1
     assert events[0]["t"] == "tool_result"
-    assert events[0]["data"]["tool_name"] == "search_web"
-    assert events[0]["data"]["cursor_instant"] is True
-    assert "cursor_tool_family" not in events[0]["data"]
+    assert events[0]["data"]["tool_use_id"] == "search-1"
+    assert "cursor_instant" not in events[0]["data"]
     assert len(emitted) == 1
 
 
@@ -489,6 +562,87 @@ def test_subagent_stop_dispatches_to_subagent_message(tmp_path: Path, monkeypatc
     assert len(events) == 1
     assert events[0]["t"] == "subagent_message"
     assert exported == []
+
+
+def test_subagent_start_dispatches_fixture(tmp_path: Path, monkeypatch, capfd):
+    monkeypatch.setenv("THIRDEYE_HOME", str(tmp_path))
+    payload = json.loads((FIXTURES / "cursor-subagent-start.json").read_text())
+
+    _invoke(monkeypatch, payload)
+
+    assert capfd.readouterr().out == '{"continue": true}'
+    events = list(Store(Config.load()).reader("cursor-session-1").iter_events())
+    assert len(events) == 1
+    assert events[0]["t"] == "subagent_start"
+    assert events[0]["data"] == {
+        key: value
+        for key, value in payload.items()
+        if key not in {"conversation_id", "hook_event_name"}
+    }
+
+
+def test_subagent_start_accepts_camel_case(tmp_path: Path, monkeypatch):
+    monkeypatch.setenv("THIRDEYE_HOME", str(tmp_path))
+    payload = {
+        "hookEventName": "subagentStart",
+        "conversationId": "session-1",
+        "generationId": "parent-generation-1",
+        "subagentId": "subagent-1",
+        "subagentType": "explore",
+        "task": "Inspect sample",
+        "toolCallId": "call-123",
+        "subagentModel": "claude-4-sonnet",
+        "isParallelWorker": True,
+        "gitBranch": "fixture-branch",
+    }
+
+    _invoke(monkeypatch, payload)
+
+    event = _events()[0]
+    assert event["t"] == "subagent_start"
+    assert event["data"] == {
+        "generation_id": "parent-generation-1",
+        "subagentId": "subagent-1",
+        "subagentType": "explore",
+        "task": "Inspect sample",
+        "toolCallId": "call-123",
+        "subagentModel": "claude-4-sonnet",
+        "isParallelWorker": True,
+        "gitBranch": "fixture-branch",
+    }
+
+
+def test_subagent_start_without_conversation_id_is_noop(tmp_path: Path, monkeypatch, capfd):
+    monkeypatch.setenv("THIRDEYE_HOME", str(tmp_path))
+
+    _invoke(
+        monkeypatch,
+        {
+            "hook_event_name": "subagentStart",
+            "generation_id": "parent-generation-1",
+            "subagent_id": "subagent-1",
+        },
+    )
+
+    assert capfd.readouterr().out == '{"continue": true}'
+    assert list(Store(Config.load()).list_sessions()) == []
+
+
+def test_subagent_start_accepts_partial_metadata(tmp_path: Path, monkeypatch):
+    monkeypatch.setenv("THIRDEYE_HOME", str(tmp_path))
+
+    _invoke(
+        monkeypatch,
+        {
+            "hook_event_name": "subagentStart",
+            "conversation_id": "session-1",
+            "subagent_id": "subagent-1",
+        },
+    )
+
+    event = _events()[0]
+    assert event["t"] == "subagent_start"
+    assert event["data"] == {"subagent_id": "subagent-1"}
 
 
 def test_subagent_stop_preserves_generation_and_counts(tmp_path: Path, monkeypatch):
