@@ -58,6 +58,14 @@ Verify both sides:
   `thirdeye events <sid>`.
 - The corresponding trace appears in the configured Logfire project.
 
+For local Cursor IDE and CLI sessions, expect the child of a `Task` call to be
+its own Task-parented `agent-turn` span — including background, parallel, and
+nested children — with the subagent's own tool calls attached as hook-backed
+`tool` spans. When a child transcript is present it only backfills the first
+user and last assistant text; it does not supply span timing, tool results,
+token usage, or extra model-call boundaries, and an absent assistant text falls
+back to a summary.
+
 Do not claim success from `status` alone: it validates local configuration,
 not delivery. If direct Logfire access is unavailable, state that the remote
 appearance still needs user verification.
