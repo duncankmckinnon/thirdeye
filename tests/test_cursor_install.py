@@ -54,7 +54,10 @@ def test_install_upgrades_old_thirdeye_cursor_hooks(tmp_path: Path, monkeypatch)
 
     data = json.loads(path.read_text())
     for event_name in TRACED_EVENTS:
-        assert sum(Path(entry["command"]).name == HOOK_BIN_NAME for entry in data["hooks"][event_name]) == 1
+        assert (
+            sum(Path(entry["command"]).name == HOOK_BIN_NAME for entry in data["hooks"][event_name])
+            == 1
+        )
     assert data["hooks"]["preToolUse"] == [ours]
     assert data["hooks"]["subagentStart"] == [ours]
     assert data["hooks"]["stop"][1] == foreign

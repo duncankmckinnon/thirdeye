@@ -451,9 +451,7 @@ class TestExportSubagentTurnDispatch:
         assert len(spawned) == 1
         job = json.loads(spawned[0].read_text())
         assert job["kind"] == "subagent_turn"
-        assert int(job["parent_span_id"]) == tool_span_id(
-            "cursor", session_id, "call-123"
-        )
+        assert int(job["parent_span_id"]) == tool_span_id("cursor", session_id, "call-123")
         assert job["turn"]["turn_id"] == "12"
 
     def test_fallback_trace_and_subagent_parent_are_scoped_by_platform(

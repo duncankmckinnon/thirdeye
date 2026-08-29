@@ -34,9 +34,7 @@ def _warning_entries(home: Path) -> list[dict]:
 
 def _capture_detached_jobs(tmp_path: Path, monkeypatch) -> list[Path]:
     monkeypatch.setenv("THIRDEYE_HOME", str(tmp_path))
-    Config(root=tmp_path).write_logfire_settings(
-        LogfireSettings(enabled=True, token="test-token")
-    )
+    Config(root=tmp_path).write_logfire_settings(LogfireSettings(enabled=True, token="test-token"))
     jobs: list[Path] = []
     monkeypatch.setattr("thirdeye.otel_export._spawn", jobs.append)
     return jobs
@@ -765,9 +763,7 @@ def test_subagent_stop_exports_under_dispatching_task(tmp_path: Path, monkeypatc
     )
     _invoke(
         monkeypatch,
-        _cursor_payload(
-            "subagentStart", subagent_id="child-1", tool_call_id="call-123", task="go"
-        ),
+        _cursor_payload("subagentStart", subagent_id="child-1", tool_call_id="call-123", task="go"),
     )
     _invoke(
         monkeypatch,
@@ -859,9 +855,7 @@ def test_nested_subagent_uses_nested_task_parent(tmp_path: Path, monkeypatch):
     )
     _invoke(
         monkeypatch,
-        _cursor_payload(
-            "preToolUse", outer_generation, tool_name="Task", tool_use_id="call-N"
-        ),
+        _cursor_payload("preToolUse", outer_generation, tool_name="Task", tool_use_id="call-N"),
     )
     _invoke(
         monkeypatch,
@@ -895,9 +889,7 @@ def test_start_without_task_id_uses_exact_parent_generation_turn(tmp_path: Path,
 
     assert len(exported) == 1
     _, kwargs = exported[0]
-    assert kwargs == {
-        "parent_span_id": str(turn_span_id("cursor", "session-1", parent_turn_seq))
-    }
+    assert kwargs == {"parent_span_id": str(turn_span_id("cursor", "session-1", parent_turn_seq))}
 
 
 def test_unresolved_modern_parent_logs_sanitized_diagnostic(tmp_path: Path, monkeypatch):

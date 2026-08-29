@@ -347,9 +347,7 @@ def _subagent_stop(payload: dict[str, Any]) -> None:
                 _PLATFORM,
                 _cwd(payload),
                 resolved.turn,
-                parent_span_id=str(
-                    turn_span_id(_PLATFORM, session_id, resolved.parent_turn_seq)
-                ),
+                parent_span_id=str(turn_span_id(_PLATFORM, session_id, resolved.parent_turn_seq)),
             )
             return
         log_capture_error(
