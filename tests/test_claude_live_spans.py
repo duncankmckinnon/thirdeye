@@ -10,7 +10,7 @@ from thirdeye.config import Config, LogfireSettings
 from thirdeye.paths import otel_jobs_dir, session_dir
 from thirdeye.platforms.claude import hooks, live_spans
 from thirdeye.reader import SessionReader
-from thirdeye.span_ids import chat_span_id, tool_span_id
+from thirdeye.span_ids import chat_span_id, tool_span_id, trace_id_for_session
 from thirdeye.store import Store
 
 
@@ -145,8 +145,9 @@ class TestLiveSpanJob:
 
         job = _jobs(config)[0]
         chat, tool = job["spans"]
-        assert chat["span_id"] == str(chat_span_id(session_id, "msg-request"))
-        assert tool["span_id"] == str(tool_span_id(session_id, "tool-1"))
+        assert job["trace_id"] == str(trace_id_for_session("claude", session_id))
+        assert chat["span_id"] == str(chat_span_id("claude", session_id, "msg-request"))
+        assert tool["span_id"] == str(tool_span_id("claude", session_id, "tool-1"))
         assert tool["parent_span_id"] == chat["span_id"]
         assert (tool["start_ts"], tool["end_ts"]) == (event_start, event_end)
         assert (tool["start_ts"], tool["end_ts"]) != (
@@ -183,8 +184,8 @@ class TestLiveSpanJob:
         ]
         assert sorted(chat_ids) == sorted(
             [
-                str(chat_span_id(session_id, "msg-1")),
-                str(chat_span_id(session_id, "msg-2")),
+                str(chat_span_id("claude", session_id, "msg-1")),
+                str(chat_span_id("claude", session_id, "msg-2")),
             ]
         )
         marker = hooks._read_open_turn(session_dir_)
@@ -222,10 +223,14 @@ class TestLiveSpanJob:
         span_names = sorted(span["name"] for span in jobs[0]["spans"])
         assert span_names == ["chat claude-sonnet-5", "tool: Read", "tool: Read"]
         by_id = {span["span_id"]: span for span in jobs[0]["spans"]}
-        tool_1_span = by_id[str(tool_span_id(session_id, "tool-1"))]
-        tool_2_span = by_id[str(tool_span_id(session_id, "tool-2"))]
-        assert tool_1_span["parent_span_id"] == str(chat_span_id(session_id, "msg-parallel"))
-        assert tool_2_span["parent_span_id"] == str(chat_span_id(session_id, "msg-parallel"))
+        tool_1_span = by_id[str(tool_span_id("claude", session_id, "tool-1"))]
+        tool_2_span = by_id[str(tool_span_id("claude", session_id, "tool-2"))]
+        assert tool_1_span["parent_span_id"] == str(
+            chat_span_id("claude", session_id, "msg-parallel")
+        )
+        assert tool_2_span["parent_span_id"] == str(
+            chat_span_id("claude", session_id, "msg-parallel")
+        )
 
         marker = hooks._read_open_turn(session_dir_)
         assert marker is not None
@@ -257,7 +262,7 @@ class TestLiveSpanJob:
             for span in job["spans"]
             if span["name"] == "tool: Read"
         ]
-        assert tool_ids == [str(tool_span_id(session_id, "tool-dup"))]
+        assert tool_ids == [str(tool_span_id("claude", session_id, "tool-dup"))]
 
     def test_failed_job_write_does_not_advance_cursor(
         self, monkeypatch: pytest.MonkeyPatch, config: Config, tmp_path: Path
@@ -518,7 +523,7 @@ class TestLiveSpanJob:
             for span in job["spans"]
             if span["name"].startswith("chat")
         ]
-        assert chat_ids == [str(chat_span_id(session_id, "msg-split"))]
+        assert chat_ids == [str(chat_span_id("claude", session_id, "msg-split"))]
 
     def test_live_spans_carry_session_and_turn_identity(
         self, monkeypatch: pytest.MonkeyPatch, config: Config, tmp_path: Path

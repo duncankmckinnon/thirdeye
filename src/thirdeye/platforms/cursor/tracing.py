@@ -1,0 +1,475 @@
+"""Reconstruct Cursor generations as Thirdeye turns.
+
+Cursor hooks are point-in-time JSON callbacks. This adapter keeps their raw
+payloads in the local event log, pairs before/after tool callbacks, and emits
+the generic turn model consumed by the OTel GenAI Logfire exporter.
+"""
+
+from __future__ import annotations
+
+import json
+from datetime import datetime, timedelta
+from pathlib import Path
+from typing import Any
+
+from thirdeye.reader import SessionReader
+from thirdeye.span_ids import turn_span_id
+from thirdeye.tracing.model import ToolCallSpanDict, TurnSpanDict, TurnStatus, UsageDict
+
+_PLATFORM = "cursor"
+
+
+def _data(event: dict[str, Any]) -> dict[str, Any]:
+    value = event.get("data")
+    return value if isinstance(value, dict) else {}
+
+
+def _text(data: dict[str, Any], *keys: str) -> str:
+    for key in keys:
+        value = data.get(key)
+        if value not in (None, ""):
+            return str(value)
+    return ""
+
+
+def _integer(data: dict[str, Any], *keys: str) -> int | None:
+    value = None
+    for key in keys:
+        value = data.get(key)
+        if value is not None:
+            break
+    if value in (None, "", "--"):
+        return None
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _structured(value: Any) -> Any:
+    if not isinstance(value, str):
+        return value
+    try:
+        return json.loads(value)
+    except (json.JSONDecodeError, TypeError):
+        return value
+
+
+def _value(data: dict[str, Any], *keys: str) -> Any:
+    for key in keys:
+        value = data.get(key)
+        if value not in (None, ""):
+            return _structured(value)
+    return None
+
+
+def _start_ts(event: dict[str, Any]) -> str:
+    end_ts = str(event.get("ts") or "")
+    # `subagentStop` reports `duration_ms`; the tool callbacks use `duration`
+    # or `durationMs`. All three mean elapsed milliseconds.
+    duration = _integer(_data(event), "duration", "duration_ms", "durationMs")
+    if not end_ts or duration is None or duration < 0:
+        return end_ts
+    try:
+        normalized = end_ts[:-1] + "+00:00" if end_ts.endswith("Z") else end_ts
+        started = datetime.fromisoformat(normalized) - timedelta(milliseconds=duration)
+        return started.isoformat(timespec="milliseconds").replace("+00:00", "Z")
+    except ValueError:
+        return end_ts
+
+
+def _provider(model: str) -> str:
+    normalized = model.lower()
+    if "claude" in normalized:
+        return "anthropic"
+    if "gemini" in normalized:
+        return "gcp.gemini"
+    if "deepseek" in normalized:
+        return "deepseek"
+    if "grok" in normalized:
+        return "x_ai"
+    if normalized.startswith(("gpt-", "o1", "o3", "o4")):
+        return "openai"
+    return ""
+
+
+def usage_from_payload(data: dict[str, Any]) -> UsageDict:
+    input_total = _integer(data, "input_tokens", "inputTokens")
+    cache_read = _integer(data, "cache_read_tokens", "cacheReadTokens")
+    cache_write = _integer(data, "cache_write_tokens", "cacheWriteTokens")
+    output = _integer(data, "output_tokens", "outputTokens")
+    usage: UsageDict = {}
+    if input_total is not None:
+        # Cursor's stop/afterAgentResponse hooks report input_tokens as the turn
+        # total, already including cache read and write buckets (unlike Anthropic's
+        # API, which reports input_tokens excluding cache).
+        usage["input_tokens"] = input_total
+    if output is not None:
+        usage["output_tokens"] = output
+    if cache_read is not None:
+        usage["cache_read_input_tokens"] = cache_read
+    if cache_write is not None:
+        usage["cache_creation_input_tokens"] = cache_write
+    return usage
+
+
+def _tool_span(
+    *,
+    session_id: str,
+    generation_id: str,
+    name: str,
+    start: dict[str, Any],
+    end: dict[str, Any],
+) -> ToolCallSpanDict:
+    start_data, end_data = _data(start), _data(end)
+    call_id = _text(
+        start_data,
+        "tool_call_id",
+        "toolCallId",
+        "tool_use_id",
+        "toolUseId",
+        "call_id",
+        "callId",
+    ) or _text(
+        end_data,
+        "tool_call_id",
+        "toolCallId",
+        "tool_use_id",
+        "toolUseId",
+        "call_id",
+        "callId",
+    )
+    call_id = call_id or f"{generation_id}:{name}:{start.get('seq', 0)}"
+    arguments = _value(
+        start_data,
+        "tool_input",
+        "toolInput",
+        "arguments",
+        "command",
+        "file_path",
+        "filePath",
+        "path",
+    )
+    result = _value(
+        end_data,
+        "tool_output",
+        "toolOutput",
+        "result",
+        "output",
+        "stdout",
+        "response",
+        "edits",
+        "diff",
+    )
+    attributes: dict[str, Any] = {
+        "gen_ai.operation.name": "execute_tool",
+        "gen_ai.tool.name": name,
+        "gen_ai.tool.call.id": call_id,
+    }
+    if arguments:
+        attributes["gen_ai.tool.call.arguments"] = arguments
+    if result:
+        attributes["gen_ai.tool.call.result"] = result
+    exit_code = end_data.get("exit_code", end_data.get("exitCode"))
+    if exit_code is not None:
+        attributes["cursor.tool.exit_code"] = exit_code
+    return {
+        "tool_call_id": call_id,
+        "name": name,
+        "start_ts": (
+            _start_ts(end) if start is end else str(start.get("ts") or end.get("ts") or "")
+        ),
+        "end_ts": str(end.get("ts") or start.get("ts") or ""),
+        "attributes": attributes,
+    }
+
+
+def _pair_key(data: dict[str, Any], family: str, name: str) -> str:
+    """Identify a tool invocation well enough to pair its before/after events.
+
+    Cursor supplies no tool call id on some callbacks, so fall back to the
+    payload body (the command, tool input, or read path), which the matching
+    after-callback may echo. Degrades to `family:name` when nothing is echoed.
+    """
+    explicit = _text(
+        data, "tool_call_id", "toolCallId", "tool_use_id", "toolUseId", "call_id", "callId"
+    )
+    if explicit:
+        return f"id:{explicit}"
+    signature = _text(
+        data,
+        "command",
+        "tool_input",
+        "toolInput",
+        "arguments",
+        "file_path",
+        "filePath",
+        "path",
+    )
+    return f"{family}:{name}:{signature}" if signature else f"{family}:{name}"
+
+
+def _take_open_call(
+    open_calls: list[tuple[str, str, dict[str, Any]]], key: str, family: str
+) -> dict[str, Any] | None:
+    """Claim the open call matching `key`, else the oldest of the same family.
+
+    Both passes take the earliest match: tools that complete in dispatch order
+    are the common case, and a LIFO match would reverse exactly those.
+    """
+    for index, (open_key, _, _event) in enumerate(open_calls):
+        if open_key == key:
+            return open_calls.pop(index)[2]
+    for index, (_, open_family, _event) in enumerate(open_calls):
+        if open_family == family:
+            return open_calls.pop(index)[2]
+    return None
+
+
+def tool_calls_for_generation(
+    events: list[dict[str, Any]], session_id: str, generation_id: str
+) -> list[ToolCallSpanDict]:
+    open_calls: list[tuple[str, str, dict[str, Any]]] = []
+    completed: list[ToolCallSpanDict] = []
+    for event in events:
+        event_type = str(event.get("t") or "")
+        data = _data(event)
+        name = _text(data, "tool_name", "toolName", "name", "tool") or "unknown"
+        family = str(data.get("cursor_tool_family") or name)
+        if event_type == "tool_call" and not data.get("cursor_instant"):
+            open_calls.append((_pair_key(data, family, name), family, event))
+            continue
+        if event_type == "tool_result" and not data.get("cursor_instant"):
+            start = _take_open_call(open_calls, _pair_key(data, family, name), family) or event
+            completed.append(
+                _tool_span(
+                    session_id=session_id,
+                    generation_id=generation_id,
+                    name=name,
+                    start=start,
+                    end=event,
+                )
+            )
+            continue
+        if event_type in {"tool_call", "tool_result"}:
+            completed.append(
+                _tool_span(
+                    session_id=session_id,
+                    generation_id=generation_id,
+                    name=name,
+                    start=event,
+                    end=event,
+                )
+            )
+    return completed
+
+
+_ERROR_STATUSES = {"error", "failed", "failure"}
+
+# Attribute name -> the payload keys that may carry it, most preferred first.
+# Cursor declares the callback as `agent.v1.SubagentStopRequestQuery`, whose
+# fields are `subagent_id`, `subagent_type`, `status`, `duration_ms`, `summary`,
+# `parent_conversation_id`, `message_count`, `tool_call_count`, `error_message`,
+# `modified_files`, `git_branch`, `conversation_id`, `generation_id`, `model`,
+# `loop_count`, `task`, `description`, and `model_id`. Both spellings are read
+# because the proto reaches a command hook as JSON, which may camel-case it.
+_SUBAGENT_TEXT_ATTRS: tuple[tuple[str, tuple[str, ...]], ...] = (
+    ("cursor.subagent.id", ("subagent_id", "subagentId", "agent_id", "agentId")),
+    ("cursor.subagent.type", ("subagent_type", "subagentType", "agent_type", "agentType")),
+    ("cursor.subagent.description", ("description",)),
+)
+_SUBAGENT_COUNT_ATTRS: tuple[tuple[str, tuple[str, ...]], ...] = (
+    ("cursor.subagent.message_count", ("message_count", "messageCount")),
+    ("cursor.subagent.tool_call_count", ("tool_call_count", "toolCallCount")),
+    ("cursor.subagent.loop_count", ("loop_count", "loopCount")),
+)
+
+
+def _status(data: dict[str, Any]) -> TurnStatus:
+    return "errored" if _text(data, "status", "reason").lower() in _ERROR_STATUSES else "completed"
+
+
+def _event_generation_id(event: dict[str, Any]) -> str:
+    return str(_data(event).get("generation_id") or _data(event).get("generationId") or "")
+
+
+def bogus_generation_id(generation_id: str, session_id: str) -> bool:
+    """Cursor sometimes sets ``generation_id`` to the conversation/session id.
+
+    ``subagentStop`` is the main offender; treating that value as a real
+    generation key would orphan subagents from their dispatching turn.
+    """
+    return bool(generation_id) and generation_id == session_id
+
+
+def resolve_turn_seq(
+    events: list[dict[str, Any]], *, generation_id: str, session_id: str, through_seq: int
+) -> int | None:
+    """Return the ``user_message`` seq anchoring ``generation_id``'s turn.
+
+    Live tool export and turn reconstruction both need the same turn anchor.
+    Never fall back to ``events[0]`` when it is not a user prompt — that
+    produced orphan ``agent-turn`` spans keyed to arbitrary tool seqs.
+    """
+    prompt: dict[str, Any] | None = None
+    for event in events:
+        seq = int(event.get("seq") or 0)
+        if seq > through_seq:
+            break
+        if event.get("t") != "user_message":
+            continue
+        if _event_generation_id(event) == generation_id:
+            prompt = event
+    if prompt is None:
+        return None
+    return int(prompt.get("seq") or 0)
+
+
+def _subagents_in_turn(
+    events: list[dict[str, Any]],
+    *,
+    turn_seq: int,
+    stop_seq: int,
+    session_id: str,
+    generation_id: str,
+) -> list[TurnSpanDict]:
+    subagents: list[TurnSpanDict] = []
+    for event in events:
+        if event.get("t") != "subagent_message":
+            continue
+        seq = int(event.get("seq") or 0)
+        if not (turn_seq < seq <= stop_seq):
+            continue
+        gen = _event_generation_id(event)
+        if gen and gen != generation_id and not bogus_generation_id(gen, session_id):
+            continue
+        subagents.append(_subagent_turn(session_id, event))
+    return subagents
+
+
+def _subagent_turn(session_id: str, event: dict[str, Any]) -> TurnSpanDict:
+    """Project one Cursor `subagentStop` callback into a leaf subagent turn.
+
+    Cursor reports a subagent only once it has finished: a single callback
+    carrying the dispatched task, an elapsed `duration_ms`, and summary counts.
+    Nothing in it describes the model calls or tools the child actually ran,
+    and Cursor fires no callback for the dispatching tool either, so the leaf
+    stays empty rather than inventing interior spans that were never observed
+    or hanging itself off a `Task` tool span that does not exist.
+    """
+    data = _data(event)
+    seq = int(event.get("seq") or 0)
+    attributes: dict[str, Any] = {}
+    for name, keys in _SUBAGENT_TEXT_ATTRS:
+        text = _text(data, *keys)
+        if text:
+            attributes[name] = text
+    for name, keys in _SUBAGENT_COUNT_ATTRS:
+        count = _integer(data, *keys)
+        if count is not None:
+            attributes[name] = count
+    return {
+        "turn_id": f"subagent:{session_id}:{seq}",
+        # Seq is unique within the session, so this never collides with the
+        # dispatching turn's id (derived from its own first event's seq).
+        "turn_span_id": str(turn_span_id(_PLATFORM, session_id, seq)),
+        "start_ts": _start_ts(event),
+        "end_ts": str(event.get("ts") or ""),
+        "input_message": _text(data, "task"),
+        "output_message": "",
+        "status": _status(data),
+        "llm_calls": [],
+        "permission_requests": [],
+        "subagents": [],
+        "attributes": attributes,
+    }
+
+
+def subagent_turn_from_event(session_id: str, event: dict[str, Any]) -> TurnSpanDict:
+    """Public wrapper for ``_subagent_turn`` used by hooks."""
+    return _subagent_turn(session_id, event)
+
+
+def build_turn(
+    *, session_dir_: Path, session_id: str, generation_id: str, stop_seq: int
+) -> TurnSpanDict | None:
+    if bogus_generation_id(generation_id, session_id):
+        return None
+    all_events = list(SessionReader(session_dir_).iter_events(seq_range=(0, stop_seq + 1)))
+    turn_seq = resolve_turn_seq(
+        all_events, generation_id=generation_id, session_id=session_id, through_seq=stop_seq
+    )
+    events = [event for event in all_events if _event_generation_id(event) == generation_id]
+    if not events:
+        return None
+    if turn_seq is None:
+        # Tool-only generations have no user_message; anchor on the first observed event.
+        turn_seq = int(events[0].get("seq") or 0)
+    prompt_event = next((event for event in events if event.get("t") == "user_message"), None)
+    response_events = [event for event in events if event.get("t") == "assistant_message"]
+    stop_event = next(
+        (event for event in reversed(events) if event.get("t") == "turn_stop"), events[-1]
+    )
+    response_event = response_events[-1] if response_events else None
+    prompt_data = _data(prompt_event or {})
+    response_data = _data(response_event or {})
+    stop_data = _data(stop_event)
+    prompt = _text(prompt_data, "prompt", "input", "text")
+    response = _text(response_data, "text", "response", "output")
+    model = _text(stop_data, "model", "model_name") or _text(response_data, "model", "model_name")
+    usage = usage_from_payload(stop_data)
+    start_event = prompt_event or events[0]
+    start_ts = str(start_event.get("ts") or "")
+    end_ts = str(stop_event.get("ts") or start_ts)
+    tools = tool_calls_for_generation(events, session_id, generation_id)
+    # Tools already dispatched live keep the same deterministic parent IDs and
+    # must not be emitted again with the completed turn.
+    from thirdeye.platforms.cursor.live_spans import committed_tool_call_ids
+
+    committed_tools = committed_tool_call_ids(session_dir_, generation_id)
+    tools = [tool for tool in tools if tool["tool_call_id"] not in committed_tools]
+    llm_calls = []
+    if prompt or response or model or usage or tools:
+        llm_calls.append(
+            {
+                "call_id": generation_id,
+                "provider": _provider(model),
+                "model": model,
+                "start_ts": start_ts,
+                "end_ts": str((response_event or stop_event).get("ts") or end_ts),
+                "input_messages": (
+                    [{"role": "user", "parts": [{"type": "text", "content": prompt}]}]
+                    if prompt
+                    else []
+                ),
+                "output_messages": (
+                    [{"role": "assistant", "parts": [{"type": "text", "content": response}]}]
+                    if response
+                    else []
+                ),
+                "usage": usage,
+                "tool_calls": tools,
+            }
+        )
+    subagents = _subagents_in_turn(
+        all_events,
+        turn_seq=turn_seq,
+        stop_seq=stop_seq,
+        session_id=session_id,
+        generation_id=generation_id,
+    )
+    if not llm_calls and not subagents:
+        return None
+    return {
+        "turn_id": str(turn_seq),
+        "turn_span_id": str(turn_span_id(_PLATFORM, session_id, turn_seq)),
+        "start_ts": start_ts,
+        "end_ts": end_ts,
+        "input_message": prompt,
+        "output_message": response,
+        "status": _status(stop_data),
+        "llm_calls": llm_calls,
+        "permission_requests": [],
+        "subagents": subagents,
+        "attributes": {"cursor.generation.id": generation_id},
+    }

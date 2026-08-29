@@ -105,7 +105,7 @@ Filters: `--platform` / `--harness`, `--model SUBSTR`, `--since` / `--until`,
 
 Mirror every captured session into [Logfire](https://pydantic.dev/logfire) live, as traces — no separate export step. Once enabled, each thirdeye session becomes one Logfire trace: tool calls appear as spans with real durations (paired from `PreToolUse`/`PostToolUse`, or Codex's `call_id`), everything else (messages, notifications, compaction, ...) as timeline markers, all searchable by `gen_ai.conversation.id`.
 
-On Claude Code, each individual model call within a turn gets its own `chat <model>` span. Codex uses a turn-level `chat <model>` span reconstructed from the completed turn in its rollout JSONL, with `execute_tool <name>` children for every paired tool call. Both use OpenTelemetry GenAI attributes for model, messages, and token usage; Codex repeated token reports are deduplicated by their cumulative watermark before turn totals are calculated.
+On Claude Code, each individual model call within a turn gets its own `chat <model>` span. Codex reconstructs calls from its rollout JSONL. Cursor reconstructs each generation from its IDE/CLI hooks, pairing shell and MCP callbacks and recording file and generic tool events. All three use OpenTelemetry GenAI semantic conventions for agent invocation, chat, tool execution, messages, models, and token/cache usage; no OpenInference span taxonomy is used.
 
 ```bash
 thirdeye logfire enable                                           # securely prompts for gateway key
@@ -115,7 +115,7 @@ thirdeye logfire disable                                          # keeps the sa
 
 Or from `thirdeye ui`, under **settings**: paste the gateway key and hit Enable — persisted the same way, in `~/.thirdeye/config.yaml`.
 
-Export is dispatched from the same Claude Code / Codex hooks that already capture events, but the actual Logfire call (including a flush, a real network round trip) runs in a detached background process — the hook itself never waits on the network, so enabling this adds no latency to your tool calls.
+Export is dispatched from the same Claude Code, Codex, and Cursor hooks that already capture events, but the actual Logfire call (including a flush, a real network round trip) runs in a detached background process — the hook itself never waits on the network, so enabling this adds no network latency to your tool calls.
 
 From the sessions page, you can also send the currently filtered sessions to
 Logfire as a named managed dataset. Configure a separate project API key with

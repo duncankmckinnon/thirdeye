@@ -102,7 +102,7 @@ _FLUSH_TIMEOUT_MS = 2000
 # internal key differs from the name their CLI is known by need an entry; any
 # other platform is used verbatim. Deliberately separate from `thirdeye.platform`
 # and from the configured service name, which both stay the internal key.
-_AGENT_NAMES = {"claude": "claude-code"}
+_AGENT_NAMES = {"claude": "claude-code", "cursor": "cursor"}
 
 # The provider a platform talks to, for spans that describe no single LLM call
 # and so have no provider of their own to report. A chat span always prefers
@@ -498,6 +498,14 @@ def _turn_claim_path(session_dir_: Path, turn_id: str) -> Path:
     return session_dir_ / "otel-turns-sent" / f"{digest}.json"
 
 
+def turn_export_sent(session_dir_: Path, turn_id: str) -> bool:
+    """Whether a turn's span tree was fully exported to Logfire."""
+    try:
+        return _turn_claim_path(session_dir_, turn_id).read_text() == "sent"
+    except OSError:
+        return False
+
+
 def _claim_turn_export(session_dir_: Path, turn_id: str) -> bool:
     """First-wins claim on exporting this turn's span tree, ever, for this
     session. A replayed/duplicate hook invocation for the same turn (e.g. the
@@ -622,7 +630,9 @@ def export_subagent_turn(
     platform: str,
     cwd: str,
     turn: TurnSpanDict,
-    tool_use_id: str,
+    tool_use_id: str = "",
+    *,
+    parent_span_id: str | None = None,
 ) -> None:
     """Hand a completed subagent turn off for background export, nested
     under the tool span (already exported, live, when the dispatching tool
@@ -646,7 +656,11 @@ def export_subagent_turn(
             state = json.loads(otel_state_path(session_dir_).read_text())
             trace_id = int(state["trace_id"], 16)
         except (OSError, TypeError, ValueError, KeyError, json.JSONDecodeError):
-            trace_id = trace_id_for_session(session_id)
+            trace_id = trace_id_for_session(platform, session_id)
+        if parent_span_id is None:
+            if not tool_use_id:
+                return
+            parent_span_id = str(int(tool_span_id(platform, session_id, tool_use_id)))
         job_path = _write_job(
             config.root,
             {
@@ -656,7 +670,7 @@ def export_subagent_turn(
                 "platform": platform,
                 "cwd": cwd,
                 "trace_id": str(trace_id),
-                "parent_span_id": str(int(tool_span_id(session_id, tool_use_id))),
+                "parent_span_id": str(int(parent_span_id)),
                 "turn": turn,
             },
         )
@@ -713,8 +727,8 @@ def _export_turn_inner(
                     _identity_attributes(session_id=session_id, platform=platform, cwd=cwd)
                 )
                 derived = (
-                    trace_id_for_session(session_id),
-                    root_span_id_for_session(session_id),
+                    trace_id_for_session(platform, session_id),
+                    root_span_id_for_session(platform, session_id),
                 )
                 parent, created_root = _create_root_atomic(root_path, *derived)
                 # Another writer can win after stale-lock recovery with either
@@ -985,11 +999,39 @@ def _tool_attributes(
     cwd: str,
     turn_id: Any = None,
     turn_span_id: Any = None,
+    tool_name: str | None = None,
+    tool_call_id: str | None = None,
 ) -> dict[str, Any]:
-    """Enrich and flatten a tool span's raw attributes."""
+    """Enrich and flatten a tool span using OTel GenAI tool conventions.
+
+    Platform adapters keep their raw hook fields for local fidelity. This
+    projection gives every harness the same Logfire-facing vocabulary.
+    """
+    semantic: dict[str, Any] = {"gen_ai.operation.name": "execute_tool"}
+    if tool_name:
+        semantic["gen_ai.tool.name"] = tool_name
+    if tool_call_id:
+        semantic["gen_ai.tool.call.id"] = tool_call_id
+    # Projected payload is moved, not copied: leaving the source key on the
+    # span would ship the same (potentially large) body twice.
+    consumed: set[str] = set()
+    if "gen_ai.tool.call.arguments" not in attributes:
+        for key in ("tool_input", "arguments", "input", "command"):
+            if key in attributes and attributes[key] not in (None, ""):
+                semantic["gen_ai.tool.call.arguments"] = attributes[key]
+                consumed.add(key)
+                break
+    if "gen_ai.tool.call.result" not in attributes:
+        for key in ("tool_response", "tool_result", "result", "output"):
+            if key in attributes and attributes[key] not in (None, ""):
+                semantic["gen_ai.tool.call.result"] = attributes[key]
+                consumed.add(key)
+                break
+    raw = {k: v for k, v in attributes.items() if k not in consumed} if consumed else attributes
     return _flatten_attrs(
         _merge_raw(
-            attributes,
+            semantic,
+            raw,
             _identity_attributes(
                 session_id=session_id,
                 platform=platform,
@@ -1047,6 +1089,8 @@ def _export_spans_batch(
                 cwd=cwd,
                 turn_id=turn_id,
                 turn_span_id=turn_span_id_,
+                tool_name=span_data.get("tool_name") or name.removeprefix("tool:").strip(),
+                tool_call_id=span_data.get("tool_call_id"),
             )
         else:
             attributes = _flatten_attrs(raw_attributes)
@@ -1127,7 +1171,7 @@ def _export_turn_subtree(
         call_span = _start_span_with_id(
             tracer,
             f"chat {model}" if model else "chat",
-            chat_span_id(session_id, llm_call["call_id"]),
+            chat_span_id(platform, session_id, llm_call["call_id"]),
             parent_ctx=turn_parent_ctx,
             start_time=_ts_to_ns(llm_call["start_ts"]),
             attributes=_chat_attributes(
@@ -1147,7 +1191,7 @@ def _export_turn_subtree(
             tool_span = _start_span_with_id(
                 tracer,
                 f"tool: {tool_call['name']}",
-                tool_span_id(session_id, tool_call["tool_call_id"]),
+                tool_span_id(platform, session_id, tool_call["tool_call_id"]),
                 parent_ctx=call_parent_ctx,
                 kind=SpanKind.INTERNAL,
                 start_time=_ts_to_ns(tool_call["start_ts"]),
@@ -1158,6 +1202,8 @@ def _export_turn_subtree(
                     cwd=cwd,
                     turn_id=turn["turn_id"],
                     turn_span_id=turn.get("turn_span_id"),
+                    tool_name=tool_call["name"],
+                    tool_call_id=tool_call["tool_call_id"],
                 ),
             )
             tool_span.end(end_time=_ts_to_ns(tool_call["end_ts"]))
@@ -1166,12 +1212,12 @@ def _export_turn_subtree(
         parent_call_id = orphan["parent_call_id"]
         tool_call = orphan["tool_call"]
         orphan_parent_ctx = _parent_context(
-            turn_ctx.trace_id, int(chat_span_id(session_id, parent_call_id))
+            turn_ctx.trace_id, int(chat_span_id(platform, session_id, parent_call_id))
         )
         orphan_span = _start_span_with_id(
             tracer,
             f"tool: {tool_call['name']}",
-            tool_span_id(session_id, tool_call["tool_call_id"]),
+            tool_span_id(platform, session_id, tool_call["tool_call_id"]),
             parent_ctx=orphan_parent_ctx,
             kind=SpanKind.INTERNAL,
             start_time=_ts_to_ns(tool_call["start_ts"]),
@@ -1182,6 +1228,8 @@ def _export_turn_subtree(
                 cwd=cwd,
                 turn_id=turn["turn_id"],
                 turn_span_id=turn.get("turn_span_id"),
+                tool_name=tool_call["name"],
+                tool_call_id=tool_call["tool_call_id"],
             ),
         )
         orphan_span.end(end_time=_ts_to_ns(tool_call["end_ts"]))

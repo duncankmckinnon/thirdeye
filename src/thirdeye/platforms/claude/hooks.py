@@ -15,6 +15,7 @@ from thirdeye.config import Config
 from thirdeye.env_capture import capture_env, env_to_tag
 from thirdeye.meta import read_meta, write_meta
 from thirdeye.paths import meta_path, session_dir
+from thirdeye.platforms.provenance import foreign_payload_reason
 from thirdeye.reader import SessionReader
 from thirdeye.span_ids import turn_span_id
 from thirdeye.store import Store
@@ -39,23 +40,71 @@ def _read_stdin() -> dict:
     if not raw:
         return {}
     try:
-        return json.loads(raw)
-    except json.JSONDecodeError:
+        value = json.loads(raw)
+    except (json.JSONDecodeError, RecursionError):
         return {}
+    # Valid JSON that is not an object (array, scalar, null) would make every
+    # caller's payload.get() raise; fail open with an empty payload instead.
+    return value if isinstance(value, dict) else {}
 
 
 def _strip_payload(payload: dict) -> dict:
     return {k: v for k, v in payload.items() if k not in _STRIP_KEYS}
 
 
+def _foreign_session_id(payload: dict) -> str:
+    """Best-effort session identifier for a payload of unknown origin.
+
+    A foreign payload is by definition not shaped like Claude's, so it need not
+    carry session_id at all: Cursor names the same field conversation_id (or
+    conversationId). Reading only session_id would log an empty id for exactly
+    the payloads this diagnostic exists to correlate.
+    """
+    for key in ("session_id", "conversation_id", "conversationId"):
+        value = payload.get(key)
+        if value not in (None, ""):
+            return str(value)
+    return ""
+
+
+def _reject_foreign_payload(payload: dict) -> bool:
+    """Reject only payloads carrying positive evidence of another platform."""
+    try:
+        reason = foreign_payload_reason(payload, expected=_PLATFORM)
+    except Exception:
+        return False
+    if reason is None:
+        return False
+
+    try:
+        config = Config.load()
+        log_capture_error(
+            thirdeye_home=config.root,
+            phase="foreign_payload",
+            level="warn",
+            platform=_PLATFORM,
+            session_id=_foreign_session_id(payload),
+            message=reason,
+            silent_fallback=True,
+        )
+    except Exception:
+        pass
+    return True
+
+
 def _log_hook_invocation(t: str, payload: dict) -> None:
-    """Breadcrumb that a hook actually fired, before any processing that
-    could return early. A background subagent's dispatching PostToolUse and
-    its own SubagentStart can fire concurrently -- unlike a foreground one,
-    where they're strictly sequential -- and one of the two is observed to
-    silently go missing under that concurrency. Without this there's no way
-    to tell "the hook was never invoked" from "it ran but this code
-    discarded what it got", since both look identical: nothing.
+    """Breadcrumb that a hook actually fired, before any Claude processing
+    that could discard the payload. A background subagent's dispatching
+    PostToolUse and its own SubagentStart can fire concurrently -- unlike a
+    foreground one, where they're strictly sequential -- and one of the two is
+    observed to silently go missing under that concurrency. Without this
+    there's no way to tell "the hook was never invoked" from "it ran but this
+    code discarded what it got", since both look identical: nothing.
+
+    Foreign-payload rejection is the one step that runs earlier: a payload
+    from another platform is not a Claude hook invocation, so claiming one
+    here would corrupt the very signal this breadcrumb exists to provide. Such
+    payloads get the warn-level foreign_payload entry instead.
     """
     try:
         config = Config.load()
@@ -75,6 +124,10 @@ def _log_hook_invocation(t: str, payload: dict) -> None:
 
 
 def _emit(t: str, payload: dict) -> int | None:
+    # Deliberately ahead of the breadcrumb: rejected payloads must leave no
+    # hook_invoked trace, only the foreign_payload warning.
+    if _reject_foreign_payload(payload):
+        return None
     _log_hook_invocation(t, payload)
     sid = payload.get("session_id")
     if not sid:
@@ -440,6 +493,8 @@ def session_start() -> None:
 
 def user_prompt_submit() -> None:
     payload = _read_stdin()
+    if _reject_foreign_payload(payload):
+        return
     sid = payload.get("session_id")
     if not sid:
         return
@@ -492,7 +547,7 @@ def user_prompt_submit() -> None:
             sd,
             {
                 "turn_seq": seq,
-                "turn_span_id": str(turn_span_id(sid, seq)),
+                "turn_span_id": str(turn_span_id(_PLATFORM, sid, seq)),
                 "start_ts": start_ts,
                 "prompt": prompt,
                 "prompt_id": payload.get("prompt_id"),
@@ -512,6 +567,13 @@ def pre_tool_use() -> None:
 
 def post_tool_use() -> None:
     payload = _read_stdin()
+    # Guarded here as well as inside _emit: _emit returns None both for a
+    # rejected payload and for an ordinary one lacking session_id, so its
+    # return value cannot gate the emit_live_spans call below. Double
+    # rejection is harmless -- _reject_foreign_payload is pure apart from the
+    # log write, and the first call has already returned by then.
+    if _reject_foreign_payload(payload):
+        return
     _emit("tool_result", payload)
 
     try:
@@ -535,6 +597,8 @@ def stop() -> None:
     from thirdeye.platforms.claude.usage import capture_usage_claude
 
     payload = _read_stdin()
+    if _reject_foreign_payload(payload):
+        return
     sid = payload.get("session_id")
     if not sid:
         return
@@ -590,6 +654,8 @@ def subagent_stop() -> None:
     # SubagentStart (below) uses a distinct "subagent_start" type; the
     # start/stop asymmetry is intentional, not an oversight.
     payload = _read_stdin()
+    if _reject_foreign_payload(payload):
+        return
     _log_hook_invocation("subagent_message", payload)
     sid = payload.get("session_id")
     if not sid:
@@ -642,6 +708,8 @@ def stop_failure() -> None:
     from thirdeye.platforms.claude.tracing import build_turn
 
     payload = _read_stdin()
+    if _reject_foreign_payload(payload):
+        return
     sid = payload.get("session_id")
     if not sid:
         return

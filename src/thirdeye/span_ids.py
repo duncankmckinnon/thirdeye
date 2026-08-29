@@ -7,11 +7,11 @@ emitted mid-turn has to name the ``chat`` span that requested it as its parent,
 and that chat span is not exported until the turn ends.
 
 So ids are derived instead of minted. Every id here is a pure function of data
-any process already holds — the session id, the turn sequence number, the
-transcript ``message.id``, the ``tool_use_id`` — so a live tool span can name a
+any process already holds — the platform, session id, turn sequence number,
+transcript ``message.id``, and ``tool_use_id`` — so a live tool span can name a
 parent that does not exist yet, and a lost or corrupt open-turn marker is
-non-fatal: the turn span id is recomputable from the session id and turn seq
-alone.
+non-fatal: the turn span id is recomputable from the platform, session id, and
+turn seq alone.
 
 Derivation is ``blake2b`` over a domain-separated string, personalised with a
 fixed constant so these digests can never collide with any other hash use in
@@ -41,26 +41,26 @@ def _derive(key: str, digest_size: int) -> int:
     return value or 1
 
 
-def trace_id_for_session(session_id: str) -> int:
+def trace_id_for_session(platform: str, session_id: str) -> int:
     """128-bit trace id anchoring every span in one thirdeye session."""
-    return _derive(session_id, _TRACE_ID_BYTES)
+    return _derive(f"{platform}/{session_id}", _TRACE_ID_BYTES)
 
 
-def root_span_id_for_session(session_id: str) -> int:
+def root_span_id_for_session(platform: str, session_id: str) -> int:
     """64-bit span id of the session's root ``session`` span."""
-    return _derive(f"{session_id}/root", _SPAN_ID_BYTES)
+    return _derive(f"{platform}/{session_id}/root", _SPAN_ID_BYTES)
 
 
-def turn_span_id(session_id: str, turn_seq: int) -> int:
+def turn_span_id(platform: str, session_id: str, turn_seq: int) -> int:
     """64-bit span id of the ``agent-turn`` span for turn ``turn_seq``."""
-    return _derive(f"{session_id}/turn/{turn_seq}", _SPAN_ID_BYTES)
+    return _derive(f"{platform}/{session_id}/turn/{turn_seq}", _SPAN_ID_BYTES)
 
 
-def chat_span_id(session_id: str, message_id: str) -> int:
+def chat_span_id(platform: str, session_id: str, message_id: str) -> int:
     """64-bit span id of the ``chat`` span for LLM message ``message_id``."""
-    return _derive(f"{session_id}/call/{message_id}", _SPAN_ID_BYTES)
+    return _derive(f"{platform}/{session_id}/call/{message_id}", _SPAN_ID_BYTES)
 
 
-def tool_span_id(session_id: str, tool_use_id: str) -> int:
+def tool_span_id(platform: str, session_id: str, tool_use_id: str) -> int:
     """64-bit span id of the ``tool`` span for tool call ``tool_use_id``."""
-    return _derive(f"{session_id}/tool/{tool_use_id}", _SPAN_ID_BYTES)
+    return _derive(f"{platform}/{session_id}/tool/{tool_use_id}", _SPAN_ID_BYTES)

@@ -20,10 +20,12 @@ def log_capture_error(
     session_id: str = "",
     source_path: str = "",
     level: str = "warn",
+    silent_fallback: bool = False,
 ) -> None:
     """Append one entry to <thirdeye_home>/logs/usage-errors.jsonl.
 
-    Never raises. If the log itself can't be written, falls back to stderr.
+    Never raises. If the log itself can't be written, falls back to stderr
+    unless ``silent_fallback`` is true.
     """
     try:
         log = usage_log_path(thirdeye_home)
@@ -42,10 +44,11 @@ def log_capture_error(
         with log.open("a", encoding="utf-8") as f:
             f.write(json.dumps(entry, separators=(",", ":")) + "\n")
     except Exception as fallback_err:
-        sys.stderr.write(
-            f"[thirdeye usage] error log write failed: {fallback_err!r}; "
-            f"original phase={phase!r} error={error!r}\n"
-        )
+        if not silent_fallback:
+            sys.stderr.write(
+                f"[thirdeye usage] error log write failed: {fallback_err!r}; "
+                f"original phase={phase!r} error={error!r}\n"
+            )
 
 
 def safe_capture(phase: str, platform: str):

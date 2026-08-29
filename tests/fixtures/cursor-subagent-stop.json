@@ -1,0 +1,24 @@
+{
+  "t": "subagent_message",
+  "ts": "2026-08-27T21:47:02.065Z",
+  "seq": 14,
+  "data": {
+    "conversation_id": "cursor-session-captured",
+    "generation_id": "cursor-generation-captured",
+    "model": "composer-2.5-fast",
+    "subagent_id": "tool_subagent_captured",
+    "subagent_type": "explore",
+    "status": "completed",
+    "duration_ms": 16635,
+    "parent_conversation_id": "cursor-session-captured",
+    "message_count": 0,
+    "tool_call_count": 0,
+    "loop_count": 0,
+    "task": "Perform a tracing smoke test and return a structured summary.",
+    "description": "Tracing smoke test subagent",
+    "hook_event_name": "subagentStop",
+    "cursor_version": "3.15.6",
+    "workspace_roots": [],
+    "user_email": "user@example.invalid"
+  }
+}

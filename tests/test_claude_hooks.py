@@ -12,6 +12,7 @@ import pytest
 from thirdeye.config import Config
 from thirdeye.paths import session_dir, tags_path
 from thirdeye.platforms.claude import hooks
+from thirdeye.platforms.provenance import foreign_payload_reason
 from thirdeye.reader import SessionReader
 from thirdeye.span_ids import turn_span_id
 from thirdeye.store import Store
@@ -21,6 +22,10 @@ from thirdeye.usage.store import UsageStore
 @pytest.fixture
 def env(monkeypatch, tmp_path: Path):
     monkeypatch.setenv("THIRDEYE_HOME", str(tmp_path))
+    # Running the suite under a harness that exports WB_*/THIRDEYE_CAPTURE_ENV
+    # would otherwise leak ambient env auto-tags into tag-store assertions.
+    # Tests that exercise env capture set the variable themselves.
+    monkeypatch.delenv("THIRDEYE_CAPTURE_ENV", raising=False)
     return tmp_path
 
 
@@ -200,7 +205,6 @@ class TestSessionStartEnvTags:
         return [json.loads(line) for line in path.read_text().splitlines() if line.strip()]
 
     def test_no_patterns_set_writes_no_tags(self, monkeypatch, env: Path):
-        monkeypatch.delenv("THIRDEYE_CAPTURE_ENV", raising=False)
         monkeypatch.setenv("WB_PLAN", "p")
         monkeypatch.setenv("WB_STEP", "test#1")
         _stdin(monkeypatch, {"session_id": "s1", "cwd": "/p"})
@@ -345,7 +349,7 @@ class TestUserPromptHashtagExtract:
 
 
 class TestOpenTurnCursor:
-    def test_user_prompt_submit_writes_deterministic_id_and_timestamp(self, monkeypatch, env: Path):
+    def test_user_prompt_writes_platform_scoped_turn_span_id(self, monkeypatch, env: Path):
         sid = "marker-round-trip"
         _stdin(monkeypatch, {"session_id": sid, "cwd": "/p", "prompt": "hello"})
         hooks.user_prompt_submit()
@@ -355,7 +359,7 @@ class TestOpenTurnCursor:
         assert marker is not None
         event = SessionReader(sd).get_event(marker["turn_seq"])
 
-        assert marker["turn_span_id"] == str(turn_span_id(sid, marker["turn_seq"]))
+        assert marker["turn_span_id"] == str(turn_span_id("claude", sid, marker["turn_seq"]))
         assert marker["last_frame_ts"] == event["ts"]
         assert marker["start_ts"] == event["ts"]
 
@@ -431,7 +435,7 @@ class TestOpenTurnCursor:
         assert marker is not None
         stale_seq = marker["turn_seq"]
         marker["turn_seq"] += 1
-        marker["turn_span_id"] = str(turn_span_id(sid, marker["turn_seq"]))
+        marker["turn_span_id"] = str(turn_span_id("claude", sid, marker["turn_seq"]))
         hooks._write_open_turn(sd, marker)
 
         assert hooks._delete_open_turn(sd, expected_turn_seq=stale_seq) is False
@@ -793,6 +797,359 @@ def _error_log_entries(home: Path) -> list[dict]:
     if not log.exists():
         return []
     return [json.loads(line) for line in log.read_text().splitlines() if line]
+
+
+# -- foreign payload provenance ------------------------------------------------
+
+
+_FOREIGN_CURSOR_HOOKS = [
+    ("pre_tool_use", "beforeShellExecution"),
+    ("user_prompt_submit", "beforeSubmitPrompt"),
+    ("stop", "stop"),
+    ("subagent_stop", "subagentStop"),
+    ("stop_failure", "afterAgentResponse"),
+]
+
+
+@pytest.mark.parametrize("handler_name,hook_event_name", _FOREIGN_CURSOR_HOOKS)
+def test_foreign_cursor_payload_writes_no_claude_event(
+    monkeypatch,
+    env: Path,
+    handler_name: str,
+    hook_event_name: str,
+):
+    sid = f"foreign-{handler_name}"
+    _stdin(monkeypatch, {"session_id": sid, "cwd": "/claude/project"})
+    hooks.session_start()
+    before = list(Store(Config.load()).reader(f"claude:{sid}").iter_events())
+
+    _stdin(
+        monkeypatch,
+        {
+            "session_id": sid,
+            "cwd": "/cursor/project",
+            "hook_event_name": hook_event_name,
+            "cursor_version": "1.7.0",
+            "prompt": "must not be stored",
+            "response": "must not be stored",
+            "error": "must not be stored",
+        },
+    )
+    getattr(hooks, handler_name)()
+
+    after = list(Store(Config.load()).reader(f"claude:{sid}").iter_events())
+    assert after == before
+
+
+def test_foreign_payload_does_not_change_open_turn_marker(monkeypatch, env: Path):
+    sid = "foreign-marker"
+    _stdin(
+        monkeypatch,
+        {
+            "session_id": sid,
+            "cwd": "/claude/project",
+            "hook_event_name": "UserPromptSubmit",
+            "prompt": "genuine Claude turn",
+        },
+    )
+    hooks.user_prompt_submit()
+    marker_path = hooks._open_turn_path(session_dir(env, "claude", sid))
+    marker_before = marker_path.read_bytes()
+
+    _stdin(
+        monkeypatch,
+        {
+            "session_id": sid,
+            "cwd": "/cursor/project",
+            "hook_event_name": "stop",
+            "cursor_version": "1.7.0",
+            "response": "foreign completion",
+        },
+    )
+    hooks.stop()
+
+    assert marker_path.exists(), "foreign Stop must not close the genuine Claude turn"
+    assert marker_path.read_bytes() == marker_before
+    events = list(Store(Config.load()).reader(f"claude:{sid}").iter_events())
+    assert [event["t"] for event in events] == ["user_message"]
+
+
+# post_tool_use is the only handler with two guards -- its own and the one
+# inside _emit -- so it is the only one that could ever double-log. pre_tool_use
+# covers the ordinary single-guard shape.
+@pytest.mark.parametrize("handler_name", ["pre_tool_use", "post_tool_use"])
+def test_foreign_payload_logs_one_warning_with_reason_and_session(
+    monkeypatch,
+    env: Path,
+    handler_name: str,
+):
+    payload = {
+        "session_id": "foreign-warning-session",
+        "cwd": "/cursor/project",
+        "hook_event_name": "beforeShellExecution",
+        "tool_use_id": "foreign-tool-use",
+    }
+    expected_reason = foreign_payload_reason(payload, expected="claude")
+    assert expected_reason is not None
+    _stdin(monkeypatch, payload)
+
+    getattr(hooks, handler_name)()
+
+    entries = _error_log_entries(env)
+    assert len(entries) == 1
+    assert entries[0]["level"] == "warn"
+    assert entries[0]["phase"] == "foreign_payload"
+    assert entries[0]["platform"] == "claude"
+    assert entries[0]["session_id"] == "foreign-warning-session"
+    assert expected_reason in entries[0]["message"]
+
+
+def test_native_cursor_payload_shape_is_rejected_with_correlatable_session(
+    monkeypatch,
+    env: Path,
+):
+    # The shape Cursor actually sends: conversation_id rather than session_id,
+    # camelCase event key, and a cursor_version marker. The breadcrumb has to
+    # name the offending conversation or an operator cannot correlate it.
+    _stdin(
+        monkeypatch,
+        {
+            "conversation_id": "cursor-conversation-1",
+            "hookEventName": "beforeShellExecution",
+            "cursor_version": "1.7.0",
+            "workspace_roots": ["/cursor/project"],
+            "command": "rm -rf /",
+        },
+    )
+
+    hooks.pre_tool_use()
+
+    assert list(Store(Config.load()).list_sessions()) == []
+    entries = _error_log_entries(env)
+    assert len(entries) == 1
+    assert entries[0]["phase"] == "foreign_payload"
+    assert entries[0]["session_id"] == "cursor-conversation-1"
+
+
+def test_native_cursor_camel_case_session_key_is_correlatable(monkeypatch, env: Path):
+    _stdin(
+        monkeypatch,
+        {
+            "conversationId": "cursor-conversation-2",
+            "hookEventName": "afterShellExecution",
+            "composer_mode": "agent",
+        },
+    )
+
+    hooks.post_tool_use()
+
+    entries = _error_log_entries(env)
+    assert [entry["phase"] for entry in entries] == ["foreign_payload"]
+    assert entries[0]["session_id"] == "cursor-conversation-2"
+
+
+def test_foreign_payload_emits_no_hook_invoked_info_breadcrumb(monkeypatch, env: Path):
+    _stdin(
+        monkeypatch,
+        {
+            "session_id": "foreign-no-info",
+            "cwd": "/cursor/project",
+            "composer_mode": "agent",
+        },
+    )
+
+    hooks.pre_tool_use()
+
+    entries = _error_log_entries(env)
+    assert [entry["phase"] for entry in entries] == ["foreign_payload"]
+    assert entries[0]["level"] == "warn"
+
+
+def test_genuine_claude_payload_records_unchanged(monkeypatch, env: Path):
+    payload = {
+        "session_id": "genuine-claude",
+        "cwd": "/claude/project",
+        "hook_event_name": "PreToolUse",
+        "tool_name": "Read",
+        "tool_use_id": "tool-1",
+        "tool_input": {"file_path": "README.md"},
+    }
+    _stdin(monkeypatch, payload)
+
+    hooks.pre_tool_use()
+
+    events = list(Store(Config.load()).reader("claude:genuine-claude").iter_events())
+    assert len(events) == 1
+    assert events[0]["t"] == "tool_call"
+    assert events[0]["data"] == {
+        key: value for key, value in payload.items() if key not in {"session_id", "cwd"}
+    }
+    # An accepted payload keeps its hook_invoked breadcrumb, and gets no
+    # foreign_payload entry.
+    entries = _error_log_entries(env)
+    assert [entry["phase"] for entry in entries] == ["hook_invoked"]
+    assert entries[0]["level"] == "info"
+    assert entries[0]["session_id"] == "genuine-claude"
+    assert "tool-1" in entries[0]["message"]
+
+
+def test_missing_hook_event_name_fails_open_and_records(monkeypatch, env: Path):
+    _stdin(
+        monkeypatch,
+        {
+            "session_id": "missing-event-name",
+            "cwd": "/claude/project",
+            "tool_name": "Read",
+            "tool_use_id": "tool-without-event-name",
+        },
+    )
+
+    hooks.pre_tool_use()
+
+    events = list(Store(Config.load()).reader("claude:missing-event-name").iter_events())
+    assert len(events) == 1
+    assert events[0]["t"] == "tool_call"
+    assert events[0]["data"]["tool_use_id"] == "tool-without-event-name"
+    assert not any(entry["phase"] == "foreign_payload" for entry in _error_log_entries(env))
+
+
+def test_rejection_writes_nothing_to_stdout_or_stderr(monkeypatch, env: Path, capsys):
+    _stdin(
+        monkeypatch,
+        {
+            "session_id": "foreign-silent",
+            "cwd": "/cursor/project",
+            "hook_event_name": "beforeSubmitPrompt",
+        },
+    )
+
+    hooks.user_prompt_submit()
+
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    assert captured.err == ""
+
+
+@pytest.mark.parametrize(
+    "handler_name",
+    [
+        "pre_tool_use",
+        "post_tool_use",
+        "user_prompt_submit",
+        "stop",
+        "subagent_stop",
+        "stop_failure",
+    ],
+)
+@pytest.mark.parametrize("decoded_payload", [[], "not-an-object", 1, True, None])
+def test_non_object_json_payload_fails_open_without_side_effects(
+    monkeypatch,
+    env: Path,
+    handler_name: str,
+    decoded_payload: object,
+):
+    monkeypatch.setattr("sys.stdin", io.StringIO(json.dumps(decoded_payload)))
+
+    getattr(hooks, handler_name)()
+
+    assert list(Store(Config.load()).list_sessions()) == []
+    # A non-object payload is handled exactly like an empty one: handlers that
+    # always breadcrumb still log their info-level "hook_invoked" entry, but
+    # nothing is stored and nothing is rejected as a foreign payload.
+    entries = _error_log_entries(env)
+    assert {entry["phase"] for entry in entries} <= {"hook_invoked"}
+    assert all(entry["level"] == "info" for entry in entries)
+
+
+def test_foreign_payload_skips_lifecycle_and_export_side_effects(monkeypatch, env: Path):
+    def unexpected(*args, **kwargs):
+        pytest.fail("foreign payload reached a Claude lifecycle or export side effect")
+
+    from thirdeye import otel_export
+    from thirdeye.platforms.claude import live_spans, usage
+
+    monkeypatch.setattr(hooks, "capture_env", unexpected)
+    monkeypatch.setattr(hooks, "_close_stale_turn_if_open", unexpected)
+    monkeypatch.setattr(Store, "close_session", unexpected)
+    monkeypatch.setattr(usage, "capture_usage_claude", unexpected)
+    monkeypatch.setattr(live_spans, "emit_live_spans", unexpected)
+    monkeypatch.setattr(otel_export, "export_turn", unexpected)
+    monkeypatch.setattr(otel_export, "export_subagent_turn", unexpected)
+
+    handlers = (
+        hooks.session_start,
+        hooks.post_tool_use,
+        hooks.stop,
+        hooks.subagent_stop,
+        hooks.stop_failure,
+        hooks.session_end,
+    )
+    for handler in handlers:
+        _stdin(
+            monkeypatch,
+            {
+                "session_id": f"foreign-side-effect-{handler.__name__}",
+                "cwd": "/cursor/project",
+                "hook_event_name": "stop",
+                "cursor_version": "1.7.0",
+                "tool_use_id": "foreign-tool",
+            },
+        )
+        handler()
+
+
+def test_foreign_payload_warning_write_failure_is_silent(monkeypatch, tmp_path: Path, capsys):
+    # A regular file cannot contain the logs/ directory. This exercises the
+    # logger's real filesystem fallback instead of replacing it with a mock
+    # that raises before its stderr behavior can run.
+    blocked_home = tmp_path / "not-a-directory"
+    blocked_home.write_text("occupied")
+    monkeypatch.setenv("THIRDEYE_HOME", str(blocked_home))
+    _stdin(
+        monkeypatch,
+        {
+            "session_id": "foreign-warning-failure",
+            "cwd": "/cursor/project",
+            "hook_event_name": "beforeShellExecution",
+        },
+    )
+
+    hooks.pre_tool_use()
+
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    assert captured.err == ""
+
+
+def test_excessively_nested_json_fails_open(monkeypatch, env: Path):
+    # CPython's JSON decoder raises RecursionError before it can classify this
+    # as ordinary invalid JSON. Hook input must still never escape to the host.
+    monkeypatch.setattr("sys.stdin", io.StringIO("[" * 10_000))
+
+    hooks.pre_tool_use()
+
+    assert list(Store(Config.load()).list_sessions()) == []
+
+
+def test_provenance_classifier_failure_fails_open_and_records(monkeypatch, env: Path):
+    def broken_classifier(payload, expected):
+        raise ValueError("unexpected payload shape")
+
+    monkeypatch.setattr(hooks, "foreign_payload_reason", broken_classifier)
+    _stdin(
+        monkeypatch,
+        {
+            "session_id": "classifier-failure",
+            "cwd": "/claude/project",
+            "hook_event_name": "PreToolUse",
+            "tool_name": "Read",
+        },
+    )
+
+    hooks.pre_tool_use()
+
+    events = list(Store(Config.load()).reader("claude:classifier-failure").iter_events())
+    assert [event["t"] for event in events] == ["tool_call"]
 
 
 class TestHookInvocationBreadcrumbs:

@@ -58,6 +58,7 @@ thirdeye-codex-permission-request = "thirdeye.platforms.codex.hooks_json:permiss
 thirdeye-codex-pre-compact = "thirdeye.platforms.codex.hooks_json:pre_compact"
 thirdeye-codex-post-compact = "thirdeye.platforms.codex.hooks_json:post_compact"
 thirdeye-codex-session-end = "thirdeye.platforms.codex.hooks_json:session_end"
+thirdeye-cursor-hook = "thirdeye.platforms.cursor.hook:main"
 
 [build-system]
 requires = ["setuptools>=64", "setuptools-scm>=8", "wheel"]

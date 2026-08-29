@@ -32,8 +32,10 @@ from thirdeye.config import Config
 from thirdeye.env_capture import capture_env, env_to_tag
 from thirdeye.meta import read_meta, write_meta
 from thirdeye.paths import meta_path, session_dir
+from thirdeye.platforms.provenance import foreign_payload_reason
 from thirdeye.store import Store
 from thirdeye.tags import TagStore, extract_hashtags
+from thirdeye.usage.errlog import log_capture_error
 
 _PLATFORM = "codex"
 
@@ -42,7 +44,28 @@ _PLATFORM = "codex"
 _STRIP_KEYS = frozenset({"session_id", "cwd", "transcript_path", "agent_transcript_path"})
 
 
+def _payload_session_id(payload: dict) -> str:
+    """Best-effort session id across platforms, for logging only.
+
+    Codex (like Claude) sends ``session_id``; Cursor keys its sessions on
+    ``conversation_id``/``conversationId`` instead. A foreign payload rejected
+    below is by definition not ours, so the breadcrumb has to look in Cursor's
+    keys too or it records an empty id for exactly the collision it exists to
+    diagnose.
+    """
+    for key in ("session_id", "conversation_id", "conversationId"):
+        value = payload.get(key)
+        if value not in (None, ""):
+            return str(value)
+    return ""
+
+
 def _read_stdin() -> dict:
+    # Provenance rejection lives here, not in the handlers: this is the single
+    # decode point every handler funnels through, so returning {} provably
+    # precedes _reap_mid_turn_marker, close_stale_turn_if_open, prompt storage,
+    # tag mutation, and _emit. Moving the check into handlers would reintroduce
+    # the ordering bug this guard exists to prevent.
     try:
         raw = sys.stdin.read()
     except OSError:
@@ -50,9 +73,32 @@ def _read_stdin() -> dict:
     if not raw:
         return {}
     try:
-        return json.loads(raw)
-    except json.JSONDecodeError:
+        payload = json.loads(raw)
+    except (json.JSONDecodeError, RecursionError):
         return {}
+    # Malformed shapes (a JSON list, string, null) are not foreign evidence —
+    # drop them silently rather than logging a foreign_payload breadcrumb.
+    if not isinstance(payload, dict):
+        return {}
+
+    try:
+        reason = foreign_payload_reason(payload, _PLATFORM)
+    except Exception:
+        return payload
+    if reason is not None:
+        try:
+            config = Config.load()
+            log_capture_error(
+                thirdeye_home=config.root,
+                phase="foreign_payload",
+                message=reason,
+                platform=_PLATFORM,
+                session_id=_payload_session_id(payload),
+            )
+        except Exception:
+            pass
+        return {}
+    return payload
 
 
 def _strip_payload(payload: dict) -> dict:

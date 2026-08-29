@@ -9,6 +9,7 @@ from thirdeye.cli import main
 from thirdeye.commands.add import PLATFORMS, find_orphaned_hooks
 from thirdeye.platforms.claude.install import ClaudePlatform
 from thirdeye.platforms.codex.install import CodexPlatform
+from thirdeye.platforms.cursor.install import CursorPlatform
 
 # -- command registration ------------------------------------------------------
 
@@ -212,8 +213,8 @@ def test_ingest_still_works(tmp_path: Path):
 # -- PLATFORMS dict correctness ------------------------------------------------
 
 
-def test_platforms_dict_is_exactly_claude_and_codex():
-    assert set(PLATFORMS) == {"claude", "codex"}
+def test_platforms_dict_is_exactly_supported_platforms():
+    assert set(PLATFORMS) == {"claude", "codex", "cursor"}
 
 
 def test_platforms_dict_has_claude():
@@ -224,6 +225,11 @@ def test_platforms_dict_has_claude():
 def test_platforms_dict_has_codex():
     assert "codex" in PLATFORMS
     assert PLATFORMS["codex"] is CodexPlatform
+
+
+def test_platforms_dict_has_cursor():
+    assert "cursor" in PLATFORMS
+    assert PLATFORMS["cursor"] is CursorPlatform
 
 
 def test_platform_flag_value_maps_to_platforms_key():
@@ -240,18 +246,8 @@ def test_add_gemini_fails():
     assert r.exit_code != 0
 
 
-def test_add_cursor_fails():
-    r = CliRunner().invoke(main, ["add", "cursor"])
-    assert r.exit_code != 0
-
-
 def test_add_gemini_flag_fails():
     r = CliRunner().invoke(main, ["add", "--gemini"])
-    assert r.exit_code != 0
-
-
-def test_add_cursor_flag_fails():
-    r = CliRunner().invoke(main, ["add", "--cursor"])
     assert r.exit_code != 0
 
 
@@ -370,7 +366,7 @@ def test_add_codex_force_takes_over_foreign_notify(tmp_path: Path, monkeypatch):
 # -- add --list ----------------------------------------------------------------
 
 
-def test_list_shows_only_two_platforms(monkeypatch):
+def test_list_shows_supported_platforms(monkeypatch):
     # Avoid depending on the real ~/.gemini or ~/.cursor config on this machine.
     monkeypatch.setattr("thirdeye.commands.add.ORPHAN_CONFIG_PATHS", ())
     r = CliRunner().invoke(main, ["add", "--list"])
@@ -378,7 +374,7 @@ def test_list_shows_only_two_platforms(monkeypatch):
     assert "claude" in r.output
     assert "codex" in r.output
     assert "gemini" not in r.output
-    assert "cursor" not in r.output
+    assert "cursor" in r.output
 
 
 # -- find_orphaned_hooks -------------------------------------------------------
@@ -435,7 +431,7 @@ def test_find_orphaned_hooks_malformed_json(tmp_path: Path):
     assert find_orphaned_hooks([config]) == []
 
 
-def test_find_orphaned_hooks_detects_cursor_hook_by_basename(tmp_path: Path):
+def test_find_orphaned_hooks_ignores_supported_cursor_hook(tmp_path: Path):
     config = tmp_path / "hooks.json"
     config.write_text(
         json.dumps(
@@ -448,7 +444,7 @@ def test_find_orphaned_hooks_detects_cursor_hook_by_basename(tmp_path: Path):
         )
     )
     result = find_orphaned_hooks([config])
-    assert result == [(config, "/opt/tools/thirdeye-cursor-hook")]
+    assert result == []
 
 
 def test_find_orphaned_hooks_does_not_match_claude_stop(tmp_path: Path):

@@ -19,7 +19,6 @@ The PyPI package is `thrdi`; the installed commands are `thirdeye` and `thrdi`
 thirdeye add --claude       # Claude Code
 thirdeye add --codex        # OpenAI Codex CLI
 thirdeye add --cursor       # Cursor
-thirdeye add --copilot      # GitHub Copilot CLI
 ```
 
 `thirdeye add` is idempotent — running it twice for the same platform leaves

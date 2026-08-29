@@ -17,6 +17,7 @@ from thirdeye.tracing.model import (
     TurnStatus,
 )
 
+_PLATFORM = "claude"
 _CORRELATED_TYPES = frozenset(
     {
         "tool_call",
@@ -228,7 +229,7 @@ def _build_subagent_turn(
     task_input = task_input if isinstance(task_input, dict) else {}
     return {
         "turn_id": str(start_ev.get("seq")),
-        "turn_span_id": str(turn_span_id(session_id, int(start_ev["seq"]))),
+        "turn_span_id": str(turn_span_id(_PLATFORM, session_id, int(start_ev["seq"]))),
         "start_ts": str(start_ev.get("ts") or ""),
         "end_ts": str(stop_ev.get("ts") or ""),
         # The subagent's own transcript opens with its task prompt as a plain
@@ -339,7 +340,7 @@ def build_turn(
         user_data = user_message.get("data") or {}
         marker = {
             "turn_seq": turn_seq,
-            "turn_span_id": str(turn_span_id(session_id, turn_seq)),
+            "turn_span_id": str(turn_span_id(_PLATFORM, session_id, turn_seq)),
             "start_ts": str(user_message.get("ts") or ""),
             "prompt": str(user_data.get("prompt") or ""),
             "prompt_id": user_data.get("prompt_id"),
@@ -351,7 +352,7 @@ def build_turn(
     try:
         derived_turn_span_id = str(int(marker["turn_span_id"]))
     except (ValueError, TypeError, KeyError):
-        derived_turn_span_id = str(turn_span_id(session_id, turn_seq))
+        derived_turn_span_id = str(turn_span_id(_PLATFORM, session_id, turn_seq))
 
     events = list(
         SessionReader(session_dir_).iter_events(

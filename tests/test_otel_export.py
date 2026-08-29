@@ -429,6 +429,32 @@ class TestExportTurnDispatch:
         otel_export.export_turn(enabled_config, tmp_path, "s1", "claude", "/p", _turn())
 
 
+class TestExportSubagentTurnDispatch:
+    def test_fallback_trace_and_subagent_parent_are_scoped_by_platform(
+        self, tmp_path: Path, enabled_config: Config, monkeypatch: pytest.MonkeyPatch
+    ):
+        spawned = []
+        monkeypatch.setattr(otel_export.subprocess, "Popen", lambda argv, **k: spawned.append(argv))
+        session_id = "shared-session"
+        tool_use_id = "dispatch-tool"
+        session_dir = tmp_path / "traces" / "cursor" / session_id
+
+        otel_export.export_subagent_turn(
+            enabled_config,
+            session_dir,
+            session_id,
+            "cursor",
+            "/proj",
+            _turn(turn_id="subagent-1"),
+            tool_use_id,
+        )
+
+        job_path = Path(spawned[0][3])
+        payload = json.loads(job_path.read_text())
+        assert payload["trace_id"] == str(trace_id_for_session("cursor", session_id))
+        assert payload["parent_span_id"] == str(tool_span_id("cursor", session_id, tool_use_id))
+
+
 class TestExportSpansDispatch:
     """Live spans use the same detached job transport as completed turns."""
 
@@ -759,7 +785,7 @@ class TestExportSpansBatch:
         )
 
         [tool_span] = exporter.exported_spans_as_dict()
-        assert tool_span["attributes"]["command"] == "pwd"
+        assert tool_span["attributes"]["gen_ai.tool.call.arguments"] == "pwd"
         assert tool_span["attributes"]["gen_ai.conversation.id"] == "s1"
         assert tool_span["attributes"]["thirdeye.platform"] == "claude"
         assert tool_span["attributes"]["thirdeye.cwd"] == "/proj"
@@ -779,7 +805,7 @@ class TestExportSpansBatch:
         )
 
         [tool_span] = exporter.exported_spans_as_dict()
-        assert tool_span["attributes"]["command"] == "x"
+        assert tool_span["attributes"]["gen_ai.tool.call.arguments"] == "x"
         assert json.loads(tool_span["attributes"]["attributes"]) == {"mode": "safe"}
 
 
@@ -815,8 +841,8 @@ class TestExportTurnInner:
         self, tmp_path: Path, enabled_config: Config, wired_instance, exporter
     ):
         session_id = "live-parent-session"
-        expected_turn_id = turn_span_id(session_id, 1)
-        live_chat_id = chat_span_id(session_id, "call_live")
+        expected_turn_id = turn_span_id("claude", session_id, 1)
+        live_chat_id = chat_span_id("claude", session_id, "call_live")
         session_dir = tmp_path / "traces" / "claude" / session_id
 
         otel_export._export_spans_batch(
@@ -825,7 +851,7 @@ class TestExportTurnInner:
             session_id=session_id,
             platform="claude",
             cwd="/proj",
-            trace_id=trace_id_for_session(session_id),
+            trace_id=trace_id_for_session("claude", session_id),
             spans=[
                 {
                     "name": "chat claude-sonnet-5",
@@ -862,8 +888,8 @@ class TestExportTurnInner:
         to a chat span exported in an earlier, separate call.
         """
         session_id = "orphan-session"
-        sd = tmp_path / "traces" / "claude" / session_id
-        live_chat_id = chat_span_id(session_id, "msg_parallel")
+        sd = tmp_path / "traces" / "cursor" / session_id
+        live_chat_id = chat_span_id("cursor", session_id, "msg_parallel")
 
         # The group's chat span, exported earlier and separately -- exactly
         # as live_spans.py already does for any chat span.
@@ -871,14 +897,14 @@ class TestExportTurnInner:
             config=enabled_config,
             session_dir_=sd,
             session_id=session_id,
-            platform="claude",
+            platform="cursor",
             cwd="/proj",
-            trace_id=trace_id_for_session(session_id),
+            trace_id=trace_id_for_session("cursor", session_id),
             spans=[
                 {
                     "name": "chat claude-sonnet-5",
                     "span_id": str(live_chat_id),
-                    "parent_span_id": str(turn_span_id(session_id, 1)),
+                    "parent_span_id": str(turn_span_id("cursor", session_id, 1)),
                     "start_ts": "2026-01-01T00:00:01.000Z",
                     "end_ts": "2026-01-01T00:00:02.000Z",
                     "attributes": _llm_call(call_id="msg_parallel"),
@@ -891,10 +917,10 @@ class TestExportTurnInner:
             config=enabled_config,
             session_dir_=sd,
             session_id=session_id,
-            platform="claude",
+            platform="cursor",
             cwd="/proj",
             turn=_turn(
-                turn_span_id=str(turn_span_id(session_id, 1)),
+                turn_span_id=str(turn_span_id("cursor", session_id, 1)),
                 orphan_tool_calls=[
                     {"parent_call_id": "msg_parallel", "tool_call": _tool_call(tool_call_id="tu_2")}
                 ],
@@ -906,7 +932,7 @@ class TestExportTurnInner:
         # turn span and the orphaned tool span.
         assert [s["name"] for s in spans if s["name"].startswith("chat")] == []
         tool_span = next(s for s in spans if s["name"] == "tool: Bash")
-        assert tool_span["context"]["span_id"] == tool_span_id(session_id, "tu_2")
+        assert tool_span["context"]["span_id"] == tool_span_id("cursor", session_id, "tu_2")
         assert tool_span["parent"]["span_id"] == live_chat_id
 
     def test_turn_with_messages_carries_them(
@@ -962,8 +988,8 @@ class TestExportTurnInner:
             turn=_turn(),
         )
 
-        expected_trace_id = trace_id_for_session(session_id)
-        expected_span_id = root_span_id_for_session(session_id)
+        expected_trace_id = trace_id_for_session("claude", session_id)
+        expected_span_id = root_span_id_for_session("claude", session_id)
         persisted = json.loads(otel_export.otel_state_path(sd).read_text())
         assert persisted == {
             "trace_id": f"{expected_trace_id:032x}",
@@ -977,6 +1003,38 @@ class TestExportTurnInner:
         assert turn_span["context"]["trace_id"] == expected_trace_id
         assert turn_span["parent"]["span_id"] == expected_span_id
 
+    def test_same_session_different_platforms_create_distinct_roots(
+        self, tmp_path: Path, enabled_config: Config, wired_instance, exporter
+    ):
+        session_id = "shared-session"
+
+        for platform in ("claude", "cursor"):
+            otel_export._export_turn_inner(
+                config=enabled_config,
+                session_dir_=tmp_path / "traces" / platform / session_id,
+                session_id=session_id,
+                platform=platform,
+                cwd="/proj",
+                turn=_turn(),
+            )
+
+        roots = {
+            span["attributes"]["thirdeye.platform"]: span
+            for span in exporter.exported_spans_as_dict()
+            if span["name"] == "session"
+        }
+        assert set(roots) == {"claude", "cursor"}
+        assert roots["claude"]["context"]["trace_id"] == trace_id_for_session("claude", session_id)
+        assert roots["cursor"]["context"]["trace_id"] == trace_id_for_session("cursor", session_id)
+        assert roots["claude"]["context"]["span_id"] == root_span_id_for_session(
+            "claude", session_id
+        )
+        assert roots["cursor"]["context"]["span_id"] == root_span_id_for_session(
+            "cursor", session_id
+        )
+        assert roots["claude"]["context"]["trace_id"] != roots["cursor"]["context"]["trace_id"]
+        assert roots["claude"]["context"]["span_id"] != roots["cursor"]["context"]["span_id"]
+
     def test_existing_root_ids_take_precedence_and_are_not_reemitted(
         self, tmp_path: Path, enabled_config: Config, wired_instance, exporter
     ):
@@ -985,6 +1043,8 @@ class TestExportTurnInner:
         root_path = otel_export.otel_state_path(sd)
         legacy_trace_id = 0x123456789ABCDEF0123456789ABCDEF0
         legacy_span_id = 0x123456789ABCDEF0
+        assert legacy_trace_id != trace_id_for_session("claude", session_id)
+        assert legacy_span_id != root_span_id_for_session("claude", session_id)
         assert otel_export._create_root_atomic(root_path, legacy_trace_id, legacy_span_id) == (
             (legacy_trace_id, legacy_span_id),
             True,
@@ -1019,8 +1079,8 @@ class TestExportTurnInner:
         sd = tmp_path / "traces" / "claude" / session_id
         root_path = otel_export.otel_state_path(sd)
         expected = (
-            trace_id_for_session(session_id),
-            root_span_id_for_session(session_id),
+            trace_id_for_session("claude", session_id),
+            root_span_id_for_session("claude", session_id),
         )
         real_atomic_create = otel_export._atomic_create
 
@@ -1050,7 +1110,7 @@ class TestExportTurnInner:
     def test_llm_call_and_tool_call_nest_correctly(
         self, tmp_path: Path, enabled_config: Config, wired_instance, exporter
     ):
-        sd = tmp_path / "traces" / "claude" / "s1"
+        sd = tmp_path / "traces" / "cursor" / "s1"
         turn = _turn(
             llm_calls=[_llm_call(tool_calls=[_tool_call()])],
         )
@@ -1058,7 +1118,7 @@ class TestExportTurnInner:
             config=enabled_config,
             session_dir_=sd,
             session_id="s1",
-            platform="claude",
+            platform="cursor",
             cwd="/proj",
             turn=turn,
         )
@@ -1069,13 +1129,13 @@ class TestExportTurnInner:
         assert turn_span["name"] == "agent-turn"
         assert chat_span["name"] == "chat claude-sonnet-5"
         assert tool_span["name"] == "tool: Bash"
-        assert chat_span["context"]["span_id"] == chat_span_id("s1", "call_1")
-        assert tool_span["context"]["span_id"] == tool_span_id("s1", "tu_1")
+        assert chat_span["context"]["span_id"] == chat_span_id("cursor", "s1", "call_1")
+        assert tool_span["context"]["span_id"] == tool_span_id("cursor", "s1", "tu_1")
         assert chat_span["parent"]["span_id"] == turn_span["context"]["span_id"]
         assert tool_span["parent"]["span_id"] == chat_span["context"]["span_id"]
         assert chat_span["attributes"]["gen_ai.usage.input_tokens"] == 100
         assert chat_span["attributes"]["gen_ai.usage.output_tokens"] == 50
-        assert tool_span["attributes"]["command"] == "ls"
+        assert tool_span["attributes"]["gen_ai.tool.call.arguments"] == "ls"
         assert tool_span["attributes"]["gen_ai.conversation.id"] == "s1"
 
     def test_permission_request_is_a_point_in_time_span_under_the_turn(
@@ -1112,7 +1172,7 @@ class TestExportTurnInner:
     ):
         session_id = "s1"
         subagent_turn_seq = 7
-        expected_subagent_span_id = turn_span_id(session_id, subagent_turn_seq)
+        expected_subagent_span_id = turn_span_id("claude", session_id, subagent_turn_seq)
         sd = tmp_path / "traces" / "claude" / "s1"
         subagent = _turn(
             turn_id=str(subagent_turn_seq),
@@ -1373,6 +1433,39 @@ class TestGenAiAgentSemantics:
         # The superseded spelling, still what pydantic-ai emits alongside.
         assert attributes["gen_ai.system"] == "anthropic"
 
+    def test_cursor_turn_uses_otel_gen_ai_agent_chat_and_tool_attributes(
+        self, tmp_path: Path, enabled_config: Config, wired_instance, exporter
+    ):
+        tool = _tool_call(
+            name="shell",
+            attributes={
+                "gen_ai.operation.name": "execute_tool",
+                "gen_ai.tool.name": "shell",
+                "gen_ai.tool.call.id": "cursor-call-1",
+                "gen_ai.tool.call.arguments": {"command": "pytest"},
+                "gen_ai.tool.call.result": {"exit_code": 0},
+            },
+        )
+        call = _llm_call(provider="openai", model="gpt-5", tool_calls=[tool])
+        otel_export._export_turn_inner(
+            config=enabled_config,
+            session_dir_=tmp_path / "traces" / "cursor" / "s1",
+            session_id="s1",
+            platform="cursor",
+            cwd="/proj",
+            turn=_turn(llm_calls=[call]),
+        )
+
+        spans = {span["name"]: span for span in exporter.exported_spans_as_dict()}
+        assert spans["agent-turn"]["attributes"]["gen_ai.operation.name"] == "invoke_agent"
+        assert spans["agent-turn"]["attributes"]["gen_ai.agent.name"] == "cursor"
+        assert spans["chat gpt-5"]["attributes"]["gen_ai.operation.name"] == "chat"
+        tool_attrs = spans["tool: shell"]["attributes"]
+        assert tool_attrs["gen_ai.operation.name"] == "execute_tool"
+        assert tool_attrs["gen_ai.tool.name"] == "shell"
+        assert tool_attrs["gen_ai.tool.call.id"] == "cursor-call-1"
+        assert not any(key.startswith("openinference") for key in tool_attrs)
+
     def test_chat_span_is_attributed_to_the_agent_that_made_the_call(self):
         attributes = otel_export._chat_attributes(
             _llm_call(),
@@ -1607,3 +1700,36 @@ class TestProviderAttribution:
         )
 
         assert "gen_ai.provider.name" not in attributes
+
+    def test_projected_tool_payload_is_moved_not_copied(self):
+        """The GenAI projection must not ship the same body twice.
+
+        `command`/`output` are projected onto `gen_ai.tool.call.*`; leaving the
+        source key on the span doubles every tool span's wire size.
+        """
+        attributes = otel_export._tool_attributes(
+            {"command": "ls -la", "output": "README.md", "exit_code": 0},
+            session_id="s1",
+            platform="claude",
+            cwd="/proj",
+        )
+
+        assert attributes["gen_ai.tool.call.arguments"] == "ls -la"
+        assert attributes["gen_ai.tool.call.result"] == "README.md"
+        assert "command" not in attributes
+        assert "output" not in attributes
+        # Unprojected raw fields still ride along for local fidelity.
+        assert attributes["exit_code"] == 0
+
+    def test_adapter_supplied_tool_payload_keeps_its_raw_fields(self):
+        """Nothing is consumed when the adapter already set the semantic keys,
+        so the raw payload is left exactly as the adapter built it."""
+        attributes = otel_export._tool_attributes(
+            {"gen_ai.tool.call.arguments": "already-set", "command": "ls"},
+            session_id="s1",
+            platform="claude",
+            cwd="/proj",
+        )
+
+        assert attributes["gen_ai.tool.call.arguments"] == "already-set"
+        assert attributes["command"] == "ls"

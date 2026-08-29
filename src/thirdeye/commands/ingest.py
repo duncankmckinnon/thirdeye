@@ -11,7 +11,7 @@ from thirdeye.store import Store
 
 
 @click.command(help="Read newline-delimited JSON events from stdin and append them to a session.")
-@click.option("--platform", required=True, help="Platform name (e.g. claude, codex).")
+@click.option("--platform", required=True, help="Platform name (e.g. claude, codex, cursor).")
 @click.option("--session-id", default=None, help="Session ID. Generated if omitted.")
 @click.option("--cwd", default=None, help="Working directory for the session.")
 def ingest(platform: str, session_id: str | None, cwd: str | None) -> None:
