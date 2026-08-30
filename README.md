@@ -35,6 +35,20 @@ uv tool install thrdi # or: uv tool install 'thrdi[ui,logfire]'
 pip install thrdi # or: pip install 'thrdi[ui,logfire]'
 ```
 
+## Interactive setup
+
+Configure tracing, bundled agent skills, and optional Pydantic Logfire export in
+one guided flow:
+
+```bash
+thirdeye setup
+```
+
+The wizard prompts for each supported agent, installs skills in the matching
+agent directories, and securely prompts for a Logfire write token only if you
+choose to enable remote export. The commands below remain available when you
+want to configure each piece separately.
+
 ## Install agent skills locally
 
 Install thirdeye's bundled skills for agents working in the current project:
