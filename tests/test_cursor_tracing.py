@@ -197,9 +197,7 @@ def test_build_turn_uses_open_prompt_when_stop_generation_is_successor(tmp_path:
     assert turn["input_message"] == "go"
     assert turn["llm_calls"][0]["call_id"] == "prompt-gen"
     assert turn["llm_calls"][0]["usage"]["input_tokens"] == 10
-    assert chat_span_id("cursor", sid, "prompt-gen") != chat_span_id(
-        "cursor", sid, "successor-gen"
-    )
+    assert chat_span_id("cursor", sid, "prompt-gen") != chat_span_id("cursor", sid, "successor-gen")
 
 
 def test_build_turn_keeps_tools_when_generation_has_no_llm_signal(tmp_path: Path):

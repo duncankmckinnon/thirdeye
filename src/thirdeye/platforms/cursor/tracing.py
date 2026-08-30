@@ -694,9 +694,7 @@ def build_turn(
             if event.get("t") == "turn_stop" and int(event.get("seq") or 0) == stop_seq
         ),
         None,
-    ) or next(
-        (event for event in reversed(events) if event.get("t") == "turn_stop"), events[-1]
-    )
+    ) or next((event for event in reversed(events) if event.get("t") == "turn_stop"), events[-1])
     response_event = response_events[-1] if response_events else None
     prompt_data = _data(prompt_event or {})
     response_data = _data(response_event or {})
