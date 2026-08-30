@@ -85,7 +85,9 @@ def unmatched_task_ids(events: list[dict[str, Any]]) -> list[str]:
 
 def pending_ended_child_ids(parent_session_id: str, events: list[dict[str, Any]]) -> list[str]:
     exported = {
-        _string(event.get("data") if isinstance(event.get("data"), dict) else {}, "child_session_id")
+        _string(
+            event.get("data") if isinstance(event.get("data"), dict) else {}, "child_session_id"
+        )
         for event in events
     }
     exported.discard("")

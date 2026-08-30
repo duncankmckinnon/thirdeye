@@ -3,12 +3,10 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+from tests.test_cursor_hook import _capture_detached_jobs, _cursor_payload, _invoke, _job
 from thirdeye.config import Config, LogfireSettings
-from thirdeye.platforms.cursor import hook
 from thirdeye.span_ids import tool_span_id
 from thirdeye.store import Store
-
-from tests.test_cursor_hook import _capture_detached_jobs, _cursor_payload, _invoke, _job
 
 
 def _write_transcript(root: Path, parent_sid: str, child_sid: str, *, ended: bool) -> Path:
@@ -44,7 +42,12 @@ def test_background_child_turn_ended_exports_parented_child(tmp_path: Path, monk
     _invoke(monkeypatch, _cursor_payload("beforeSubmitPrompt", prompt="delegate"))
     _invoke(
         monkeypatch,
-        _cursor_payload("preToolUse", tool_name="Task", tool_use_id="call-bg", tool_input={"prompt": "Review the PR"}),
+        _cursor_payload(
+            "preToolUse",
+            tool_name="Task",
+            tool_use_id="call-bg",
+            tool_input={"prompt": "Review the PR"},
+        ),
     )
     _invoke(
         monkeypatch,
