@@ -335,31 +335,43 @@ def _finalize_background_subagents(payload: dict[str, Any]) -> None:
     """Synthesize a parent stop when an IDE child transcript has turn_ended."""
     try:
         from thirdeye.platforms.cursor.ide_children import (
+            exportable_child_pairs,
             parent_session_for_child,
             pending_ended_child_ids,
             unmatched_task_ids,
         )
         from thirdeye.reader import SessionReader
+        from thirdeye.usage.errlog import log_capture_error
 
         child_or_parent = _session_id(payload)
         if not child_or_parent:
             return
-        parent_sid = parent_session_for_child(child_or_parent) or child_or_parent
+        parent_from_child = parent_session_for_child(child_or_parent)
+        parent_sid = parent_from_child or child_or_parent
+        only_child = child_or_parent if parent_from_child else ""
         config = Config.load()
         sd = session_dir(config.root, _PLATFORM, parent_sid)
         if not sd.is_dir():
             return
         events = list(SessionReader(sd).iter_events())
-        unmatched = unmatched_task_ids(events)
-        pending = pending_ended_child_ids(parent_sid, events)
-        if not unmatched or not pending:
-            return
-        # One unmatched start and one ended child is the backgrounded Task case.
-        if len(unmatched) == 1 and len(pending) == 1:
-            pairs = [(unmatched[0], pending[0])]
-        elif len(unmatched) == len(pending):
-            pairs = list(zip(unmatched, pending, strict=True))
-        else:
+        pairs = exportable_child_pairs(
+            parent_sid, events, only_child=only_child, thirdeye_home=config.root
+        )
+        if not pairs:
+            if only_child:
+                unmatched = unmatched_task_ids(events)
+                pending = pending_ended_child_ids(parent_sid, events)
+                if unmatched and only_child in pending:
+                    log_capture_error(
+                        thirdeye_home=config.root,
+                        phase="cursor_background_subagent_unpaired",
+                        level="warn",
+                        platform=_PLATFORM,
+                        session_id=parent_sid,
+                        message=(
+                            f"unmatched={unmatched!r} pending={pending!r} only_child={only_child!r}"
+                        ),
+                    )
             return
         for subagent_id, child_sid in pairs:
             _subagent_stop(
@@ -371,8 +383,17 @@ def _finalize_background_subagents(payload: dict[str, Any]) -> None:
                     "child_session_id": child_sid,
                 }
             )
-    except Exception:
-        pass
+    except Exception as exc:
+        try:
+            log_capture_error(
+                thirdeye_home=Config.load().root,
+                phase="cursor_background_subagent_finalize",
+                error=exc,
+                platform=_PLATFORM,
+                session_id=_session_id(payload),
+            )
+        except Exception:
+            pass
 
 
 def _subagent_start(payload: dict[str, Any]) -> None:

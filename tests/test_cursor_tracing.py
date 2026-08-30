@@ -154,6 +154,54 @@ def test_build_turn_ignores_other_generations(tmp_path: Path):
     assert turn["llm_calls"][0]["provider"] == "openai"
 
 
+def test_build_turn_uses_open_prompt_when_stop_generation_is_successor(tmp_path: Path):
+    """Cursor Stop often labels the next loop; live tools already used the prompt gen."""
+    from thirdeye.span_ids import chat_span_id
+
+    sid = "cursor-session"
+    store = Store(Config(root=tmp_path))
+    prompt_seq = _append(
+        store, sid, "user_message", {"generation_id": "prompt-gen", "prompt": "go"}
+    )
+    _append(
+        store,
+        sid,
+        "tool_call",
+        {"generation_id": "prompt-gen", "tool_name": "Grep", "tool_use_id": "call-g"},
+    )
+    _append(
+        store,
+        sid,
+        "assistant_message",
+        {"generation_id": "prompt-gen", "text": "done"},
+    )
+    stop_seq = _append(
+        store,
+        sid,
+        "turn_stop",
+        {
+            "generation_id": "successor-gen",
+            "model": "cursor-grok-4.6-medium",
+            "input_tokens": 10,
+            "output_tokens": 2,
+        },
+    )
+    turn = build_turn(
+        session_dir_=session_dir(tmp_path, "cursor", sid),
+        session_id=sid,
+        generation_id="successor-gen",
+        stop_seq=stop_seq,
+    )
+    assert turn is not None
+    assert turn["turn_id"] == str(prompt_seq)
+    assert turn["input_message"] == "go"
+    assert turn["llm_calls"][0]["call_id"] == "prompt-gen"
+    assert turn["llm_calls"][0]["usage"]["input_tokens"] == 10
+    assert chat_span_id("cursor", sid, "prompt-gen") != chat_span_id(
+        "cursor", sid, "successor-gen"
+    )
+
+
 def test_build_turn_keeps_tools_when_generation_has_no_llm_signal(tmp_path: Path):
     """A generation carrying only tool activity still exports its tool calls.
 
@@ -1093,14 +1141,20 @@ def test_build_turn_skips_bogus_stop_generation_id(tmp_path: Path):
     sid = "cursor-session"
     store = Store(Config(root=tmp_path))
     _append(store, sid, "user_message", {"generation_id": "real-gen", "prompt": "hi"})
-    stop_seq = _append(store, sid, "turn_stop", {"generation_id": sid})
-
-    assert (
-        build_turn(
-            session_dir_=session_dir(tmp_path, "cursor", sid),
-            session_id=sid,
-            generation_id=sid,
-            stop_seq=stop_seq,
-        )
-        is None
+    stop_seq = _append(
+        store,
+        sid,
+        "turn_stop",
+        {"generation_id": sid, "model": "cursor-grok-4.6-medium", "input_tokens": 4},
     )
+
+    turn = build_turn(
+        session_dir_=session_dir(tmp_path, "cursor", sid),
+        session_id=sid,
+        generation_id=sid,
+        stop_seq=stop_seq,
+    )
+    assert turn is not None
+    assert turn["input_message"] == "hi"
+    assert turn["llm_calls"][0]["call_id"] == "real-gen"
+    assert turn["llm_calls"][0]["usage"]["input_tokens"] == 4

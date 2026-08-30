@@ -367,6 +367,43 @@ def resolve_turn_seq(
     return int(prompt.get("seq") or 0)
 
 
+def resolve_turn_generation(
+    events: list[dict[str, Any]],
+    *,
+    generation_id: str,
+    session_id: str,
+    stop_seq: int,
+) -> str:
+    """Return the generation live tools already parented their chat span to.
+
+    Cursor ``Stop`` often carries a successor ``generation_id`` (the next
+    loop), not the ``user_message`` / tool generation. Building the turn from
+    Stop's id emits a chat-less degenerate span and leaves those tools
+    dangling.
+    """
+    if generation_id and not bogus_generation_id(generation_id, session_id):
+        if (
+            resolve_turn_seq(
+                events,
+                generation_id=generation_id,
+                session_id=session_id,
+                through_seq=stop_seq,
+            )
+            is not None
+        ):
+            return generation_id
+    for event in reversed(events):
+        seq = int(event.get("seq") or 0)
+        if seq > stop_seq:
+            continue
+        if event.get("t") != "user_message":
+            continue
+        prompt_gen = _event_generation_id(event)
+        if prompt_gen and not bogus_generation_id(prompt_gen, session_id):
+            return prompt_gen
+    return generation_id
+
+
 def _subagents_in_turn(
     events: list[dict[str, Any]],
     *,
@@ -630,9 +667,15 @@ def resolve_subagent_export(
 def build_turn(
     *, session_dir_: Path, session_id: str, generation_id: str, stop_seq: int
 ) -> TurnSpanDict | None:
-    if bogus_generation_id(generation_id, session_id):
-        return None
     all_events = list(SessionReader(session_dir_).iter_events(seq_range=(0, stop_seq + 1)))
+    generation_id = resolve_turn_generation(
+        all_events,
+        generation_id=generation_id,
+        session_id=session_id,
+        stop_seq=stop_seq,
+    )
+    if not generation_id or bogus_generation_id(generation_id, session_id):
+        return None
     turn_seq = resolve_turn_seq(
         all_events, generation_id=generation_id, session_id=session_id, through_seq=stop_seq
     )
@@ -645,6 +688,13 @@ def build_turn(
     prompt_event = next((event for event in events if event.get("t") == "user_message"), None)
     response_events = [event for event in events if event.get("t") == "assistant_message"]
     stop_event = next(
+        (
+            event
+            for event in reversed(all_events)
+            if event.get("t") == "turn_stop" and int(event.get("seq") or 0) == stop_seq
+        ),
+        None,
+    ) or next(
         (event for event in reversed(events) if event.get("t") == "turn_stop"), events[-1]
     )
     response_event = response_events[-1] if response_events else None
