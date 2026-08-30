@@ -163,12 +163,14 @@ def _before_submit(payload: dict[str, Any]) -> None:
         pass
 
 
-def _after_response(payload: dict[str, Any]) -> None:
-    _emit(payload, "assistant_message")
-
-
 def _after_thought(payload: dict[str, Any]) -> None:
     _emit(payload, "assistant_thought")
+    _finalize_background_subagents(payload)
+
+
+def _after_response(payload: dict[str, Any]) -> None:
+    _emit(payload, "assistant_message")
+    _finalize_background_subagents(payload)
 
 
 def _tool_name(payload: dict[str, Any], default: str) -> str:
@@ -307,10 +309,9 @@ def _stop(payload: dict[str, Any]) -> None:
     if seq is None:
         return
     _capture_usage(config, session_id, payload, seq)
-    # `turn_stop` carries the model and token counts, so it is persisted even
-    # when Cursor omits the generation_id. Only the turn span needs the id.
     generation_id = _generation_id(payload)
     if not generation_id:
+        _finalize_background_subagents(payload)
         return
     try:
         from thirdeye.otel_export import export_turn
@@ -325,6 +326,51 @@ def _stop(payload: dict[str, Any]) -> None:
         )
         if turn is not None:
             export_turn(config, sd, session_id, _PLATFORM, cwd, turn)
+    except Exception:
+        pass
+    _finalize_background_subagents(payload)
+
+
+def _finalize_background_subagents(payload: dict[str, Any]) -> None:
+    """Synthesize a parent stop when an IDE child transcript has turn_ended."""
+    try:
+        from thirdeye.platforms.cursor.ide_children import (
+            parent_session_for_child,
+            pending_ended_child_ids,
+            unmatched_task_ids,
+        )
+        from thirdeye.reader import SessionReader
+
+        child_or_parent = _session_id(payload)
+        if not child_or_parent:
+            return
+        parent_sid = parent_session_for_child(child_or_parent) or child_or_parent
+        config = Config.load()
+        sd = session_dir(config.root, _PLATFORM, parent_sid)
+        if not sd.is_dir():
+            return
+        events = list(SessionReader(sd).iter_events())
+        unmatched = unmatched_task_ids(events)
+        pending = pending_ended_child_ids(parent_sid, events)
+        if not unmatched or not pending:
+            return
+        # One unmatched start and one ended child is the backgrounded Task case.
+        if len(unmatched) == 1 and len(pending) == 1:
+            pairs = [(unmatched[0], pending[0])]
+        elif len(unmatched) == len(pending):
+            pairs = list(zip(unmatched, pending, strict=True))
+        else:
+            return
+        for subagent_id, child_sid in pairs:
+            _subagent_stop(
+                {
+                    "conversation_id": parent_sid,
+                    "cwd": _cwd(payload),
+                    "hook_event_name": "subagentStop",
+                    "subagent_id": subagent_id,
+                    "child_session_id": child_sid,
+                }
+            )
     except Exception:
         pass
 

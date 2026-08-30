@@ -94,6 +94,7 @@ def _resume_start(event: dict[str, Any]) -> tuple[str, dict[str, Any] | None]:
     start_data["subagent_id"] = run_id
     start_data["tool_call_id"] = run_id
     start_data["cursor_resume"] = True
+    start_data["cursor.subagent.agent_id"] = _string(tool_input, "resume")
     for source, target in (
         ("prompt", "task"),
         ("description", "description"),
@@ -104,6 +105,28 @@ def _resume_start(event: dict[str, Any]) -> tuple[str, dict[str, Any] | None]:
         if value not in (None, ""):
             start_data[target] = value
     return run_id, {**event, "data": start_data}
+
+
+_RESUME_COPY_KEYS = (
+    "task",
+    "description",
+    "subagent_type",
+    "subagent_model",
+    "cursor_resume",
+    "cursor.subagent.agent_id",
+)
+
+
+def _merge_resume_start(synthetic: dict[str, Any], start: dict[str, Any]) -> dict[str, Any]:
+    """Keep resume Task metadata when a later ``subagentStart`` omits it."""
+    merged_data = dict(_data(start))
+    synthetic_data = _data(synthetic)
+    for key in _RESUME_COPY_KEYS:
+        if merged_data.get(key) in (None, "") and synthetic_data.get(key) not in (None, ""):
+            merged_data[key] = synthetic_data[key]
+    if not _tool_call_id(start):
+        merged_data["tool_call_id"] = _tool_call_id(synthetic)
+    return {**start, "data": merged_data}
 
 
 def cursor_subagent_generation_id(tool_call_id: str) -> str:
@@ -148,6 +171,7 @@ def _cursor_subagent_lifecycle(
                         continue
                     if tool_call_id and _tool_call_id(queued) != tool_call_id:
                         continue
+                    event = _merge_resume_start(queued, event)
                     del open_starts[subagent_id][index]
                     break
                 open_starts[subagent_id].append(event)

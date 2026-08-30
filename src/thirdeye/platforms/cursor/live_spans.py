@@ -167,15 +167,35 @@ def _emit_task_parent_span(
 
         task_data = _event_data(task_event)
         generation_id = _event_text(task_data, "generation_id", "generationId")
-        if not generation_id:
-            return
+        commit_key = generation_id or f"task:{tool_call_id}"
         state = _read_state(session_dir_)
-        committed = set(state.get(generation_id, []))
+        committed = set(state.get(commit_key, []))
         if tool_call_id in committed:
             return
-        turn_seq = _context_turn_seq(all_events, session_id, generation_id, through_seq)
+        turn_seq = None
+        if generation_id:
+            turn_seq = _context_turn_seq(all_events, session_id, generation_id, through_seq)
         if turn_seq is None:
+            turn_seq = int(task_event.get("seq") or 0) or None
+        if turn_seq is None:
+            log_capture_error(
+                thirdeye_home=config.root,
+                phase="emit_cursor_task_parent_skipped",
+                level="warn",
+                platform=_PLATFORM,
+                session_id=session_id,
+                message=f"no turn anchor for tool_call_id={tool_call_id!r}",
+            )
             return
+        if not generation_id:
+            log_capture_error(
+                thirdeye_home=config.root,
+                phase="emit_cursor_task_parent_ungenerated",
+                level="warn",
+                platform=_PLATFORM,
+                session_id=session_id,
+                message=f"emitting Task span without generation_id tool_call_id={tool_call_id!r}",
+            )
 
         timestamp = str(task_event.get("ts") or "")
         tool_input = task_data.get("tool_input", task_data.get("toolInput"))
@@ -186,12 +206,17 @@ def _emit_task_parent_span(
         }
         if tool_input not in (None, ""):
             attributes["gen_ai.tool.call.arguments"] = tool_input
+        parent_id = (
+            chat_span_id(_PLATFORM, session_id, generation_id)
+            if generation_id
+            else turn_span_id(_PLATFORM, session_id, turn_seq)
+        )
         span = {
             "name": "tool: Task",
             "tool_name": "Task",
             "tool_call_id": tool_call_id,
             "span_id": tool_span_id(_PLATFORM, session_id, tool_call_id),
-            "parent_span_id": chat_span_id(_PLATFORM, session_id, generation_id),
+            "parent_span_id": parent_id,
             "turn_seq": turn_seq,
             "turn_span_id": str(turn_span_id(_PLATFORM, session_id, turn_seq)),
             "start_ts": timestamp,
@@ -208,7 +233,7 @@ def _emit_task_parent_span(
             [span],
         ):
             return
-        state[generation_id] = sorted(committed | {tool_call_id})
+        state[commit_key] = sorted(committed | {tool_call_id})
         _write_state(session_dir_, state)
 
 

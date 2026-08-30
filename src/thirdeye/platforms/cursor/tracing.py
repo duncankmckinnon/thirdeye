@@ -507,9 +507,7 @@ def _modern_subagent_turn(
         "modelId",
     ) or _text(stop_data, "model", "model_id", "modelId")
 
-    tools = tool_calls_for_generation(owned_events, session_id, window.generation_id)
-    nested_task_ids = subagent_task_parent_ids(owned_events)
-    tools = [tool for tool in tools if tool["tool_call_id"] not in nested_task_ids]
+    tools = _owned_tool_calls(owned_events, session_id, window.generation_id)
     usage = usage_from_payload(stop_data)
     llm_calls: list[LlmCallSpanDict] = []
     if input_text or output_text or model or usage or tools:
@@ -557,6 +555,28 @@ def _modern_subagent_turn(
     return turn
 
 
+def _owned_tool_calls(
+    owned_events: list[dict[str, Any]], session_id: str, derived_generation: str
+) -> list[ToolCallSpanDict]:
+    generations: list[str] = []
+    for event in owned_events:
+        gen = _event_generation_id(event)
+        if gen and gen not in generations:
+            generations.append(gen)
+    if not generations:
+        generations = [derived_generation] if derived_generation else []
+    tools: list[ToolCallSpanDict] = []
+    seen: set[str] = set()
+    for generation in generations:
+        for tool in tool_calls_for_generation(owned_events, session_id, generation):
+            if tool["tool_call_id"] in seen:
+                continue
+            seen.add(tool["tool_call_id"])
+            tools.append(tool)
+    nested_task_ids = subagent_task_parent_ids(owned_events)
+    return [tool for tool in tools if tool["tool_call_id"] not in nested_task_ids]
+
+
 def resolve_subagent_export(
     session_dir_: Path, session_id: str, stop_event: dict[str, Any]
 ) -> CursorSubagentExport | None:
@@ -583,6 +603,11 @@ def resolve_subagent_export(
         return None
 
     owned_events = events_for_subagent(events, window)
+    child_sid = _text(_data(stop_event), "child_session_id")
+    if child_sid:
+        child_dir = session_dir_.parent / child_sid
+        if child_dir.is_dir():
+            owned_events = list(SessionReader(child_dir).iter_events())
     turn = _modern_subagent_turn(session_id, window, owned_events)
 
     if window.tool_call_id:

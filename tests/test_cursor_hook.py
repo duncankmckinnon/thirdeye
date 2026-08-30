@@ -980,6 +980,45 @@ def test_resume_task_exports_reused_subagent_as_new_run(tmp_path: Path, monkeypa
     resumed = subagent_jobs[1]
     assert int(resumed["parent_span_id"]) == tool_span_id("cursor", "session-1", "call-2")
     assert resumed["turn"]["input_message"] == "Continue the review"
+    task_jobs = [_job(path) for path in jobs if _job(path)["kind"] == "spans"]
+    resume_task = next(
+        span
+        for job in task_jobs
+        for span in job["spans"]
+        if span["name"] == "tool: Task" and span["tool_call_id"] == "call-2"
+    )
+    assert int(resume_task["span_id"]) == int(resumed["parent_span_id"])
+
+
+def test_resume_with_subagent_start_keeps_prompt(tmp_path: Path, monkeypatch):
+    jobs = _capture_detached_jobs(tmp_path, monkeypatch)
+    _invoke(
+        monkeypatch,
+        _cursor_payload("preToolUse", tool_name="Task", tool_use_id="call-1"),
+    )
+    _invoke(
+        monkeypatch,
+        _cursor_payload("subagentStart", subagent_id="call-1", tool_call_id="call-1"),
+    )
+    _invoke(monkeypatch, _cursor_payload("subagentStop", subagent_id="call-1"))
+    _invoke(
+        monkeypatch,
+        _cursor_payload(
+            "preToolUse",
+            tool_name="Task",
+            tool_use_id="call-2",
+            tool_input={"resume": "agent-uuid", "prompt": "Continue the review"},
+        ),
+    )
+    _invoke(
+        monkeypatch,
+        _cursor_payload("subagentStart", subagent_id="call-2", tool_call_id="call-2"),
+    )
+    _invoke(monkeypatch, _cursor_payload("subagentStop", subagent_id="call-2"))
+
+    resumed = [_job(path) for path in jobs if _job(path)["kind"] == "subagent_turn"][1]
+    assert resumed["turn"]["input_message"] == "Continue the review"
+    assert int(resumed["parent_span_id"]) == tool_span_id("cursor", "session-1", "call-2")
 
 
 def test_resolver_exception_is_fail_open(tmp_path: Path, monkeypatch, capfd):

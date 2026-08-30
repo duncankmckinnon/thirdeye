@@ -105,8 +105,11 @@ Logfire trace whose spans nest the way the session view nests events: an
 `agent-turn` contains a `chat` span, which contains `tool` spans.
 
 For local Cursor IDE and CLI sessions, a dispatched subagent is exported as its
-own `agent-turn` under the `Task` tool span that launched it, and the subagent's
-own tool calls nest under that child turn:
+own `agent-turn` under the `Task` tool span that launched it. CLI children nest
+their tool calls under that child turn when the child's hooks share the derived
+Task generation. IDE children run in a separate conversation; their tools are
+joined from that child session when the child transcript records `turn_ended`
+(including backgrounded Tasks that never fire `subagentStop`):
 
 ```text
 agent-turn

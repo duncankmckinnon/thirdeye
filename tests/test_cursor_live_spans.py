@@ -1045,3 +1045,31 @@ def test_failed_child_job_dispatch_is_retryable(tmp_path: Path, monkeypatch):
     emit_live_tools(config, sd, sid, "/repo", "parent-gen", task_result_seq)
     assert committed_tool_call_ids(sd, "parent-gen") == {"call-A"}
     assert committed_tool_call_ids(sd, child_gen) == set()
+
+
+def test_task_parent_emits_when_task_event_has_no_generation_id(tmp_path: Path, monkeypatch):
+    from thirdeye.platforms.cursor.live_spans import emit_task_parent_span
+
+    config = _config(tmp_path)
+    store = Store(config)
+    sid = "cursor-session"
+    user_seq = _append(store, sid, "user_message", {"generation_id": "parent-gen", "prompt": "go"})
+    task_seq = _append(
+        store,
+        sid,
+        "tool_call",
+        {"tool_name": "Task", "tool_use_id": "call-orphan", "tool_input": {"prompt": "child"}},
+    )
+    exported: list[list[dict]] = []
+    monkeypatch.setattr(
+        "thirdeye.platforms.cursor.live_spans.export_spans",
+        lambda *args: exported.append(args[-1]) or True,
+    )
+    sd = session_dir(tmp_path, "cursor", sid)
+    emit_task_parent_span(config, sd, sid, "/repo", "call-orphan", task_seq)
+
+    assert len(exported) == 1
+    span = exported[0][0]
+    assert span["name"] == "tool: Task"
+    assert int(span["span_id"]) == tool_span_id("cursor", sid, "call-orphan")
+    assert span["turn_seq"] in {user_seq, task_seq}

@@ -60,12 +60,15 @@ Verify both sides:
 
 For local Cursor IDE and CLI sessions, expect the child of a `Task` call to be
 its own Task-parented `agent-turn` span — including background, parallel, and
-nested children — with the subagent's own tool calls attached as hook-backed
-`tool` spans. Missing or unreadable transcripts still produce these hook-backed
-child and tool spans. When a child transcript is present it only backfills the
-first user and last assistant text; it does not supply span timing, tool IDs,
-tool results, token usage, or extra model-call boundaries. When assistant text
-is absent, the child output falls back to a summary.
+nested children. CLI tool calls attach when they share the derived child
+generation. IDE tool calls live in the child conversation and are joined when
+that session's transcript ends with `turn_ended` (Cursor often skips
+`subagentStop` for backgrounded Tasks). Missing or unreadable transcripts still
+produce the Task-parented child turn from lifecycle hooks. When a child
+transcript is present it backfills the first user and last assistant text; it
+does not supply span timing, tool IDs, token usage, or extra model-call
+boundaries unless those events were captured in the child session. When
+assistant text is absent, the child output falls back to a summary.
 
 Do not claim success from `status` alone: it validates local configuration,
 not delivery. If direct Logfire access is unavailable, state that the remote

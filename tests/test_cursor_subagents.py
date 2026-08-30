@@ -156,8 +156,24 @@ class TestCursorSubagentWindows:
         windows = cursor_subagent_windows(events)
 
         assert len(windows) == 2
-        assert windows[1].start_event is events[3]
+        assert windows[1].start_event["seq"] == 4
+        assert windows[1].start_event["data"]["task"] == "CLI resume"
+        assert windows[1].start_event["data"]["cursor_resume"] is True
         assert windows[1].tool_call_id == "call-two"
+
+    def test_resume_start_without_task_keeps_resume_prompt(self):
+        events = [
+            start(1, "call-one", "call-one"),
+            stop(2, "call-one"),
+            resume(3, "agent-uuid", "call-two", prompt="Continue inspection"),
+            start(4, "call-two", "call-two"),
+            stop(5, "call-two"),
+        ]
+
+        windows = cursor_subagent_windows(events)
+
+        assert windows[1].start_event["data"]["task"] == "Continue inspection"
+        assert windows[1].start_event["data"]["cursor.subagent.agent_id"] == "agent-uuid"
 
     def test_modern_stop_sequences_include_suppressed_duplicates(self):
         events = [start(1, "child", "call"), stop(2, "child"), stop(3, "child")]
