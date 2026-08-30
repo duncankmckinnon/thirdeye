@@ -56,6 +56,52 @@ def _seq(event: dict[str, Any]) -> int:
         return 0
 
 
+def _tool_call_id(event: dict[str, Any]) -> str:
+    return _string(_data(event), "tool_call_id", "toolCallId", "tool_use_id", "toolUseId")
+
+
+def _resume_start(event: dict[str, Any]) -> tuple[str, dict[str, Any] | None]:
+    """Return the resumed child id and a lifecycle-compatible start event.
+
+    Cursor IDE deliberately skips ``subagentStart`` for resumed Task calls. Its
+    preceding ``preToolUse`` callback still carries ``tool_input.resume`` and a
+    fresh Task call id, so use that durable tool event as the resumed run's
+    boundary. A plain repeated stop remains distinguishable because it has no
+    intervening resume dispatch.
+    """
+    if event.get("t") != "tool_call":
+        return "", None
+    data = _data(event)
+    if _string(data, "tool_name", "toolName", "name", "tool").lower() != "task":
+        return "", None
+    tool_input = data.get("tool_input", data.get("toolInput"))
+    if isinstance(tool_input, str):
+        try:
+            tool_input = json.loads(tool_input)
+        except json.JSONDecodeError:
+            return "", None
+    if not isinstance(tool_input, dict):
+        return "", None
+    subagent_id = _string(tool_input, "resume")
+    if not subagent_id:
+        return "", None
+
+    start_data = dict(data)
+    start_data["subagent_id"] = subagent_id
+    start_data["tool_call_id"] = _tool_call_id(event)
+    start_data["cursor_resume"] = True
+    for source, target in (
+        ("prompt", "task"),
+        ("description", "description"),
+        ("subagent_type", "subagent_type"),
+        ("model", "subagent_model"),
+    ):
+        value = tool_input.get(source)
+        if value not in (None, ""):
+            start_data[target] = value
+    return subagent_id, {**event, "data": start_data}
+
+
 def cursor_subagent_generation_id(tool_call_id: str) -> str:
     if not tool_call_id:
         return ""
@@ -66,19 +112,41 @@ def cursor_subagent_generation_id(tool_call_id: str) -> str:
     return "-".join((value[0:8], value[8:12], value[12:16], value[16:20], value[20:32]))
 
 
-def cursor_subagent_windows(events: list[dict[str, Any]]) -> list[CursorSubagentWindow]:
+def _cursor_subagent_lifecycle(
+    events: list[dict[str, Any]],
+) -> tuple[list[CursorSubagentWindow], set[int]]:
     ordered = sorted(events, key=_seq)
     open_starts: dict[str, deque[dict[str, Any]]] = defaultdict(deque)
     modern_completed: set[str] = set()
+    modern_stop_seqs: set[int] = set()
     windows: list[CursorSubagentWindow] = []
 
     for event in ordered:
         event_type = str(event.get("t") or "")
         data = _data(event)
         subagent_id = _string(data, "subagent_id", "subagentId", "agent_id", "agentId")
+        if event_type == "tool_call":
+            resumed_id, resume_start = _resume_start(event)
+            if resumed_id and resume_start is not None:
+                modern_completed.discard(resumed_id)
+                open_starts[resumed_id].append(resume_start)
+            continue
         if event_type == "subagent_start":
             if subagent_id:
                 modern_completed.discard(subagent_id)
+                # Cursor IDE omits this callback on resume, while Cursor CLI
+                # versions may still emit it. Replace the synthetic Task
+                # boundary when both runtimes' signals are present so one
+                # resumed invocation always creates exactly one window.
+                tool_call_id = _tool_call_id(event)
+                for index, queued in enumerate(open_starts[subagent_id]):
+                    queued_data = _data(queued)
+                    if queued_data.get("cursor_resume") is not True:
+                        continue
+                    if tool_call_id and _tool_call_id(queued) != tool_call_id:
+                        continue
+                    del open_starts[subagent_id][index]
+                    break
                 open_starts[subagent_id].append(event)
             continue
         if event_type != "subagent_message":
@@ -86,8 +154,8 @@ def cursor_subagent_windows(events: list[dict[str, Any]]) -> list[CursorSubagent
         if subagent_id and open_starts[subagent_id]:
             start = open_starts[subagent_id].popleft()
             modern_completed.add(subagent_id)
-            start_data = _data(start)
-            tool_call_id = _string(start_data, "tool_call_id", "toolCallId")
+            modern_stop_seqs.add(_seq(event))
+            tool_call_id = _tool_call_id(start)
             windows.append(
                 CursorSubagentWindow(
                     start_event=start,
@@ -97,7 +165,9 @@ def cursor_subagent_windows(events: list[dict[str, Any]]) -> list[CursorSubagent
                     generation_id=cursor_subagent_generation_id(tool_call_id),
                 )
             )
-        elif not subagent_id or subagent_id not in modern_completed:
+        elif subagent_id and subagent_id in modern_completed:
+            modern_stop_seqs.add(_seq(event))
+        else:
             windows.append(
                 CursorSubagentWindow(
                     start_event=None,
@@ -109,7 +179,16 @@ def cursor_subagent_windows(events: list[dict[str, Any]]) -> list[CursorSubagent
             )
 
     windows.sort(key=lambda window: _seq(window.stop_event))
-    return windows
+    return windows, modern_stop_seqs
+
+
+def cursor_subagent_windows(events: list[dict[str, Any]]) -> list[CursorSubagentWindow]:
+    return _cursor_subagent_lifecycle(events)[0]
+
+
+def modern_subagent_stop_seqs(events: list[dict[str, Any]]) -> set[int]:
+    """Return paired and duplicate stops owned by a modern lifecycle."""
+    return _cursor_subagent_lifecycle(events)[1]
 
 
 def window_for_stop(

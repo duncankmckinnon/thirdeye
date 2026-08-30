@@ -15,8 +15,8 @@ from typing import Any
 
 from thirdeye.platforms.cursor.subagents import (
     CursorSubagentWindow,
-    cursor_subagent_windows,
     events_for_subagent,
+    modern_subagent_stop_seqs,
     read_cursor_transcript,
     window_for_stop,
 )
@@ -377,11 +377,7 @@ def _subagents_in_turn(
     # A modern lifecycle window (paired subagent_start + subagent_message) is
     # exported independently and parented to its dispatching Task span, so it
     # must never also be embedded here. Only unmatched historical stops remain.
-    modern_stop_seqs = {
-        int(window.stop_event.get("seq") or 0)
-        for window in cursor_subagent_windows(events)
-        if window.start_event is not None
-    }
+    modern_stop_seqs = modern_subagent_stop_seqs(events)
     subagents: list[TurnSpanDict] = []
     for event in events:
         if event.get("t") != "subagent_message":

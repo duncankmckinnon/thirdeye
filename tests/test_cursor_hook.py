@@ -944,6 +944,35 @@ def test_duplicate_stop_writes_raw_event_but_spawns_one_job(tmp_path: Path, monk
     assert len(jobs) == 1
 
 
+def test_resume_task_exports_reused_subagent_as_new_run(tmp_path: Path, monkeypatch):
+    jobs = _capture_detached_jobs(tmp_path, monkeypatch)
+    _invoke(
+        monkeypatch,
+        _cursor_payload("preToolUse", tool_name="Task", tool_use_id="call-1"),
+    )
+    _invoke(
+        monkeypatch,
+        _cursor_payload("subagentStart", subagent_id="child-A", tool_call_id="call-1"),
+    )
+    _invoke(monkeypatch, _cursor_payload("subagentStop", subagent_id="child-A"))
+    _invoke(
+        monkeypatch,
+        _cursor_payload(
+            "preToolUse",
+            tool_name="Task",
+            tool_use_id="call-2",
+            tool_input={"resume": "child-A", "prompt": "Continue the review"},
+        ),
+    )
+    _invoke(monkeypatch, _cursor_payload("subagentStop", subagent_id="child-A"))
+
+    subagent_jobs = [_job(path) for path in jobs if _job(path)["kind"] == "subagent_turn"]
+    assert len(subagent_jobs) == 2
+    resumed = subagent_jobs[1]
+    assert int(resumed["parent_span_id"]) == tool_span_id("cursor", "session-1", "call-2")
+    assert resumed["turn"]["input_message"] == "Continue the review"
+
+
 def test_resolver_exception_is_fail_open(tmp_path: Path, monkeypatch, capfd):
     monkeypatch.setenv("THIRDEYE_HOME", str(tmp_path))
     _invoke(

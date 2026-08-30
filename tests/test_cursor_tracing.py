@@ -899,6 +899,39 @@ class TestSubagentExportResolution:
         assert first.tool_call_id == "call-1"
         assert (second.tool_call_id, second.turn["turn_id"]) == ("call-2", str(second_start))
 
+    def test_resumed_subagent_uses_resume_task_as_new_start(self, tmp_path: Path):
+        sid = "resolve-resume"
+        store = Store(Config(root=tmp_path))
+        _modern_lifecycle(store, sid, subagent_id="child", tool_call_id="call-1")
+        resume_seq = _append(
+            store,
+            sid,
+            "tool_call",
+            {
+                "generation_id": "parent",
+                "tool_name": "Task",
+                "tool_use_id": "call-2",
+                "tool_input": {"resume": "child", "prompt": "Continue the review"},
+            },
+        )
+        resumed_generation = cursor_subagent_generation_id("call-2")
+        _append(
+            store,
+            sid,
+            "assistant_message",
+            {"generation_id": resumed_generation, "text": "Review complete"},
+        )
+        resumed_stop = _subagent_stop(store, sid, "parent", subagent_id="child")
+
+        resolved = _resolve(store, tmp_path, sid, resumed_stop)
+
+        assert resolved is not None
+        assert resolved.tool_call_id == "call-2"
+        assert resolved.turn["turn_id"] == str(resume_seq)
+        assert resolved.turn["input_message"] == "Continue the review"
+        assert resolved.turn["output_message"] == "Review complete"
+        assert resolved.turn["llm_calls"][0]["call_id"] == resumed_generation
+
 
 class TestSubagentNesting:
     def test_nested_task_and_child_use_distinct_exact_generations(self, tmp_path: Path):
@@ -1012,6 +1045,16 @@ class TestLegacySubagentCompatibility:
         assert [leaf["attributes"]["cursor.subagent.id"] for leaf in turn["subagents"]] == [
             "legacy"
         ]
+
+    def test_duplicate_modern_stop_is_not_embedded_as_legacy(self, tmp_path: Path):
+        sid, generation = "modern-duplicate-parent", "parent"
+        store = Store(Config(root=tmp_path))
+        _append(store, sid, "user_message", {"generation_id": generation, "prompt": "delegate"})
+        _modern_lifecycle(store, sid, parent_generation=generation)
+        _subagent_stop(store, sid, generation, subagent_id="child-A")
+        stop_seq = _append(store, sid, "turn_stop", {"generation_id": generation})
+
+        assert _build(tmp_path, sid, generation, stop_seq)["subagents"] == []
 
     @pytest.mark.parametrize(
         ("status", "expected"),

@@ -7,6 +7,7 @@ from thirdeye.platforms.cursor.subagents import (
     cursor_subagent_generation_id,
     cursor_subagent_windows,
     events_for_subagent,
+    modern_subagent_stop_seqs,
     read_cursor_transcript,
     window_for_stop,
 )
@@ -26,6 +27,16 @@ def start(seq, subagent_id, tool_call_id=None, **data):
 
 def stop(seq, subagent_id, **data):
     return event(seq, "subagent_message", subagent_id=subagent_id, **data)
+
+
+def resume(seq, subagent_id, tool_call_id, **tool_input):
+    return event(
+        seq,
+        "tool_call",
+        tool_name="Task",
+        tool_use_id=tool_call_id,
+        tool_input={"resume": subagent_id, **tool_input},
+    )
 
 
 def write_jsonl(path, records):
@@ -114,6 +125,43 @@ class TestCursorSubagentWindows:
 
         assert len(windows) == 1
         assert windows[0].stop_event is first_stop
+
+    def test_resume_task_opens_new_window_for_reused_id(self):
+        first_start = start(1, "child", "call-one")
+        first_stop = stop(2, "child")
+        resume_start = resume(3, "child", "call-two", prompt="Continue inspection")
+        resumed_stop = stop(5, "child")
+
+        windows = cursor_subagent_windows([resumed_stop, resume_start, first_stop, first_start])
+
+        assert len(windows) == 2
+        resumed = windows[1]
+        assert resumed.start_event["seq"] == 3
+        assert resumed.start_event["data"]["cursor_resume"] is True
+        assert resumed.start_event["data"]["task"] == "Continue inspection"
+        assert resumed.stop_event is resumed_stop
+        assert resumed.tool_call_id == "call-two"
+        assert resumed.generation_id == cursor_subagent_generation_id("call-two")
+
+    def test_resume_task_and_cli_start_coalesce_by_tool_call_id(self):
+        events = [
+            start(1, "child", "call-one"),
+            stop(2, "child"),
+            resume(3, "child", "call-two"),
+            start(4, "child", "call-two", task="CLI resume"),
+            stop(5, "child"),
+        ]
+
+        windows = cursor_subagent_windows(events)
+
+        assert len(windows) == 2
+        assert windows[1].start_event is events[3]
+        assert windows[1].tool_call_id == "call-two"
+
+    def test_modern_stop_sequences_include_suppressed_duplicates(self):
+        events = [start(1, "child", "call"), stop(2, "child"), stop(3, "child")]
+
+        assert modern_subagent_stop_seqs(events) == {2, 3}
 
     def test_unmatched_start_omitted(self):
         assert cursor_subagent_windows([start(1, "child", "call")]) == []
