@@ -236,7 +236,9 @@ def _pre_tool_use(payload: dict[str, Any]) -> None:
         return
     if normalized_name in READ_TOOL_NAMES:
         return
-    _emit(payload, "tool_call", {"tool_name": name})
+    seq = _emit(payload, "tool_call", {"tool_name": name})
+    if normalized_name == "task":
+        _emit_task_parent(payload, seq)
 
 
 def _post_tool_use(payload: dict[str, Any]) -> None:
@@ -254,6 +256,31 @@ def _post_tool_use(payload: dict[str, Any]) -> None:
         return
     seq = _emit(payload, "tool_result", {"tool_name": name})
     _emit_live(payload, seq)
+
+
+def _emit_task_parent(payload: dict[str, Any], seq: int | None, tool_call_id: str = "") -> None:
+    session_id = _session_id(payload)
+    if seq is None or not session_id:
+        return
+    call_id = tool_call_id or _get_str(
+        payload, "tool_call_id", "toolCallId", "tool_use_id", "toolUseId"
+    )
+    if not call_id:
+        return
+    try:
+        from thirdeye.platforms.cursor.live_spans import emit_task_parent_span
+
+        config = Config.load()
+        emit_task_parent_span(
+            config,
+            session_dir(config.root, _PLATFORM, session_id),
+            session_id,
+            _cwd(payload),
+            call_id,
+            seq,
+        )
+    except Exception:
+        pass
 
 
 def _capture_usage(config: Config, session_id: str, payload: dict[str, Any], seq: int) -> None:
@@ -333,6 +360,7 @@ def _subagent_stop(payload: dict[str, Any]) -> None:
         if resolved is None:
             return
         if resolved.tool_call_id:
+            _emit_task_parent(payload, seq, resolved.tool_call_id)
             export_subagent_turn(
                 config,
                 sd,

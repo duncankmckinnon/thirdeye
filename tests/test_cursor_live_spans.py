@@ -426,6 +426,18 @@ def _run_subagent_job(job: dict) -> None:
     )
 
 
+def _run_spans_job(job: dict) -> None:
+    otel_export._export_spans_batch(
+        config=Config.load(),
+        session_dir_=Path(job["session_dir"]),
+        session_id=job["session_id"],
+        platform=job["platform"],
+        cwd=job["cwd"],
+        trace_id=job["trace_id"],
+        spans=job["spans"],
+    )
+
+
 def _span_with_id(spans: list[dict], span_id: int) -> dict:
     matches = [span for span in spans if span["context"]["span_id"] == span_id]
     assert len(matches) == 1
@@ -707,7 +719,9 @@ def test_parallel_child_stops_do_not_cross_attribute_tools(tmp_path: Path, monke
         ]
     )
 
-    sub_jobs = [json.loads(path.read_text()) for path in jobs]
+    sub_jobs = [
+        job for path in jobs if (job := json.loads(path.read_text()))["kind"] == "subagent_turn"
+    ]
     assert len(sub_jobs) == 2
     by_parent = {int(job["parent_span_id"]): job for job in sub_jobs}
     assert set(by_parent) == {
@@ -852,7 +866,8 @@ def test_nested_and_outer_stop_race_have_independent_claims(tmp_path: Path, monk
         ]
     )
 
-    sub_jobs = [json.loads(path.read_text()) for path in jobs]
+    loaded = [json.loads(path.read_text()) for path in jobs]
+    sub_jobs = [job for job in loaded if job["kind"] == "subagent_turn"]
     assert len(sub_jobs) == 2
     by_parent = {int(job["parent_span_id"]): job for job in sub_jobs}
     outer_tool_id = tool_span_id("cursor", sid, "call-A")
@@ -866,9 +881,12 @@ def test_nested_and_outer_stop_race_have_independent_claims(tmp_path: Path, monk
     assert outer_job["turn"]["turn_span_id"] == str(turn_span_id("cursor", sid, outer_start))
     assert outer_job["turn"]["llm_calls"][0]["call_id"] == gen_a
     assert [t["tool_call_id"] for t in outer_job["turn"]["llm_calls"][0]["tool_calls"]] == [
-        "read-A",
-        "call-N",
+        "read-A"
     ]
+    task_span_ids = {
+        int(span["span_id"]) for job in loaded if job["kind"] == "spans" for span in job["spans"]
+    }
+    assert task_span_ids == {outer_tool_id, nested_tool_id}
 
     assert nested_job["turn"]["turn_id"] == str(nested_start)
     assert nested_job["turn"]["turn_span_id"] == str(turn_span_id("cursor", sid, nested_start))
@@ -880,6 +898,9 @@ def test_nested_and_outer_stop_race_have_independent_claims(tmp_path: Path, monk
     outer_claim = f"subagent:{outer_start}"
     nested_claim = f"subagent:{nested_start}"
     exporter = _worker_exporter(monkeypatch)
+    for job in loaded:
+        if job["kind"] == "spans":
+            _run_spans_job(job)
     for job in sub_jobs:
         _run_subagent_job(job)
 

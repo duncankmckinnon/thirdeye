@@ -438,10 +438,14 @@ class TestDuplicateChildDeliveryFirstWins:
         assert len(captured_stops) == 2
         assert len({event["seq"] for event in captured_stops}) == 2
         assert all(event["data"]["subagent_id"] == "child-A" for event in captured_stops)
-        assert len(jobs) == 1
+        loaded = [json.loads(path.read_text()) for path in jobs]
+        task_jobs = [job for job in loaded if job["kind"] == "spans"]
+        subagent_jobs = [job for job in loaded if job["kind"] == "subagent_turn"]
+        assert len(task_jobs) == len(subagent_jobs) == 1
+        [task_span] = task_jobs[0]["spans"]
+        assert int(task_span["span_id"]) == tool_span_id("cursor", sid, "call-A")
 
-        job = json.loads(jobs[0].read_text())
-        assert job["kind"] == "subagent_turn"
+        job = subagent_jobs[0]
         assert job["turn"]["turn_id"] == str(start_seq)
         assert job["turn"]["turn_span_id"] == str(turn_span_id("cursor", sid, start_seq))
         assert job["turn"]["llm_calls"][0]["call_id"] == child_generation

@@ -18,6 +18,7 @@ from thirdeye.platforms.cursor.subagents import (
     events_for_subagent,
     modern_subagent_stop_seqs,
     read_cursor_transcript,
+    subagent_task_parent_ids,
     window_for_stop,
 )
 from thirdeye.reader import SessionReader
@@ -507,6 +508,8 @@ def _modern_subagent_turn(
     ) or _text(stop_data, "model", "model_id", "modelId")
 
     tools = tool_calls_for_generation(owned_events, session_id, window.generation_id)
+    nested_task_ids = subagent_task_parent_ids(owned_events)
+    tools = [tool for tool in tools if tool["tool_call_id"] not in nested_task_ids]
     usage = usage_from_payload(stop_data)
     llm_calls: list[LlmCallSpanDict] = []
     if input_text or output_text or model or usage or tools:

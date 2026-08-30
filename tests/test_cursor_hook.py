@@ -777,9 +777,12 @@ def test_subagent_stop_exports_under_dispatching_task(tmp_path: Path, monkeypatc
     start_seq = next(event["seq"] for event in _events() if event["t"] == "subagent_start")
     _invoke(monkeypatch, _cursor_payload("subagentStop", subagent_id="child-1"))
 
-    assert len(jobs) == 1
-    job = _job(jobs[0])
-    assert job["kind"] == "subagent_turn"
+    loaded = [_job(path) for path in jobs]
+    task_job = next(job for job in loaded if job["kind"] == "spans")
+    [task_span] = task_job["spans"]
+    assert task_span["name"] == "tool: Task"
+    assert int(task_span["span_id"]) == tool_span_id("cursor", "session-1", "call-123")
+    job = next(job for job in loaded if job["kind"] == "subagent_turn")
     assert int(job["parent_span_id"]) == tool_span_id("cursor", "session-1", "call-123")
     assert job["turn"]["turn_id"] == str(start_seq)
 
@@ -826,8 +829,8 @@ def test_subagent_stop_can_precede_parent_task_post(tmp_path: Path, monkeypatch)
     )
     _invoke(monkeypatch, _cursor_payload("subagentStop", subagent_id="child-A"))
 
-    assert len(jobs) == 1
-    recorded_parent = int(_job(jobs[0])["parent_span_id"])
+    child_job = next(_job(path) for path in jobs if _job(path)["kind"] == "subagent_turn")
+    recorded_parent = int(child_job["parent_span_id"])
     _invoke(
         monkeypatch,
         _cursor_payload(
@@ -835,6 +838,7 @@ def test_subagent_stop_can_precede_parent_task_post(tmp_path: Path, monkeypatch)
         ),
     )
     task_job = next(_job(path) for path in jobs if _job(path)["kind"] == "spans")
+    assert sum(_job(path)["kind"] == "spans" for path in jobs) == 1
     [task_span] = task_job["spans"]
     assert int(task_span["span_id"]) == recorded_parent
     assert recorded_parent == tool_span_id("cursor", "session-1", "call-A")
@@ -868,10 +872,15 @@ def test_nested_subagent_uses_nested_task_parent(tmp_path: Path, monkeypatch):
     )
     _invoke(monkeypatch, _cursor_payload("subagentStop", subagent_id="nested"))
 
-    assert len(jobs) == 1
-    parent_id = int(_job(jobs[0])["parent_span_id"])
+    loaded = [_job(path) for path in jobs]
+    child_job = next(job for job in loaded if job["kind"] == "subagent_turn")
+    parent_id = int(child_job["parent_span_id"])
     assert parent_id == tool_span_id("cursor", "session-1", "call-N")
     assert parent_id != tool_span_id("cursor", "session-1", "call-A")
+    task_span_ids = {
+        int(span["span_id"]) for job in loaded if job["kind"] == "spans" for span in job["spans"]
+    }
+    assert parent_id in task_span_ids
 
 
 def test_start_without_task_id_uses_exact_parent_generation_turn(tmp_path: Path, monkeypatch):
@@ -952,19 +961,19 @@ def test_resume_task_exports_reused_subagent_as_new_run(tmp_path: Path, monkeypa
     )
     _invoke(
         monkeypatch,
-        _cursor_payload("subagentStart", subagent_id="child-A", tool_call_id="call-1"),
+        _cursor_payload("subagentStart", subagent_id="call-1", tool_call_id="call-1"),
     )
-    _invoke(monkeypatch, _cursor_payload("subagentStop", subagent_id="child-A"))
+    _invoke(monkeypatch, _cursor_payload("subagentStop", subagent_id="call-1"))
     _invoke(
         monkeypatch,
         _cursor_payload(
             "preToolUse",
             tool_name="Task",
             tool_use_id="call-2",
-            tool_input={"resume": "child-A", "prompt": "Continue the review"},
+            tool_input={"resume": "agent-uuid", "prompt": "Continue the review"},
         ),
     )
-    _invoke(monkeypatch, _cursor_payload("subagentStop", subagent_id="child-A"))
+    _invoke(monkeypatch, _cursor_payload("subagentStop", subagent_id="call-2"))
 
     subagent_jobs = [_job(path) for path in jobs if _job(path)["kind"] == "subagent_turn"]
     assert len(subagent_jobs) == 2

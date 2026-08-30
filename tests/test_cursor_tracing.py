@@ -902,7 +902,7 @@ class TestSubagentExportResolution:
     def test_resumed_subagent_uses_resume_task_as_new_start(self, tmp_path: Path):
         sid = "resolve-resume"
         store = Store(Config(root=tmp_path))
-        _modern_lifecycle(store, sid, subagent_id="child", tool_call_id="call-1")
+        _modern_lifecycle(store, sid, subagent_id="call-1", tool_call_id="call-1")
         resume_seq = _append(
             store,
             sid,
@@ -911,7 +911,7 @@ class TestSubagentExportResolution:
                 "generation_id": "parent",
                 "tool_name": "Task",
                 "tool_use_id": "call-2",
-                "tool_input": {"resume": "child", "prompt": "Continue the review"},
+                "tool_input": {"resume": "agent-uuid", "prompt": "Continue the review"},
             },
         )
         resumed_generation = cursor_subagent_generation_id("call-2")
@@ -921,7 +921,7 @@ class TestSubagentExportResolution:
             "assistant_message",
             {"generation_id": resumed_generation, "text": "Review complete"},
         )
-        resumed_stop = _subagent_stop(store, sid, "parent", subagent_id="child")
+        resumed_stop = _subagent_stop(store, sid, "parent", subagent_id="call-2")
 
         resolved = _resolve(store, tmp_path, sid, resumed_stop)
 
@@ -975,9 +975,7 @@ class TestSubagentNesting:
         outer = _resolve(store, tmp_path, sid, outer_stop).turn
         nested = _resolve(store, tmp_path, sid, nested_stop).turn
         assert outer_gen != nested_gen
-        assert [tool["tool_call_id"] for tool in outer["llm_calls"][0]["tool_calls"]] == [
-            nested_call
-        ]
+        assert outer["llm_calls"][0]["tool_calls"] == []
         assert [tool["tool_call_id"] for tool in nested["llm_calls"][0]["tool_calls"]] == [
             "nested-read"
         ]

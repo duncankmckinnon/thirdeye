@@ -29,13 +29,13 @@ def stop(seq, subagent_id, **data):
     return event(seq, "subagent_message", subagent_id=subagent_id, **data)
 
 
-def resume(seq, subagent_id, tool_call_id, **tool_input):
+def resume(seq, agent_id, tool_call_id, **tool_input):
     return event(
         seq,
         "tool_call",
         tool_name="Task",
         tool_use_id=tool_call_id,
-        tool_input={"resume": subagent_id, **tool_input},
+        tool_input={"resume": agent_id, **tool_input},
     )
 
 
@@ -126,11 +126,11 @@ class TestCursorSubagentWindows:
         assert len(windows) == 1
         assert windows[0].stop_event is first_stop
 
-    def test_resume_task_opens_new_window_for_reused_id(self):
-        first_start = start(1, "child", "call-one")
-        first_stop = stop(2, "child")
-        resume_start = resume(3, "child", "call-two", prompt="Continue inspection")
-        resumed_stop = stop(5, "child")
+    def test_resume_task_opens_new_window_by_fresh_task_id(self):
+        first_start = start(1, "call-one", "call-one")
+        first_stop = stop(2, "call-one")
+        resume_start = resume(3, "agent-uuid", "call-two", prompt="Continue inspection")
+        resumed_stop = stop(5, "call-two")
 
         windows = cursor_subagent_windows([resumed_stop, resume_start, first_stop, first_start])
 
@@ -138,6 +138,7 @@ class TestCursorSubagentWindows:
         resumed = windows[1]
         assert resumed.start_event["seq"] == 3
         assert resumed.start_event["data"]["cursor_resume"] is True
+        assert resumed.start_event["data"]["subagent_id"] == "call-two"
         assert resumed.start_event["data"]["task"] == "Continue inspection"
         assert resumed.stop_event is resumed_stop
         assert resumed.tool_call_id == "call-two"
@@ -145,11 +146,11 @@ class TestCursorSubagentWindows:
 
     def test_resume_task_and_cli_start_coalesce_by_tool_call_id(self):
         events = [
-            start(1, "child", "call-one"),
-            stop(2, "child"),
-            resume(3, "child", "call-two"),
-            start(4, "child", "call-two", task="CLI resume"),
-            stop(5, "child"),
+            start(1, "call-one", "call-one"),
+            stop(2, "call-one"),
+            resume(3, "agent-uuid", "call-two"),
+            start(4, "call-two", "call-two", task="CLI resume"),
+            stop(5, "call-two"),
         ]
 
         windows = cursor_subagent_windows(events)
