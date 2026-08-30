@@ -321,11 +321,15 @@ def _subagent_stop(payload: dict[str, Any]) -> None:
 
         config = Config.load()
         sd = session_dir(config.root, _PLATFORM, session_id)
-        stop_events = list(SessionReader(sd).iter_events(seq_range=(seq, seq + 1)))
-        stop_event = stop_events[0] if stop_events else None
-        if stop_event is None:
-            return
-        resolved = resolve_subagent_export(sd, session_id, stop_event)
+        stop_event = SessionReader(sd).get_event(seq)
+        try:
+            resolved = resolve_subagent_export(sd, session_id, stop_event)
+        except Exception:
+            # The stop is durable before resolution begins. Retry that exact
+            # event once from disk so a transient snapshot/read failure cannot
+            # strand a modern lifecycle without its detached export job.
+            stop_event = SessionReader(sd).get_event(seq)
+            resolved = resolve_subagent_export(sd, session_id, stop_event)
         if resolved is None:
             return
         if resolved.tool_call_id:

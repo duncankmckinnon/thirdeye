@@ -8,7 +8,7 @@ import pytest
 
 from thirdeye.config import Config, LogfireSettings
 from thirdeye.paths import usage_log_path
-from thirdeye.platforms.cursor import hook
+from thirdeye.platforms.cursor import hook, tracing
 from thirdeye.platforms.cursor.subagents import cursor_subagent_generation_id
 from thirdeye.span_ids import tool_span_id, turn_span_id
 from thirdeye.store import Store
@@ -959,6 +959,33 @@ def test_resolver_exception_is_fail_open(tmp_path: Path, monkeypatch, capfd):
 
     assert capfd.readouterr().out == '{"continue": true}{"continue": true}'
     assert [event["t"] for event in _events()] == ["subagent_start", "subagent_message"]
+
+
+def test_transient_resolver_exception_retries_persisted_stop(tmp_path: Path, monkeypatch):
+    jobs = _capture_detached_jobs(tmp_path, monkeypatch)
+    _invoke(
+        monkeypatch,
+        _cursor_payload("subagentStart", subagent_id="child-A", tool_call_id="call-A"),
+    )
+    real_resolve = tracing.resolve_subagent_export
+    attempts = 0
+
+    def flaky_resolve(*args):
+        nonlocal attempts
+        attempts += 1
+        if attempts == 1:
+            raise OSError("transient event snapshot failure")
+        return real_resolve(*args)
+
+    monkeypatch.setattr(
+        "thirdeye.platforms.cursor.tracing.resolve_subagent_export",
+        flaky_resolve,
+    )
+
+    _invoke(monkeypatch, _cursor_payload("subagentStop", subagent_id="child-A"))
+
+    assert attempts == 2
+    assert len(jobs) == 1
 
 
 def test_subagent_exporter_exception_is_fail_open(tmp_path: Path, monkeypatch, capfd):
