@@ -228,6 +228,7 @@ __marimo__/
 
 #agents
 .claude/
+.codex/
 .agents/
 .workbench/
 *docs/superpowers/*
