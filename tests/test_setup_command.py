@@ -31,6 +31,7 @@ def test_setup_configures_selected_platforms_skills_and_logfire(
     def fake_platform(name: str) -> MagicMock:
         platform = MagicMock()
         platform.display_name = name
+        platform.notify_conflict.return_value = None
         platform.install.side_effect = lambda: installed.append(name)
         return platform
 
@@ -78,6 +79,64 @@ def test_setup_explains_missing_logfire_extra(monkeypatch: pytest.MonkeyPatch) -
     assert result.exit_code == 0, result.output
     assert "thrdi[logfire]" in result.output
     assert Config.load().logfire.enabled is False
+
+
+def test_setup_offers_to_replace_a_foreign_codex_notifier(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from thirdeye.commands.setup import add_commands
+    from thirdeye.platforms.codex.install import CodexPlatform
+
+    config_file = tmp_path / "config.toml"
+    hooks_file = tmp_path / "hooks.json"
+    config_file.write_text("notify = ['/usr/local/bin/existing-notifier']\n")
+    monkeypatch.setitem(
+        add_commands.PLATFORMS,
+        "codex",
+        lambda **kwargs: CodexPlatform(
+            config_file=config_file,
+            hooks_file=hooks_file,
+            **kwargs,
+        ),
+    )
+
+    result = CliRunner().invoke(main, ["setup"], input="n\ny\ny\nn\nn\nn\n")
+
+    assert result.exit_code == 0, result.output
+    assert "existing-notifier" in result.output
+    assert "may disable features" in result.output
+    assert "Installed tracing for Codex CLI" in result.output
+    assert "thirdeye-codex-notify" in config_file.read_text()
+    assert "existing-notifier" not in config_file.read_text()
+
+
+def test_setup_preserves_a_foreign_codex_notifier_when_force_is_declined(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from thirdeye.commands.setup import add_commands
+    from thirdeye.platforms.codex.install import CodexPlatform
+
+    config_file = tmp_path / "config.toml"
+    hooks_file = tmp_path / "hooks.json"
+    original = "notify = ['/usr/local/bin/existing-notifier']\n"
+    config_file.write_text(original)
+    monkeypatch.setitem(
+        add_commands.PLATFORMS,
+        "codex",
+        lambda **kwargs: CodexPlatform(
+            config_file=config_file,
+            hooks_file=hooks_file,
+            **kwargs,
+        ),
+    )
+
+    result = CliRunner().invoke(main, ["setup"], input="n\ny\nn\nn\nn\nn\n")
+
+    assert result.exit_code == 0, result.output
+    assert "Skipped Codex tracing" in result.output
+    assert "Tracing: no platforms configured" in result.output
+    assert config_file.read_text() == original
+    assert not hooks_file.exists()
 
 
 @pytest.mark.parametrize(

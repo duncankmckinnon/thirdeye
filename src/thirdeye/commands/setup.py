@@ -1,11 +1,13 @@
 from __future__ import annotations
 
 from pathlib import Path
+from typing import cast
 
 import click
 
 from thirdeye.commands import add as add_commands
 from thirdeye.commands import logfire_cmd, skill
+from thirdeye.platforms.codex.install import CodexPlatform
 
 _PLATFORM_LABELS = {
     "claude": "Claude Code",
@@ -14,10 +16,26 @@ _PLATFORM_LABELS = {
 }
 
 
-def _install_tracing(platform_name: str) -> None:
+def _install_tracing(platform_name: str) -> bool:
     platform = add_commands._resolve_platform(platform_name)
+    if platform_name == "codex":
+        incumbent = cast(CodexPlatform, platform).notify_conflict()
+        if incumbent:
+            click.echo(f"  Codex notify is already used by {incumbent!r}.")
+            click.echo(
+                "  Codex supports one notify program; replacing it may disable "
+                "features that depend on the current notifier."
+            )
+            if not click.confirm(
+                "Replace the existing Codex notifier and install thirdeye?",
+                default=False,
+            ):
+                click.echo("  Skipped Codex tracing; existing notifier was not changed")
+                return False
+            platform = add_commands._resolve_platform(platform_name, force=True)
     platform.install()
     click.echo(f"  Installed tracing for {platform.display_name}")
+    return True
 
 
 def _skill_targets(platforms: list[str]) -> list[Path]:
@@ -63,8 +81,8 @@ def setup() -> None:
     platforms: list[str] = []
     for name, label in _PLATFORM_LABELS.items():
         if click.confirm(f"Configure tracing for {label}?", default=False):
-            _install_tracing(name)
-            platforms.append(name)
+            if _install_tracing(name):
+                platforms.append(name)
 
     click.echo("\nAgent skills")
     skills_installed = click.confirm("Install thirdeye's bundled agent skills?", default=True)
