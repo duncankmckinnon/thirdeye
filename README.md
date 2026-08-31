@@ -13,6 +13,9 @@ Trace every agent session on your machine — Claude Code, Codex, Cursor — int
 
 ## Install
 
+> **macOS and Linux only, for now.** thirdeye is not yet supported on Windows —
+> Windows support is planned.
+
 The easiest installation approach is to use [homebrew](https://brew.sh/). This will package all thirdeye extras as a globally available CLI tool.
 
 ```bash
