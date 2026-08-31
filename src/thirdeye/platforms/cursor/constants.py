@@ -24,7 +24,9 @@ TRACED_EVENTS: tuple[str, ...] = (
     "afterFileEdit",
     "beforeTabFileRead",
     "afterTabFileEdit",
+    "preToolUse",
     "postToolUse",
+    "subagentStart",
     "subagentStop",
     "stop",
 )

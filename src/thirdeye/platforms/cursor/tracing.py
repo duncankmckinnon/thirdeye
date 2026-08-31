@@ -8,13 +8,28 @@ the generic turn model consumed by the OTel GenAI Logfire exporter.
 from __future__ import annotations
 
 import json
+from dataclasses import dataclass
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any
 
+from thirdeye.platforms.cursor.subagents import (
+    CursorSubagentWindow,
+    events_for_subagent,
+    modern_subagent_stop_seqs,
+    read_cursor_transcript,
+    subagent_task_parent_ids,
+    window_for_stop,
+)
 from thirdeye.reader import SessionReader
 from thirdeye.span_ids import turn_span_id
-from thirdeye.tracing.model import ToolCallSpanDict, TurnSpanDict, TurnStatus, UsageDict
+from thirdeye.tracing.model import (
+    LlmCallSpanDict,
+    ToolCallSpanDict,
+    TurnSpanDict,
+    TurnStatus,
+    UsageDict,
+)
 
 _PLATFORM = "cursor"
 
@@ -265,6 +280,27 @@ def tool_calls_for_generation(
 
 
 _ERROR_STATUSES = {"error", "failed", "failure"}
+_INTERRUPTED_STATUSES = {"aborted", "cancelled", "canceled", "interrupted"}
+
+
+def _subagent_status(data: dict[str, Any]) -> TurnStatus:
+    value = _text(data, "status", "reason").lower()
+    if value in _ERROR_STATUSES:
+        return "errored"
+    if value in _INTERRUPTED_STATUSES:
+        return "interrupted"
+    return "completed"
+
+
+def _last_owned_response(events: list[dict[str, Any]]) -> str:
+    for event in reversed(events):
+        if event.get("t") != "assistant_message":
+            continue
+        text = _text(_data(event), "text", "response", "output")
+        if text:
+            return text
+    return ""
+
 
 # Attribute name -> the payload keys that may carry it, most preferred first.
 # Cursor declares the callback as `agent.v1.SubagentStopRequestQuery`, whose
@@ -277,6 +313,12 @@ _SUBAGENT_TEXT_ATTRS: tuple[tuple[str, tuple[str, ...]], ...] = (
     ("cursor.subagent.id", ("subagent_id", "subagentId", "agent_id", "agentId")),
     ("cursor.subagent.type", ("subagent_type", "subagentType", "agent_type", "agentType")),
     ("cursor.subagent.description", ("description",)),
+    (
+        "cursor.subagent.model",
+        ("subagent_model", "subagentModel", "model", "model_id", "modelId"),
+    ),
+    ("cursor.subagent.git_branch", ("git_branch", "gitBranch")),
+    ("cursor.subagent.error_message", ("error_message", "errorMessage")),
 )
 _SUBAGENT_COUNT_ATTRS: tuple[tuple[str, tuple[str, ...]], ...] = (
     ("cursor.subagent.message_count", ("message_count", "messageCount")),
@@ -325,6 +367,43 @@ def resolve_turn_seq(
     return int(prompt.get("seq") or 0)
 
 
+def resolve_turn_generation(
+    events: list[dict[str, Any]],
+    *,
+    generation_id: str,
+    session_id: str,
+    stop_seq: int,
+) -> str:
+    """Return the generation live tools already parented their chat span to.
+
+    Cursor ``Stop`` often carries a successor ``generation_id`` (the next
+    loop), not the ``user_message`` / tool generation. Building the turn from
+    Stop's id emits a chat-less degenerate span and leaves those tools
+    dangling.
+    """
+    if generation_id and not bogus_generation_id(generation_id, session_id):
+        if (
+            resolve_turn_seq(
+                events,
+                generation_id=generation_id,
+                session_id=session_id,
+                through_seq=stop_seq,
+            )
+            is not None
+        ):
+            return generation_id
+    for event in reversed(events):
+        seq = int(event.get("seq") or 0)
+        if seq > stop_seq:
+            continue
+        if event.get("t") != "user_message":
+            continue
+        prompt_gen = _event_generation_id(event)
+        if prompt_gen and not bogus_generation_id(prompt_gen, session_id):
+            return prompt_gen
+    return generation_id
+
+
 def _subagents_in_turn(
     events: list[dict[str, Any]],
     *,
@@ -333,11 +412,17 @@ def _subagents_in_turn(
     session_id: str,
     generation_id: str,
 ) -> list[TurnSpanDict]:
+    # A modern lifecycle window (paired subagent_start + subagent_message) is
+    # exported independently and parented to its dispatching Task span, so it
+    # must never also be embedded here. Only unmatched historical stops remain.
+    modern_stop_seqs = modern_subagent_stop_seqs(events)
     subagents: list[TurnSpanDict] = []
     for event in events:
         if event.get("t") != "subagent_message":
             continue
         seq = int(event.get("seq") or 0)
+        if seq in modern_stop_seqs:
+            continue
         if not (turn_seq < seq <= stop_seq):
             continue
         gen = _event_generation_id(event)
@@ -377,7 +462,7 @@ def _subagent_turn(session_id: str, event: dict[str, Any]) -> TurnSpanDict:
         "end_ts": str(event.get("ts") or ""),
         "input_message": _text(data, "task"),
         "output_message": "",
-        "status": _status(data),
+        "status": _subagent_status(data),
         "llm_calls": [],
         "permission_requests": [],
         "subagents": [],
@@ -390,12 +475,207 @@ def subagent_turn_from_event(session_id: str, event: dict[str, Any]) -> TurnSpan
     return _subagent_turn(session_id, event)
 
 
+@dataclass(frozen=True)
+class CursorSubagentExport:
+    """A modern child turn plus how to parent it.
+
+    ``tool_call_id`` is non-empty when the dispatching ``Task`` call id is
+    known and the child should hang off that deterministic tool span.
+    ``parent_turn_seq`` is populated only when the start carries no Task id
+    but its own ``generation_id`` resolves to a user turn; otherwise ``None``.
+    Export wiring owns the diagnostic/no-export decision when neither is set.
+    """
+
+    turn: TurnSpanDict
+    tool_call_id: str
+    parent_turn_seq: int | None
+
+
+def _modern_subagent_turn(
+    session_id: str,
+    window: CursorSubagentWindow,
+    owned_events: list[dict[str, Any]],
+) -> TurnSpanDict:
+    """Build one aggregate child turn from an exact-generation lifecycle window.
+
+    Cursor exposes no boundaries or usage to split a child into multiple
+    truthful model calls, so the child is one aggregate LLM call whose
+    ``call_id`` is the derived subagent generation, carrying every tool call
+    that exactly matched that generation between the lifecycle start and stop.
+    """
+    start_event = window.start_event or {}
+    stop_event = window.stop_event
+    start_data = _data(start_event)
+    stop_data = _data(stop_event)
+
+    attributes: dict[str, Any] = {}
+    for name, keys in _SUBAGENT_TEXT_ATTRS:
+        # Start metadata wins over the stop payload for every text attribute.
+        text = _text(start_data, *keys) or _text(stop_data, *keys)
+        if text:
+            attributes[name] = text
+    for name, keys in _SUBAGENT_COUNT_ATTRS:
+        # Completed counts win: prefer the stop value, fall back to the start.
+        count = _integer(stop_data, *keys)
+        if count is None:
+            count = _integer(start_data, *keys)
+        if count is not None:
+            attributes[name] = count
+    parallel = start_data.get("is_parallel_worker", start_data.get("isParallelWorker"))
+    if isinstance(parallel, bool):
+        attributes["cursor.subagent.is_parallel_worker"] = parallel
+    modified = stop_data.get("modified_files", stop_data.get("modifiedFiles"))
+    if isinstance(modified, list) and all(isinstance(item, str) for item in modified):
+        attributes["cursor.subagent.modified_files"] = modified
+
+    transcript = read_cursor_transcript(
+        _text(stop_data, "agent_transcript_path", "agentTranscriptPath") or None
+    )
+    input_text = _text(start_data, "task") or transcript.input_text
+    output_text = (
+        _last_owned_response(owned_events) or transcript.output_text or _text(stop_data, "summary")
+    )
+    model = _text(
+        start_data,
+        "subagent_model",
+        "subagentModel",
+        "model",
+        "model_id",
+        "modelId",
+    ) or _text(stop_data, "model", "model_id", "modelId")
+
+    tools = _owned_tool_calls(owned_events, session_id, window.generation_id)
+    usage = usage_from_payload(stop_data)
+    llm_calls: list[LlmCallSpanDict] = []
+    if input_text or output_text or model or usage or tools:
+        llm_calls.append(
+            {
+                "call_id": window.generation_id,
+                "provider": _provider(model),
+                "model": model,
+                "start_ts": str(start_event.get("ts") or ""),
+                "end_ts": str(stop_event.get("ts") or start_event.get("ts") or ""),
+                "input_messages": (
+                    [{"role": "user", "parts": [{"type": "text", "content": input_text}]}]
+                    if input_text
+                    else []
+                ),
+                "output_messages": (
+                    [
+                        {
+                            "role": "assistant",
+                            "parts": [{"type": "text", "content": output_text}],
+                        }
+                    ]
+                    if output_text
+                    else []
+                ),
+                "usage": usage,
+                "tool_calls": tools,
+            }
+        )
+
+    start_seq = int(start_event.get("seq") or 0)
+    turn: TurnSpanDict = {
+        "turn_id": str(start_seq),
+        "turn_span_id": str(turn_span_id(_PLATFORM, session_id, start_seq)),
+        "start_ts": str(start_event.get("ts") or ""),
+        "end_ts": str(stop_event.get("ts") or start_event.get("ts") or ""),
+        "input_message": input_text,
+        "output_message": output_text,
+        "status": _subagent_status(stop_data),
+        "llm_calls": llm_calls,
+        "permission_requests": [],
+        "subagents": [],
+        "attributes": attributes,
+    }
+    return turn
+
+
+def _owned_tool_calls(
+    owned_events: list[dict[str, Any]], session_id: str, derived_generation: str
+) -> list[ToolCallSpanDict]:
+    generations: list[str] = []
+    for event in owned_events:
+        gen = _event_generation_id(event)
+        if gen and gen not in generations:
+            generations.append(gen)
+    if not generations:
+        generations = [derived_generation] if derived_generation else []
+    tools: list[ToolCallSpanDict] = []
+    seen: set[str] = set()
+    for generation in generations:
+        for tool in tool_calls_for_generation(owned_events, session_id, generation):
+            if tool["tool_call_id"] in seen:
+                continue
+            seen.add(tool["tool_call_id"])
+            tools.append(tool)
+    nested_task_ids = subagent_task_parent_ids(owned_events)
+    return [tool for tool in tools if tool["tool_call_id"] not in nested_task_ids]
+
+
+def resolve_subagent_export(
+    session_dir_: Path, session_id: str, stop_event: dict[str, Any]
+) -> CursorSubagentExport | None:
+    """Resolve a just-finished Cursor child into an independently exported turn.
+
+    A modern child (paired ``subagent_start`` + ``subagent_message``) is built
+    from its exact-generation events and parented to the deterministic Task
+    span from the start's ``tool_call_id``. When the start omits that id, the
+    parent turn is resolved from the start event's own ``generation_id``.
+    Duplicate or unmatched modern stops -- and every legacy stop-only window --
+    return ``None`` here; the legacy summary-only ``_subagent_turn`` fallback
+    handles unmatched historical stops elsewhere.
+    """
+    try:
+        stop_seq = int(stop_event.get("seq") or 0)
+    except (TypeError, ValueError):
+        return None
+    if stop_seq <= 0:
+        return None
+
+    events = list(SessionReader(session_dir_).iter_events(seq_range=(0, stop_seq + 1)))
+    window = window_for_stop(events, stop_event)
+    if window is None or window.start_event is None:
+        return None
+
+    owned_events = events_for_subagent(events, window)
+    child_sid = _text(_data(stop_event), "child_session_id")
+    if child_sid:
+        child_dir = session_dir_.parent / child_sid
+        if child_dir.is_dir():
+            owned_events = list(SessionReader(child_dir).iter_events())
+    turn = _modern_subagent_turn(session_id, window, owned_events)
+
+    if window.tool_call_id:
+        return CursorSubagentExport(turn, window.tool_call_id, None)
+
+    start_data = _data(window.start_event)
+    parent_generation = _text(start_data, "generation_id", "generationId")
+    parent_turn_seq: int | None = None
+    if parent_generation and not bogus_generation_id(parent_generation, session_id):
+        start_seq = int(window.start_event.get("seq") or 0)
+        parent_turn_seq = resolve_turn_seq(
+            events,
+            generation_id=parent_generation,
+            session_id=session_id,
+            through_seq=start_seq,
+        )
+    return CursorSubagentExport(turn, "", parent_turn_seq)
+
+
 def build_turn(
     *, session_dir_: Path, session_id: str, generation_id: str, stop_seq: int
 ) -> TurnSpanDict | None:
-    if bogus_generation_id(generation_id, session_id):
-        return None
     all_events = list(SessionReader(session_dir_).iter_events(seq_range=(0, stop_seq + 1)))
+    generation_id = resolve_turn_generation(
+        all_events,
+        generation_id=generation_id,
+        session_id=session_id,
+        stop_seq=stop_seq,
+    )
+    if not generation_id or bogus_generation_id(generation_id, session_id):
+        return None
     turn_seq = resolve_turn_seq(
         all_events, generation_id=generation_id, session_id=session_id, through_seq=stop_seq
     )
@@ -408,8 +688,13 @@ def build_turn(
     prompt_event = next((event for event in events if event.get("t") == "user_message"), None)
     response_events = [event for event in events if event.get("t") == "assistant_message"]
     stop_event = next(
-        (event for event in reversed(events) if event.get("t") == "turn_stop"), events[-1]
-    )
+        (
+            event
+            for event in reversed(all_events)
+            if event.get("t") == "turn_stop" and int(event.get("seq") or 0) == stop_seq
+        ),
+        None,
+    ) or next((event for event in reversed(events) if event.get("t") == "turn_stop"), events[-1])
     response_event = response_events[-1] if response_events else None
     prompt_data = _data(prompt_event or {})
     response_data = _data(response_event or {})

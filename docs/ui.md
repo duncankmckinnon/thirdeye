@@ -98,6 +98,31 @@ The 'ui' extra is required. Install it with: pip install 'thrdi[ui]'
   events stream new entries into the tree in real time via
   Server-Sent Events. No refresh needed.
 
+## Logfire span tree
+
+With Logfire export enabled (see the project README), each session is also a
+Logfire trace whose spans nest the way the session view nests events: an
+`agent-turn` contains a `chat` span, which contains `tool` spans.
+
+For local Cursor IDE and CLI sessions, a dispatched subagent is exported as its
+own `agent-turn` under the `Task` tool span that launched it. CLI children nest
+their tool calls under that child turn when the child's hooks share the derived
+Task generation. IDE children run in a separate conversation; their tools are
+joined from that child session when the child transcript records `turn_ended`
+(including backgrounded Tasks that never fire `subagentStop`):
+
+```text
+agent-turn
+└── chat
+    └── tool: Task
+        └── agent-turn (Cursor subagent)
+            └── chat
+                └── tool: read_file
+```
+
+The `Task` span may be exported before or after its child, but stable span IDs
+preserve the same tree regardless of the order spans arrive.
+
 ## Keyboard shortcuts
 
 Inside the session tree:

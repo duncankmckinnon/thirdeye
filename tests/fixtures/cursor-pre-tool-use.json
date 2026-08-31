@@ -1,0 +1,13 @@
+{
+  "hook_event_name": "preToolUse",
+  "conversation_id": "cursor-session-1",
+  "generation_id": "parent-generation-1",
+  "model": "claude-4-sonnet",
+  "tool_name": "Task",
+  "tool_use_id": "call-123",
+  "tool_input": {
+    "description": "Inspect sample",
+    "prompt": "Inspect the sample module",
+    "subagent_type": "explore"
+  }
+}

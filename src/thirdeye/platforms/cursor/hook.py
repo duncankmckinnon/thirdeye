@@ -17,7 +17,7 @@ from thirdeye.platforms.cursor.constants import (
     READ_TOOL_NAMES,
     STRIP_KEYS,
 )
-from thirdeye.platforms.cursor.tracing import bogus_generation_id, subagent_turn_from_event
+from thirdeye.platforms.cursor.tracing import bogus_generation_id
 from thirdeye.platforms.provenance import foreign_payload_reason
 from thirdeye.store import Store
 from thirdeye.tags import TagStore, extract_hashtags
@@ -163,12 +163,14 @@ def _before_submit(payload: dict[str, Any]) -> None:
         pass
 
 
-def _after_response(payload: dict[str, Any]) -> None:
-    _emit(payload, "assistant_message")
-
-
 def _after_thought(payload: dict[str, Any]) -> None:
     _emit(payload, "assistant_thought")
+    _finalize_background_subagents(payload)
+
+
+def _after_response(payload: dict[str, Any]) -> None:
+    _emit(payload, "assistant_message")
+    _finalize_background_subagents(payload)
 
 
 def _tool_name(payload: dict[str, Any], default: str) -> str:
@@ -229,6 +231,18 @@ def _emit_live(payload: dict[str, Any], seq: int | None) -> None:
         pass
 
 
+def _pre_tool_use(payload: dict[str, Any]) -> None:
+    name = _tool_name(payload, "unknown")
+    normalized_name = name.lower()
+    if normalized_name in DEDICATED_AFTER_TOOL_NAMES:
+        return
+    if normalized_name in READ_TOOL_NAMES:
+        return
+    seq = _emit(payload, "tool_call", {"tool_name": name})
+    if normalized_name == "task":
+        _emit_task_parent(payload, seq)
+
+
 def _post_tool_use(payload: dict[str, Any]) -> None:
     name = _tool_name(payload, "unknown")
     normalized_name = name.lower()
@@ -242,7 +256,33 @@ def _post_tool_use(payload: dict[str, Any]) -> None:
         )
         _emit_live(payload, seq)
         return
-    _instant_tool(payload, "tool_result", name)
+    seq = _emit(payload, "tool_result", {"tool_name": name})
+    _emit_live(payload, seq)
+
+
+def _emit_task_parent(payload: dict[str, Any], seq: int | None, tool_call_id: str = "") -> None:
+    session_id = _session_id(payload)
+    if seq is None or not session_id:
+        return
+    call_id = tool_call_id or _get_str(
+        payload, "tool_call_id", "toolCallId", "tool_use_id", "toolUseId"
+    )
+    if not call_id:
+        return
+    try:
+        from thirdeye.platforms.cursor.live_spans import emit_task_parent_span
+
+        config = Config.load()
+        emit_task_parent_span(
+            config,
+            session_dir(config.root, _PLATFORM, session_id),
+            session_id,
+            _cwd(payload),
+            call_id,
+            seq,
+        )
+    except Exception:
+        pass
 
 
 def _capture_usage(config: Config, session_id: str, payload: dict[str, Any], seq: int) -> None:
@@ -269,10 +309,9 @@ def _stop(payload: dict[str, Any]) -> None:
     if seq is None:
         return
     _capture_usage(config, session_id, payload, seq)
-    # `turn_stop` carries the model and token counts, so it is persisted even
-    # when Cursor omits the generation_id. Only the turn span needs the id.
     generation_id = _generation_id(payload)
     if not generation_id:
+        _finalize_background_subagents(payload)
         return
     try:
         from thirdeye.otel_export import export_turn
@@ -289,46 +328,136 @@ def _stop(payload: dict[str, Any]) -> None:
             export_turn(config, sd, session_id, _PLATFORM, cwd, turn)
     except Exception:
         pass
+    _finalize_background_subagents(payload)
+
+
+def _finalize_background_subagents(payload: dict[str, Any]) -> None:
+    """Synthesize a parent stop when an IDE child transcript has turn_ended."""
+    try:
+        from thirdeye.platforms.cursor.ide_children import (
+            exportable_child_pairs,
+            parent_session_for_child,
+            pending_ended_child_ids,
+            unmatched_task_ids,
+        )
+        from thirdeye.reader import SessionReader
+        from thirdeye.usage.errlog import log_capture_error
+
+        child_or_parent = _session_id(payload)
+        if not child_or_parent:
+            return
+        parent_from_child = parent_session_for_child(child_or_parent)
+        parent_sid = parent_from_child or child_or_parent
+        only_child = child_or_parent if parent_from_child else ""
+        config = Config.load()
+        sd = session_dir(config.root, _PLATFORM, parent_sid)
+        if not sd.is_dir():
+            return
+        events = list(SessionReader(sd).iter_events())
+        pairs = exportable_child_pairs(
+            parent_sid, events, only_child=only_child, thirdeye_home=config.root
+        )
+        if not pairs:
+            if only_child:
+                unmatched = unmatched_task_ids(events)
+                pending = pending_ended_child_ids(parent_sid, events)
+                if unmatched and only_child in pending:
+                    log_capture_error(
+                        thirdeye_home=config.root,
+                        phase="cursor_background_subagent_unpaired",
+                        level="warn",
+                        platform=_PLATFORM,
+                        session_id=parent_sid,
+                        message=(
+                            f"unmatched={unmatched!r} pending={pending!r} only_child={only_child!r}"
+                        ),
+                    )
+            return
+        for subagent_id, child_sid in pairs:
+            _subagent_stop(
+                {
+                    "conversation_id": parent_sid,
+                    "cwd": _cwd(payload),
+                    "hook_event_name": "subagentStop",
+                    "subagent_id": subagent_id,
+                    "child_session_id": child_sid,
+                }
+            )
+    except Exception as exc:
+        try:
+            log_capture_error(
+                thirdeye_home=Config.load().root,
+                phase="cursor_background_subagent_finalize",
+                error=exc,
+                platform=_PLATFORM,
+                session_id=_session_id(payload),
+            )
+        except Exception:
+            pass
+
+
+def _subagent_start(payload: dict[str, Any]) -> None:
+    _emit(payload, "subagent_start")
 
 
 def _subagent_stop(payload: dict[str, Any]) -> None:
     session_id = _session_id(payload)
     if not session_id:
         return
-    cwd = _cwd(payload)
     seq = _emit(payload, "subagent_message")
     if seq is None:
         return
     try:
-        from thirdeye.otel_export import export_subagent_turn, turn_export_sent
+        from thirdeye.otel_export import export_subagent_turn
+        from thirdeye.platforms.cursor.tracing import resolve_subagent_export
         from thirdeye.reader import SessionReader
         from thirdeye.span_ids import turn_span_id
 
         config = Config.load()
         sd = session_dir(config.root, _PLATFORM, session_id)
-        all_events = list(SessionReader(sd).iter_events(seq_range=(0, seq + 1)))
-        stop_ev = all_events[-1]
-        subagent = subagent_turn_from_event(session_id, stop_ev)
-        # Attach to the user turn that was open when the subagent finished.
-        # Walk backward for the nearest user_message before this stop.
-        turn_seq = None
-        for event in reversed(all_events[:-1]):
-            if event.get("t") == "user_message":
-                turn_seq = int(event.get("seq") or 0)
-                break
-        if turn_seq is None:
+        stop_event = SessionReader(sd).get_event(seq)
+        try:
+            resolved = resolve_subagent_export(sd, session_id, stop_event)
+        except Exception:
+            # The stop is durable before resolution begins. Retry that exact
+            # event once from disk so a transient snapshot/read failure cannot
+            # strand a modern lifecycle without its detached export job.
+            stop_event = SessionReader(sd).get_event(seq)
+            resolved = resolve_subagent_export(sd, session_id, stop_event)
+        if resolved is None:
             return
-        turn_id = str(turn_seq)
-        if not turn_export_sent(sd, turn_id):
+        if resolved.tool_call_id:
+            _emit_task_parent(payload, seq, resolved.tool_call_id)
+            export_subagent_turn(
+                config,
+                sd,
+                session_id,
+                _PLATFORM,
+                _cwd(payload),
+                resolved.turn,
+                tool_use_id=resolved.tool_call_id,
+            )
             return
-        export_subagent_turn(
-            config,
-            sd,
-            session_id,
-            _PLATFORM,
-            cwd,
-            subagent,
-            parent_span_id=str(turn_span_id(_PLATFORM, session_id, turn_seq)),
+        if resolved.parent_turn_seq is not None:
+            export_subagent_turn(
+                config,
+                sd,
+                session_id,
+                _PLATFORM,
+                _cwd(payload),
+                resolved.turn,
+                parent_span_id=str(turn_span_id(_PLATFORM, session_id, resolved.parent_turn_seq)),
+            )
+            return
+        log_capture_error(
+            thirdeye_home=config.root,
+            phase="cursor_subagent_parent_resolution",
+            platform=_PLATFORM,
+            session_id=session_id,
+            message=(
+                "No proven parent for Cursor subagent "
+                f"{resolved.turn['attributes'].get('cursor.subagent.id', '')!r}"
+            ),
         )
     except Exception:
         pass
@@ -348,7 +477,9 @@ _HANDLERS: dict[str, Callable[[dict[str, Any]], None]] = {
     "afterFileEdit": lambda p: _instant_tool(p, "tool_result", "edit_file"),
     "beforeTabFileRead": lambda p: _instant_tool(p, "tool_call", "read_file_tab"),
     "afterTabFileEdit": lambda p: _instant_tool(p, "tool_result", "edit_file_tab"),
+    "preToolUse": _pre_tool_use,
     "postToolUse": _post_tool_use,
+    "subagentStart": _subagent_start,
     "subagentStop": _subagent_stop,
     "stop": _stop,
 }

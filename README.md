@@ -107,6 +107,8 @@ Mirror every captured session into [Logfire](https://pydantic.dev/logfire) live,
 
 On Claude Code, each individual model call within a turn gets its own `chat <model>` span. Codex reconstructs calls from its rollout JSONL. Cursor reconstructs each generation from its IDE/CLI hooks, pairing shell and MCP callbacks and recording file and generic tool events. All three use OpenTelemetry GenAI semantic conventions for agent invocation, chat, tool execution, messages, models, and token/cache usage; no OpenInference span taxonomy is used.
 
+Within a trace, subagents dispatched in local Cursor IDE and CLI sessions are exported beneath their dispatching `Task` span — including background, parallel, and nested children — and each child's tool calls are attributed to it by the child hook generation derived from its Task call identity, never by timing, nearest-turn heuristics, or tool-completion order.
+
 ```bash
 thirdeye logfire enable                                           # securely prompts for gateway key
 thirdeye logfire status

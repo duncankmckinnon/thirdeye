@@ -1,0 +1,4 @@
+{"role": "user", "message": {"content": [{"type": "text", "text": "Inspect the sample module"}]}}
+{"role": "assistant", "message": {"content": [{"type": "text", "text": "I will inspect the module."}, {"type": "tool_use", "name": "read_file", "input": {"path": "sample.py"}}]}}
+{"role": "assistant", "message": {"content": [{"type": "text", "text": "The sample module is valid."}]}}
+{"type": "turn_ended", "status": "success"}

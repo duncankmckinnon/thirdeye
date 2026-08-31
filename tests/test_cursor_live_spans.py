@@ -1,12 +1,19 @@
 from __future__ import annotations
 
 import json
+import threading
 from pathlib import Path
 
+import pytest
+
+from thirdeye import otel_export
 from thirdeye.config import Config, LogfireSettings
 from thirdeye.paths import otel_state_path, session_dir
+from thirdeye.platforms.cursor import hook
 from thirdeye.platforms.cursor.live_spans import committed_tool_call_ids, emit_live_tools
-from thirdeye.platforms.cursor.tracing import build_turn
+from thirdeye.platforms.cursor.subagents import cursor_subagent_generation_id
+from thirdeye.platforms.cursor.tracing import build_turn, resolve_subagent_export
+from thirdeye.reader import SessionReader
 from thirdeye.span_ids import chat_span_id, tool_span_id, trace_id_for_session, turn_span_id
 from thirdeye.store import Store
 
@@ -332,3 +339,737 @@ def test_live_export_skips_when_prompt_generation_mismatches_tools(tmp_path: Pat
     assert exported == []
     assert committed_tool_call_ids(sd, tool_gen) == set()
     assert tool_seq < result_seq
+
+
+# --------------------------------------------------------------------------- #
+# Concurrency: parent / child / nested Cursor subagent exports race, but every
+# deterministic span, claim, and committed-cursor entry lands exactly once.
+# These follow `test_failed_live_dispatch_is_retried`: the local export/job
+# boundary is monkeypatched and persisted state is inspected. `threading.Barrier`
+# only aligns the calls whose ordering is under test; no assertion depends on
+# which aligned thread wins.
+# --------------------------------------------------------------------------- #
+
+
+def _hook_env(tmp_path: Path, monkeypatch) -> list[Path]:
+    """Wire a logfire-enabled home and capture detached OTel jobs as files."""
+    monkeypatch.setenv("THIRDEYE_HOME", str(tmp_path))
+    Config(root=tmp_path).write_logfire_settings(LogfireSettings(enabled=True, token="test-token"))
+    jobs: list[Path] = []
+    monkeypatch.setattr("thirdeye.otel_export._spawn", jobs.append)
+    return jobs
+
+
+def _cursor_payload(session_id: str, generation_id: str | None = "parent-gen", **values):
+    payload = {"conversation_id": session_id, "cwd": "/repo", **values}
+    if generation_id is not None:
+        payload["generation_id"] = generation_id
+    return payload
+
+
+def _event_at(sd: Path, seq: int) -> dict:
+    return next(iter(SessionReader(sd).iter_events(seq_range=(seq, seq + 1))))
+
+
+def _run_aligned(fns, timeout: float = 5.0) -> None:
+    """Start `fns` on threads aligned by a barrier; join each with a deadline."""
+    barrier = threading.Barrier(len(fns))
+    errors: list[BaseException] = []
+
+    def wrap(fn):
+        def inner() -> None:
+            try:
+                barrier.wait(timeout=timeout)
+                fn()
+            except BaseException as exc:  # noqa: BLE001 -- surfaced via assert below
+                errors.append(exc)
+
+        return inner
+
+    threads = [threading.Thread(target=wrap(fn)) for fn in fns]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join(timeout=timeout)
+        assert not thread.is_alive(), "aligned thread did not terminate"
+    assert errors == [], f"aligned thread raised: {errors!r}"
+
+
+def _worker_exporter(monkeypatch):
+    """Configure a local OTel exporter for exercising queued child jobs."""
+    logfire = pytest.importorskip("logfire")
+    from logfire.testing import TestExporter
+    from opentelemetry.sdk.trace.export import SimpleSpanProcessor
+
+    otel_export._state["id_generator"] = None
+    exporter = TestExporter()
+    instance = logfire.configure(
+        send_to_logfire=False,
+        console=False,
+        additional_span_processors=[SimpleSpanProcessor(exporter)],
+        advanced=logfire.AdvancedOptions(id_generator=otel_export._id_generator()),
+    )
+    monkeypatch.setattr(otel_export, "_get_instance", lambda config, platform: instance)
+    return exporter
+
+
+def _run_subagent_job(job: dict) -> None:
+    otel_export._export_subagent_turn_inner(
+        config=Config.load(),
+        session_dir_=Path(job["session_dir"]),
+        session_id=job["session_id"],
+        platform=job["platform"],
+        cwd=job["cwd"],
+        trace_id=job["trace_id"],
+        parent_span_id=job["parent_span_id"],
+        turn=job["turn"],
+    )
+
+
+def _run_spans_job(job: dict) -> None:
+    otel_export._export_spans_batch(
+        config=Config.load(),
+        session_dir_=Path(job["session_dir"]),
+        session_id=job["session_id"],
+        platform=job["platform"],
+        cwd=job["cwd"],
+        trace_id=job["trace_id"],
+        spans=job["spans"],
+    )
+
+
+def _span_with_id(spans: list[dict], span_id: int) -> dict:
+    matches = [span for span in spans if span["context"]["span_id"] == span_id]
+    assert len(matches) == 1
+    return matches[0]
+
+
+def test_child_generation_is_not_live_committed_without_user_turn(tmp_path: Path, monkeypatch):
+    """Script 1: a child generic pre/post pair has no `user_message` of its own,
+    so `emit_live_tools` must leave it uncommitted for `resolve_subagent_export`;
+    the tool is still reconstructed exactly once when the child is built at stop.
+    """
+    config = _config(tmp_path)
+    store = Store(config)
+    sid = "cursor-session"
+    child_generation = cursor_subagent_generation_id("call-123")
+
+    _append(store, sid, "user_message", {"generation_id": "parent-gen", "prompt": "dispatch"})
+    _append(
+        store,
+        sid,
+        "tool_call",
+        {
+            "generation_id": "parent-gen",
+            "tool_name": "Task",
+            "tool_call_id": "call-123",
+            "tool_input": {"task": "go"},
+        },
+    )
+    start_seq = _append(
+        store,
+        sid,
+        "subagent_start",
+        {
+            "generation_id": "parent-gen",
+            "subagent_id": "child-1",
+            "tool_call_id": "call-123",
+            "task": "go",
+        },
+    )
+    _append(
+        store,
+        sid,
+        "tool_call",
+        {
+            "generation_id": child_generation,
+            "tool_name": "search_web",
+            "cursor_tool_family": "search",
+            "tool_use_id": "child-tool",
+            "tool_input": {"q": "cursor"},
+        },
+    )
+    result_seq = _append(
+        store,
+        sid,
+        "tool_result",
+        {
+            "generation_id": child_generation,
+            "tool_name": "search_web",
+            "cursor_tool_family": "search",
+            "tool_use_id": "child-tool",
+            "tool_output": "hit",
+        },
+    )
+    stop_seq = _append(
+        store, sid, "subagent_message", {"subagent_id": "child-1", "status": "completed"}
+    )
+    sd = session_dir(tmp_path, "cursor", sid)
+
+    exported: list = []
+    state_writes: list = []
+    monkeypatch.setattr(
+        "thirdeye.platforms.cursor.live_spans.export_spans",
+        lambda *args: exported.append(args[-1]) or True,
+    )
+    monkeypatch.setattr(
+        "thirdeye.platforms.cursor.live_spans._write_state",
+        lambda *args: state_writes.append(args),
+    )
+    emit_live_tools(config, sd, sid, "/repo", child_generation, result_seq)
+
+    assert exported == []
+    assert state_writes == []
+    assert committed_tool_call_ids(sd, child_generation) == set()
+
+    resolved = resolve_subagent_export(sd, sid, _event_at(sd, stop_seq))
+    assert resolved is not None
+    assert resolved.tool_call_id == "call-123"
+    assert resolved.turn["turn_id"] == str(start_seq)
+    assert resolved.turn["turn_span_id"] == str(turn_span_id("cursor", sid, start_seq))
+    llm_call = resolved.turn["llm_calls"][0]
+    assert llm_call["call_id"] == child_generation
+    assert [t["tool_call_id"] for t in llm_call["tool_calls"]] == ["child-tool"]
+
+    exporter = _worker_exporter(monkeypatch)
+    parent_id = tool_span_id("cursor", sid, "call-123")
+    otel_export._export_subagent_turn_inner(
+        config=config,
+        session_dir_=sd,
+        session_id=sid,
+        platform="cursor",
+        cwd="/repo",
+        trace_id=trace_id_for_session("cursor", sid),
+        parent_span_id=parent_id,
+        turn=resolved.turn,
+    )
+    spans = exporter.exported_spans_as_dict()
+    turn_span = _span_with_id(spans, turn_span_id("cursor", sid, start_seq))
+    chat_span = _span_with_id(spans, chat_span_id("cursor", sid, child_generation))
+    tool_span = _span_with_id(spans, tool_span_id("cursor", sid, "child-tool"))
+    assert turn_span["parent"]["span_id"] == parent_id
+    assert chat_span["parent"]["span_id"] == turn_span["context"]["span_id"]
+    assert tool_span["parent"]["span_id"] == chat_span["context"]["span_id"]
+
+
+def test_parent_task_post_racing_child_stop_keeps_deterministic_parent(tmp_path: Path, monkeypatch):
+    """Script 2: the dispatching Task's live export and the child stop run on
+    aligned threads. One Task tool span id is produced and the child-turn job's
+    parent id equals it, regardless of job creation order.
+    """
+    jobs = _hook_env(tmp_path, monkeypatch)
+    sid = "cursor-session"
+    child_gen = cursor_subagent_generation_id("call-A")
+    store = Store(Config.load())
+
+    _append(store, sid, "user_message", {"generation_id": "parent-gen", "prompt": "turn A"})
+    _append(
+        store,
+        sid,
+        "tool_call",
+        {"generation_id": "parent-gen", "tool_name": "Task", "tool_call_id": "call-A"},
+    )
+    start_seq = _append(
+        store,
+        sid,
+        "subagent_start",
+        {"generation_id": "parent-gen", "subagent_id": "child-A", "tool_call_id": "call-A"},
+    )
+    _append(
+        store,
+        sid,
+        "tool_call",
+        {
+            "generation_id": child_gen,
+            "tool_name": "search_web",
+            "cursor_tool_family": "search",
+            "tool_use_id": "child-tool",
+        },
+    )
+    _append(
+        store,
+        sid,
+        "tool_result",
+        {
+            "generation_id": child_gen,
+            "tool_name": "search_web",
+            "cursor_tool_family": "search",
+            "tool_use_id": "child-tool",
+            "tool_output": "hit",
+        },
+    )
+    sd = session_dir(tmp_path, "cursor", sid)
+
+    _run_aligned(
+        [
+            lambda: hook._post_tool_use(
+                _cursor_payload(
+                    sid, tool_name="Task", tool_use_id="call-A", result={"status": "done"}
+                )
+            ),
+            lambda: hook._subagent_stop(
+                _cursor_payload(sid, generation_id=None, subagent_id="child-A")
+            ),
+        ]
+    )
+
+    loaded = [json.loads(path.read_text()) for path in jobs]
+    spans_jobs = [job for job in loaded if job["kind"] == "spans"]
+    sub_jobs = [job for job in loaded if job["kind"] == "subagent_turn"]
+
+    task_tool_id = tool_span_id("cursor", sid, "call-A")
+    assert len(spans_jobs) == 1
+    task_spans = [s for s in spans_jobs[0]["spans"] if s["name"] == "tool: Task"]
+    assert len(task_spans) == 1
+    assert int(task_spans[0]["span_id"]) == task_tool_id
+    assert int(task_spans[0]["parent_span_id"]) == chat_span_id("cursor", sid, "parent-gen")
+
+    assert len(sub_jobs) == 1
+    child_turn = sub_jobs[0]["turn"]
+    assert int(sub_jobs[0]["parent_span_id"]) == task_tool_id
+    assert child_turn["turn_id"] == str(start_seq)
+    assert child_turn["turn_span_id"] == str(turn_span_id("cursor", sid, start_seq))
+    assert child_turn["llm_calls"][0]["call_id"] == child_gen
+    assert [t["tool_call_id"] for t in child_turn["llm_calls"][0]["tool_calls"]] == ["child-tool"]
+
+    exporter = _worker_exporter(monkeypatch)
+    _run_subagent_job(sub_jobs[0])
+    emitted = exporter.exported_spans_as_dict()
+    child_turn_span = _span_with_id(emitted, turn_span_id("cursor", sid, start_seq))
+    child_chat_span = _span_with_id(emitted, chat_span_id("cursor", sid, child_gen))
+    child_tool_span = _span_with_id(emitted, tool_span_id("cursor", sid, "child-tool"))
+    assert child_turn_span["parent"]["span_id"] == task_tool_id
+    assert child_chat_span["parent"]["span_id"] == child_turn_span["context"]["span_id"]
+    assert child_tool_span["parent"]["span_id"] == child_chat_span["context"]["span_id"]
+
+    assert committed_tool_call_ids(sd, "parent-gen") == {"call-A"}
+    assert committed_tool_call_ids(sd, child_gen) == set()
+
+
+def test_parallel_child_stops_do_not_cross_attribute_tools(tmp_path: Path, monkeypatch):
+    """Script 3: two starts with distinct Task ids and derived generations stop
+    on aligned threads. Two distinct child turns result, each parented to its own
+    Task span, with no tool id owned by the other child.
+    """
+    jobs = _hook_env(tmp_path, monkeypatch)
+    sid = "cursor-session"
+    gen_a = cursor_subagent_generation_id("call-A")
+    gen_b = cursor_subagent_generation_id("call-B")
+    store = Store(Config.load())
+
+    _append(store, sid, "user_message", {"generation_id": "parent-gen", "prompt": "fan out"})
+    _append(
+        store,
+        sid,
+        "tool_call",
+        {"generation_id": "parent-gen", "tool_name": "Task", "tool_call_id": "call-A"},
+    )
+    start_a = _append(
+        store,
+        sid,
+        "subagent_start",
+        {"generation_id": "parent-gen", "subagent_id": "child-A", "tool_call_id": "call-A"},
+    )
+    _append(
+        store,
+        sid,
+        "tool_call",
+        {"generation_id": "parent-gen", "tool_name": "Task", "tool_call_id": "call-B"},
+    )
+    start_b = _append(
+        store,
+        sid,
+        "subagent_start",
+        {"generation_id": "parent-gen", "subagent_id": "child-B", "tool_call_id": "call-B"},
+    )
+    for gen, tool_id in ((gen_a, "tool-A"), (gen_b, "tool-B")):
+        _append(
+            store,
+            sid,
+            "tool_call",
+            {
+                "generation_id": gen,
+                "tool_name": "read_file",
+                "cursor_tool_family": "read",
+                "tool_use_id": tool_id,
+            },
+        )
+        _append(
+            store,
+            sid,
+            "tool_result",
+            {
+                "generation_id": gen,
+                "tool_name": "read_file",
+                "cursor_tool_family": "read",
+                "tool_use_id": tool_id,
+                "tool_output": "x",
+            },
+        )
+    sd = session_dir(tmp_path, "cursor", sid)
+
+    _run_aligned(
+        [
+            lambda: hook._subagent_stop(
+                _cursor_payload(sid, generation_id=None, subagent_id="child-A")
+            ),
+            lambda: hook._subagent_stop(
+                _cursor_payload(sid, generation_id=None, subagent_id="child-B")
+            ),
+        ]
+    )
+
+    sub_jobs = [
+        job for path in jobs if (job := json.loads(path.read_text()))["kind"] == "subagent_turn"
+    ]
+    assert len(sub_jobs) == 2
+    by_parent = {int(job["parent_span_id"]): job for job in sub_jobs}
+    assert set(by_parent) == {
+        tool_span_id("cursor", sid, "call-A"),
+        tool_span_id("cursor", sid, "call-B"),
+    }
+    job_a = by_parent[tool_span_id("cursor", sid, "call-A")]
+    job_b = by_parent[tool_span_id("cursor", sid, "call-B")]
+
+    assert job_a["turn"]["turn_id"] == str(start_a)
+    assert job_a["turn"]["turn_span_id"] == str(turn_span_id("cursor", sid, start_a))
+    assert job_a["turn"]["llm_calls"][0]["call_id"] == gen_a
+    assert [t["tool_call_id"] for t in job_a["turn"]["llm_calls"][0]["tool_calls"]] == ["tool-A"]
+
+    assert job_b["turn"]["turn_id"] == str(start_b)
+    assert job_b["turn"]["turn_span_id"] == str(turn_span_id("cursor", sid, start_b))
+    assert job_b["turn"]["llm_calls"][0]["call_id"] == gen_b
+    assert [t["tool_call_id"] for t in job_b["turn"]["llm_calls"][0]["tool_calls"]] == ["tool-B"]
+
+    assert start_a != start_b
+    assert turn_span_id("cursor", sid, start_a) != turn_span_id("cursor", sid, start_b)
+
+    exporter = _worker_exporter(monkeypatch)
+    for job in sub_jobs:
+        _run_subagent_job(job)
+    emitted = exporter.exported_spans_as_dict()
+    for start_seq, generation, task_id, child_tool_id in (
+        (start_a, gen_a, "call-A", "tool-A"),
+        (start_b, gen_b, "call-B", "tool-B"),
+    ):
+        turn_span = _span_with_id(emitted, turn_span_id("cursor", sid, start_seq))
+        chat_span = _span_with_id(emitted, chat_span_id("cursor", sid, generation))
+        tool_span = _span_with_id(emitted, tool_span_id("cursor", sid, child_tool_id))
+        assert turn_span["parent"]["span_id"] == tool_span_id("cursor", sid, task_id)
+        assert chat_span["parent"]["span_id"] == turn_span["context"]["span_id"]
+        assert tool_span["parent"]["span_id"] == chat_span["context"]["span_id"]
+
+
+def test_nested_and_outer_stop_race_have_independent_claims(tmp_path: Path, monkeypatch):
+    """Script 4: the full nested lifecycle is stored, then the nested and outer
+    stops run on aligned threads. Each child turn keys a distinct
+    `subagent:<turn_id>` claim and the nested turn parents to its own Task span.
+    """
+    jobs = _hook_env(tmp_path, monkeypatch)
+    sid = "cursor-session"
+    gen_a = cursor_subagent_generation_id("call-A")
+    gen_n = cursor_subagent_generation_id("call-N")
+    store = Store(Config.load())
+
+    _append(store, sid, "user_message", {"generation_id": "parent-gen", "prompt": "root"})
+    _append(
+        store,
+        sid,
+        "tool_call",
+        {"generation_id": "parent-gen", "tool_name": "Task", "tool_call_id": "call-A"},
+    )
+    outer_start = _append(
+        store,
+        sid,
+        "subagent_start",
+        {"generation_id": "parent-gen", "subagent_id": "outer", "tool_call_id": "call-A"},
+    )
+    _append(
+        store,
+        sid,
+        "tool_call",
+        {
+            "generation_id": gen_a,
+            "tool_name": "read_file",
+            "cursor_tool_family": "read",
+            "tool_use_id": "read-A",
+        },
+    )
+    _append(
+        store,
+        sid,
+        "tool_result",
+        {
+            "generation_id": gen_a,
+            "tool_name": "read_file",
+            "cursor_tool_family": "read",
+            "tool_use_id": "read-A",
+            "tool_output": "y",
+        },
+    )
+    _append(
+        store,
+        sid,
+        "tool_call",
+        {"generation_id": gen_a, "tool_name": "Task", "tool_call_id": "call-N"},
+    )
+    nested_start = _append(
+        store,
+        sid,
+        "subagent_start",
+        {"generation_id": gen_a, "subagent_id": "nested", "tool_call_id": "call-N"},
+    )
+    _append(
+        store,
+        sid,
+        "tool_call",
+        {
+            "generation_id": gen_n,
+            "tool_name": "read_file",
+            "cursor_tool_family": "read",
+            "tool_use_id": "nested-read",
+        },
+    )
+    _append(
+        store,
+        sid,
+        "tool_result",
+        {
+            "generation_id": gen_n,
+            "tool_name": "read_file",
+            "cursor_tool_family": "read",
+            "tool_use_id": "nested-read",
+            "tool_output": "z",
+        },
+    )
+    _append(
+        store,
+        sid,
+        "tool_result",
+        {
+            "generation_id": gen_a,
+            "tool_name": "Task",
+            "tool_call_id": "call-N",
+            "tool_output": "nested done",
+        },
+    )
+    sd = session_dir(tmp_path, "cursor", sid)
+
+    _run_aligned(
+        [
+            lambda: hook._subagent_stop(
+                _cursor_payload(sid, generation_id=None, subagent_id="nested")
+            ),
+            lambda: hook._subagent_stop(
+                _cursor_payload(sid, generation_id=None, subagent_id="outer")
+            ),
+        ]
+    )
+
+    loaded = [json.loads(path.read_text()) for path in jobs]
+    sub_jobs = [job for job in loaded if job["kind"] == "subagent_turn"]
+    assert len(sub_jobs) == 2
+    by_parent = {int(job["parent_span_id"]): job for job in sub_jobs}
+    outer_tool_id = tool_span_id("cursor", sid, "call-A")
+    nested_tool_id = tool_span_id("cursor", sid, "call-N")
+    assert nested_tool_id != outer_tool_id
+    assert set(by_parent) == {outer_tool_id, nested_tool_id}
+    outer_job = by_parent[outer_tool_id]
+    nested_job = by_parent[nested_tool_id]
+
+    assert outer_job["turn"]["turn_id"] == str(outer_start)
+    assert outer_job["turn"]["turn_span_id"] == str(turn_span_id("cursor", sid, outer_start))
+    assert outer_job["turn"]["llm_calls"][0]["call_id"] == gen_a
+    assert [t["tool_call_id"] for t in outer_job["turn"]["llm_calls"][0]["tool_calls"]] == [
+        "read-A"
+    ]
+    task_span_ids = {
+        int(span["span_id"]) for job in loaded if job["kind"] == "spans" for span in job["spans"]
+    }
+    assert task_span_ids == {outer_tool_id, nested_tool_id}
+
+    assert nested_job["turn"]["turn_id"] == str(nested_start)
+    assert nested_job["turn"]["turn_span_id"] == str(turn_span_id("cursor", sid, nested_start))
+    assert nested_job["turn"]["llm_calls"][0]["call_id"] == gen_n
+    assert [t["tool_call_id"] for t in nested_job["turn"]["llm_calls"][0]["tool_calls"]] == [
+        "nested-read"
+    ]
+
+    outer_claim = f"subagent:{outer_start}"
+    nested_claim = f"subagent:{nested_start}"
+    exporter = _worker_exporter(monkeypatch)
+    for job in loaded:
+        if job["kind"] == "spans":
+            _run_spans_job(job)
+    for job in sub_jobs:
+        _run_subagent_job(job)
+
+    assert otel_export._turn_claim_path(sd, outer_claim).read_text() == "sent"
+    assert otel_export._turn_claim_path(sd, nested_claim).read_text() == "sent"
+    emitted = exporter.exported_spans_as_dict()
+    outer_turn_span = _span_with_id(emitted, turn_span_id("cursor", sid, outer_start))
+    outer_chat_span = _span_with_id(emitted, chat_span_id("cursor", sid, gen_a))
+    read_a_span = _span_with_id(emitted, tool_span_id("cursor", sid, "read-A"))
+    nested_task_span = _span_with_id(emitted, nested_tool_id)
+    nested_turn_span = _span_with_id(emitted, turn_span_id("cursor", sid, nested_start))
+    nested_chat_span = _span_with_id(emitted, chat_span_id("cursor", sid, gen_n))
+    nested_read_span = _span_with_id(emitted, tool_span_id("cursor", sid, "nested-read"))
+
+    assert outer_turn_span["parent"]["span_id"] == outer_tool_id
+    assert outer_chat_span["parent"]["span_id"] == outer_turn_span["context"]["span_id"]
+    assert read_a_span["parent"]["span_id"] == outer_chat_span["context"]["span_id"]
+    assert nested_task_span["parent"]["span_id"] == outer_chat_span["context"]["span_id"]
+    assert nested_turn_span["parent"]["span_id"] == nested_tool_id
+    assert nested_chat_span["parent"]["span_id"] == nested_turn_span["context"]["span_id"]
+    assert nested_read_span["parent"]["span_id"] == nested_chat_span["context"]["span_id"]
+
+
+def test_failed_child_job_dispatch_is_retryable(tmp_path: Path, monkeypatch):
+    """Script 5: the first local job/export boundary raises before any claim or
+    committed-cursor entry becomes permanent; repeating the same logical event
+    writes exactly one usable job and commits the parent Task exactly once.
+    """
+    jobs = _hook_env(tmp_path, monkeypatch)
+    sid = "cursor-session"
+    child_gen = cursor_subagent_generation_id("call-A")
+    store = Store(Config.load())
+
+    _append(store, sid, "user_message", {"generation_id": "parent-gen", "prompt": "turn A"})
+    _append(
+        store,
+        sid,
+        "tool_call",
+        {"generation_id": "parent-gen", "tool_name": "Task", "tool_call_id": "call-A"},
+    )
+    start_seq = _append(
+        store,
+        sid,
+        "subagent_start",
+        {"generation_id": "parent-gen", "subagent_id": "child-A", "tool_call_id": "call-A"},
+    )
+    _append(
+        store,
+        sid,
+        "tool_call",
+        {
+            "generation_id": child_gen,
+            "tool_name": "search_web",
+            "cursor_tool_family": "search",
+            "tool_use_id": "child-tool",
+        },
+    )
+    _append(
+        store,
+        sid,
+        "tool_result",
+        {
+            "generation_id": child_gen,
+            "tool_name": "search_web",
+            "cursor_tool_family": "search",
+            "tool_use_id": "child-tool",
+            "tool_output": "hit",
+        },
+    )
+    stop_seq = _append(
+        store, sid, "subagent_message", {"subagent_id": "child-A", "status": "completed"}
+    )
+    sd = session_dir(tmp_path, "cursor", sid)
+    config = Config.load()
+
+    resolved = resolve_subagent_export(sd, sid, _event_at(sd, stop_seq))
+    assert resolved is not None
+    claim_id = f"subagent:{resolved.turn['turn_id']}"
+
+    real_write_job = otel_export._write_job
+    attempts = {"n": 0}
+
+    def flaky_write_job(home, payload):
+        attempts["n"] += 1
+        if attempts["n"] == 1:
+            raise OSError("disk full")
+        return real_write_job(home, payload)
+
+    monkeypatch.setattr(otel_export, "_write_job", flaky_write_job)
+
+    otel_export.export_subagent_turn(
+        config, sd, sid, "cursor", "/repo", resolved.turn, tool_use_id=resolved.tool_call_id
+    )
+    assert jobs == []
+    assert not otel_export._turn_claim_path(sd, claim_id).exists()
+
+    otel_export.export_subagent_turn(
+        config, sd, sid, "cursor", "/repo", resolved.turn, tool_use_id=resolved.tool_call_id
+    )
+    assert len(jobs) == 1
+    job = json.loads(jobs[0].read_text())
+    assert job["kind"] == "subagent_turn"
+    assert int(job["parent_span_id"]) == tool_span_id("cursor", sid, "call-A")
+    assert job["turn"]["turn_id"] == str(start_seq)
+    assert job["turn"]["turn_span_id"] == str(turn_span_id("cursor", sid, start_seq))
+    assert job["turn"]["llm_calls"][0]["call_id"] == child_gen
+    assert [t["tool_call_id"] for t in job["turn"]["llm_calls"][0]["tool_calls"]] == ["child-tool"]
+    assert not otel_export.turn_export_sent(sd, claim_id)
+    assert not otel_export._turn_claim_path(sd, claim_id).exists()
+
+    exporter = _worker_exporter(monkeypatch)
+    _run_subagent_job(job)
+    assert otel_export.turn_export_sent(sd, claim_id)
+    emitted = exporter.exported_spans_as_dict()
+    turn_span = _span_with_id(emitted, turn_span_id("cursor", sid, start_seq))
+    chat_span = _span_with_id(emitted, chat_span_id("cursor", sid, child_gen))
+    tool_span = _span_with_id(emitted, tool_span_id("cursor", sid, "child-tool"))
+    assert turn_span["parent"]["span_id"] == tool_span_id("cursor", sid, "call-A")
+    assert chat_span["parent"]["span_id"] == turn_span["context"]["span_id"]
+    assert tool_span["parent"]["span_id"] == chat_span["context"]["span_id"]
+
+    # The dispatching Task's live tool commit is likewise retried, never marked
+    # committed by the failed attempt.
+    outcomes = iter((False, True))
+    monkeypatch.setattr(
+        "thirdeye.platforms.cursor.live_spans.export_spans",
+        lambda *args: next(outcomes),
+    )
+    task_result_seq = _append(
+        store,
+        sid,
+        "tool_result",
+        {
+            "generation_id": "parent-gen",
+            "tool_name": "Task",
+            "tool_call_id": "call-A",
+            "tool_output": "done",
+        },
+    )
+    emit_live_tools(config, sd, sid, "/repo", "parent-gen", task_result_seq)
+    assert committed_tool_call_ids(sd, "parent-gen") == set()
+    emit_live_tools(config, sd, sid, "/repo", "parent-gen", task_result_seq)
+    assert committed_tool_call_ids(sd, "parent-gen") == {"call-A"}
+    assert committed_tool_call_ids(sd, child_gen) == set()
+
+
+def test_task_parent_emits_when_task_event_has_no_generation_id(tmp_path: Path, monkeypatch):
+    from thirdeye.platforms.cursor.live_spans import emit_task_parent_span
+
+    config = _config(tmp_path)
+    store = Store(config)
+    sid = "cursor-session"
+    user_seq = _append(store, sid, "user_message", {"generation_id": "parent-gen", "prompt": "go"})
+    task_seq = _append(
+        store,
+        sid,
+        "tool_call",
+        {"tool_name": "Task", "tool_use_id": "call-orphan", "tool_input": {"prompt": "child"}},
+    )
+    exported: list[list[dict]] = []
+    monkeypatch.setattr(
+        "thirdeye.platforms.cursor.live_spans.export_spans",
+        lambda *args: exported.append(args[-1]) or True,
+    )
+    sd = session_dir(tmp_path, "cursor", sid)
+    emit_task_parent_span(config, sd, sid, "/repo", "call-orphan", task_seq)
+
+    assert len(exported) == 1
+    span = exported[0][0]
+    assert span["name"] == "tool: Task"
+    assert int(span["span_id"]) == tool_span_id("cursor", sid, "call-orphan")
+    assert span["turn_seq"] in {user_seq, task_seq}
