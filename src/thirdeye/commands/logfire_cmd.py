@@ -10,6 +10,14 @@ def _mask(token: str | None) -> str:
     return "********" if token else "(none)"
 
 
+def enable_with_token(token: str) -> None:
+    """Persist a Logfire write token and enable live export."""
+    config = Config.load()
+    config.write_logfire_settings(
+        LogfireSettings(enabled=True, token=token, api_key=config.logfire.api_key)
+    )
+
+
 @click.group(name="logfire", help="Export thirdeye sessions to Pydantic Logfire, live.")
 def logfire_group() -> None:
     pass
@@ -22,10 +30,7 @@ def enable() -> None:
             "the `logfire` package is not installed. Install with: pip install 'thrdi[logfire]'"
         )
     token = click.prompt("Logfire write token (gateway key)", hide_input=True)
-    config = Config.load()
-    config.write_logfire_settings(
-        LogfireSettings(enabled=True, token=token, api_key=config.logfire.api_key)
-    )
+    enable_with_token(token)
     click.echo(f"logfire export enabled (token {_mask(token)})")
 
 

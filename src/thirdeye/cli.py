@@ -9,6 +9,7 @@ from thirdeye.commands.eval import eval_group
 from thirdeye.commands.ingest import ingest
 from thirdeye.commands.logfire_cmd import logfire_group
 from thirdeye.commands.reads import event, events, list_sessions, search, show, stats, tail
+from thirdeye.commands.setup import setup
 from thirdeye.commands.skill import skills_group
 from thirdeye.commands.tags import tag, tags
 from thirdeye.commands.ui import ui
@@ -41,3 +42,4 @@ main.add_command(ui)
 main.add_command(views_group)
 main.add_command(agent_cmd)
 main.add_command(logfire_group)
+main.add_command(setup)
