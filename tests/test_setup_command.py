@@ -259,9 +259,7 @@ def test_setup_can_enable_an_existing_disabled_logfire_token(
         ),
     ],
 )
-def test_skill_targets_follow_configured_agents(
-    platforms: list[str], targets: list[Path]
-) -> None:
+def test_skill_targets_follow_configured_agents(platforms: list[str], targets: list[Path]) -> None:
     from thirdeye.commands.setup import _skill_targets
 
     assert _skill_targets(platforms) == targets

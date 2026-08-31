@@ -56,7 +56,9 @@ def test_codex_requires_notify_and_every_json_hook(tmp_path: Path) -> None:
 
 def test_installed_checks_tolerate_malformed_hook_groups(tmp_path: Path) -> None:
     claude_file = tmp_path / "claude.json"
-    claude_file.write_text(json.dumps({"hooks": {event: [{"hooks": None}] for event in HOOK_EVENTS}}))
+    claude_file.write_text(
+        json.dumps({"hooks": {event: [{"hooks": None}] for event in HOOK_EVENTS}})
+    )
     assert ClaudePlatform(settings_file=claude_file).is_installed() is False
 
     codex_config = tmp_path / "config.toml"

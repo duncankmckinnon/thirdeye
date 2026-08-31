@@ -63,8 +63,7 @@ class CursorPlatform(Platform):
         if not isinstance(hooks, dict):
             return False
         return all(
-            isinstance(hooks.get(event), list)
-            and any(_is_ours(entry) for entry in hooks[event])
+            isinstance(hooks.get(event), list) and any(_is_ours(entry) for entry in hooks[event])
             for event in TRACED_EVENTS
         )
 

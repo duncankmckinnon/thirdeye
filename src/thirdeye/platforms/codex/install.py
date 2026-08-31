@@ -155,8 +155,7 @@ class CodexPlatform(Platform):
                 if not isinstance(group, dict) or not isinstance(group.get("hooks"), list):
                     continue
                 if any(
-                    isinstance(entry, dict)
-                    and _command_name(entry.get("command")) == bin_name
+                    isinstance(entry, dict) and _command_name(entry.get("command")) == bin_name
                     for entry in group["hooks"]
                 ):
                     found = True

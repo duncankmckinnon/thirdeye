@@ -169,9 +169,7 @@ def setup() -> None:
     click.echo("Set up thirdeye\n")
     click.echo("Agent tracing")
 
-    platform_objects = {
-        name: add_commands._resolve_platform(name) for name in _PLATFORM_LABELS
-    }
+    platform_objects = {name: add_commands._resolve_platform(name) for name in _PLATFORM_LABELS}
     configured = [name for name, platform in platform_objects.items() if platform.is_installed()]
     for name in configured:
         click.echo(f"  {_PLATFORM_LABELS[name]}: already configured")
