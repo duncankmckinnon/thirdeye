@@ -207,6 +207,24 @@ class TestInstallExistingNotify:
             CodexPlatform(config_file=config_file).install()
         assert "/some/other/tool" in str(exc_info.value)
 
+    def test_notify_conflict_reports_foreign_owner(self, tmp_path: Path, monkeypatch):
+        from thirdeye.platforms.codex.install import CodexPlatform
+
+        monkeypatch.setattr("thirdeye.platforms.codex.install.shutil.which", lambda _: None)
+        config_file = tmp_path / "config.toml"
+        config_file.write_text(SAMPLE_TOML_WITH_NOTIFY)
+
+        assert CodexPlatform(config_file=config_file).notify_conflict() == "/some/other/tool"
+
+    def test_notify_conflict_is_empty_when_thirdeye_owns_slot(self, tmp_path: Path, monkeypatch):
+        from thirdeye.platforms.codex.install import CodexPlatform
+
+        monkeypatch.setattr("thirdeye.platforms.codex.install.shutil.which", lambda _: None)
+        config_file = tmp_path / "config.toml"
+        config_file.write_text("notify = ['thirdeye-codex-notify']\n")
+
+        assert CodexPlatform(config_file=config_file).notify_conflict() is None
+
     def test_force_overwrites_foreign_notify(self, tmp_path: Path, monkeypatch):
         from thirdeye.platforms.codex.install import CodexPlatform
 

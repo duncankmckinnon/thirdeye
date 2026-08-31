@@ -58,6 +58,15 @@ class CursorPlatform(Platform):
                 entries.append({"type": "command", "command": command, "timeout": HOOK_TIMEOUT_S})
         _save(self._hooks_file, data)
 
+    def is_installed(self) -> bool:
+        hooks = _load(self._hooks_file).get("hooks")
+        if not isinstance(hooks, dict):
+            return False
+        return all(
+            isinstance(hooks.get(event), list) and any(_is_ours(entry) for entry in hooks[event])
+            for event in TRACED_EVENTS
+        )
+
     def uninstall(self) -> None:
         if not self._hooks_file.exists():
             return

@@ -12,3 +12,7 @@ class Platform(ABC):
 
     @abstractmethod
     def uninstall(self) -> None: ...
+
+    def is_installed(self) -> bool:
+        """Return whether thirdeye's complete integration is configured."""
+        return False
