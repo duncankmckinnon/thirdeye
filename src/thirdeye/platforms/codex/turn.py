@@ -41,6 +41,17 @@ def _subtract_duration(ts: str, duration: Any) -> str:
         return ts
 
 
+# Codex also injects environment/context and other ambient state as its own
+# `response_item`/`message` frames with `role: "user"` (the OpenAI Responses
+# API shape), not something the person actually typed. Verified against real
+# rollouts: these are the only tag names seen wrapping such synthetic content.
+_SYNTHETIC_USER_TAGS = (
+    "<environment_context>",
+    "<recommended_plugins>",
+    "<task-notification>",
+    "<in-app-browser-context",
+)
+
 # Renames a Codex rollout usage block's own key names onto UsageDict's, per
 # thirdeye.tracing.model.UsageDict.
 _USAGE_RENAME = {
@@ -223,6 +234,20 @@ def extract_turn_codex(rollout_path: str, turn_id: str) -> dict[str, Any] | None
                     next_input_parts = []
                     call_start_ts = ts
                     last_output_ts = ""
+            continue
+
+        if outer == "response_item" and subtype == "message" and payload.get("role") == "user":
+            texts = [
+                str(block.get("text") or block.get("content"))
+                for block in payload.get("content") or []
+                if isinstance(block, dict) and (block.get("text") or block.get("content"))
+            ]
+            joined = "\n".join(texts).strip()
+            if joined and not joined.startswith(_SYNTHETIC_USER_TAGS):
+                user_prompt = joined
+                if not input_parts:
+                    input_parts.append({"type": "text", "content": joined})
+                call_start_ts = call_start_ts or ts
             continue
 
         if outer == "response_item" and subtype == "message" and payload.get("role") == "assistant":

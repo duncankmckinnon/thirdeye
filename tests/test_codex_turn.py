@@ -467,6 +467,109 @@ def test_turn_aborted_marks_interrupted_and_keeps_partial_call(tmp_path: Path) -
     assert turn["calls"][0]["tool_calls"][0]["tool_call_id"] == "c1"
 
 
+def test_response_item_user_message_supplies_prompt_when_no_user_message_event(
+    tmp_path: Path,
+) -> None:
+    """Newer Codex CLI builds (checked against local rollouts from 2026-08-20)
+    stop emitting ``event_msg/user_message`` entirely -- the only record of
+    what the user typed is a ``response_item/message`` frame with
+    ``role: "user"`` (the OpenAI Responses API shape also used for the
+    assistant's reply). Before this fix, ``user_prompt`` stayed empty for
+    every such turn, so Logfire showed an ``agent-turn`` span with an output
+    but no input for the majority of real Codex sessions.
+    """
+    path = tmp_path / "rollout.jsonl"
+    path.write_text(
+        "\n".join(
+            [
+                _frame("2026-01-01T00:00:00Z", "turn_context", {"turn_id": "t1", "model": "gpt-5"}),
+                _frame(
+                    "2026-01-01T00:00:01Z", "event_msg", {"type": "task_started", "turn_id": "t1"}
+                ),
+                _frame(
+                    "2026-01-01T00:00:02Z",
+                    "response_item",
+                    {
+                        "type": "message",
+                        "role": "user",
+                        "content": [{"type": "input_text", "text": "is claude set up too?"}],
+                    },
+                ),
+                _frame(
+                    "2026-01-01T00:00:03Z",
+                    "event_msg",
+                    {"type": "agent_message", "message": "yes it is"},
+                ),
+                _frame(
+                    "2026-01-01T00:00:04Z",
+                    "event_msg",
+                    {"type": "task_complete", "turn_id": "t1", "last_agent_message": "yes it is"},
+                ),
+            ]
+        )
+        + "\n"
+    )
+
+    turn = extract_turn_codex(str(path), "t1")
+    assert turn is not None
+    assert turn["user_prompt"] == "is claude set up too?"
+    assert turn["calls"][0]["input_messages"][0]["parts"][0]["content"] == "is claude set up too?"
+
+
+def test_response_item_user_message_skips_synthetic_environment_context(tmp_path: Path) -> None:
+    """Codex also injects environment/context and other ambient state as its
+    own ``response_item/message`` frames with ``role: "user"`` (verified
+    against real rollouts: ``<environment_context>``, ``<recommended_plugins>``,
+    ``<task-notification>``, and ``<in-app-browser-context>`` all appear this
+    way). These are not something the user typed, so they must not become
+    ``user_prompt`` even when they arrive before the real prompt.
+    """
+    path = tmp_path / "rollout.jsonl"
+    path.write_text(
+        "\n".join(
+            [
+                _frame("2026-01-01T00:00:00Z", "turn_context", {"turn_id": "t1", "model": "gpt-5"}),
+                _frame(
+                    "2026-01-01T00:00:01Z", "event_msg", {"type": "task_started", "turn_id": "t1"}
+                ),
+                _frame(
+                    "2026-01-01T00:00:02Z",
+                    "response_item",
+                    {
+                        "type": "message",
+                        "role": "user",
+                        "content": [
+                            {
+                                "type": "input_text",
+                                "text": "<environment_context>\n  <cwd>/x</cwd>\n</environment_context>",
+                            }
+                        ],
+                    },
+                ),
+                _frame(
+                    "2026-01-01T00:00:03Z",
+                    "response_item",
+                    {
+                        "type": "message",
+                        "role": "user",
+                        "content": [{"type": "input_text", "text": "fix the bug"}],
+                    },
+                ),
+                _frame(
+                    "2026-01-01T00:00:04Z",
+                    "event_msg",
+                    {"type": "task_complete", "turn_id": "t1", "last_agent_message": "done"},
+                ),
+            ]
+        )
+        + "\n"
+    )
+
+    turn = extract_turn_codex(str(path), "t1")
+    assert turn is not None
+    assert turn["user_prompt"] == "fix the bug"
+
+
 def test_turn_aborted_real_payload_shape_marks_interrupted(tmp_path: Path) -> None:
     """The synthetic ``turn_aborted`` frame above only carries ``turn_id``.
     A genuine frame pulled from a real Codex rollout on this machine
