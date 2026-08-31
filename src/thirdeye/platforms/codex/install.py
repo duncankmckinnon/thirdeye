@@ -133,6 +133,38 @@ class CodexPlatform(Platform):
             return None
         return existing[0]
 
+    def is_installed(self) -> bool:
+        """Return whether both Codex integration mechanisms are configured."""
+        text = _read_text(self._config_file)
+        match = _NOTIFY_LINE_RE.search(text)
+        if not match:
+            return False
+        notify = _parse_notify_array(match.group(1))
+        if not notify or Path(notify[0]).name != NOTIFY_BIN_NAME:
+            return False
+
+        hooks = _read_json(self._hooks_file).get("hooks")
+        if not isinstance(hooks, dict):
+            return False
+        for event, bin_name in HOOKS_JSON_BIN_NAMES.items():
+            groups = hooks.get(event)
+            if not isinstance(groups, list):
+                return False
+            found = False
+            for group in groups:
+                if not isinstance(group, dict) or not isinstance(group.get("hooks"), list):
+                    continue
+                if any(
+                    isinstance(entry, dict)
+                    and _command_name(entry.get("command")) == bin_name
+                    for entry in group["hooks"]
+                ):
+                    found = True
+                    break
+            if not found:
+                return False
+        return True
+
     def install(self) -> None:
         """Install thirdeye's notify handler and hooks.json bindings.
 

@@ -9,7 +9,7 @@ from thirdeye.store import Store
 @pytest.fixture(autouse=True)
 def _never_touch_real_platform_configs(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """Redirect every platform's real home-directory config path (Codex's
-    config.toml and hooks.json, Claude's settings.json) to this test's
+    config.toml and hooks.json, Claude's settings.json, and Cursor's hooks.json) to this test's
     tmp_path, for every test in the suite — not just ones that remember to
     pass an explicit path to a Platform constructor.
 
@@ -32,6 +32,10 @@ def _never_touch_real_platform_configs(tmp_path: Path, monkeypatch: pytest.Monke
     monkeypatch.setattr(
         "thirdeye.platforms.claude.install.SETTINGS_FILE",
         fake_home / ".claude" / "settings.json",
+    )
+    monkeypatch.setattr(
+        "thirdeye.platforms.cursor.install.HOOKS_FILE",
+        fake_home / ".cursor" / "hooks.json",
     )
 
 

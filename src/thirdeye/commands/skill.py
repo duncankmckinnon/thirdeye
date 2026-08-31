@@ -59,6 +59,20 @@ def _install_one(name: str, dest: Path, *, force: bool) -> str:
     return f"Installed {name} skill at {dest}"
 
 
+def _install_state(name: str, dest: Path) -> str:
+    """Return ``installed``, ``missing``, or ``conflict`` for a skill target."""
+    source = _bundled_skill_root(name).resolve()
+    dest = dest.expanduser().absolute()
+    try:
+        if dest.is_symlink() and dest.resolve() == source:
+            return "installed"
+    except OSError:
+        pass
+    if dest.exists() or dest.is_symlink():
+        return "conflict"
+    return "missing"
+
+
 @skills_group.command(name="add")
 @click.option(
     "-p",
