@@ -1,12 +1,15 @@
 from __future__ import annotations
 
 import copy
+from typing import Any
 
 import pytest
 
 from thirdeye.platforms.cursor.interactions import (
     CanonicalInteraction,
+    InteractionKind,
     canonical_interactions,
+    interaction_messages,
 )
 
 GENERATION = "gen-abc"
@@ -429,3 +432,349 @@ def test_populates_canonical_interaction_metadata_from_event():
     assert item.ts == "2026-09-02T12:07:00.000Z"
     assert item.generation_id == GENERATION
     assert item.duplicate_seqs == ()
+
+
+def _messages(
+    events: list[dict],
+    *,
+    generation_id: str = GENERATION,
+    through_seq: int | None = None,
+    before_seq: int | None = None,
+) -> list[dict[str, Any]]:
+    interactions = _canonicalize(events, generation_id=generation_id, through_seq=through_seq)
+    return interaction_messages(interactions, before_seq=before_seq)
+
+
+def _make_interaction(
+    seq: int,
+    kind: InteractionKind,
+    payload: dict[str, Any],
+    *,
+    correlation_id: str = "",
+    generation_id: str = GENERATION,
+) -> CanonicalInteraction:
+    return CanonicalInteraction(
+        interaction_id=f"{generation_id}:{kind}:{correlation_id or '-'}:{seq}",
+        kind=kind,
+        source_type=kind,
+        source_seq=seq,
+        duplicate_seqs=(),
+        ts=TS,
+        generation_id=generation_id,
+        correlation_id=correlation_id,
+        payload={"generation_id": generation_id, **payload},
+    )
+
+
+def test_projects_user_message_from_prompt():
+    events = [_event(0, "user_message", prompt="hello")]
+    assert _messages(events) == [
+        {"role": "user", "parts": [{"type": "text", "content": "hello"}]},
+    ]
+
+
+@pytest.mark.parametrize("key", ["input", "text"])
+def test_projects_user_message_from_alternate_text_keys(key: str):
+    events = [_event(0, "user_message", **{key: "hello"})]
+    assert _messages(events) == [
+        {"role": "user", "parts": [{"type": "text", "content": "hello"}]},
+    ]
+
+
+def test_user_message_text_lookup_prefers_prompt_over_input_and_text():
+    events = [_event(0, "user_message", prompt="first", input="second", text="third")]
+    assert _messages(events) == [
+        {"role": "user", "parts": [{"type": "text", "content": "first"}]},
+    ]
+
+
+def test_projects_assistant_message_from_text():
+    events = [_event(0, "assistant_message", text="done")]
+    assert _messages(events) == [
+        {"role": "assistant", "parts": [{"type": "text", "content": "done"}]},
+    ]
+
+
+@pytest.mark.parametrize("key", ["response", "output"])
+def test_projects_assistant_message_from_alternate_text_keys(key: str):
+    events = [_event(0, "assistant_message", **{key: "done"})]
+    assert _messages(events) == [
+        {"role": "assistant", "parts": [{"type": "text", "content": "done"}]},
+    ]
+
+
+def test_assistant_message_text_lookup_prefers_text_over_response_and_output():
+    events = [_event(0, "assistant_message", text="first", response="second", output="third")]
+    assert _messages(events) == [
+        {"role": "assistant", "parts": [{"type": "text", "content": "first"}]},
+    ]
+
+
+def test_projects_reasoning_as_assistant_text_with_thirdeye_kind():
+    events = [_event(0, "assistant_thought", text="thinking")]
+    assert _messages(events) == [
+        {
+            "role": "assistant",
+            "thirdeye.kind": "reasoning",
+            "parts": [{"type": "text", "content": "thinking"}],
+        },
+    ]
+
+
+def test_projects_tool_call_with_id_name_and_arguments():
+    events = [
+        _event(
+            0,
+            "tool_call",
+            tool_use_id="call-1",
+            tool_name="shell",
+            command="pytest -q",
+        )
+    ]
+    assert _messages(events) == [
+        {
+            "role": "assistant",
+            "parts": [
+                {
+                    "type": "tool_call",
+                    "id": "call-1",
+                    "name": "shell",
+                    "arguments": "pytest -q",
+                }
+            ],
+        },
+    ]
+
+
+@pytest.mark.parametrize("key", ["toolName", "name", "tool"])
+def test_tool_call_name_lookup_uses_alternate_keys(key: str):
+    events = [
+        _event(0, "tool_call", tool_use_id="call-1", **{key: "Read"}, path="/a.py"),
+    ]
+    assert _messages(events)[0]["parts"][0]["name"] == "Read"
+
+
+def test_tool_call_name_lookup_prefers_tool_name_over_alternate_keys():
+    events = [
+        _event(
+            0,
+            "tool_call",
+            tool_use_id="call-1",
+            tool_name="shell",
+            toolName="ignored",
+            name="ignored",
+            tool="ignored",
+        )
+    ]
+    assert _messages(events)[0]["parts"][0]["name"] == "shell"
+
+
+@pytest.mark.parametrize("key", ["tool_input", "toolInput", "arguments", "input", "file_path", "filePath", "path"])
+def test_tool_call_arguments_from_alternate_input_keys(key: str):
+    value = {"nested": [1, 2]} if key in {"tool_input", "toolInput", "arguments", "input"} else "/tmp/file.py"
+    events = [
+        _event(0, "tool_call", tool_use_id="call-1", tool_name="Read", **{key: value}),
+    ]
+    assert _messages(events)[0]["parts"][0]["arguments"] == value
+
+
+def test_tool_call_arguments_returns_dict_when_multiple_input_keys_present():
+    payload = {
+        "command": "pytest -q",
+        "file_path": "/repo/tests/test_cursor_interactions.py",
+        "input": {"line": 1},
+    }
+    events = [_event(0, "tool_call", tool_use_id="call-1", tool_name="shell", **payload)]
+    assert _messages(events)[0]["parts"][0]["arguments"] == payload
+
+
+def test_tool_call_arguments_preserves_structures_without_stringifying():
+    nested = {"items": [{"id": 1}, {"id": 2}], "enabled": True}
+    events = [
+        _event(0, "tool_call", tool_use_id="call-1", tool_name="Task", arguments=nested),
+    ]
+    assert _messages(events)[0]["parts"][0]["arguments"] == nested
+
+
+def test_projects_tool_result_with_tool_call_response_part():
+    events = [
+        _event(
+            0,
+            "tool_result",
+            tool_use_id="call-1",
+            tool_name="shell",
+            output="passed",
+        )
+    ]
+    assert _messages(events) == [
+        {
+            "role": "tool",
+            "parts": [
+                {
+                    "type": "tool_call_response",
+                    "id": "call-1",
+                    "response": "passed",
+                }
+            ],
+        },
+    ]
+
+
+@pytest.mark.parametrize(
+    "key",
+    ["tool_output", "toolOutput", "result", "stdout", "response", "edits", "diff"],
+)
+def test_tool_result_response_from_alternate_output_keys(key: str):
+    value = {"lines": ["+added"]} if key == "edits" else "ok"
+    events = [_event(0, "tool_result", tool_use_id="call-1", **{key: value})]
+    assert _messages(events)[0]["parts"][0]["response"] == value
+
+
+def test_tool_result_response_returns_dict_when_multiple_output_keys_present():
+    payload = {
+        "stdout": "line one\n",
+        "stderr": "ignored",
+        "result": {"exit_code": 0},
+        "output": "line one\n",
+    }
+    events = [_event(0, "tool_result", tool_use_id="call-1", **payload)]
+    assert _messages(events)[0]["parts"][0]["response"] == {
+        "stdout": "line one\n",
+        "result": {"exit_code": 0},
+        "output": "line one\n",
+    }
+
+
+def test_tool_result_response_preserves_structures_without_stringifying():
+    structured = {"files": [{"path": "a.py", "diff": "---\n+++"}]}
+    events = [_event(0, "tool_result", tool_use_id="call-1", edits=structured)]
+    assert _messages(events)[0]["parts"][0]["response"] == structured
+
+
+@pytest.mark.parametrize("event_type", ["subagent_start", "subagent_message", "turn_stop"])
+def test_lifecycle_interactions_are_excluded_from_messages(event_type: str):
+    events = [
+        _event(0, "user_message", prompt="start"),
+        _event(1, event_type, subagent_id="child-1"),
+        _event(2, "assistant_message", text="done"),
+    ]
+    assert _messages(events) == [
+        {"role": "user", "parts": [{"type": "text", "content": "start"}]},
+        {"role": "assistant", "parts": [{"type": "text", "content": "done"}]},
+    ]
+
+
+def test_before_seq_excludes_matching_and_later_sequences():
+    events = [
+        _event(0, "user_message", prompt="first"),
+        _event(1, "assistant_message", text="second"),
+        _event(2, "tool_call", tool_use_id="call-1", tool_name="Read", path="/a.py"),
+        _event(3, "tool_result", tool_use_id="call-1", output="contents"),
+    ]
+    assert _messages(events, before_seq=2) == [
+        {"role": "user", "parts": [{"type": "text", "content": "first"}]},
+        {"role": "assistant", "parts": [{"type": "text", "content": "second"}]},
+    ]
+
+
+def test_before_seq_none_includes_all_projectable_interactions():
+    events = [
+        _event(0, "user_message", prompt="only"),
+        _event(1, "turn_stop", subagent_id="child-1"),
+    ]
+    assert _messages(events, before_seq=None) == [
+        {"role": "user", "parts": [{"type": "text", "content": "only"}]},
+    ]
+
+
+@pytest.mark.parametrize(
+    "kind,payload",
+    [
+        ("user_message", {}),
+        ("user_message", {"detail": "no text keys"}),
+        ("assistant_message", {}),
+        ("reasoning", {}),
+    ],
+)
+def test_skips_text_interactions_missing_required_text(kind: str, payload: dict):
+    event_type = {
+        "user_message": "user_message",
+        "assistant_message": "assistant_message",
+        "reasoning": "assistant_thought",
+    }[kind]
+    events = [_event(0, event_type, **payload)]
+    assert _messages(events) == []
+
+
+@pytest.mark.parametrize("kind", ["tool_call", "tool_result"])
+def test_skips_tool_interactions_missing_correlation_id(kind: str):
+    event_type = kind
+    payload = {"tool_name": "shell", "command": "ls"} if kind == "tool_call" else {"output": "ok"}
+    interaction = _make_interaction(0, kind, payload, correlation_id="")
+    assert interaction_messages([interaction]) == []
+
+
+def test_preserves_interaction_order_in_projected_messages():
+    events = [
+        _event(0, "user_message", prompt="start"),
+        _event(1, "assistant_thought", text="plan"),
+        _event(2, "tool_call", tool_use_id="call-1", tool_name="Read", path="/a.py"),
+        _event(3, "tool_result", tool_use_id="call-1", output="contents"),
+        _event(4, "assistant_message", text="done"),
+    ]
+    assert _messages(events) == [
+        {"role": "user", "parts": [{"type": "text", "content": "start"}]},
+        {
+            "role": "assistant",
+            "thirdeye.kind": "reasoning",
+            "parts": [{"type": "text", "content": "plan"}],
+        },
+        {
+            "role": "assistant",
+            "parts": [
+                {
+                    "type": "tool_call",
+                    "id": "call-1",
+                    "name": "Read",
+                    "arguments": "/a.py",
+                }
+            ],
+        },
+        {
+            "role": "tool",
+            "parts": [
+                {
+                    "type": "tool_call_response",
+                    "id": "call-1",
+                    "response": "contents",
+                }
+            ],
+        },
+        {"role": "assistant", "parts": [{"type": "text", "content": "done"}]},
+    ]
+
+
+def test_projects_direct_canonical_interactions_without_events():
+    interactions = [
+        _make_interaction(0, "user_message", {"prompt": "hi"}),
+        _make_interaction(
+            1,
+            "tool_call",
+            {"tool_name": "shell", "command": "ls"},
+            correlation_id="call-9",
+        ),
+    ]
+    assert interaction_messages(interactions) == [
+        {"role": "user", "parts": [{"type": "text", "content": "hi"}]},
+        {
+            "role": "assistant",
+            "parts": [
+                {
+                    "type": "tool_call",
+                    "id": "call-9",
+                    "name": "shell",
+                    "arguments": "ls",
+                }
+            ],
+        },
+    ]
