@@ -10,6 +10,7 @@ from thirdeye import otel_export
 from thirdeye.config import Config, LogfireSettings
 from thirdeye.span_ids import (
     chat_span_id,
+    interaction_span_id,
     root_span_id_for_session,
     tool_span_id,
     trace_id_for_session,
@@ -107,6 +108,25 @@ def _tool_call(**overrides: Any) -> dict[str, Any]:
         start_ts="2026-01-01T00:00:01.100Z",
         end_ts="2026-01-01T00:00:01.900Z",
         attributes={"command": "ls"},
+    )
+    defaults.update(overrides)
+    return defaults
+
+
+def _interaction(**overrides: Any) -> dict[str, Any]:
+    defaults: dict[str, Any] = dict(
+        interaction_id="int_1",
+        kind="user_message",
+        span_id="100",
+        parent_span_id="200",
+        start_ts="2026-01-01T00:00:01.000Z",
+        end_ts="2026-01-01T00:00:01.500Z",
+        attributes={
+            "thirdeye.interaction.kind": "user_message",
+            "thirdeye.interaction.payload": {"prompt": "hello"},
+            "thirdeye.interaction.generation_id": "gen-1",
+            "thirdeye.interaction.correlation_id": "corr-1",
+        },
     )
     defaults.update(overrides)
     return defaults
@@ -855,6 +875,344 @@ class TestExportSpansBatch:
         [tool_span] = exporter.exported_spans_as_dict()
         assert tool_span["attributes"]["gen_ai.tool.call.arguments"] == "x"
         assert json.loads(tool_span["attributes"]["attributes"]) == {"mode": "safe"}
+
+    def test_live_reasoning_child_parents_to_absent_turn_span(
+        self, tmp_path: Path, enabled_config: Config, wired_instance, exporter
+    ):
+        """Reasoning can arrive before its deterministic turn parent exists."""
+        session_id = "cursor-reasoning-child-first"
+        expected_turn_id = turn_span_id("cursor", session_id, 1)
+        reasoning_id = interaction_span_id("cursor", session_id, "reasoning-1")
+        session_dir = tmp_path / "traces" / "cursor" / session_id
+
+        otel_export._export_spans_batch(
+            config=enabled_config,
+            session_dir_=session_dir,
+            session_id=session_id,
+            platform="cursor",
+            cwd="/proj",
+            trace_id=trace_id_for_session("cursor", session_id),
+            spans=[
+                {
+                    "name": "reasoning",
+                    "span_id": str(reasoning_id),
+                    "parent_span_id": str(expected_turn_id),
+                    "start_ts": "2026-01-01T00:00:01.000Z",
+                    "end_ts": "2026-01-01T00:00:01.100Z",
+                    "turn_seq": 1,
+                    "turn_span_id": str(expected_turn_id),
+                    "attributes": {
+                        "thirdeye.interaction.kind": "reasoning",
+                        "thirdeye.interaction.payload": {"text": "consider options"},
+                    },
+                }
+            ],
+        )
+
+        [reasoning_span] = exporter.exported_spans_as_dict()
+        assert reasoning_span["name"] == "reasoning"
+        assert reasoning_span["context"]["span_id"] == reasoning_id
+        assert reasoning_span["parent"]["span_id"] == expected_turn_id
+        assert reasoning_span["attributes"]["thirdeye.turn.id"] == "1"
+        assert reasoning_span["attributes"]["thirdeye.turn.span_id"] == str(expected_turn_id)
+        assert reasoning_span["attributes"]["gen_ai.conversation.id"] == session_id
+        assert (
+            json.loads(reasoning_span["attributes"]["thirdeye.interaction.payload"])["text"]
+            == "consider options"
+        )
+
+    def test_live_interaction_span_carries_identity_and_nested_payload(
+        self, tmp_path: Path, enabled_config: Config, wired_instance, exporter
+    ):
+        session_id = "cursor-interaction-batch"
+        turn_id = turn_span_id("cursor", session_id, 1)
+        span_id = interaction_span_id("cursor", session_id, "assistant-1")
+        nested_payload = {"text": "done", "parts": [{"type": "text", "content": "done"}]}
+
+        otel_export._export_spans_batch(
+            config=enabled_config,
+            session_dir_=tmp_path / "traces" / "cursor" / session_id,
+            session_id=session_id,
+            platform="cursor",
+            cwd="/proj",
+            trace_id=trace_id_for_session("cursor", session_id),
+            spans=[
+                {
+                    "name": "interaction: assistant_message",
+                    "span_id": str(span_id),
+                    "parent_span_id": str(turn_id),
+                    "start_ts": "2026-01-01T00:00:02.000Z",
+                    "end_ts": "2026-01-01T00:00:02.500Z",
+                    "turn_seq": 1,
+                    "turn_span_id": str(turn_id),
+                    "attributes": {
+                        "thirdeye.interaction.kind": "assistant_message",
+                        "thirdeye.interaction.payload": nested_payload,
+                    },
+                }
+            ],
+        )
+
+        [span] = exporter.exported_spans_as_dict()
+        assert span["name"] == "interaction: assistant_message"
+        assert span["attributes"]["thirdeye.platform"] == "cursor"
+        assert span["attributes"]["gen_ai.agent.name"] == "cursor"
+        assert json.loads(span["attributes"]["thirdeye.interaction.payload"]) == nested_payload
+        schema = json.loads(span["attributes"]["logfire.json_schema"])
+        assert schema["properties"]["thirdeye.interaction.payload"] == {"type": "object"}
+
+
+class TestInteractionAttributes:
+    def test_merges_raw_attributes_with_identity_and_flattens_once(self):
+        raw = {
+            "thirdeye.interaction.kind": "reasoning",
+            "thirdeye.interaction.payload": {"nested": {"key": "value"}},
+        }
+        result = otel_export._interaction_attributes(
+            raw,
+            session_id="s1",
+            platform="cursor",
+            cwd="/proj",
+            turn_id="turn_1",
+            turn_span_id="4242",
+        )
+
+        assert result["gen_ai.conversation.id"] == "s1"
+        assert result["gen_ai.agent.name"] == "cursor"
+        assert result["thirdeye.platform"] == "cursor"
+        assert result["thirdeye.cwd"] == "/proj"
+        assert result["thirdeye.turn.id"] == "turn_1"
+        assert result["thirdeye.turn.span_id"] == "4242"
+        assert result["thirdeye.interaction.kind"] == "reasoning"
+        assert json.loads(result["thirdeye.interaction.payload"]) == {"nested": {"key": "value"}}
+
+    def test_omits_turn_fields_when_not_supplied(self):
+        result = otel_export._interaction_attributes(
+            {"thirdeye.interaction.kind": "user_message"},
+            session_id="s1",
+            platform="cursor",
+            cwd="/proj",
+        )
+
+        assert "thirdeye.turn.id" not in result
+        assert "thirdeye.turn.span_id" not in result
+        assert result["gen_ai.conversation.id"] == "s1"
+
+
+class TestInteractionTurnRecovery:
+    """Completed turns can carry pre-built interaction records for stop-time
+    recovery. The exporter must emit them under the turn span using the
+    supplied ids and raw attributes — no record generation here.
+    """
+
+    def test_completed_turn_exports_supplied_recovery_children(
+        self, tmp_path: Path, enabled_config: Config, wired_instance, exporter
+    ):
+        session_id = "recovery-session"
+        turn_id = turn_span_id("cursor", session_id, 1)
+        user_id = interaction_span_id("cursor", session_id, "user-1")
+        reasoning_id = interaction_span_id("cursor", session_id, "reasoning-1")
+        payload = {"prompt": "fix the bug", "metadata": {"source": "hook"}}
+
+        otel_export._export_turn_inner(
+            config=enabled_config,
+            session_dir_=tmp_path / "traces" / "cursor" / session_id,
+            session_id=session_id,
+            platform="cursor",
+            cwd="/proj",
+            turn=_turn(
+                turn_span_id=str(turn_id),
+                interactions=[
+                    _interaction(
+                        interaction_id="user-1",
+                        kind="user_message",
+                        span_id=str(user_id),
+                        parent_span_id=str(turn_id),
+                        attributes={
+                            "thirdeye.interaction.kind": "user_message",
+                            "thirdeye.interaction.payload": payload,
+                            "thirdeye.interaction.generation_id": "gen-1",
+                        },
+                    ),
+                    _interaction(
+                        interaction_id="reasoning-1",
+                        kind="reasoning",
+                        span_id=str(reasoning_id),
+                        parent_span_id=str(turn_id),
+                        start_ts="2026-01-01T00:00:02.000Z",
+                        end_ts="2026-01-01T00:00:02.500Z",
+                        attributes={
+                            "thirdeye.interaction.kind": "reasoning",
+                            "thirdeye.interaction.payload": {"text": "plan"},
+                        },
+                    ),
+                ],
+            ),
+        )
+
+        spans = exporter.exported_spans_as_dict()
+        user_span = next(span for span in spans if span["context"]["span_id"] == user_id)
+        reasoning_span = next(span for span in spans if span["context"]["span_id"] == reasoning_id)
+        turn_span = next(span for span in spans if span["name"] == "invoke_agent")
+
+        assert user_span["name"] == "interaction: user_message"
+        assert reasoning_span["name"] == "reasoning"
+        assert user_span["parent"]["span_id"] == turn_span["context"]["span_id"]
+        assert reasoning_span["parent"]["span_id"] == turn_span["context"]["span_id"]
+        assert json.loads(user_span["attributes"]["thirdeye.interaction.payload"]) == payload
+        assert json.loads(reasoning_span["attributes"]["thirdeye.interaction.payload"]) == {
+            "text": "plan"
+        }
+
+    def test_recovery_interactions_parent_under_turn_not_chat(
+        self, tmp_path: Path, enabled_config: Config, wired_instance, exporter
+    ):
+        session_id = "recovery-parent-session"
+        turn_id = turn_span_id("cursor", session_id, 1)
+        interaction_id = interaction_span_id("cursor", session_id, "user-1")
+        call = _llm_call(call_id="call_live")
+
+        otel_export._export_turn_inner(
+            config=enabled_config,
+            session_dir_=tmp_path / "traces" / "cursor" / session_id,
+            session_id=session_id,
+            platform="cursor",
+            cwd="/proj",
+            turn=_turn(
+                turn_span_id=str(turn_id),
+                llm_calls=[call],
+                interactions=[
+                    _interaction(
+                        span_id=str(interaction_id),
+                        parent_span_id=str(turn_id),
+                    )
+                ],
+            ),
+        )
+
+        spans = exporter.exported_spans_as_dict()
+        interaction_span = next(
+            span for span in spans if span["context"]["span_id"] == interaction_id
+        )
+        turn_span = next(span for span in spans if span["name"] == "invoke_agent")
+        chat_span = next(span for span in spans if span["name"].startswith("chat"))
+
+        assert interaction_span["parent"]["span_id"] == turn_span["context"]["span_id"]
+        assert chat_span["parent"]["span_id"] == turn_span["context"]["span_id"]
+        assert interaction_span["parent"]["span_id"] != chat_span["context"]["span_id"]
+
+    def test_turn_without_interactions_exports_no_interaction_spans(
+        self, tmp_path: Path, enabled_config: Config, wired_instance, exporter
+    ):
+        otel_export._export_turn_inner(
+            config=enabled_config,
+            session_dir_=tmp_path / "traces" / "cursor" / "s1",
+            session_id="s1",
+            platform="cursor",
+            cwd="/proj",
+            turn=_turn(),
+        )
+
+        spans = exporter.exported_spans_as_dict()
+        assert not any(
+            span["name"] == "reasoning" or span["name"].startswith("interaction:")
+            for span in spans
+        )
+
+    def test_later_turn_export_resolves_reasoning_child_parent(
+        self, tmp_path: Path, enabled_config: Config, wired_instance, exporter
+    ):
+        """A live reasoning child exported before the turn span still joins the
+        tree once the turn parent arrives."""
+        session_id = "reasoning-hierarchy-session"
+        expected_turn_id = turn_span_id("cursor", session_id, 1)
+        reasoning_id = interaction_span_id("cursor", session_id, "reasoning-1")
+        session_dir = tmp_path / "traces" / "cursor" / session_id
+
+        otel_export._export_spans_batch(
+            config=enabled_config,
+            session_dir_=session_dir,
+            session_id=session_id,
+            platform="cursor",
+            cwd="/proj",
+            trace_id=trace_id_for_session("cursor", session_id),
+            spans=[
+                {
+                    "name": "reasoning",
+                    "span_id": str(reasoning_id),
+                    "parent_span_id": str(expected_turn_id),
+                    "start_ts": "2026-01-01T00:00:01.000Z",
+                    "end_ts": "2026-01-01T00:00:01.100Z",
+                    "turn_seq": 1,
+                    "turn_span_id": str(expected_turn_id),
+                    "attributes": {
+                        "thirdeye.interaction.kind": "reasoning",
+                        "thirdeye.interaction.payload": {"text": "think"},
+                    },
+                }
+            ],
+        )
+        otel_export._export_turn_inner(
+            config=enabled_config,
+            session_dir_=session_dir,
+            session_id=session_id,
+            platform="cursor",
+            cwd="/proj",
+            turn=_turn(turn_span_id=str(expected_turn_id)),
+        )
+
+        spans = exporter.exported_spans_as_dict()
+        reasoning_span = next(span for span in spans if span["context"]["span_id"] == reasoning_id)
+        turn_span = next(span for span in spans if span["name"] == "invoke_agent")
+        assert reasoning_span["parent"]["span_id"] == turn_span["context"]["span_id"]
+        assert turn_span["context"]["span_id"] == expected_turn_id
+        assert reasoning_span["attributes"]["gen_ai.conversation.id"] == session_id
+        assert reasoning_span["attributes"]["thirdeye.turn.id"] == "1"
+
+    def test_supplied_recovery_children_export_once(
+        self, tmp_path: Path, enabled_config: Config, wired_instance, exporter
+    ):
+        session_id = "recovery-once-session"
+        turn_id = turn_span_id("cursor", session_id, 1)
+        interaction_id = interaction_span_id("cursor", session_id, "user-1")
+        session_dir = tmp_path / "traces" / "cursor" / session_id
+        turn = _turn(
+            turn_span_id=str(turn_id),
+            interactions=[
+                _interaction(
+                    span_id=str(interaction_id),
+                    parent_span_id=str(turn_id),
+                )
+            ],
+        )
+        kwargs = {
+            "config": enabled_config,
+            "session_dir_": session_dir,
+            "session_id": session_id,
+            "platform": "cursor",
+            "cwd": "/proj",
+            "turn": turn,
+        }
+
+        otel_export._export_turn_inner(**kwargs)
+        first_count = len(exporter.exported_spans_as_dict())
+        interaction_count = sum(
+            1
+            for span in exporter.exported_spans_as_dict()
+            if span["context"]["span_id"] == interaction_id
+        )
+        assert interaction_count == 1
+
+        otel_export._export_turn_inner(**kwargs)
+        assert len(exporter.exported_spans_as_dict()) == first_count
+        assert (
+            sum(
+                1
+                for span in exporter.exported_spans_as_dict()
+                if span["context"]["span_id"] == interaction_id
+            )
+            == 1
+        )
 
 
 class TestExportTurnInner:
