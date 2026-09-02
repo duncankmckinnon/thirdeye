@@ -859,7 +859,7 @@ def _identity_attributes(
 ) -> dict[str, Any]:
     """Attributes naming the session and turn a span belongs to.
 
-    A live span is exported while its `agent-turn` parent is still open, so it
+    A live span is exported while its `invoke_agent` parent is still open, so it
     has no parent row to inherit this from and cannot otherwise be attributed
     to a turn until the turn ends. Applied on the completed-turn path too, so
     the two paths keep one vocabulary.

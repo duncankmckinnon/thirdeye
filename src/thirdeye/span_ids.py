@@ -52,7 +52,7 @@ def root_span_id_for_session(platform: str, session_id: str) -> int:
 
 
 def turn_span_id(platform: str, session_id: str, turn_seq: int) -> int:
-    """64-bit span id of the ``agent-turn`` span for turn ``turn_seq``."""
+    """64-bit span id of the ``invoke_agent`` span for turn ``turn_seq``."""
     return _derive(f"{platform}/{session_id}/turn/{turn_seq}", _SPAN_ID_BYTES)
 
 

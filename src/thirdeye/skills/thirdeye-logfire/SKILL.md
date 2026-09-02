@@ -59,7 +59,7 @@ Verify both sides:
 - The corresponding trace appears in the configured Logfire project.
 
 For local Cursor IDE and CLI sessions, expect the child of a `Task` call to be
-its own Task-parented `agent-turn` span — including background, parallel, and
+its own Task-parented `invoke_agent` span — including background, parallel, and
 nested children. CLI tool calls attach when they share the derived child
 generation. IDE tool calls live in the child conversation and are joined when
 that session's transcript ends with `turn_ended` (Cursor often skips
