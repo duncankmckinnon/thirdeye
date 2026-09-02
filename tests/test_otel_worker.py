@@ -8,6 +8,7 @@ import pytest
 
 from thirdeye import otel_export, otel_worker
 from thirdeye.config import Config, LogfireSettings
+from thirdeye.span_ids import interaction_span_id, trace_id_for_session, turn_span_id
 
 pytest.importorskip("logfire")
 
@@ -499,3 +500,131 @@ class TestDuplicateChildDeliveryFirstWins:
         assert turn_spans[0]["parent"]["span_id"] == tool_span_id("cursor", sid, "call-A")
         assert chat_spans[0]["parent"]["span_id"] == turn_spans[0]["context"]["span_id"]
         assert tool_spans[0]["parent"]["span_id"] == chat_spans[0]["context"]["span_id"]
+
+
+class TestInteractionSpanWorkerRoundTrip:
+    """Interaction spans cross the detached worker boundary as JSON job files.
+    Nested payloads must survive serialization and decode back into structured
+    Logfire attributes on the far side.
+    """
+
+    def test_spans_job_round_trips_nested_interaction_payload(
+        self, home: Path, enabled: None, monkeypatch: pytest.MonkeyPatch
+    ):
+        import logfire
+
+        otel_export._state["id_generator"] = None
+        exporter = TestExporter()
+        instance = logfire.configure(
+            send_to_logfire=False,
+            console=False,
+            additional_span_processors=[SimpleSpanProcessor(exporter)],
+            advanced=logfire.AdvancedOptions(id_generator=otel_export._id_generator()),
+        )
+        monkeypatch.setattr(otel_export, "_get_instance", lambda config, platform: instance)
+
+        session_id = "cursor-worker-session"
+        trace_id = trace_id_for_session("cursor", session_id)
+        span_id = interaction_span_id("cursor", session_id, "assistant-1")
+        parent_span_id = turn_span_id("cursor", session_id, 1)
+        nested_payload = {"text": "done", "parts": [{"type": "text", "content": "done"}]}
+        spans = [
+            {
+                "name": "interaction: assistant_message",
+                "span_id": str(span_id),
+                "parent_span_id": str(parent_span_id),
+                "start_ts": "2026-01-01T00:00:01.000Z",
+                "end_ts": "2026-01-01T00:00:02.000Z",
+                "turn_seq": 1,
+                "turn_span_id": str(parent_span_id),
+                "attributes": {
+                    "thirdeye.interaction.kind": "assistant_message",
+                    "thirdeye.interaction.payload": nested_payload,
+                },
+            }
+        ]
+        job_path = home / "interaction-spans-job.json"
+        job_path.write_text(
+            json.dumps(
+                {
+                    "kind": "spans",
+                    "session_dir": str(home / "traces" / "cursor" / session_id),
+                    "session_id": session_id,
+                    "platform": "cursor",
+                    "cwd": "/proj",
+                    "trace_id": str(trace_id),
+                    "spans": spans,
+                }
+            )
+        )
+
+        otel_worker.main([str(job_path)])
+
+        assert not job_path.exists()
+        [span] = exporter.exported_spans_as_dict()
+        assert span["name"] == "interaction: assistant_message"
+        assert span["context"]["span_id"] == span_id
+        assert span["parent"]["span_id"] == parent_span_id
+        assert span["attributes"]["gen_ai.conversation.id"] == session_id
+        assert span["attributes"]["thirdeye.turn.id"] == "1"
+        assert json.loads(span["attributes"]["thirdeye.interaction.payload"]) == nested_payload
+
+    def test_turn_job_round_trips_interaction_recovery_records(
+        self, home: Path, enabled: None, monkeypatch: pytest.MonkeyPatch
+    ):
+        import logfire
+
+        otel_export._state["id_generator"] = None
+        exporter = TestExporter()
+        instance = logfire.configure(
+            send_to_logfire=False,
+            console=False,
+            additional_span_processors=[SimpleSpanProcessor(exporter)],
+            advanced=logfire.AdvancedOptions(id_generator=otel_export._id_generator()),
+        )
+        monkeypatch.setattr(otel_export, "_get_instance", lambda config, platform: instance)
+
+        session_id = "cursor-turn-recovery"
+        turn_id = turn_span_id("cursor", session_id, 1)
+        user_id = interaction_span_id("cursor", session_id, "user-1")
+        payload = {"prompt": "ship it", "flags": {"urgent": True}}
+        turn = _turn(
+            turn_span_id=str(turn_id),
+            interactions=[
+                {
+                    "interaction_id": "user-1",
+                    "kind": "user_message",
+                    "span_id": str(user_id),
+                    "parent_span_id": str(turn_id),
+                    "start_ts": "2026-01-01T00:00:01.000Z",
+                    "end_ts": "2026-01-01T00:00:01.000Z",
+                    "attributes": {
+                        "thirdeye.interaction.kind": "user_message",
+                        "thirdeye.interaction.payload": payload,
+                    },
+                }
+            ],
+        )
+        job_path = home / "interaction-turn-job.json"
+        job_path.write_text(
+            json.dumps(
+                {
+                    "kind": "turn",
+                    "session_dir": str(home / "traces" / "cursor" / session_id),
+                    "session_id": session_id,
+                    "platform": "cursor",
+                    "cwd": "/proj",
+                    "turn": turn,
+                }
+            )
+        )
+
+        otel_worker.main([str(job_path)])
+
+        assert not job_path.exists()
+        spans = exporter.exported_spans_as_dict()
+        user_span = next(span for span in spans if span["context"]["span_id"] == user_id)
+        turn_span = next(span for span in spans if span["name"] == "invoke_agent")
+        assert user_span["name"] == "interaction: user_message"
+        assert user_span["parent"]["span_id"] == turn_span["context"]["span_id"]
+        assert json.loads(user_span["attributes"]["thirdeye.interaction.payload"]) == payload
