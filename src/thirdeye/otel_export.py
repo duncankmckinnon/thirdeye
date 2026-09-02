@@ -1204,12 +1204,17 @@ def _export_turn_subtree(
     turn_parent_ctx = _parent_context(turn_ctx.trace_id, turn_ctx.span_id)
 
     for interaction in turn.get("interactions") or []:
-        interaction_name = "reasoning" if interaction["kind"] == "reasoning" else f"interaction: {interaction['kind']}"
+        kind = interaction["kind"]
+        # Every record already carries the ids the producer derived, so this
+        # loop only re-emits them: the supplied `parent_span_id` is
+        # authoritative (it may name a span deeper than the turn, such as the
+        # chat span an interaction belongs to) and is never replaced by the
+        # turn's own context.
         interaction_span = _start_span_with_id(
             tracer,
-            interaction_name,
+            "reasoning" if kind == "reasoning" else f"interaction: {kind}",
             int(interaction["span_id"]),
-            parent_ctx=turn_parent_ctx,
+            parent_ctx=_parent_context(turn_ctx.trace_id, int(interaction["parent_span_id"])),
             start_time=_ts_to_ns(interaction["start_ts"]),
             attributes=_interaction_attributes(
                 interaction["attributes"],

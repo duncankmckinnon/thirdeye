@@ -1101,6 +1101,53 @@ class TestInteractionTurnRecovery:
         assert chat_span["parent"]["span_id"] == turn_span["context"]["span_id"]
         assert interaction_span["parent"]["span_id"] != chat_span["context"]["span_id"]
 
+    def test_recovery_interaction_uses_its_supplied_parent_span_id(
+        self, tmp_path: Path, enabled_config: Config, wired_instance, exporter
+    ):
+        """A record's own `parent_span_id` is authoritative, not the turn span.
+
+        Cursor can attach an interaction under a deeper parent (a chat span,
+        say) than the turn itself, so the exporter must honor the id the
+        producer supplied rather than re-parenting everything to the turn.
+        """
+        session_id = "recovery-supplied-parent-session"
+        turn_id = turn_span_id("cursor", session_id, 1)
+        interaction_id = interaction_span_id("cursor", session_id, "reasoning-1")
+        call = _llm_call(call_id="call_live")
+        supplied_parent = chat_span_id("cursor", session_id, "call_live")
+
+        otel_export._export_turn_inner(
+            config=enabled_config,
+            session_dir_=tmp_path / "traces" / "cursor" / session_id,
+            session_id=session_id,
+            platform="cursor",
+            cwd="/proj",
+            turn=_turn(
+                turn_span_id=str(turn_id),
+                llm_calls=[call],
+                interactions=[
+                    _interaction(
+                        interaction_id="reasoning-1",
+                        kind="reasoning",
+                        span_id=str(interaction_id),
+                        parent_span_id=str(supplied_parent),
+                    )
+                ],
+            ),
+        )
+
+        spans = exporter.exported_spans_as_dict()
+        interaction_span = next(
+            span for span in spans if span["context"]["span_id"] == interaction_id
+        )
+        turn_span = next(span for span in spans if span["name"] == "invoke_agent")
+        chat_span = next(span for span in spans if span["name"].startswith("chat"))
+
+        assert interaction_span["parent"]["span_id"] == supplied_parent
+        assert interaction_span["parent"]["span_id"] == chat_span["context"]["span_id"]
+        assert interaction_span["parent"]["span_id"] != turn_span["context"]["span_id"]
+        assert interaction_span["context"]["trace_id"] == turn_span["context"]["trace_id"]
+
     def test_turn_without_interactions_exports_no_interaction_spans(
         self, tmp_path: Path, enabled_config: Config, wired_instance, exporter
     ):
@@ -1115,8 +1162,7 @@ class TestInteractionTurnRecovery:
 
         spans = exporter.exported_spans_as_dict()
         assert not any(
-            span["name"] == "reasoning" or span["name"].startswith("interaction:")
-            for span in spans
+            span["name"] == "reasoning" or span["name"].startswith("interaction:") for span in spans
         )
 
     def test_later_turn_export_resolves_reasoning_child_parent(
