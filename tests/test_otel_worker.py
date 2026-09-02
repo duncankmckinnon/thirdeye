@@ -197,7 +197,7 @@ class TestMainExportsThroughToLogfire:
         # root (session) span plus the turn span.
         assert len(spans) == 2
         turn_span = spans[-1]
-        assert turn_span["name"] == "agent-turn"
+        assert turn_span["name"] == "invoke_agent"
         assert turn_span["attributes"]["gen_ai.conversation.id"] == "s1"
 
     def test_disabled_config_never_reaches_logfire(
@@ -486,7 +486,7 @@ class TestDuplicateChildDeliveryFirstWins:
         assert claim.read_text() == "sent"
 
         spans = exporter.exported_spans_as_dict()
-        turn_spans = [s for s in spans if s["name"] == "agent-turn (subagent)"]
+        turn_spans = [s for s in spans if s["name"] == "invoke_agent"]
         chat_spans = [s for s in spans if s["name"] == "chat" or s["name"].startswith("chat ")]
         tool_spans = [s for s in spans if s["name"].startswith("tool:")]
         assert len(turn_spans) == 1

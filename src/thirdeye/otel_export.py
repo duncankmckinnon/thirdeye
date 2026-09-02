@@ -801,7 +801,7 @@ def _export_subagent_turn_inner(
             session_id=session_id,
             platform=platform,
             cwd=cwd,
-            span_name="agent-turn (subagent)",
+            span_name="invoke_agent",
         )
         if instance.force_flush(timeout_millis=_FLUSH_TIMEOUT_MS) is False:
             raise RuntimeError("subagent turn export was not flushed")
@@ -859,7 +859,7 @@ def _identity_attributes(
 ) -> dict[str, Any]:
     """Attributes naming the session and turn a span belongs to.
 
-    A live span is exported while its `agent-turn` parent is still open, so it
+    A live span is exported while its `invoke_agent` parent is still open, so it
     has no parent row to inherit this from and cannot otherwise be attributed
     to a turn until the turn ends. Applied on the completed-turn path too, so
     the two paths keep one vocabulary.
@@ -1117,7 +1117,7 @@ def _export_turn_subtree(
     session_id: str,
     platform: str,
     cwd: str,
-    span_name: str = "agent-turn",
+    span_name: str = "invoke_agent",
 ) -> None:
     """Export one turn and its whole subtree (LLM calls, their tool calls,
     permission requests, and recursively any nested subagent turns).
@@ -1259,5 +1259,5 @@ def _export_turn_subtree(
             session_id=session_id,
             platform=platform,
             cwd=cwd,
-            span_name="agent-turn (subagent)",
+            span_name="invoke_agent",
         )
