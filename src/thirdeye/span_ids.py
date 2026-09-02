@@ -64,3 +64,8 @@ def chat_span_id(platform: str, session_id: str, message_id: str) -> int:
 def tool_span_id(platform: str, session_id: str, tool_use_id: str) -> int:
     """64-bit span id of the ``tool`` span for tool call ``tool_use_id``."""
     return _derive(f"{platform}/{session_id}/tool/{tool_use_id}", _SPAN_ID_BYTES)
+
+
+def interaction_span_id(platform: str, session_id: str, interaction_id: str) -> int:
+    """64-bit span id of the ``interaction`` span for interaction ``interaction_id``."""
+    return _derive(f"{platform}/{session_id}/interaction/{interaction_id}", _SPAN_ID_BYTES)

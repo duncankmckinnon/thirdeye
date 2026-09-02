@@ -70,6 +70,18 @@ class PermissionRequestSpanDict(TypedDict):
     attributes: dict[str, Any]
 
 
+class InteractionSpanDict(TypedDict):
+    """One user interaction from Cursor, exported as a span."""
+
+    interaction_id: str
+    kind: str
+    span_id: str
+    parent_span_id: str
+    start_ts: str
+    end_ts: str
+    attributes: dict[str, Any]
+
+
 TurnStatus = Literal["completed", "interrupted", "errored"]
 
 
@@ -115,3 +127,5 @@ class TurnSpanDict(TypedDict):
     permission_requests: list[PermissionRequestSpanDict]
     subagents: list[TurnSpanDict]
     attributes: dict[str, Any]
+    # Optional: Cursor interactions exported as spans.
+    interactions: NotRequired[list[InteractionSpanDict]]
