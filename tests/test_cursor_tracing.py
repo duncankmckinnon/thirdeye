@@ -861,6 +861,43 @@ class TestToolReconstruction:
         assert attrs["thirdeye.event.call_seq"] == call_seq
         assert attrs["thirdeye.event.result_seq"] == result_seq
 
+    def test_build_turn_omits_unmatched_tools_without_prompt(self, tmp_path: Path):
+        sid, generation = _TOOL_SID, _TOOL_GEN
+        store = Store(Config(root=tmp_path))
+        _append(
+            store,
+            sid,
+            "tool_call",
+            {
+                "generation_id": generation,
+                "tool_name": "Grep",
+                "tool_use_id": "grep-orphan",
+                "pattern": "orphan",
+            },
+        )
+        stop_seq = _append(store, sid, "turn_stop", {"generation_id": generation})
+
+        assert build_turn(
+            session_dir_=session_dir(tmp_path, "cursor", sid),
+            session_id=sid,
+            generation_id=generation,
+            stop_seq=stop_seq,
+        ) is None
+
+    def test_unmatched_call_with_explicit_id_preserves_call_id(self):
+        call = _tool_event(
+            3,
+            "tool_call",
+            tool_name="Read",
+            tool_use_id="read-explicit",
+            path="src/main.py",
+        )
+
+        tool = _reconstructed_tools([call])[0]
+
+        assert tool["tool_call_id"] == "read-explicit"
+        assert _tool_attrs(tool)["thirdeye.tool.unmatched"] == "call"
+
 
 # --- subagents ---------------------------------------------------------------
 
@@ -1236,9 +1273,15 @@ class TestSubagentToolOwnership:
                 )
             ],
         )
+        child_gen = cursor_subagent_generation_id("call-owner")
         tool = turn["llm_calls"][0]["tool_calls"][0]
+        attrs = tool["attributes"]
         assert tool["name"] == "mcp.search"
-        assert tool["tool_call_id"] == "mcp-1"
+        assert tool["tool_call_id"] == (
+            f"{child_gen}:mcp.search:result:{attrs['thirdeye.event.result_seq']}"
+        )
+        assert attrs["thirdeye.tool.unmatched"] == "result"
+        assert attrs["thirdeye.tool.result.payload"]["tool_use_id"] == "mcp-1"
         assert _parse(tool["end_ts"]) > _parse(tool["start_ts"])
 
     def test_transcript_tool_use_does_not_create_tool_span(self, tmp_path: Path):
