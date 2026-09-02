@@ -34,7 +34,9 @@ class _ArchiveHandler(http.server.BaseHTTPRequestHandler):
 
 
 @contextmanager
-def archive_server(payload: bytes, *, failures: int = 0) -> Iterator[tuple[str, type[_ArchiveHandler]]]:
+def archive_server(
+    payload: bytes, *, failures: int = 0
+) -> Iterator[tuple[str, type[_ArchiveHandler]]]:
     class Handler(_ArchiveHandler):
         pass
 
@@ -58,7 +60,11 @@ def run_download(url: str, destination: Path) -> subprocess.CompletedProcess[str
         ["bash", str(DOWNLOAD_SCRIPT), url, str(destination)],
         capture_output=True,
         text=True,
-        env={"PATH": "/usr/bin:/bin", "PYPI_DOWNLOAD_RETRIES": "2", "PYPI_DOWNLOAD_RETRY_DELAY": "0"},
+        env={
+            "PATH": "/usr/bin:/bin",
+            "PYPI_DOWNLOAD_RETRIES": "2",
+            "PYPI_DOWNLOAD_RETRY_DELAY": "0",
+        },
         check=False,
     )
 
