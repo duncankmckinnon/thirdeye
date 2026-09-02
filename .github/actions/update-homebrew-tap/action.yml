@@ -21,26 +21,7 @@ inputs:
 runs:
   using: composite
   steps:
-    - name: Wait for PyPI availability
-      shell: bash
-      env:
-        VERSION: ${{ inputs.version }}
-        PYPI_PACKAGE: ${{ inputs.pypi-package }}
-      run: |
-        URL="https://files.pythonhosted.org/packages/source/${PYPI_PACKAGE:0:1}/${PYPI_PACKAGE}/${PYPI_PACKAGE}-${VERSION}.tar.gz"
-        echo "Waiting for ${URL} ..."
-        for i in $(seq 1 30); do
-          if curl -sfI "${URL}" >/dev/null 2>&1; then
-            echo "Found on PyPI."
-            exit 0
-          fi
-          echo "  attempt ${i}/30 — retrying in 10s"
-          sleep 10
-        done
-        echo "::error::${PYPI_PACKAGE} ${VERSION} not found on PyPI after 5 minutes"
-        exit 1
-
-    - name: Compute SHA256
+    - name: Download sdist and compute SHA256
       id: sha
       shell: bash
       env:
@@ -48,7 +29,9 @@ runs:
         PYPI_PACKAGE: ${{ inputs.pypi-package }}
       run: |
         URL="https://files.pythonhosted.org/packages/source/${PYPI_PACKAGE:0:1}/${PYPI_PACKAGE}/${PYPI_PACKAGE}-${VERSION}.tar.gz"
-        SHA=$(curl -sL "${URL}" | shasum -a 256 | cut -d' ' -f1)
+        TARBALL=$(mktemp)
+        trap 'rm -f "${TARBALL}"' EXIT
+        SHA=$(bash "${GITHUB_ACTION_PATH}/download-pypi-sdist.sh" "${URL}" "${TARBALL}")
         echo "sha256=${SHA}" >> "$GITHUB_OUTPUT"
         echo "url=${URL}" >> "$GITHUB_OUTPUT"
         echo "SHA256: ${SHA}"
