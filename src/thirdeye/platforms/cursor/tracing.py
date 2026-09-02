@@ -135,8 +135,12 @@ def _tool_span(
     name: str,
     start: dict[str, Any],
     end: dict[str, Any],
+    unmatched: str = "",
 ) -> ToolCallSpanDict:
     start_data, end_data = _data(start), _data(end)
+    start_seq = int(start.get("seq") or 0)
+    end_seq = int(end.get("seq") or 0)
+
     call_id = _text(
         start_data,
         "tool_call_id",
@@ -154,40 +158,60 @@ def _tool_span(
         "call_id",
         "callId",
     )
-    call_id = call_id or f"{generation_id}:{name}:{start.get('seq', 0)}"
-    arguments = _value(
-        start_data,
-        "tool_input",
-        "toolInput",
-        "arguments",
-        "command",
-        "file_path",
-        "filePath",
-        "path",
-    )
-    result = _value(
-        end_data,
-        "tool_output",
-        "toolOutput",
-        "result",
-        "output",
-        "stdout",
-        "response",
-        "edits",
-        "diff",
-    )
+
+    # Compute family for unmatched ID generation
+    family = str(start_data.get("cursor_tool_family") or end_data.get("cursor_tool_family") or name)
+
+    if unmatched == "call":
+        # Unmatched call: use synthetic ID if no explicit ID
+        if not call_id:
+            call_id = f"{generation_id}:{family}:{start_seq}"
+    elif unmatched == "result":
+        # Unmatched result: always use synthetic ID
+        call_id = f"{generation_id}:{name}:result:{end_seq}"
+    else:
+        # Paired
+        call_id = call_id or f"{generation_id}:{name}:{start_seq}"
+
+    # Extract semantic arguments with combined candidate keys
+    _CALL_ARGUMENT_KEYS = ("tool_input", "toolInput", "arguments", "input", "command", "file_path", "filePath", "path")
+    _RESULT_ARGUMENT_KEYS = ("tool_output", "toolOutput", "result", "output", "stdout", "response", "edits", "diff")
+
+    arguments = _extract_semantic_arguments(start_data, _CALL_ARGUMENT_KEYS)
+    result = _extract_semantic_arguments(end_data, _RESULT_ARGUMENT_KEYS)
+
     attributes: dict[str, Any] = {
         "gen_ai.operation.name": "execute_tool",
         "gen_ai.tool.name": name,
         "gen_ai.tool.call.id": call_id,
     }
-    if arguments:
+
+    # Add raw payloads and event sequences
+    if unmatched != "result":
+        # Has a call side
+        attributes["thirdeye.tool.call.payload"] = start_data
+        attributes["thirdeye.event.call_seq"] = start_seq
+
+    if unmatched != "call":
+        # Has a result side
+        attributes["thirdeye.tool.result.payload"] = end_data
+        attributes["thirdeye.event.result_seq"] = end_seq
+
+    # Add semantic arguments
+    if arguments is not None:
         attributes["gen_ai.tool.call.arguments"] = arguments
-    if result:
+    if result is not None:
         attributes["gen_ai.tool.call.result"] = result
+
+    # Add exit code if present
     exit_code = end_data.get("exit_code", end_data.get("exitCode"))
     if exit_code is not None:
         attributes["cursor.tool.exit_code"] = exit_code
+
+    # Add unmatched marker
+    if unmatched:
+        attributes["thirdeye.tool.unmatched"] = unmatched
+
     return {
         "tool_call_id": call_id,
         "name": name,
@@ -224,6 +248,24 @@ def _pair_key(data: dict[str, Any], family: str, name: str) -> str:
     return f"{family}:{name}:{signature}" if signature else f"{family}:{name}"
 
 
+def _extract_semantic_arguments(data: dict[str, Any], keys: tuple[str, ...]) -> Any:
+    """Extract semantic arguments, combining multiple present keys if needed.
+
+    If exactly one candidate key is present, return its value.
+    If multiple are present, return a dict containing all of them.
+    If none are present, return None.
+    """
+    present = {}
+    for key in keys:
+        if key in data:
+            present[key] = data[key]
+    if not present:
+        return None
+    if len(present) == 1:
+        return next(iter(present.values()))
+    return present
+
+
 def _take_open_call(
     open_calls: list[tuple[str, str, dict[str, Any]]], key: str, family: str
 ) -> dict[str, Any] | None:
@@ -246,27 +288,75 @@ def tool_calls_for_generation(
 ) -> list[ToolCallSpanDict]:
     open_calls: list[tuple[str, str, dict[str, Any]]] = []
     completed: list[ToolCallSpanDict] = []
+    open_results: list[tuple[str, str, dict[str, Any]]] = []
+
     for event in events:
         event_type = str(event.get("t") or "")
         data = _data(event)
         name = _text(data, "tool_name", "toolName", "name", "tool") or "unknown"
         family = str(data.get("cursor_tool_family") or name)
+
         if event_type == "tool_call" and not data.get("cursor_instant"):
-            open_calls.append((_pair_key(data, family, name), family, event))
+            key = _pair_key(data, family, name)
+
+            # Check if there's a matching result with explicit ID already processed
+            result_event = None
+            if key.startswith("id:"):
+                for index, (open_key, _, _event) in enumerate(open_results):
+                    if open_key == key:
+                        result_event = open_results.pop(index)[2]
+                        break
+
+            if result_event is None:
+                # No matching result, add to open calls
+                open_calls.append((key, family, event))
+            else:
+                # Matched with a result that came before (reverse order)
+                completed.append(
+                    _tool_span(
+                        session_id=session_id,
+                        generation_id=generation_id,
+                        name=name,
+                        start=event,
+                        end=result_event,
+                    )
+                )
             continue
+
         if event_type == "tool_result" and not data.get("cursor_instant"):
-            start = _take_open_call(open_calls, _pair_key(data, family, name), family) or event
+            key = _pair_key(data, family, name)
+
+            # Try to find a matching call
+            start_event = None
+            if key.startswith("id:"):
+                # Explicit ID: only match calls with exact same key
+                for index, (open_key, _, _event) in enumerate(open_calls):
+                    if open_key == key:
+                        start_event = open_calls.pop(index)[2]
+                        break
+            else:
+                # No explicit ID: use existing logic (signature or FIFO)
+                start_event = _take_open_call(open_calls, key, family)
+
+            if start_event is None:
+                # No matching call, save result for later (unmatched)
+                open_results.append((key, family, event))
+                continue
+
+            # Paired
             completed.append(
                 _tool_span(
                     session_id=session_id,
                     generation_id=generation_id,
                     name=name,
-                    start=start,
+                    start=start_event,
                     end=event,
                 )
             )
             continue
+
         if event_type in {"tool_call", "tool_result"}:
+            # Instant tools (complete in single event)
             completed.append(
                 _tool_span(
                     session_id=session_id,
@@ -276,6 +366,35 @@ def tool_calls_for_generation(
                     end=event,
                 )
             )
+
+    # Handle unmatched calls
+    for pair_key, family, call_event in open_calls:
+        name = _text(_data(call_event), "tool_name", "toolName", "name", "tool") or "unknown"
+        completed.append(
+            _tool_span(
+                session_id=session_id,
+                generation_id=generation_id,
+                name=name,
+                start=call_event,
+                end=call_event,
+                unmatched="call",
+            )
+        )
+
+    # Handle unmatched results
+    for pair_key, family, result_event in open_results:
+        name = _text(_data(result_event), "tool_name", "toolName", "name", "tool") or "unknown"
+        completed.append(
+            _tool_span(
+                session_id=session_id,
+                generation_id=generation_id,
+                name=name,
+                start=result_event,
+                end=result_event,
+                unmatched="result",
+            )
+        )
+
     return completed
 
 
@@ -713,6 +832,12 @@ def build_turn(
 
     committed_tools = committed_tool_call_ids(session_dir_, generation_id)
     tools = [tool for tool in tools if tool["tool_call_id"] not in committed_tools]
+    # Unmatched tools without user prompt context don't form a real turn
+    if not prompt:
+        tools = [
+            tool for tool in tools
+            if tool["attributes"].get("thirdeye.tool.unmatched") is None
+        ]
     llm_calls = []
     if prompt or response or model or usage or tools:
         llm_calls.append(
