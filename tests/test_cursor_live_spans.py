@@ -36,7 +36,7 @@ def test_completed_tool_is_emitted_live_once_and_omitted_at_stop(tmp_path: Path,
     store = Store(config)
     sid, generation = "cursor-session", "generation-1"
     turn_seq = _append(store, sid, "user_message", {"generation_id": generation, "prompt": "test"})
-    _append(
+    call_seq = _append(
         store,
         sid,
         "tool_call",
@@ -83,6 +83,22 @@ def test_completed_tool_is_emitted_live_once_and_omitted_at_stop(tmp_path: Path,
         "gen_ai.tool.call.id": "call-1",
         "gen_ai.tool.call.arguments": "pytest",
         "gen_ai.tool.call.result": "passed",
+        "thirdeye.event.call_seq": call_seq,
+        "thirdeye.event.result_seq": result_seq,
+        "thirdeye.tool.call.payload": {
+            "generation_id": generation,
+            "tool_name": "shell",
+            "cursor_tool_family": "shell",
+            "tool_call_id": "call-1",
+            "command": "pytest",
+        },
+        "thirdeye.tool.result.payload": {
+            "generation_id": generation,
+            "tool_name": "shell",
+            "cursor_tool_family": "shell",
+            "tool_call_id": "call-1",
+            "output": "passed",
+        },
     }
 
     stop_seq = _append(

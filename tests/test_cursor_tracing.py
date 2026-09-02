@@ -12,6 +12,7 @@ from thirdeye.platforms.cursor.subagents import cursor_subagent_generation_id
 from thirdeye.platforms.cursor.tracing import (
     build_turn,
     resolve_subagent_export,
+    tool_calls_for_generation,
     usage_from_payload,
 )
 from thirdeye.span_ids import turn_span_id
@@ -479,6 +480,618 @@ def test_reads_without_echoed_path_pair_fifo(tmp_path: Path):
     ]
 
 
+# --- tool reconstruction -----------------------------------------------------
+
+_TOOL_TS = "2026-09-02T12:00:00.000Z"
+_TOOL_GEN = "gen-reconstruct"
+_TOOL_SID = "cursor-session"
+
+
+def _tool_event(seq: int, event_type: str, ts: str = _TOOL_TS, **data) -> dict:
+    return {
+        "seq": seq,
+        "t": event_type,
+        "ts": ts,
+        "data": {"generation_id": _TOOL_GEN, **data},
+    }
+
+
+def _reconstructed_tools(events: list[dict]):
+    return tool_calls_for_generation(events, _TOOL_SID, _TOOL_GEN)
+
+
+def _tool_attrs(tool: dict) -> dict:
+    return tool["attributes"]
+
+
+class TestToolReconstruction:
+    def test_paired_span_preserves_raw_payloads_and_event_seqs(self):
+        call = _tool_event(
+            2,
+            "tool_call",
+            tool_name="StrReplace",
+            cursor_tool_family="edit",
+            tool_use_id="edit-1",
+            tool_input={"path": "src/a.py", "old_string": "x", "new_string": "y"},
+        )
+        result = _tool_event(
+            5,
+            "tool_result",
+            tool_name="StrReplace",
+            cursor_tool_family="edit",
+            tool_use_id="edit-1",
+            tool_output={"edits": [{"path": "src/a.py"}], "applied": True},
+            exit_code=0,
+        )
+
+        tool = _reconstructed_tools([call, result])[0]
+        attrs = _tool_attrs(tool)
+
+        assert attrs["thirdeye.tool.call.payload"] == call["data"]
+        assert attrs["thirdeye.tool.result.payload"] == result["data"]
+        assert attrs["thirdeye.event.call_seq"] == 2
+        assert attrs["thirdeye.event.result_seq"] == 5
+        assert attrs["gen_ai.tool.call.arguments"] == {
+            "path": "src/a.py",
+            "old_string": "x",
+            "new_string": "y",
+        }
+        assert attrs["gen_ai.tool.call.result"] == {
+            "edits": [{"path": "src/a.py"}],
+            "applied": True,
+        }
+
+    def test_semantic_arguments_use_single_present_candidate(self):
+        call = _tool_event(
+            1,
+            "tool_call",
+            tool_name="shell",
+            cursor_tool_family="shell",
+            command="pytest -q",
+        )
+        result = _tool_event(
+            2,
+            "tool_result",
+            tool_name="shell",
+            cursor_tool_family="shell",
+            command="pytest -q",
+            output="passed",
+        )
+
+        attrs = _tool_attrs(_reconstructed_tools([call, result])[0])
+
+        assert attrs["gen_ai.tool.call.arguments"] == "pytest -q"
+        assert attrs["gen_ai.tool.call.result"] == "passed"
+
+    def test_semantic_arguments_honor_input_key(self):
+        call = _tool_event(1, "tool_call", tool_name="custom", input={"query": "find tests"})
+        result = _tool_event(
+            2,
+            "tool_result",
+            tool_name="custom",
+            response={"matches": 3},
+        )
+
+        attrs = _tool_attrs(_reconstructed_tools([call, result])[0])
+
+        assert attrs["gen_ai.tool.call.arguments"] == {"query": "find tests"}
+        assert attrs["gen_ai.tool.call.result"] == {"matches": 3}
+
+    def test_semantic_arguments_combine_all_present_candidates(self):
+        call = _tool_event(
+            1,
+            "tool_call",
+            tool_name="ApplyPatch",
+            cursor_tool_family="edit",
+            tool_input={"path": "src/a.py"},
+            command="apply",
+            file_path="src/a.py",
+        )
+        result = _tool_event(
+            2,
+            "tool_result",
+            tool_name="ApplyPatch",
+            cursor_tool_family="edit",
+            tool_output={"applied": True},
+            output="done",
+            diff="--- a\n+++ b",
+        )
+
+        attrs = _tool_attrs(_reconstructed_tools([call, result])[0])
+
+        assert attrs["gen_ai.tool.call.arguments"] == {
+            "tool_input": {"path": "src/a.py"},
+            "command": "apply",
+            "file_path": "src/a.py",
+        }
+        assert attrs["gen_ai.tool.call.result"] == {
+            "tool_output": {"applied": True},
+            "output": "done",
+            "diff": "--- a\n+++ b",
+        }
+
+    def test_reverse_explicit_id_completion_pairs_correctly(self):
+        result = _tool_event(
+            1,
+            "tool_result",
+            tool_name="Task",
+            tool_use_id="call-reverse",
+            tool_output={"status": "done"},
+        )
+        call = _tool_event(
+            2,
+            "tool_call",
+            tool_name="Task",
+            tool_use_id="call-reverse",
+            tool_input={"prompt": "delegate"},
+        )
+
+        tool = _reconstructed_tools([result, call])[0]
+
+        assert tool["tool_call_id"] == "call-reverse"
+        attrs = _tool_attrs(tool)
+        assert attrs["thirdeye.tool.call.payload"] == call["data"]
+        assert attrs["thirdeye.tool.result.payload"] == result["data"]
+        assert attrs["thirdeye.event.call_seq"] == 2
+        assert attrs["thirdeye.event.result_seq"] == 1
+        assert attrs["gen_ai.tool.call.arguments"] == {"prompt": "delegate"}
+        assert attrs["gen_ai.tool.call.result"] == {"status": "done"}
+
+    def test_explicit_id_overrides_contradictory_signature(self):
+        call_one = _tool_event(
+            1,
+            "tool_call",
+            tool_name="read_file",
+            cursor_tool_family="read",
+            tool_use_id="call-1",
+            path="src/first.py",
+        )
+        call_two = _tool_event(
+            2,
+            "tool_call",
+            tool_name="read_file",
+            cursor_tool_family="read",
+            tool_use_id="call-2",
+            path="src/second.py",
+        )
+        result_two = _tool_event(
+            3,
+            "tool_result",
+            tool_name="read_file",
+            cursor_tool_family="read",
+            tool_use_id="call-2",
+            path="src/first.py",
+            output="second contents",
+        )
+        result_one = _tool_event(
+            4,
+            "tool_result",
+            tool_name="read_file",
+            cursor_tool_family="read",
+            tool_use_id="call-1",
+            path="src/second.py",
+            output="first contents",
+        )
+
+        tools = _reconstructed_tools([call_one, call_two, result_two, result_one])
+        by_id = {tool["tool_call_id"]: tool for tool in tools}
+
+        assert _tool_attrs(by_id["call-1"])["gen_ai.tool.call.arguments"] == "src/first.py"
+        assert _tool_attrs(by_id["call-1"])["gen_ai.tool.call.result"] == "first contents"
+        assert _tool_attrs(by_id["call-2"])["gen_ai.tool.call.arguments"] == "src/second.py"
+        assert _tool_attrs(by_id["call-2"])["gen_ai.tool.call.result"] == "second contents"
+        assert _tool_attrs(by_id["call-1"])["thirdeye.event.result_seq"] == 4
+        assert _tool_attrs(by_id["call-2"])["thirdeye.event.result_seq"] == 3
+
+    def test_explicit_id_mismatch_does_not_steal_family_call(self):
+        call = _tool_event(
+            1,
+            "tool_call",
+            tool_name="shell",
+            cursor_tool_family="shell",
+            command="only-call",
+        )
+        result = _tool_event(
+            2,
+            "tool_result",
+            tool_name="shell",
+            cursor_tool_family="shell",
+            tool_use_id="missing-call-id",
+            output="orphan-out",
+        )
+
+        tools = _reconstructed_tools([call, result])
+
+        assert len(tools) == 2
+        unmatched_call = next(
+            tool for tool in tools if _tool_attrs(tool).get("thirdeye.tool.unmatched") == "call"
+        )
+        unmatched_result = next(
+            tool for tool in tools if _tool_attrs(tool).get("thirdeye.tool.unmatched") == "result"
+        )
+        assert unmatched_call["tool_call_id"] == f"{_TOOL_GEN}:shell:1"
+        assert unmatched_result["tool_call_id"] == f"{_TOOL_GEN}:shell:result:2"
+        assert "thirdeye.tool.result.payload" not in _tool_attrs(unmatched_call)
+        assert "thirdeye.tool.call.payload" not in _tool_attrs(unmatched_result)
+
+    def test_signature_pairing_retains_payload_metadata(self):
+        call = _tool_event(
+            1,
+            "tool_call",
+            tool_name="shell",
+            cursor_tool_family="shell",
+            command="make build",
+        )
+        result = _tool_event(
+            2,
+            "tool_result",
+            tool_name="shell",
+            cursor_tool_family="shell",
+            command="make build",
+            output="built",
+            exit_code=0,
+        )
+
+        attrs = _tool_attrs(_reconstructed_tools([call, result])[0])
+
+        assert attrs["gen_ai.tool.call.arguments"] == "make build"
+        assert attrs["gen_ai.tool.call.result"] == "built"
+        assert attrs["thirdeye.tool.call.payload"] == call["data"]
+        assert attrs["thirdeye.tool.result.payload"] == result["data"]
+        assert attrs["cursor.tool.exit_code"] == 0
+
+    def test_fifo_pairing_retains_payload_metadata(self):
+        call_first = _tool_event(
+            1,
+            "tool_call",
+            tool_name="shell",
+            cursor_tool_family="shell",
+            command="first",
+        )
+        call_second = _tool_event(
+            2,
+            "tool_call",
+            tool_name="shell",
+            cursor_tool_family="shell",
+            command="second",
+        )
+        result_first = _tool_event(
+            3,
+            "tool_result",
+            tool_name="shell",
+            cursor_tool_family="shell",
+            output="out-first",
+        )
+        result_second = _tool_event(
+            4,
+            "tool_result",
+            tool_name="shell",
+            cursor_tool_family="shell",
+            output="out-second",
+        )
+
+        tools = _reconstructed_tools([call_first, call_second, result_first, result_second])
+
+        assert [
+            (
+                _tool_attrs(tool)["gen_ai.tool.call.arguments"],
+                _tool_attrs(tool)["gen_ai.tool.call.result"],
+                _tool_attrs(tool)["thirdeye.event.call_seq"],
+                _tool_attrs(tool)["thirdeye.event.result_seq"],
+            )
+            for tool in tools
+        ] == [
+            ("first", "out-first", 1, 3),
+            ("second", "out-second", 2, 4),
+        ]
+
+    def test_unmatched_call_emits_call_marker(self):
+        call = _tool_event(
+            7,
+            "tool_call",
+            tool_name="Grep",
+            tool_use_id="grep-1",
+            pattern="tool_calls_for_generation",
+        )
+
+        tool = _reconstructed_tools([call])[0]
+        attrs = _tool_attrs(tool)
+
+        assert attrs["thirdeye.tool.unmatched"] == "call"
+        assert attrs["thirdeye.tool.call.payload"] == call["data"]
+        assert attrs["thirdeye.event.call_seq"] == 7
+        assert "thirdeye.tool.result.payload" not in attrs
+        assert "thirdeye.event.result_seq" not in attrs
+
+    def test_unmatched_result_emits_synthetic_id_and_result_marker(self):
+        result = _tool_event(
+            9,
+            "tool_result",
+            tool_name="mcp.search",
+            tool_use_id="mcp-1",
+            tool_output="found",
+        )
+
+        tool = _reconstructed_tools([result])[0]
+        attrs = _tool_attrs(tool)
+
+        assert tool["tool_call_id"] == f"{_TOOL_GEN}:mcp.search:result:9"
+        assert attrs["thirdeye.tool.unmatched"] == "result"
+        assert attrs["thirdeye.tool.result.payload"] == result["data"]
+        assert attrs["thirdeye.event.result_seq"] == 9
+        assert "thirdeye.tool.call.payload" not in attrs
+        assert "thirdeye.event.call_seq" not in attrs
+
+    def test_build_turn_surfaces_reconstructed_tool_payloads(self, tmp_path: Path):
+        sid, generation = _TOOL_SID, _TOOL_GEN
+        store = Store(Config(root=tmp_path))
+        call_seq = _append(
+            store,
+            sid,
+            "tool_call",
+            {
+                "generation_id": generation,
+                "tool_name": "shell",
+                "cursor_tool_family": "shell",
+                "command": "echo hi",
+            },
+        )
+        result_seq = _append(
+            store,
+            sid,
+            "tool_result",
+            {
+                "generation_id": generation,
+                "tool_name": "shell",
+                "cursor_tool_family": "shell",
+                "command": "echo hi",
+                "output": "hi",
+            },
+        )
+        _append(store, sid, "user_message", {"generation_id": generation, "prompt": "run shell"})
+        stop_seq = _append(store, sid, "turn_stop", {"generation_id": generation})
+
+        tool = _build(tmp_path, sid, generation, stop_seq)["llm_calls"][0]["tool_calls"][0]
+        attrs = tool["attributes"]
+        call_event = _stored_event(store, sid, call_seq)
+        result_event = _stored_event(store, sid, result_seq)
+
+        assert attrs["thirdeye.tool.call.payload"] == call_event["data"]
+        assert attrs["thirdeye.tool.result.payload"] == result_event["data"]
+        assert attrs["thirdeye.event.call_seq"] == call_seq
+        assert attrs["thirdeye.event.result_seq"] == result_seq
+
+    def test_build_turn_keeps_unmatched_tools_without_prompt(self, tmp_path: Path):
+        """Tool-only generations still export their unmatched sides."""
+        sid, generation = _TOOL_SID, _TOOL_GEN
+        store = Store(Config(root=tmp_path))
+        call_seq = _append(
+            store,
+            sid,
+            "tool_call",
+            {
+                "generation_id": generation,
+                "tool_name": "Grep",
+                "tool_use_id": "grep-orphan",
+                "pattern": "orphan",
+            },
+        )
+        stop_seq = _append(store, sid, "turn_stop", {"generation_id": generation})
+
+        turn = build_turn(
+            session_dir_=session_dir(tmp_path, "cursor", sid),
+            session_id=sid,
+            generation_id=generation,
+            stop_seq=stop_seq,
+        )
+
+        assert turn is not None
+        tool = turn["llm_calls"][0]["tool_calls"][0]
+        assert tool["tool_call_id"] == "grep-orphan"
+        assert _tool_attrs(tool)["thirdeye.tool.unmatched"] == "call"
+        assert _tool_attrs(tool)["thirdeye.event.call_seq"] == call_seq
+
+    def test_reverse_signature_completion_pairs_correctly(self):
+        result = _tool_event(
+            1,
+            "tool_result",
+            tool_name="shell",
+            cursor_tool_family="shell",
+            command="make build",
+            output="built",
+        )
+        call = _tool_event(
+            2,
+            "tool_call",
+            tool_name="shell",
+            cursor_tool_family="shell",
+            command="make build",
+        )
+
+        tools = _reconstructed_tools([result, call])
+
+        assert len(tools) == 1
+        attrs = _tool_attrs(tools[0])
+        assert "thirdeye.tool.unmatched" not in attrs
+        assert attrs["thirdeye.event.call_seq"] == 2
+        assert attrs["thirdeye.event.result_seq"] == 1
+        assert attrs["thirdeye.tool.call.payload"] == call["data"]
+        assert attrs["thirdeye.tool.result.payload"] == result["data"]
+
+    def test_reverse_completion_orders_span_timestamps(self):
+        result = _tool_event(
+            1,
+            "tool_result",
+            ts="2026-09-02T12:00:01.000Z",
+            tool_name="Task",
+            tool_use_id="call-reverse",
+            tool_output={"status": "done"},
+        )
+        call = _tool_event(
+            2,
+            "tool_call",
+            ts="2026-09-02T12:00:04.000Z",
+            tool_name="Task",
+            tool_use_id="call-reverse",
+            tool_input={"prompt": "delegate"},
+        )
+
+        tool = _reconstructed_tools([result, call])[0]
+
+        # The callbacks arrived reversed; the span still spans the observed
+        # interval rather than ending before it starts.
+        assert tool["start_ts"] == "2026-09-02T12:00:01.000Z"
+        assert tool["end_ts"] == "2026-09-02T12:00:04.000Z"
+
+    def test_forward_completion_keeps_call_and_result_timestamps(self):
+        call = _tool_event(
+            1,
+            "tool_call",
+            ts="2026-09-02T12:00:01.000Z",
+            tool_name="shell",
+            cursor_tool_family="shell",
+            command="make build",
+        )
+        result = _tool_event(
+            2,
+            "tool_result",
+            ts="2026-09-02T12:00:09.000Z",
+            tool_name="shell",
+            cursor_tool_family="shell",
+            command="make build",
+            output="built",
+        )
+
+        tool = _reconstructed_tools([call, result])[0]
+
+        assert tool["start_ts"] == "2026-09-02T12:00:01.000Z"
+        assert tool["end_ts"] == "2026-09-02T12:00:09.000Z"
+
+    def test_unsigned_result_does_not_claim_explicit_id_call(self):
+        call = _tool_event(
+            1,
+            "tool_call",
+            tool_name="shell",
+            cursor_tool_family="shell",
+            tool_use_id="call-explicit",
+            command="make build",
+        )
+        result = _tool_event(
+            2,
+            "tool_result",
+            tool_name="shell",
+            cursor_tool_family="shell",
+            output="built",
+        )
+
+        tools = _reconstructed_tools([call, result])
+
+        assert [_tool_attrs(tool).get("thirdeye.tool.unmatched") for tool in tools] == [
+            "call",
+            "result",
+        ]
+        assert tools[0]["tool_call_id"] == "call-explicit"
+        assert tools[1]["tool_call_id"] == f"{_TOOL_GEN}:shell:result:2"
+
+    def test_unsigned_result_does_not_reach_past_explicit_id_call(self):
+        """Positional pairing never reorders: it stops at an explicit id it cannot match."""
+        explicit_call = _tool_event(
+            1,
+            "tool_call",
+            tool_name="shell",
+            cursor_tool_family="shell",
+            tool_use_id="call-explicit",
+            command="explicit",
+        )
+        signature_call = _tool_event(
+            2,
+            "tool_call",
+            tool_name="shell",
+            cursor_tool_family="shell",
+            command="signed",
+        )
+        result = _tool_event(
+            3,
+            "tool_result",
+            tool_name="shell",
+            cursor_tool_family="shell",
+            output="built",
+        )
+
+        tools = _reconstructed_tools([explicit_call, signature_call, result])
+
+        assert [_tool_attrs(tool).get("thirdeye.tool.unmatched") for tool in tools] == [
+            "call",
+            "call",
+            "result",
+        ]
+        assert [tool["tool_call_id"] for tool in tools] == [
+            "call-explicit",
+            f"{_TOOL_GEN}:shell:2",
+            f"{_TOOL_GEN}:shell:result:3",
+        ]
+
+    def test_unmatched_call_with_explicit_id_preserves_call_id(self):
+        call = _tool_event(
+            3,
+            "tool_call",
+            tool_name="Read",
+            tool_use_id="read-explicit",
+            path="src/main.py",
+        )
+
+        tool = _reconstructed_tools([call])[0]
+
+        assert tool["tool_call_id"] == "read-explicit"
+        assert _tool_attrs(tool)["thirdeye.tool.unmatched"] == "call"
+
+    def test_instant_tool_keeps_one_payload_on_both_sides(self):
+        """Preserved: an instant callback is a complete call and result at once."""
+        event = _tool_event(
+            1,
+            "tool_result",
+            tool_name="Grep",
+            tool_use_id="grep-instant",
+            cursor_instant=True,
+            tool_input={"pattern": "TODO"},
+            tool_output='{"matches": 3}',
+            duration=25,
+        )
+
+        tools = _reconstructed_tools([event])
+        attrs = _tool_attrs(tools[0])
+
+        assert len(tools) == 1
+        assert tools[0]["tool_call_id"] == "grep-instant"
+        assert "thirdeye.tool.unmatched" not in attrs
+        assert attrs["thirdeye.tool.call.payload"] == event["data"]
+        assert attrs["thirdeye.tool.result.payload"] == event["data"]
+        assert attrs["thirdeye.event.call_seq"] == 1
+        assert attrs["thirdeye.event.result_seq"] == 1
+        # Embedded JSON is decoded rather than pre-stringified.
+        assert attrs["gen_ai.tool.call.result"] == {"matches": 3}
+        assert tools[0]["start_ts"] < tools[0]["end_ts"]
+
+    def test_pairing_tolerates_unusable_timestamps(self):
+        """Preserved fail-open behavior: unparseable or absent `ts` never raises."""
+        malformed = _reconstructed_tools(
+            [
+                _tool_event(1, "tool_result", ts="not-a-timestamp", command="c", output="o"),
+                _tool_event(2, "tool_call", ts="also-not-a-timestamp", command="c"),
+            ]
+        )
+        missing = _reconstructed_tools(
+            [
+                _tool_event(1, "tool_call", ts="", command="c"),
+                _tool_event(2, "tool_result", ts="", command="c", output="o"),
+            ]
+        )
+
+        assert malformed[0]["start_ts"] == "also-not-a-timestamp"
+        assert malformed[0]["end_ts"] == "not-a-timestamp"
+        assert (missing[0]["start_ts"], missing[0]["end_ts"]) == ("", "")
+
+
 # --- subagents ---------------------------------------------------------------
 
 
@@ -853,9 +1466,15 @@ class TestSubagentToolOwnership:
                 )
             ],
         )
+        child_gen = cursor_subagent_generation_id("call-owner")
         tool = turn["llm_calls"][0]["tool_calls"][0]
+        attrs = tool["attributes"]
         assert tool["name"] == "mcp.search"
-        assert tool["tool_call_id"] == "mcp-1"
+        assert tool["tool_call_id"] == (
+            f"{child_gen}:mcp.search:result:{attrs['thirdeye.event.result_seq']}"
+        )
+        assert attrs["thirdeye.tool.unmatched"] == "result"
+        assert attrs["thirdeye.tool.result.payload"]["tool_use_id"] == "mcp-1"
         assert _parse(tool["end_ts"]) > _parse(tool["start_ts"])
 
     def test_transcript_tool_use_does_not_create_tool_span(self, tmp_path: Path):
@@ -1113,7 +1732,8 @@ class TestLegacySubagentCompatibility:
         assert _only_subagent(_build(tmp_path, sid, generation, stop_seq))["status"] == expected
 
 
-def test_build_turn_without_user_message_returns_none(tmp_path: Path):
+def test_build_turn_without_user_message_keeps_unmatched_tool(tmp_path: Path):
+    """A tool-only generation is still a turn: its unmatched call stays visible."""
     sid, generation = "cursor-session", "gen-tools-only"
     store = Store(Config(root=tmp_path))
     _append(
@@ -1122,6 +1742,26 @@ def test_build_turn_without_user_message_returns_none(tmp_path: Path):
         "tool_call",
         {"generation_id": generation, "tool_name": "shell", "command": "ls"},
     )
+    stop_seq = _append(store, sid, "turn_stop", {"generation_id": generation})
+
+    turn = build_turn(
+        session_dir_=session_dir(tmp_path, "cursor", sid),
+        session_id=sid,
+        generation_id=generation,
+        stop_seq=stop_seq,
+    )
+
+    assert turn is not None
+    assert turn["input_message"] == ""
+    tool = turn["llm_calls"][0]["tool_calls"][0]
+    assert tool["attributes"]["thirdeye.tool.unmatched"] == "call"
+    assert tool["attributes"]["gen_ai.tool.call.arguments"] == "ls"
+
+
+def test_build_turn_without_llm_content_returns_none(tmp_path: Path):
+    sid, generation = "cursor-session", "gen-empty"
+    store = Store(Config(root=tmp_path))
+    _append(store, sid, "reasoning", {"generation_id": generation, "text": "thinking"})
     stop_seq = _append(store, sid, "turn_stop", {"generation_id": generation})
 
     assert (

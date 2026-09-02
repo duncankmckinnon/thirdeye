@@ -33,6 +33,28 @@ from thirdeye.tracing.model import (
 
 _PLATFORM = "cursor"
 
+_CALL_ID_KEYS = ("tool_call_id", "toolCallId", "tool_use_id", "toolUseId", "call_id", "callId")
+_CALL_ARGUMENT_KEYS = (
+    "tool_input",
+    "toolInput",
+    "arguments",
+    "input",
+    "command",
+    "file_path",
+    "filePath",
+    "path",
+)
+_RESULT_ARGUMENT_KEYS = (
+    "tool_output",
+    "toolOutput",
+    "result",
+    "output",
+    "stdout",
+    "response",
+    "edits",
+    "diff",
+)
+
 
 def _data(event: dict[str, Any]) -> dict[str, Any]:
     value = event.get("data")
@@ -68,14 +90,6 @@ def _structured(value: Any) -> Any:
         return json.loads(value)
     except (json.JSONDecodeError, TypeError):
         return value
-
-
-def _value(data: dict[str, Any], *keys: str) -> Any:
-    for key in keys:
-        value = data.get(key)
-        if value not in (None, ""):
-            return _structured(value)
-    return None
 
 
 def _start_ts(event: dict[str, Any]) -> str:
@@ -135,68 +149,85 @@ def _tool_span(
     name: str,
     start: dict[str, Any],
     end: dict[str, Any],
+    unmatched: str = "",
 ) -> ToolCallSpanDict:
     start_data, end_data = _data(start), _data(end)
-    call_id = _text(
-        start_data,
-        "tool_call_id",
-        "toolCallId",
-        "tool_use_id",
-        "toolUseId",
-        "call_id",
-        "callId",
-    ) or _text(
-        end_data,
-        "tool_call_id",
-        "toolCallId",
-        "tool_use_id",
-        "toolUseId",
-        "call_id",
-        "callId",
-    )
-    call_id = call_id or f"{generation_id}:{name}:{start.get('seq', 0)}"
-    arguments = _value(
-        start_data,
-        "tool_input",
-        "toolInput",
-        "arguments",
-        "command",
-        "file_path",
-        "filePath",
-        "path",
-    )
-    result = _value(
-        end_data,
-        "tool_output",
-        "toolOutput",
-        "result",
-        "output",
-        "stdout",
-        "response",
-        "edits",
-        "diff",
-    )
+    start_seq = int(start.get("seq") or 0)
+    end_seq = int(end.get("seq") or 0)
+    family = str(start_data.get("cursor_tool_family") or end_data.get("cursor_tool_family") or name)
+
+    call_id = _text(start_data, *_CALL_ID_KEYS) or _text(end_data, *_CALL_ID_KEYS)
+    if unmatched == "result":
+        # A result with no call of its own cannot borrow the call id it echoes:
+        # the absent call may still arrive live and claim that id.
+        call_id = f"{generation_id}:{name}:result:{end_seq}"
+    elif unmatched == "call":
+        call_id = call_id or f"{generation_id}:{family}:{start_seq}"
+    else:
+        call_id = call_id or f"{generation_id}:{name}:{start_seq}"
+
     attributes: dict[str, Any] = {
         "gen_ai.operation.name": "execute_tool",
         "gen_ai.tool.name": name,
         "gen_ai.tool.call.id": call_id,
     }
-    if arguments:
+    # The raw payloads are the lossless record; the semantic attributes below
+    # are a best-effort reading of them for querying.
+    if unmatched != "result":
+        attributes["thirdeye.tool.call.payload"] = start_data
+        attributes["thirdeye.event.call_seq"] = start_seq
+    if unmatched != "call":
+        attributes["thirdeye.tool.result.payload"] = end_data
+        attributes["thirdeye.event.result_seq"] = end_seq
+
+    arguments = _semantic_value(start_data, _CALL_ARGUMENT_KEYS)
+    if arguments is not None:
         attributes["gen_ai.tool.call.arguments"] = arguments
-    if result:
+    result = _semantic_value(end_data, _RESULT_ARGUMENT_KEYS)
+    if result is not None:
         attributes["gen_ai.tool.call.result"] = result
+
     exit_code = end_data.get("exit_code", end_data.get("exitCode"))
     if exit_code is not None:
         attributes["cursor.tool.exit_code"] = exit_code
+    if unmatched:
+        attributes["thirdeye.tool.unmatched"] = unmatched
+
+    if start is end:
+        span_start, span_end = _start_ts(end), str(end.get("ts") or "")
+    else:
+        span_start, span_end = _span_window(str(start.get("ts") or ""), str(end.get("ts") or ""))
     return {
         "tool_call_id": call_id,
         "name": name,
-        "start_ts": (
-            _start_ts(end) if start is end else str(start.get("ts") or end.get("ts") or "")
-        ),
-        "end_ts": str(end.get("ts") or start.get("ts") or ""),
+        "start_ts": span_start,
+        "end_ts": span_end,
         "attributes": attributes,
     }
+
+
+def _span_window(call_ts: str, result_ts: str) -> tuple[str, str]:
+    """Order a call/result pair into a span window that cannot run backwards.
+
+    Cursor sometimes delivers the after-callback before the before-callback, so
+    the call is not always the earlier event. The span covers the interval the
+    two callbacks actually observed; `thirdeye.event.call_seq` and
+    `thirdeye.event.result_seq` keep the roles legible either way.
+    """
+    span_start, span_end = call_ts or result_ts, result_ts or call_ts
+    first, second = _parse_ts(span_start), _parse_ts(span_end)
+    if first is not None and second is not None and second < first:
+        return span_end, span_start
+    return span_start, span_end
+
+
+def _parse_ts(value: str) -> datetime | None:
+    if not value:
+        return None
+    try:
+        return datetime.fromisoformat(value[:-1] + "+00:00" if value.endswith("Z") else value)
+    except ValueError:
+        return None
 
 
 def _pair_key(data: dict[str, Any], family: str, name: str) -> str:
@@ -206,9 +237,7 @@ def _pair_key(data: dict[str, Any], family: str, name: str) -> str:
     payload body (the command, tool input, or read path), which the matching
     after-callback may echo. Degrades to `family:name` when nothing is echoed.
     """
-    explicit = _text(
-        data, "tool_call_id", "toolCallId", "tool_use_id", "toolUseId", "call_id", "callId"
-    )
+    explicit = _text(data, *_CALL_ID_KEYS)
     if explicit:
         return f"id:{explicit}"
     signature = _text(
@@ -224,20 +253,58 @@ def _pair_key(data: dict[str, Any], family: str, name: str) -> str:
     return f"{family}:{name}:{signature}" if signature else f"{family}:{name}"
 
 
-def _take_open_call(
-    open_calls: list[tuple[str, str, dict[str, Any]]], key: str, family: str
+def _semantic_value(data: dict[str, Any], keys: tuple[str, ...]) -> Any:
+    """Read the payload's arguments (or its result) under any spelling Cursor uses.
+
+    One present candidate is that value; several are kept together under their
+    own keys, since guessing which spelling is canonical would drop the rest.
+    Values stay structured -- embedded JSON is decoded, never pre-stringified,
+    because `_flatten_attrs()` owns serialization.
+    """
+    present = {key: _structured(data[key]) for key in keys if data.get(key) not in (None, "")}
+    if not present:
+        return None
+    if len(present) == 1:
+        return next(iter(present.values()))
+    return present
+
+
+def _take_pending(
+    pending: list[tuple[str, str, dict[str, Any]]],
+    key: str,
+    family: str,
+    *,
+    family_fifo: bool,
 ) -> dict[str, Any] | None:
-    """Claim the open call matching `key`, else the oldest of the same family.
+    """Claim the pending counterpart matching `key`, else the oldest of the same family.
+
+    The family pass is a last resort for callbacks that identify nothing, so it
+    runs only when `family_fifo` says this side carries neither an explicit id
+    nor a signature. Cursor's after-callbacks routinely echo nothing while the
+    before-callback carried a command or path, so a pending signature does not
+    disqualify the match -- an explicit id does: that invocation's other
+    callback would have echoed the same id, so a callback without one belongs
+    elsewhere.
+
+    The family pass is strictly positional: it takes the oldest same-family
+    counterpart, and gives up when that one carries an explicit id rather than
+    reaching past it. Skipping ahead would silently reorder concurrent tools,
+    which is the one thing positional pairing has no evidence for.
 
     Both passes take the earliest match: tools that complete in dispatch order
     are the common case, and a LIFO match would reverse exactly those.
     """
-    for index, (open_key, _, _event) in enumerate(open_calls):
-        if open_key == key:
-            return open_calls.pop(index)[2]
-    for index, (_, open_family, _event) in enumerate(open_calls):
-        if open_family == family:
-            return open_calls.pop(index)[2]
+    for index, (pending_key, _, _event) in enumerate(pending):
+        if pending_key == key:
+            return pending.pop(index)[2]
+    if not family_fifo:
+        return None
+    for index, (pending_key, pending_family, _event) in enumerate(pending):
+        if pending_family != family:
+            continue
+        if pending_key.startswith("id:"):
+            return None
+        return pending.pop(index)[2]
     return None
 
 
@@ -245,37 +312,58 @@ def tool_calls_for_generation(
     events: list[dict[str, Any]], session_id: str, generation_id: str
 ) -> list[ToolCallSpanDict]:
     open_calls: list[tuple[str, str, dict[str, Any]]] = []
+    open_results: list[tuple[str, str, dict[str, Any]]] = []
     completed: list[ToolCallSpanDict] = []
+
+    def span(name: str, start: dict[str, Any], end: dict[str, Any], unmatched: str = "") -> None:
+        completed.append(
+            _tool_span(
+                session_id=session_id,
+                generation_id=generation_id,
+                name=name,
+                start=start,
+                end=end,
+                unmatched=unmatched,
+            )
+        )
+
     for event in events:
         event_type = str(event.get("t") or "")
         data = _data(event)
         name = _text(data, "tool_name", "toolName", "name", "tool") or "unknown"
         family = str(data.get("cursor_tool_family") or name)
-        if event_type == "tool_call" and not data.get("cursor_instant"):
-            open_calls.append((_pair_key(data, family, name), family, event))
+        if event_type not in {"tool_call", "tool_result"}:
             continue
-        if event_type == "tool_result" and not data.get("cursor_instant"):
-            start = _take_open_call(open_calls, _pair_key(data, family, name), family) or event
-            completed.append(
-                _tool_span(
-                    session_id=session_id,
-                    generation_id=generation_id,
-                    name=name,
-                    start=start,
-                    end=event,
-                )
-            )
+        if data.get("cursor_instant"):
+            span(name, event, event)
             continue
-        if event_type in {"tool_call", "tool_result"}:
-            completed.append(
-                _tool_span(
-                    session_id=session_id,
-                    generation_id=generation_id,
-                    name=name,
-                    start=event,
-                    end=event,
-                )
-            )
+
+        key = _pair_key(data, family, name)
+        # A signatureless key identifies nothing beyond the family, which is the
+        # only case where positional (FIFO) pairing is allowed to guess.
+        family_fifo = key == f"{family}:{name}"
+        if event_type == "tool_call":
+            # Cursor can deliver the after-callback first, so a call also looks
+            # back at results still waiting for one.
+            result_event = _take_pending(open_results, key, family, family_fifo=family_fifo)
+            if result_event is None:
+                open_calls.append((key, family, event))
+            else:
+                span(name, event, result_event)
+            continue
+
+        call_event = _take_pending(open_calls, key, family, family_fifo=family_fifo)
+        if call_event is None:
+            open_results.append((key, family, event))
+        else:
+            span(name, call_event, event)
+
+    for _key, _family, call_event in open_calls:
+        name = _text(_data(call_event), "tool_name", "toolName", "name", "tool") or "unknown"
+        span(name, call_event, call_event, unmatched="call")
+    for _key, _family, result_event in open_results:
+        name = _text(_data(result_event), "tool_name", "toolName", "name", "tool") or "unknown"
+        span(name, result_event, result_event, unmatched="result")
     return completed
 
 
