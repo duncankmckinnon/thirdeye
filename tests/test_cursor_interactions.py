@@ -569,7 +569,10 @@ def test_tool_call_name_lookup_prefers_tool_name_over_alternate_keys():
     assert _messages(events)[0]["parts"][0]["name"] == "shell"
 
 
-@pytest.mark.parametrize("key", ["tool_input", "toolInput", "arguments", "input", "file_path", "filePath", "path"])
+@pytest.mark.parametrize(
+    "key",
+    ["tool_input", "toolInput", "arguments", "input", "command", "file_path", "filePath", "path"],
+)
 def test_tool_call_arguments_from_alternate_input_keys(key: str):
     value = {"nested": [1, 2]} if key in {"tool_input", "toolInput", "arguments", "input"} else "/tmp/file.py"
     events = [
@@ -712,6 +715,38 @@ def test_skips_tool_interactions_missing_correlation_id(kind: str):
     payload = {"tool_name": "shell", "command": "ls"} if kind == "tool_call" else {"output": "ok"}
     interaction = _make_interaction(0, kind, payload, correlation_id="")
     assert interaction_messages([interaction]) == []
+
+
+def test_skips_tool_call_missing_tool_name():
+    interaction = _make_interaction(
+        0,
+        "tool_call",
+        {"command": "ls"},
+        correlation_id="call-1",
+    )
+    assert interaction_messages([interaction]) == []
+
+
+def test_skips_tool_result_missing_output_keys():
+    interaction = _make_interaction(
+        0,
+        "tool_result",
+        {"tool_name": "shell", "stderr": "ignored"},
+        correlation_id="call-1",
+    )
+    assert interaction_messages([interaction]) == []
+
+
+@pytest.mark.parametrize("key", ["response", "output"])
+def test_projects_reasoning_from_alternate_text_keys(key: str):
+    events = [_event(0, "assistant_thought", **{key: "thinking"})]
+    assert _messages(events) == [
+        {
+            "role": "assistant",
+            "thirdeye.kind": "reasoning",
+            "parts": [{"type": "text", "content": "thinking"}],
+        },
+    ]
 
 
 def test_preserves_interaction_order_in_projected_messages():
