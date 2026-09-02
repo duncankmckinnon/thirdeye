@@ -1156,3 +1156,28 @@ def test_build_turn_skips_bogus_stop_generation_id(tmp_path: Path):
     assert turn["input_message"] == "hi"
     assert turn["llm_calls"][0]["call_id"] == "real-gen"
     assert turn["llm_calls"][0]["usage"]["input_tokens"] == 4
+
+
+def test_hook_reconstructed_subagent_carries_its_model_into_the_agent_name() -> None:
+    """The exporter reads a callless subagent's model off `cursor.subagent.model`.
+
+    Cursor is genuinely multi-provider, so a subagent dispatched to a different
+    model than its parent has to register as its own agent in Logfire.
+    """
+    from thirdeye.otel_export import _agent_name, _turn_model
+    from thirdeye.platforms.cursor.tracing import subagent_turn_from_event
+
+    event = {
+        "seq": 7,
+        "ts": "2026-01-01T00:00:05.000Z",
+        "data": {
+            "subagent_id": "sa1",
+            "subagent_model": "claude-sonnet-4",
+            "task": "review it",
+            "status": "completed",
+        },
+    }
+    turn = subagent_turn_from_event("s1", event)
+
+    assert turn["llm_calls"] == []
+    assert _agent_name("cursor", _turn_model(turn)) == "cursor[claude-sonnet-4]"

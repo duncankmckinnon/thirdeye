@@ -613,3 +613,56 @@ def test_turn_aborted_real_payload_shape_marks_interrupted(tmp_path: Path) -> No
     assert turn is not None
     assert turn["status"] == "interrupted"
     assert turn["end_ts"] == "2026-08-20T18:20:40.773Z"
+
+
+def test_turn_context_model_reaches_the_exported_agent_name(tmp_path: Path) -> None:
+    """Codex names its model once per turn, on `turn_context`, not per call.
+
+    The exporter reads the model off the turn's calls, so this checks the
+    single per-turn value actually lands on every call it stamps.
+    """
+    from thirdeye.otel_export import _agent_name, _turn_model
+
+    path = tmp_path / "rollout.jsonl"
+    path.write_text(
+        "\n".join(
+            [
+                _frame(
+                    "2026-01-01T00:00:00Z", "turn_context", {"turn_id": "t1", "model": "gpt-5.6"}
+                ),
+                _frame(
+                    "2026-01-01T00:00:01Z", "event_msg", {"type": "task_started", "turn_id": "t1"}
+                ),
+                _frame(
+                    "2026-01-01T00:00:02Z",
+                    "event_msg",
+                    {"type": "user_message", "message": "fix it"},
+                ),
+                _frame(
+                    "2026-01-01T00:00:03Z",
+                    "response_item",
+                    {
+                        "type": "function_call",
+                        "call_id": "c1",
+                        "name": "exec_command",
+                        "arguments": "{}",
+                    },
+                ),
+                _frame(
+                    "2026-01-01T00:00:04Z",
+                    "response_item",
+                    {"type": "function_call_output", "call_id": "c1", "output": "ok"},
+                ),
+                _frame(
+                    "2026-01-01T00:00:06Z", "event_msg", {"type": "task_complete", "turn_id": "t1"}
+                ),
+            ]
+        )
+        + "\n"
+    )
+
+    turn = extract_turn_codex(str(path), "t1")
+    assert turn is not None
+    assert {call["model"] for call in turn["calls"]} == {"gpt-5.6"}
+    # `calls` is what the tracing layer hands the exporter as `llm_calls`.
+    assert _agent_name("codex", _turn_model({"llm_calls": turn["calls"]})) == "codex[gpt-5.6]"
