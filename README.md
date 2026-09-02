@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="docs/img/logo_1.jpeg" alt="thirdeye" width="160" />
+  <img src="docs/img/logo_transparent.png" alt="thirdeye" width="160" />
 </p>
 
 [![PyPI](https://img.shields.io/pypi/v/thrdi.svg)](https://pypi.org/project/thrdi/)
