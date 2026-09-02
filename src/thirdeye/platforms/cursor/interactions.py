@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import json
-from collections.abc import Iterable
+from collections.abc import Callable, Iterable
 from dataclasses import dataclass, replace
 from typing import Any, Literal
 
@@ -19,6 +19,34 @@ InteractionKind = Literal[
 # Reasoning is re-emitted by Cursor with differing model/speed metadata for the
 # same thought, so these keys are excluded when comparing payloads.
 _IGNORED_KEYS = frozenset({"model", "model_id", "model_params", "speed", "fast"})
+
+_USER_TEXT_KEYS = ("prompt", "input", "text")
+_ASSISTANT_TEXT_KEYS = ("text", "response", "output")
+_TOOL_NAME_KEYS = ("tool_name", "toolName", "name", "tool")
+_TOOL_INPUT_KEYS = (
+    "tool_input",
+    "toolInput",
+    "arguments",
+    "input",
+    "command",
+    "file_path",
+    "filePath",
+    "path",
+)
+_TOOL_OUTPUT_KEYS = (
+    "tool_output",
+    "toolOutput",
+    "result",
+    "output",
+    "stdout",
+    "response",
+    "edits",
+    "diff",
+)
+
+# Sentinel separating "no matching key in the payload" from a key that is
+# present with a null value; the latter is captured content and is preserved.
+_MISSING = object()
 
 
 @dataclass(frozen=True)
@@ -143,61 +171,55 @@ def interaction_messages(
     interactions: Iterable[CanonicalInteraction], *, before_seq: int | None = None
 ) -> list[dict[str, Any]]:
     """Return ordered GenAI messages before an exclusive source boundary."""
-    messages = []
+    messages: list[dict[str, Any]] = []
 
     for interaction in interactions:
         if before_seq is not None and interaction.source_seq >= before_seq:
             break
 
-        if interaction.kind == "lifecycle":
+        # Lifecycle interactions have no projector: they get spans, not messages.
+        projector = _PROJECTORS.get(interaction.kind)
+        if projector is None:
             continue
 
-        if interaction.kind == "user_message":
-            message = _project_user_message(interaction)
-            if message:
-                messages.append(message)
-        elif interaction.kind == "assistant_message":
-            message = _project_assistant_message(interaction)
-            if message:
-                messages.append(message)
-        elif interaction.kind == "reasoning":
-            message = _project_reasoning(interaction)
-            if message:
-                messages.append(message)
-        elif interaction.kind == "tool_call":
-            message = _project_tool_call(interaction)
-            if message:
-                messages.append(message)
-        elif interaction.kind == "tool_result":
-            message = _project_tool_result(interaction)
-            if message:
-                messages.append(message)
+        message = projector(interaction)
+        if message is not None:
+            messages.append(message)
 
     return messages
 
 
-def _get_first_key(payload: dict[str, Any], keys: list[str]) -> Any:
-    """Get the first existing key from a list of alternatives."""
+def _first_text(payload: dict[str, Any], keys: tuple[str, ...]) -> Any:
+    """Return the first key's value that carries content, else `_MISSING`.
+
+    A key present with a `None` value carries no content, so the lookup falls
+    through to the next alternative. Every other value is returned verbatim,
+    including an empty string, which is captured text rather than a missing key.
+    """
     for key in keys:
-        if key in payload:
-            return payload[key]
-    return None
+        value = payload.get(key)
+        if value is not None:
+            return value
+    return _MISSING
 
 
-def _get_multiple_keys(payload: dict[str, Any], keys: list[str]) -> Any:
-    """Get values for keys, returning single value or dict of multiple values."""
-    present_keys = {key: payload[key] for key in keys if key in payload}
-    if len(present_keys) == 0:
-        return None
-    elif len(present_keys) == 1:
-        return list(present_keys.values())[0]
-    else:
-        return present_keys
+def _present_values(payload: dict[str, Any], keys: tuple[str, ...]) -> Any:
+    """Return the sole present key's value, a dict of several, else `_MISSING`.
+
+    Presence is membership, not truthiness, so an explicit `{"output": None}`
+    stays distinguishable from a payload carrying no matching key at all.
+    """
+    present = {key: payload[key] for key in keys if key in payload}
+    if not present:
+        return _MISSING
+    if len(present) == 1:
+        return next(iter(present.values()))
+    return present
 
 
 def _project_user_message(interaction: CanonicalInteraction) -> dict[str, Any] | None:
-    text = _get_first_key(interaction.payload, ["prompt", "input", "text"])
-    if not text:
+    text = _first_text(interaction.payload, _USER_TEXT_KEYS)
+    if text is _MISSING:
         return None
     return {
         "role": "user",
@@ -206,8 +228,8 @@ def _project_user_message(interaction: CanonicalInteraction) -> dict[str, Any] |
 
 
 def _project_assistant_message(interaction: CanonicalInteraction) -> dict[str, Any] | None:
-    text = _get_first_key(interaction.payload, ["text", "response", "output"])
-    if not text:
+    text = _first_text(interaction.payload, _ASSISTANT_TEXT_KEYS)
+    if text is _MISSING:
         return None
     return {
         "role": "assistant",
@@ -216,8 +238,8 @@ def _project_assistant_message(interaction: CanonicalInteraction) -> dict[str, A
 
 
 def _project_reasoning(interaction: CanonicalInteraction) -> dict[str, Any] | None:
-    text = _get_first_key(interaction.payload, ["text", "response", "output"])
-    if not text:
+    text = _first_text(interaction.payload, _ASSISTANT_TEXT_KEYS)
+    if text is _MISSING:
         return None
     return {
         "role": "assistant",
@@ -230,12 +252,11 @@ def _project_tool_call(interaction: CanonicalInteraction) -> dict[str, Any] | No
     if not interaction.correlation_id:
         return None
 
-    tool_name = _get_first_key(interaction.payload, ["tool_name", "toolName", "name", "tool"])
-    if not tool_name:
+    tool_name = _first_text(interaction.payload, _TOOL_NAME_KEYS)
+    if tool_name is _MISSING:
         return None
 
-    input_keys = ["tool_input", "toolInput", "arguments", "input", "command", "file_path", "filePath", "path"]
-    arguments = _get_multiple_keys(interaction.payload, input_keys)
+    arguments = _present_values(interaction.payload, _TOOL_INPUT_KEYS)
 
     return {
         "role": "assistant",
@@ -244,7 +265,7 @@ def _project_tool_call(interaction: CanonicalInteraction) -> dict[str, Any] | No
                 "type": "tool_call",
                 "id": interaction.correlation_id,
                 "name": tool_name,
-                "arguments": arguments,
+                "arguments": None if arguments is _MISSING else arguments,
             }
         ],
     }
@@ -254,11 +275,7 @@ def _project_tool_result(interaction: CanonicalInteraction) -> dict[str, Any] | 
     if not interaction.correlation_id:
         return None
 
-    output_keys = ["tool_output", "toolOutput", "result", "output", "stdout", "response", "edits", "diff"]
-    response = _get_multiple_keys(interaction.payload, output_keys)
-
-    if response is None:
-        return None
+    response = _present_values(interaction.payload, _TOOL_OUTPUT_KEYS)
 
     return {
         "role": "tool",
@@ -266,7 +283,17 @@ def _project_tool_result(interaction: CanonicalInteraction) -> dict[str, Any] | 
             {
                 "type": "tool_call_response",
                 "id": interaction.correlation_id,
-                "response": response,
+                "response": None if response is _MISSING else response,
             }
         ],
     }
+
+
+# Lifecycle interactions are absent here on purpose: they get spans, not messages.
+_PROJECTORS: dict[str, Callable[[CanonicalInteraction], dict[str, Any] | None]] = {
+    "user_message": _project_user_message,
+    "assistant_message": _project_assistant_message,
+    "reasoning": _project_reasoning,
+    "tool_call": _project_tool_call,
+    "tool_result": _project_tool_result,
+}

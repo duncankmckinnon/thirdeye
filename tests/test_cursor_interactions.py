@@ -574,7 +574,11 @@ def test_tool_call_name_lookup_prefers_tool_name_over_alternate_keys():
     ["tool_input", "toolInput", "arguments", "input", "command", "file_path", "filePath", "path"],
 )
 def test_tool_call_arguments_from_alternate_input_keys(key: str):
-    value = {"nested": [1, 2]} if key in {"tool_input", "toolInput", "arguments", "input"} else "/tmp/file.py"
+    value = (
+        {"nested": [1, 2]}
+        if key in {"tool_input", "toolInput", "arguments", "input"}
+        else "/tmp/file.py"
+    )
     events = [
         _event(0, "tool_call", tool_use_id="call-1", tool_name="Read", **{key: value}),
     ]
@@ -727,14 +731,133 @@ def test_skips_tool_call_missing_tool_name():
     assert interaction_messages([interaction]) == []
 
 
-def test_skips_tool_result_missing_output_keys():
+def test_projects_tool_result_without_output_keys_as_null_response():
     interaction = _make_interaction(
         0,
         "tool_result",
         {"tool_name": "shell", "stderr": "ignored"},
         correlation_id="call-1",
     )
-    assert interaction_messages([interaction]) == []
+    assert interaction_messages([interaction]) == [
+        {
+            "role": "tool",
+            "parts": [
+                {
+                    "type": "tool_call_response",
+                    "id": "call-1",
+                    "response": None,
+                }
+            ],
+        },
+    ]
+
+
+def test_projects_tool_result_with_explicitly_null_output():
+    events = [_event(0, "tool_result", tool_use_id="call-1", output=None)]
+    assert _messages(events) == [
+        {
+            "role": "tool",
+            "parts": [
+                {
+                    "type": "tool_call_response",
+                    "id": "call-1",
+                    "response": None,
+                }
+            ],
+        },
+    ]
+
+
+def test_projects_tool_result_with_empty_string_output():
+    events = [_event(0, "tool_result", tool_use_id="call-1", output="")]
+    assert _messages(events) == [
+        {
+            "role": "tool",
+            "parts": [
+                {
+                    "type": "tool_call_response",
+                    "id": "call-1",
+                    "response": "",
+                }
+            ],
+        },
+    ]
+
+
+def test_projects_tool_call_without_input_keys_as_null_arguments():
+    events = [_event(0, "tool_call", tool_use_id="call-1", tool_name="TodoWrite")]
+    assert _messages(events) == [
+        {
+            "role": "assistant",
+            "parts": [
+                {
+                    "type": "tool_call",
+                    "id": "call-1",
+                    "name": "TodoWrite",
+                    "arguments": None,
+                }
+            ],
+        },
+    ]
+
+
+@pytest.mark.parametrize(
+    "event_type,payload,expected",
+    [
+        (
+            "user_message",
+            {"prompt": ""},
+            {"role": "user", "parts": [{"type": "text", "content": ""}]},
+        ),
+        (
+            "assistant_message",
+            {"text": ""},
+            {"role": "assistant", "parts": [{"type": "text", "content": ""}]},
+        ),
+        (
+            "assistant_thought",
+            {"text": ""},
+            {
+                "role": "assistant",
+                "thirdeye.kind": "reasoning",
+                "parts": [{"type": "text", "content": ""}],
+            },
+        ),
+    ],
+)
+def test_projects_empty_string_text_instead_of_skipping(
+    event_type: str, payload: dict, expected: dict
+):
+    events = [_event(0, event_type, **payload)]
+    assert _messages(events) == [expected]
+
+
+@pytest.mark.parametrize(
+    "event_type,payload,expected_role",
+    [
+        ("user_message", {"prompt": None, "input": "hello"}, "user"),
+        ("assistant_message", {"text": None, "response": "hello"}, "assistant"),
+    ],
+)
+def test_text_lookup_falls_through_keys_present_with_null_values(
+    event_type: str, payload: dict, expected_role: str
+):
+    events = [_event(0, event_type, **payload)]
+    assert _messages(events) == [
+        {"role": expected_role, "parts": [{"type": "text", "content": "hello"}]},
+    ]
+
+
+def test_skips_text_interaction_when_every_text_key_is_null():
+    events = [_event(0, "user_message", prompt=None, input=None, text=None)]
+    assert _messages(events) == []
+
+
+def test_tool_call_name_lookup_falls_through_keys_present_with_null_values():
+    events = [
+        _event(0, "tool_call", tool_use_id="call-1", tool_name=None, toolName="Read", path="/a.py")
+    ]
+    assert _messages(events)[0]["parts"][0]["name"] == "Read"
 
 
 @pytest.mark.parametrize("key", ["response", "output"])
