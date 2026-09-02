@@ -204,11 +204,61 @@ def test_reads_correlation_id_from_call_id_before_subagent_id():
     assert result[0].correlation_id == "call-1"
 
 
+def test_reads_correlation_id_from_call_id_camel_case():
+    events = [
+        {
+            "seq": 0,
+            "t": "tool_call",
+            "ts": TS,
+            "data": {
+                "generation_id": GENERATION,
+                "callId": "camel-call",
+                "subagentId": "ignored",
+            },
+        }
+    ]
+    result = _canonicalize(events)
+
+    assert result[0].correlation_id == "camel-call"
+
+
+def test_reads_correlation_id_from_tool_use_id_camel_case():
+    events = [
+        {
+            "seq": 0,
+            "t": "tool_call",
+            "ts": TS,
+            "data": {
+                "generation_id": GENERATION,
+                "toolUseId": "camel-use",
+                "subagentId": "ignored",
+            },
+        }
+    ]
+    result = _canonicalize(events)
+
+    assert result[0].correlation_id == "camel-use"
+
+
 def test_reads_correlation_id_from_subagent_id_when_no_tool_ids():
     events = [_event(0, "subagent_start", subagent_id="child-1")]
     result = _canonicalize(events)
 
     assert result[0].correlation_id == "child-1"
+
+
+def test_reads_correlation_id_from_subagent_id_camel_case():
+    events = [
+        {
+            "seq": 0,
+            "t": "subagent_start",
+            "ts": TS,
+            "data": {"generationId": GENERATION, "subagentId": "camel-child"},
+        }
+    ]
+    result = _canonicalize(events)
+
+    assert result[0].correlation_id == "camel-child"
 
 
 def test_uses_dash_in_interaction_id_when_correlation_id_missing():
@@ -217,6 +267,25 @@ def test_uses_dash_in_interaction_id_when_correlation_id_missing():
 
     assert result[0].correlation_id == ""
     assert result[0].interaction_id == f"{GENERATION}:user_message:-:0"
+
+
+def test_returns_empty_list_for_no_matching_events():
+    assert _canonicalize([]) == []
+    assert _canonicalize([_event(0, "session_start", detail="ignored")]) == []
+
+
+def test_excludes_events_missing_generation_id():
+    events = [
+        {
+            "seq": 0,
+            "t": "user_message",
+            "ts": TS,
+            "data": {"prompt": "no generation"},
+        }
+    ]
+    result = _canonicalize(events)
+
+    assert result == []
 
 
 def test_deduplicates_reasoning_with_same_timestamp_despite_model_metadata():
@@ -282,6 +351,19 @@ def test_keeps_same_reasoning_text_at_different_timestamps_separate():
     assert len(result) == 2
     assert result[0].duplicate_seqs == ()
     assert result[1].duplicate_seqs == ()
+
+
+def test_records_multiple_reasoning_duplicate_sequences():
+    events = [
+        _event(0, "assistant_thought", text="plan", model="a"),
+        _event(1, "assistant_thought", text="plan", model="b"),
+        _event(2, "assistant_thought", text="plan", model="c"),
+    ]
+    result = _canonicalize(events)
+
+    assert len(result) == 1
+    assert result[0].source_seq == 0
+    assert result[0].duplicate_seqs == (1, 2)
 
 
 def test_keeps_same_reasoning_with_distinct_correlation_ids_separate():
