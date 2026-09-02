@@ -278,11 +278,18 @@ def _take_pending(
 ) -> dict[str, Any] | None:
     """Claim the pending counterpart matching `key`, else the oldest of the same family.
 
-    The family pass is a last resort for callbacks that echo nothing, so it runs
-    only when `family_fifo` says this side carries neither an explicit id nor a
-    signature, and it never claims a counterpart carrying an explicit id: that
-    invocation's other callback would have echoed the same id, so a callback
-    without one belongs elsewhere.
+    The family pass is a last resort for callbacks that identify nothing, so it
+    runs only when `family_fifo` says this side carries neither an explicit id
+    nor a signature. Cursor's after-callbacks routinely echo nothing while the
+    before-callback carried a command or path, so a pending signature does not
+    disqualify the match -- an explicit id does: that invocation's other
+    callback would have echoed the same id, so a callback without one belongs
+    elsewhere.
+
+    The family pass is strictly positional: it takes the oldest same-family
+    counterpart, and gives up when that one carries an explicit id rather than
+    reaching past it. Skipping ahead would silently reorder concurrent tools,
+    which is the one thing positional pairing has no evidence for.
 
     Both passes take the earliest match: tools that complete in dispatch order
     are the common case, and a LIFO match would reverse exactly those.
@@ -293,8 +300,11 @@ def _take_pending(
     if not family_fifo:
         return None
     for index, (pending_key, pending_family, _event) in enumerate(pending):
-        if pending_family == family and not pending_key.startswith("id:"):
-            return pending.pop(index)[2]
+        if pending_family != family:
+            continue
+        if pending_key.startswith("id:"):
+            return None
+        return pending.pop(index)[2]
     return None
 
 

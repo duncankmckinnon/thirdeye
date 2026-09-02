@@ -993,7 +993,8 @@ class TestToolReconstruction:
         assert tools[0]["tool_call_id"] == "call-explicit"
         assert tools[1]["tool_call_id"] == f"{_TOOL_GEN}:shell:result:2"
 
-    def test_unsigned_result_prefers_signature_call_over_explicit_id_call(self):
+    def test_unsigned_result_does_not_reach_past_explicit_id_call(self):
+        """Positional pairing never reorders: it stops at an explicit id it cannot match."""
         explicit_call = _tool_event(
             1,
             "tool_call",
@@ -1018,15 +1019,17 @@ class TestToolReconstruction:
         )
 
         tools = _reconstructed_tools([explicit_call, signature_call, result])
-        paired = next(tool for tool in tools if "thirdeye.tool.unmatched" not in _tool_attrs(tool))
 
-        assert _tool_attrs(paired)["gen_ai.tool.call.arguments"] == "signed"
-        assert _tool_attrs(paired)["thirdeye.event.call_seq"] == 2
-        assert _tool_attrs(paired)["thirdeye.event.result_seq"] == 3
-        unmatched = next(
-            tool for tool in tools if _tool_attrs(tool).get("thirdeye.tool.unmatched") == "call"
-        )
-        assert unmatched["tool_call_id"] == "call-explicit"
+        assert [_tool_attrs(tool).get("thirdeye.tool.unmatched") for tool in tools] == [
+            "call",
+            "call",
+            "result",
+        ]
+        assert [tool["tool_call_id"] for tool in tools] == [
+            "call-explicit",
+            f"{_TOOL_GEN}:shell:2",
+            f"{_TOOL_GEN}:shell:result:3",
+        ]
 
     def test_unmatched_call_with_explicit_id_preserves_call_id(self):
         call = _tool_event(
