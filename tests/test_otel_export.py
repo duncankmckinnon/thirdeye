@@ -879,7 +879,7 @@ class TestExportTurnInner:
         # The root (session) span plus the turn span.
         assert len(spans) == 2
         turn_span = spans[-1]
-        assert turn_span["name"] == "agent-turn"
+        assert turn_span["name"] == "invoke_agent"
         assert "gen_ai.input.messages" not in turn_span["attributes"]
         assert "gen_ai.output.messages" not in turn_span["attributes"]
         assert turn_span["attributes"]["thirdeye.turn.status"] == "completed"
@@ -922,7 +922,7 @@ class TestExportTurnInner:
 
         spans = exporter.exported_spans_as_dict()
         live_chat = next(span for span in spans if span["context"]["span_id"] == live_chat_id)
-        completed_turn = next(span for span in spans if span["name"] == "agent-turn")
+        completed_turn = next(span for span in spans if span["name"] == "invoke_agent")
         assert live_chat["parent"]["span_id"] == completed_turn["context"]["span_id"]
         assert completed_turn["context"]["span_id"] == expected_turn_id
 
@@ -1109,7 +1109,7 @@ class TestExportTurnInner:
         )
 
         spans = exporter.exported_spans_as_dict()
-        assert [span["name"] for span in spans] == ["agent-turn"]
+        assert [span["name"] for span in spans] == ["invoke_agent"]
         turn_span = spans[0]
         assert turn_span["context"]["trace_id"] == legacy_trace_id
         assert turn_span["parent"]["span_id"] == legacy_span_id
@@ -1151,7 +1151,7 @@ class TestExportTurnInner:
         )
 
         spans = exporter.exported_spans_as_dict()
-        assert [span["name"] for span in spans] == ["agent-turn"]
+        assert [span["name"] for span in spans] == ["invoke_agent"]
         assert spans[0]["context"]["trace_id"] == expected[0]
         assert spans[0]["parent"]["span_id"] == expected[1]
 
@@ -1174,7 +1174,7 @@ class TestExportTurnInner:
         # root, turn, chat, tool
         assert len(spans) == 4
         root_span, turn_span, chat_span, tool_span = spans
-        assert turn_span["name"] == "agent-turn"
+        assert turn_span["name"] == "invoke_agent"
         assert chat_span["name"] == "chat claude-sonnet-5"
         assert tool_span["name"] == "tool: Bash"
         assert chat_span["context"]["span_id"] == chat_span_id("cursor", "s1", "call_1")
@@ -1243,7 +1243,7 @@ class TestExportTurnInner:
         subagent_span = spans[2]
         chat_span = spans[3]
         tool_span = spans[4]
-        assert subagent_span["name"] == "agent-turn (subagent)"
+        assert subagent_span["name"] == "invoke_agent"
         assert subagent_span["context"]["span_id"] == expected_subagent_span_id
         assert subagent_span["parent"]["span_id"] == top_turn_span["context"]["span_id"]
         assert chat_span["parent"]["span_id"] == subagent_span["context"]["span_id"]
@@ -1368,7 +1368,7 @@ class TestExportTurnInnerFailureRecovery:
         assert claim_path.read_text() == "sent"
         spans = exporter.exported_spans_as_dict()
         assert len(spans) == 2  # session root + turn span
-        assert spans[-1]["name"] == "agent-turn"
+        assert spans[-1]["name"] == "invoke_agent"
 
     def test_flush_failure_releases_claim_so_a_retry_can_succeed(
         self,
@@ -1436,7 +1436,7 @@ class TestGenAiAgentSemantics:
         )
 
         [turn_span] = [
-            span for span in exporter.exported_spans_as_dict() if span["name"] == "agent-turn"
+            span for span in exporter.exported_spans_as_dict() if span["name"] == "invoke_agent"
         ]
         assert turn_span["attributes"]["gen_ai.operation.name"] == "invoke_agent"
         assert turn_span["attributes"]["gen_ai.agent.name"] == "claude-code"
@@ -1458,8 +1458,9 @@ class TestGenAiAgentSemantics:
         [subagent_span] = [
             span
             for span in exporter.exported_spans_as_dict()
-            if span["name"] == "agent-turn (subagent)"
+            if span["attributes"].get("thirdeye.turn.id") == "turn_1.1"
         ]
+        assert subagent_span["name"] == "invoke_agent"
         assert subagent_span["attributes"]["gen_ai.operation.name"] == "invoke_agent"
         # A platform whose CLI name needs no translating is used verbatim.
         assert subagent_span["attributes"]["gen_ai.agent.name"] == "codex"
@@ -1505,8 +1506,8 @@ class TestGenAiAgentSemantics:
         )
 
         spans = {span["name"]: span for span in exporter.exported_spans_as_dict()}
-        assert spans["agent-turn"]["attributes"]["gen_ai.operation.name"] == "invoke_agent"
-        assert spans["agent-turn"]["attributes"]["gen_ai.agent.name"] == "cursor"
+        assert spans["invoke_agent"]["attributes"]["gen_ai.operation.name"] == "invoke_agent"
+        assert spans["invoke_agent"]["attributes"]["gen_ai.agent.name"] == "cursor"
         assert spans["chat gpt-5"]["attributes"]["gen_ai.operation.name"] == "chat"
         tool_attrs = spans["tool: shell"]["attributes"]
         assert tool_attrs["gen_ai.operation.name"] == "execute_tool"
@@ -1622,7 +1623,7 @@ class TestRepoAttribution:
         )
 
         exported = {span["name"]: span for span in exporter.exported_spans_as_dict()}
-        assert exported["agent-turn"]["attributes"]["thirdeye.repo"] == "some-repo"
+        assert exported["invoke_agent"]["attributes"]["thirdeye.repo"] == "some-repo"
         assert exported["permission_request: Bash"]["attributes"]["thirdeye.repo"] == "some-repo"
 
 
@@ -1704,7 +1705,7 @@ class TestProviderAttribution:
 
         exported = {s["name"]: s for s in exporter.exported_spans_as_dict()}
         assert exported["session"]["attributes"]["gen_ai.provider.name"] == "anthropic"
-        assert exported["agent-turn"]["attributes"]["gen_ai.provider.name"] == "anthropic"
+        assert exported["invoke_agent"]["attributes"]["gen_ai.provider.name"] == "anthropic"
 
     def test_codex_derives_its_own_provider(
         self, tmp_path: Path, enabled_config: Config, wired_instance, exporter
@@ -1720,7 +1721,7 @@ class TestProviderAttribution:
 
         exported = {s["name"]: s for s in exporter.exported_spans_as_dict()}
         assert exported["session"]["attributes"]["gen_ai.provider.name"] == "openai"
-        assert exported["agent-turn"]["attributes"]["gen_ai.provider.name"] == "openai"
+        assert exported["invoke_agent"]["attributes"]["gen_ai.provider.name"] == "openai"
 
     def test_tool_spans_carry_the_provider_too(self):
         attributes = otel_export._tool_attributes(

@@ -801,7 +801,7 @@ def _export_subagent_turn_inner(
             session_id=session_id,
             platform=platform,
             cwd=cwd,
-            span_name="agent-turn (subagent)",
+            span_name="invoke_agent",
         )
         if instance.force_flush(timeout_millis=_FLUSH_TIMEOUT_MS) is False:
             raise RuntimeError("subagent turn export was not flushed")
@@ -1117,7 +1117,7 @@ def _export_turn_subtree(
     session_id: str,
     platform: str,
     cwd: str,
-    span_name: str = "agent-turn",
+    span_name: str = "invoke_agent",
 ) -> None:
     """Export one turn and its whole subtree (LLM calls, their tool calls,
     permission requests, and recursively any nested subagent turns).
@@ -1259,5 +1259,5 @@ def _export_turn_subtree(
             session_id=session_id,
             platform=platform,
             cwd=cwd,
-            span_name="agent-turn (subagent)",
+            span_name="invoke_agent",
         )
