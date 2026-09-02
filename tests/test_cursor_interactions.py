@@ -37,9 +37,7 @@ def _canonicalize(
 ) -> list[CanonicalInteraction]:
     if through_seq is None:
         through_seq = max((event["seq"] for event in events), default=0)
-    return canonical_interactions(
-        events, generation_id=generation_id, through_seq=through_seq
-    )
+    return canonical_interactions(events, generation_id=generation_id, through_seq=through_seq)
 
 
 def test_maps_user_message_to_user_message_kind():
