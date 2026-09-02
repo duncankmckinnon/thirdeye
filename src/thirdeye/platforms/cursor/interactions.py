@@ -137,3 +137,136 @@ def _normalized_payload(payload: dict[str, Any]) -> str:
     """Return canonical JSON for a payload with model/speed metadata removed."""
     comparable = {key: value for key, value in payload.items() if key not in _IGNORED_KEYS}
     return json.dumps(comparable, sort_keys=True, separators=(",", ":"))
+
+
+def interaction_messages(
+    interactions: Iterable[CanonicalInteraction], *, before_seq: int | None = None
+) -> list[dict[str, Any]]:
+    """Return ordered GenAI messages before an exclusive source boundary."""
+    messages = []
+
+    for interaction in interactions:
+        if before_seq is not None and interaction.source_seq >= before_seq:
+            break
+
+        if interaction.kind == "lifecycle":
+            continue
+
+        if interaction.kind == "user_message":
+            message = _project_user_message(interaction)
+            if message:
+                messages.append(message)
+        elif interaction.kind == "assistant_message":
+            message = _project_assistant_message(interaction)
+            if message:
+                messages.append(message)
+        elif interaction.kind == "reasoning":
+            message = _project_reasoning(interaction)
+            if message:
+                messages.append(message)
+        elif interaction.kind == "tool_call":
+            message = _project_tool_call(interaction)
+            if message:
+                messages.append(message)
+        elif interaction.kind == "tool_result":
+            message = _project_tool_result(interaction)
+            if message:
+                messages.append(message)
+
+    return messages
+
+
+def _get_first_key(payload: dict[str, Any], keys: list[str]) -> Any:
+    """Get the first existing key from a list of alternatives."""
+    for key in keys:
+        if key in payload:
+            return payload[key]
+    return None
+
+
+def _get_multiple_keys(payload: dict[str, Any], keys: list[str]) -> Any:
+    """Get values for keys, returning single value or dict of multiple values."""
+    present_keys = {key: payload[key] for key in keys if key in payload}
+    if len(present_keys) == 0:
+        return None
+    elif len(present_keys) == 1:
+        return list(present_keys.values())[0]
+    else:
+        return present_keys
+
+
+def _project_user_message(interaction: CanonicalInteraction) -> dict[str, Any] | None:
+    text = _get_first_key(interaction.payload, ["prompt", "input", "text"])
+    if not text:
+        return None
+    return {
+        "role": "user",
+        "parts": [{"type": "text", "content": text}],
+    }
+
+
+def _project_assistant_message(interaction: CanonicalInteraction) -> dict[str, Any] | None:
+    text = _get_first_key(interaction.payload, ["text", "response", "output"])
+    if not text:
+        return None
+    return {
+        "role": "assistant",
+        "parts": [{"type": "text", "content": text}],
+    }
+
+
+def _project_reasoning(interaction: CanonicalInteraction) -> dict[str, Any] | None:
+    text = _get_first_key(interaction.payload, ["text", "response", "output"])
+    if not text:
+        return None
+    return {
+        "role": "assistant",
+        "thirdeye.kind": "reasoning",
+        "parts": [{"type": "text", "content": text}],
+    }
+
+
+def _project_tool_call(interaction: CanonicalInteraction) -> dict[str, Any] | None:
+    if not interaction.correlation_id:
+        return None
+
+    tool_name = _get_first_key(interaction.payload, ["tool_name", "toolName", "name", "tool"])
+    if not tool_name:
+        return None
+
+    input_keys = ["tool_input", "toolInput", "arguments", "input", "command", "file_path", "filePath", "path"]
+    arguments = _get_multiple_keys(interaction.payload, input_keys)
+
+    return {
+        "role": "assistant",
+        "parts": [
+            {
+                "type": "tool_call",
+                "id": interaction.correlation_id,
+                "name": tool_name,
+                "arguments": arguments,
+            }
+        ],
+    }
+
+
+def _project_tool_result(interaction: CanonicalInteraction) -> dict[str, Any] | None:
+    if not interaction.correlation_id:
+        return None
+
+    output_keys = ["tool_output", "toolOutput", "result", "output", "stdout", "response", "edits", "diff"]
+    response = _get_multiple_keys(interaction.payload, output_keys)
+
+    if response is None:
+        return None
+
+    return {
+        "role": "tool",
+        "parts": [
+            {
+                "type": "tool_call_response",
+                "id": interaction.correlation_id,
+                "response": response,
+            }
+        ],
+    }
