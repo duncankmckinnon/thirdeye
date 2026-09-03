@@ -88,11 +88,13 @@ session history up to that call's response, not just the current turn.
 
 thirdeye exports complete raw captured payloads on interaction spans as
 structured `thirdeye.interaction.payload` attributes (user prompts, assistant
-text, reasoning, tool arguments, and lifecycle details). thirdeye does not
-scrub or truncate this content before export; Pydantic Logfire applies its own
-scrubbing at ingestion (for example passwords and API keys). thirdeye only
-exempts legitimate uses of the word "session" in captured agent content from
-Logfire's default scrub patterns.
+text, reasoning, and lifecycle details). Tool arguments and results export on
+tool spans (`thirdeye.tool.call.payload` / `thirdeye.tool.result.payload`) and
+in chat `gen_ai.input.messages`. thirdeye does not scrub or truncate this
+content before export; Pydantic Logfire applies its own scrubbing at ingestion
+(for example passwords and API keys). thirdeye only exempts legitimate uses of
+the word "session" in captured agent content from Logfire's default scrub
+patterns.
 
 Live interaction and tool spans can arrive before their turn or chat parents.
 At `turn_stop`, thirdeye uploads the turn and chat spans; Logfire joins
