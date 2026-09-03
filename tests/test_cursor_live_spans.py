@@ -462,6 +462,15 @@ def test_duplicate_reasoning_emits_one_span_with_duplicate_seqs(tmp_path: Path, 
     config = _config(tmp_path)
     store = Store(config)
     sid, generation = "cursor-session", "generation-1"
+    timestamps = iter(
+        [
+            "1970-01-01T00:00:00.000Z",
+            "2026-09-02T12:00:00.000Z",
+            "2026-09-02T12:00:00.000Z",
+            "2026-09-02T12:00:00.000Z",
+        ]
+    )
+    monkeypatch.setattr("thirdeye.writer._utc_iso_ms", lambda: next(timestamps))
     _append(store, sid, "user_message", {"generation_id": generation, "prompt": "go"})
     first_seq = _append(
         store,
@@ -563,6 +572,149 @@ def test_same_reasoning_text_at_later_timestamp_emits_second_span(tmp_path: Path
         interaction_span_id("cursor", sid, second_id),
     }
     assert committed_interaction_ids(sd, generation) == {first_id, second_id}
+
+
+def test_same_reasoning_text_within_same_second_emits_second_span(tmp_path: Path, monkeypatch):
+    config = _config(tmp_path)
+    store = Store(config)
+    sid, generation = "cursor-session", "generation-1"
+    timestamps = iter(
+        [
+            "1970-01-01T00:00:00.000Z",
+            "2026-09-02T12:00:00.000Z",
+            "2026-09-02T12:00:00.100Z",
+            "2026-09-02T12:00:00.900Z",
+        ]
+    )
+    monkeypatch.setattr("thirdeye.writer._utc_iso_ms", lambda: next(timestamps))
+    _append(store, sid, "user_message", {"generation_id": generation, "prompt": "go"})
+    first_seq = _append(
+        store,
+        sid,
+        "assistant_thought",
+        {"generation_id": generation, "text": "plan"},
+    )
+    second_seq = _append(
+        store,
+        sid,
+        "assistant_thought",
+        {"generation_id": generation, "text": "plan"},
+    )
+    exported: list[list[dict]] = []
+    monkeypatch.setattr(
+        "thirdeye.platforms.cursor.live_spans.export_spans",
+        lambda *args: exported.append(args[-1]) or True,
+    )
+    sd = session_dir(tmp_path, "cursor", sid)
+
+    emit_live_interactions(config, sd, sid, "/repo", generation, first_seq)
+    emit_live_interactions(config, sd, sid, "/repo", generation, second_seq)
+
+    assert len(exported) == 2
+    first_id = _canonical_interaction_id(generation, "reasoning", first_seq)
+    second_id = _canonical_interaction_id(generation, "reasoning", second_seq)
+    assert committed_interaction_ids(sd, generation) == {first_id, second_id}
+
+
+def test_live_reasoning_reexports_when_duplicate_arrives_after_first_sweep(
+    tmp_path: Path, monkeypatch
+):
+    config = _config(tmp_path)
+    store = Store(config)
+    sid, generation = "cursor-session", "generation-1"
+    timestamps = iter(
+        [
+            "1970-01-01T00:00:00.000Z",
+            "2026-09-02T12:00:00.000Z",
+            "2026-09-02T12:00:00.000Z",
+            "2026-09-02T12:00:00.000Z",
+            "2026-09-02T12:00:00.000Z",
+        ]
+    )
+    monkeypatch.setattr("thirdeye.writer._utc_iso_ms", lambda: next(timestamps))
+    _append(store, sid, "user_message", {"generation_id": generation, "prompt": "go"})
+    first_seq = _append(
+        store,
+        sid,
+        "assistant_thought",
+        {"generation_id": generation, "text": "plan", "model": "claude-4"},
+    )
+    exported: list[list[dict]] = []
+    monkeypatch.setattr(
+        "thirdeye.platforms.cursor.live_spans.export_spans",
+        lambda *args: exported.append(args[-1]) or True,
+    )
+    sd = session_dir(tmp_path, "cursor", sid)
+    interaction_id = _canonical_interaction_id(generation, "reasoning", first_seq)
+
+    emit_live_interactions(config, sd, sid, "/repo", generation, first_seq)
+    assert len(exported) == 1
+    assert "thirdeye.interaction.duplicate_seqs" not in exported[0][0]["attributes"]
+
+    duplicate_seq = _append(
+        store,
+        sid,
+        "assistant_thought",
+        {"generation_id": generation, "text": "plan", "model": "gpt-5"},
+    )
+    emit_live_interactions(config, sd, sid, "/repo", generation, duplicate_seq)
+
+    assert len(exported) == 2
+    assert exported[1][0]["span_id"] == interaction_span_id("cursor", sid, interaction_id)
+    assert exported[1][0]["attributes"]["thirdeye.interaction.duplicate_seqs"] == [duplicate_seq]
+    assert committed_interaction_ids(sd, generation) == {interaction_id}
+
+
+def test_live_state_classifies_colon_containing_tool_and_interaction_ids(
+    tmp_path: Path, monkeypatch
+):
+    config = _config(tmp_path)
+    store = Store(config)
+    sid = "cursor-session"
+    generation = "gen:with:colons"
+    tool_call_id = "x:reasoning:y:1"
+    _append(store, sid, "user_message", {"generation_id": generation, "prompt": "go"})
+    thought_seq = _append(
+        store,
+        sid,
+        "assistant_thought",
+        {"generation_id": generation, "text": "stateful"},
+    )
+    _append(
+        store,
+        sid,
+        "tool_call",
+        {
+            "generation_id": generation,
+            "tool_name": "shell",
+            "tool_call_id": tool_call_id,
+            "command": "ls",
+        },
+    )
+    result_seq = _append(
+        store,
+        sid,
+        "tool_result",
+        {
+            "generation_id": generation,
+            "tool_name": "shell",
+            "tool_call_id": tool_call_id,
+            "output": "ok",
+        },
+    )
+    monkeypatch.setattr(
+        "thirdeye.platforms.cursor.live_spans.export_spans",
+        lambda *args: True,
+    )
+    sd = session_dir(tmp_path, "cursor", sid)
+    emit_live_interactions(config, sd, sid, "/repo", generation, result_seq)
+
+    interaction_id = _canonical_interaction_id(generation, "reasoning", thought_seq)
+    assert committed_tool_call_ids(sd, generation) == {tool_call_id}
+    assert committed_interaction_ids(sd, generation) == {interaction_id}
+    persisted = json.loads(_live_state_path(sd).read_text())
+    assert f"i:{interaction_id}" in persisted[generation]
+    assert tool_call_id in persisted[generation]
 
 
 def test_live_assistant_message_parents_to_turn_span(tmp_path: Path, monkeypatch):
@@ -801,7 +953,11 @@ def test_live_interaction_state_keeps_generation_list_json_compatible(tmp_path: 
     assert isinstance(persisted, dict)
     assert isinstance(persisted[generation], list)
     interaction_id = _canonical_interaction_id(generation, "reasoning", thought_seq)
-    assert set(persisted[generation]) == {"legacy-tool", "call-1", interaction_id}
+    assert set(persisted[generation]) == {
+        "legacy-tool",
+        "call-1",
+        f"i:{interaction_id}",
+    }
     assert committed_tool_call_ids(sd, generation) == {"legacy-tool", "call-1"}
     assert committed_interaction_ids(sd, generation) == {interaction_id}
 

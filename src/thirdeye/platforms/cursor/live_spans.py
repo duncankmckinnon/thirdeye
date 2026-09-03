@@ -19,7 +19,7 @@ from typing import Any
 from thirdeye.config import Config
 from thirdeye.otel_export import export_spans
 from thirdeye.paths import otel_state_path
-from thirdeye.platforms.cursor.interactions import canonical_interactions
+from thirdeye.platforms.cursor.interactions import CanonicalInteraction, canonical_interactions
 from thirdeye.platforms.cursor.subagents import cursor_subagent_generation_id
 from thirdeye.platforms.cursor.tracing import (
     resolve_turn_seq,
@@ -36,6 +36,38 @@ from thirdeye.span_ids import (
 from thirdeye.usage.errlog import log_capture_error
 
 _PLATFORM = "cursor"
+_INTERACTION_STATE_PREFIX = "i:"
+_INTERACTION_DUP_SUFFIX = "::d::"
+
+
+def _interaction_state_entry(interaction_id: str, duplicate_count: int = 0) -> str:
+    entry = f"{_INTERACTION_STATE_PREFIX}{interaction_id}"
+    if duplicate_count:
+        return f"{entry}{_INTERACTION_DUP_SUFFIX}{duplicate_count}"
+    return entry
+
+
+def _parse_interaction_state_entry(entry: str) -> tuple[str, int] | None:
+    if not entry.startswith(_INTERACTION_STATE_PREFIX):
+        return None
+    body = entry[len(_INTERACTION_STATE_PREFIX) :]
+    if _INTERACTION_DUP_SUFFIX in body:
+        interaction_id, duplicate_count = body.rsplit(_INTERACTION_DUP_SUFFIX, 1)
+        return interaction_id, int(duplicate_count)
+    return body, 0
+
+
+def _parse_committed_state(entries: list[str]) -> tuple[set[str], dict[str, int]]:
+    tool_ids: set[str] = set()
+    interaction_dup_counts: dict[str, int] = {}
+    for entry in entries:
+        parsed = _parse_interaction_state_entry(entry)
+        if parsed is not None:
+            interaction_id, duplicate_count = parsed
+            interaction_dup_counts[interaction_id] = duplicate_count
+            continue
+        tool_ids.add(entry)
+    return tool_ids, interaction_dup_counts
 
 
 def _trace_id(session_dir_: Path, session_id: str) -> int:
@@ -90,24 +122,43 @@ def _write_state(session_dir_: Path, state: dict[str, list[str]]) -> None:
 
 def committed_tool_call_ids(session_dir_: Path, generation_id: str) -> set[str]:
     with _locked(session_dir_):
-        all_ids = _read_state(session_dir_).get(generation_id, [])
-        result = set()
-        for id_ in all_ids:
-            parts = id_.split(":")
-            if not (
-                len(parts) == 4
-                and parts[1]
-                in (
-                    "user_message",
-                    "assistant_message",
-                    "reasoning",
-                    "tool_call",
-                    "tool_result",
-                    "lifecycle",
-                )
-            ):
-                result.add(id_)
-        return result
+        tool_ids, _ = _parse_committed_state(_read_state(session_dir_).get(generation_id, []))
+        return tool_ids
+
+
+def _interaction_span_attributes(interaction: CanonicalInteraction) -> dict[str, Any]:
+    return {
+        "thirdeye.interaction.kind": interaction.kind,
+        "thirdeye.interaction.payload": interaction.payload,
+        "thirdeye.interaction.correlation_id": interaction.correlation_id,
+        "thirdeye.interaction.source_type": interaction.source_type,
+        "thirdeye.interaction.source_seq": interaction.source_seq,
+        "thirdeye.interaction.generation_id": interaction.generation_id,
+        **(
+            {"thirdeye.interaction.duplicate_seqs": list(interaction.duplicate_seqs)}
+            if interaction.duplicate_seqs
+            else {}
+        ),
+    }
+
+
+def _interaction_span_dict(
+    interaction: CanonicalInteraction, *, session_id: str, turn_seq: int, turn_id: int
+) -> dict[str, Any]:
+    return {
+        "name": (
+            interaction.kind
+            if interaction.kind == "reasoning"
+            else f"interaction: {interaction.kind}"
+        ),
+        "span_id": interaction_span_id(_PLATFORM, session_id, interaction.interaction_id),
+        "parent_span_id": turn_id,
+        "turn_seq": turn_seq,
+        "turn_span_id": str(turn_id),
+        "start_ts": interaction.ts,
+        "end_ts": interaction.ts,
+        "attributes": _interaction_span_attributes(interaction),
+    }
 
 
 def _event_data(event: dict[str, Any]) -> dict[str, Any]:
@@ -299,14 +350,15 @@ def _emit_live_tools(
         return
     with _locked(session_dir_):
         state = _read_state(session_dir_)
-        committed = set(state.get(generation_id, []))
+        committed_entries = state.get(generation_id, [])
+        committed_tools, _ = _parse_committed_state(committed_entries)
         events = _generation_events(session_dir_, generation_id, through_seq)
         if not events:
             return
         fresh = [
             tool
             for tool in tool_calls_for_generation(events, session_id, generation_id)
-            if tool["tool_call_id"] not in committed
+            if tool["tool_call_id"] not in committed_tools
         ]
         if not fresh:
             return
@@ -346,7 +398,9 @@ def _emit_live_tools(
             spans,
         ):
             return
-        state[generation_id] = sorted(committed | {tool["tool_call_id"] for tool in fresh})
+        state[generation_id] = sorted(
+            set(committed_entries) | {tool["tool_call_id"] for tool in fresh}
+        )
         _write_state(session_dir_, state)
 
 
@@ -377,20 +431,10 @@ def emit_live_tools(
 
 def committed_interaction_ids(session_dir_: Path, generation_id: str) -> set[str]:
     with _locked(session_dir_):
-        all_ids = _read_state(session_dir_).get(generation_id, [])
-        result = set()
-        for id_ in all_ids:
-            parts = id_.split(":")
-            if len(parts) == 4 and parts[1] in (
-                "user_message",
-                "assistant_message",
-                "reasoning",
-                "tool_call",
-                "tool_result",
-                "lifecycle",
-            ):
-                result.add(id_)
-        return result
+        _, interaction_dup_counts = _parse_committed_state(
+            _read_state(session_dir_).get(generation_id, [])
+        )
+        return set(interaction_dup_counts)
 
 
 def _emit_live_interactions(
@@ -405,7 +449,8 @@ def _emit_live_interactions(
         return
     with _locked(session_dir_):
         state = _read_state(session_dir_)
-        committed = set(state.get(generation_id, []))
+        committed_entries = state.get(generation_id, [])
+        committed_tools, committed_interactions = _parse_committed_state(committed_entries)
         all_events = list(SessionReader(session_dir_).iter_events(seq_range=(0, through_seq + 1)))
         interactions = canonical_interactions(
             all_events, generation_id=generation_id, through_seq=through_seq
@@ -421,43 +466,28 @@ def _emit_live_interactions(
         if turn_seq is None:
             return
         turn_id = turn_span_id(_PLATFORM, session_id, turn_seq)
-        fresh_interactions = [
+        export_interactions = [
             interaction
             for interaction in interactions
-            if interaction.interaction_id not in committed
-            and interaction.kind in ("reasoning", "assistant_message")
+            if interaction.kind in ("reasoning", "assistant_message")
+            and (
+                interaction.interaction_id not in committed_interactions
+                or len(interaction.duplicate_seqs)
+                > committed_interactions[interaction.interaction_id]
+            )
         ]
         tools = tool_calls_for_generation(all_events, session_id, generation_id)
         fresh_tools = [
             tool
             for tool in tools
-            if tool["tool_call_id"] not in committed
+            if tool["tool_call_id"] not in committed_tools
         ]
 
         interaction_spans = [
-            {
-                "name": interaction.kind if interaction.kind == "reasoning" else f"interaction: {interaction.kind}",
-                "span_id": interaction_span_id(_PLATFORM, session_id, interaction.interaction_id),
-                "parent_span_id": turn_id,
-                "turn_seq": turn_seq,
-                "turn_span_id": str(turn_id),
-                "start_ts": interaction.ts,
-                "end_ts": interaction.ts,
-                "attributes": {
-                    "thirdeye.interaction.kind": interaction.kind,
-                    "thirdeye.interaction.payload": interaction.payload,
-                    "thirdeye.interaction.correlation_id": interaction.correlation_id,
-                    "thirdeye.interaction.source_type": interaction.source_type,
-                    "thirdeye.interaction.source_seq": interaction.source_seq,
-                    "thirdeye.interaction.generation_id": interaction.generation_id,
-                    **(
-                        {"thirdeye.interaction.duplicate_seqs": list(interaction.duplicate_seqs)}
-                        if interaction.duplicate_seqs
-                        else {}
-                    ),
-                },
-            }
-            for interaction in fresh_interactions
+            _interaction_span_dict(
+                interaction, session_id=session_id, turn_seq=turn_seq, turn_id=turn_id
+            )
+            for interaction in export_interactions
         ]
 
         chat_id = chat_span_id(_PLATFORM, session_id, generation_id)
@@ -491,10 +521,22 @@ def _emit_live_interactions(
             spans,
         ):
             return
+        updated_entries = set(committed_entries)
+        for interaction in export_interactions:
+            updated_entries.discard(interaction.interaction_id)
+            updated_entries.discard(
+                _interaction_state_entry(
+                    interaction.interaction_id,
+                    committed_interactions.get(interaction.interaction_id, 0),
+                )
+            )
+            updated_entries.add(
+                _interaction_state_entry(
+                    interaction.interaction_id, len(interaction.duplicate_seqs)
+                )
+            )
         state[generation_id] = sorted(
-            committed
-            | {interaction.interaction_id for interaction in fresh_interactions}
-            | {tool["tool_call_id"] for tool in fresh_tools}
+            updated_entries | {tool["tool_call_id"] for tool in fresh_tools}
         )
         _write_state(session_dir_, state)
 
