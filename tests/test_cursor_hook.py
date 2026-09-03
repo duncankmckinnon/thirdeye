@@ -233,7 +233,7 @@ def test_hook_fires_live_export_only_when_shell_tool_completes(tmp_path: Path, m
     monkeypatch.setenv("THIRDEYE_HOME", str(tmp_path))
     emitted = []
     monkeypatch.setattr(
-        "thirdeye.platforms.cursor.live_spans.emit_live_tools",
+        "thirdeye.platforms.cursor.live_spans.emit_live_interactions",
         lambda *args: emitted.append(args),
     )
     common = {
@@ -305,7 +305,7 @@ def test_read_result_triggers_live_export_once(tmp_path: Path, monkeypatch):
     monkeypatch.setenv("THIRDEYE_HOME", str(tmp_path))
     emitted = []
     monkeypatch.setattr(
-        "thirdeye.platforms.cursor.live_spans.emit_live_tools",
+        "thirdeye.platforms.cursor.live_spans.emit_live_interactions",
         lambda *args: emitted.append(args),
     )
     common = {
@@ -360,7 +360,7 @@ def test_post_tool_skips_dedicated_after_aliases(tmp_path: Path, monkeypatch, to
     monkeypatch.setenv("THIRDEYE_HOME", str(tmp_path))
     emitted = []
     monkeypatch.setattr(
-        "thirdeye.platforms.cursor.live_spans.emit_live_tools",
+        "thirdeye.platforms.cursor.live_spans.emit_live_interactions",
         lambda *args: emitted.append(args),
     )
 
@@ -484,7 +484,7 @@ def test_read_without_session_is_noop(tmp_path: Path, monkeypatch, capfd):
     monkeypatch.setenv("THIRDEYE_HOME", str(tmp_path))
     emitted = []
     monkeypatch.setattr(
-        "thirdeye.platforms.cursor.live_spans.emit_live_tools",
+        "thirdeye.platforms.cursor.live_spans.emit_live_interactions",
         lambda *args: emitted.append(args),
     )
 
@@ -510,7 +510,7 @@ def test_read_without_generation_records_but_does_not_export_live(tmp_path: Path
     monkeypatch.setenv("THIRDEYE_HOME", str(tmp_path))
     emitted = []
     monkeypatch.setattr(
-        "thirdeye.platforms.cursor.live_spans.emit_live_tools",
+        "thirdeye.platforms.cursor.live_spans.emit_live_interactions",
         lambda *args: emitted.append(args),
     )
     common = {"conversation_id": "session-1", "cwd": "/repo"}

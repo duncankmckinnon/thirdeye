@@ -1345,20 +1345,37 @@ class TestCommittedInteractionRecovery:
         interaction_ids = {item["interaction_id"] for item in (turn.get("interactions") or [])}
         assert reasoning_id not in interaction_ids
 
+        # Failed live export on a fresh session must recover the same deterministic IDs.
+        store2 = Store(config)
+        sid2, generation2 = "cursor-session-2", "gen-parent-match-2"
+        turn_seq2 = _append(
+            store2, sid2, "user_message", {"generation_id": generation2, "prompt": "go"}
+        )
+        thought_seq2 = _append(
+            store2,
+            sid2,
+            "assistant_thought",
+            {"generation_id": generation2, "text": "plan"},
+        )
+        stop_seq2 = _append(store2, sid2, "turn_stop", {"generation_id": generation2})
+        sd2 = session_dir(tmp_path, "cursor", sid2)
         monkeypatch.setattr(
             "thirdeye.platforms.cursor.live_spans.export_spans",
             lambda *args: False,
         )
-        emit_live_interactions(config, sd, sid, "/repo", generation, thought_seq)
+        emit_live_interactions(config, sd2, sid2, "/repo", generation2, thought_seq2)
         recovered_turn = build_turn(
-            session_dir_=sd,
-            session_id=sid,
-            generation_id=generation,
-            stop_seq=stop_seq,
+            session_dir_=sd2,
+            session_id=sid2,
+            generation_id=generation2,
+            stop_seq=stop_seq2,
         )
-        recovered = _interaction_by_id(recovered_turn, reasoning_id)
-        assert recovered["parent_span_id"] == str(expected_parent)
-        assert recovered["span_id"] == str(live_span["span_id"])
+        reasoning_id2 = _interaction_id(generation2, "reasoning", thought_seq2)
+        recovered = _interaction_by_id(recovered_turn, reasoning_id2)
+        expected_parent2 = turn_span_id("cursor", sid2, turn_seq2)
+        expected_span_id2 = interaction_span_id("cursor", sid2, reasoning_id2)
+        assert recovered["parent_span_id"] == str(expected_parent2)
+        assert recovered["span_id"] == str(expected_span_id2)
 
 
 # --- turn reconstruction -----------------------------------------------------
