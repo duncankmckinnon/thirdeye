@@ -164,12 +164,14 @@ def _before_submit(payload: dict[str, Any]) -> None:
 
 
 def _after_thought(payload: dict[str, Any]) -> None:
-    _emit(payload, "assistant_thought")
+    seq = _emit(payload, "assistant_thought")
+    _emit_live(payload, seq)
     _finalize_background_subagents(payload)
 
 
 def _after_response(payload: dict[str, Any]) -> None:
-    _emit(payload, "assistant_message")
+    seq = _emit(payload, "assistant_message")
+    _emit_live(payload, seq)
     _finalize_background_subagents(payload)
 
 
@@ -216,10 +218,10 @@ def _emit_live(payload: dict[str, Any], seq: int | None) -> None:
     if seq is None or not session_id or not generation_id:
         return
     try:
-        from thirdeye.platforms.cursor.live_spans import emit_live_tools
+        from thirdeye.platforms.cursor.live_spans import emit_live_interactions
 
         config = Config.load()
-        emit_live_tools(
+        emit_live_interactions(
             config,
             session_dir(config.root, _PLATFORM, session_id),
             session_id,

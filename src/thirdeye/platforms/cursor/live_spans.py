@@ -478,7 +478,9 @@ def _emit_live_interactions(
                 > committed_interactions[interaction.interaction_id]
             )
         ]
-        tools = tool_calls_for_generation(all_events, session_id, generation_id)
+        tools = tool_calls_for_generation(
+            _generation_events(session_dir_, generation_id, through_seq), session_id, generation_id
+        )
         fresh_tools = [
             tool
             for tool in tools
