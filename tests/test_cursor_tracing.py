@@ -1462,6 +1462,91 @@ class TestTurnReconstruction:
         assert interactions
         assert all(item["parent_span_id"] == expected_parent for item in interactions)
 
+    def test_build_turn_without_assistant_uses_stop_seq_for_input_messages(self, tmp_path: Path):
+        """When no assistant_message exists, ``before_seq`` falls back to ``stop_seq``."""
+        sid, generation = "no-response-session", "gen-no-response"
+        store = Store(Config(root=tmp_path))
+        _append(store, sid, "user_message", {"generation_id": generation, "prompt": "run tools"})
+        _shell_call(store, sid, generation, tool_use_id="shell-1", command="pytest -q")
+        _shell_result(store, sid, generation, tool_use_id="shell-1", output="passed")
+        stop_seq = _append(store, sid, "turn_stop", {"generation_id": generation})
+
+        turn = build_turn(
+            session_dir_=session_dir(tmp_path, "cursor", sid),
+            session_id=sid,
+            generation_id=generation,
+            stop_seq=stop_seq,
+        )
+
+        assert turn is not None
+        assert turn["output_message"] == ""
+        call = turn["llm_calls"][0]
+        assert call["input_messages"] == [
+            {"role": "user", "parts": [{"type": "text", "content": "run tools"}]},
+            {
+                "role": "assistant",
+                "parts": [
+                    {
+                        "type": "tool_call",
+                        "id": "shell-1",
+                        "name": "shell",
+                        "arguments": "pytest -q",
+                    }
+                ],
+            },
+            {
+                "role": "tool",
+                "parts": [
+                    {
+                        "type": "tool_call_response",
+                        "id": "shell-1",
+                        "response": "passed",
+                    }
+                ],
+            },
+        ]
+        assert call["output_messages"] == []
+
+    def test_interaction_records_include_subagent_lifecycle_in_active_generation(
+        self, tmp_path: Path
+    ):
+        sid, generation = "lifecycle-session", "gen-lifecycle"
+        store = Store(Config(root=tmp_path))
+        _append(store, sid, "user_message", {"generation_id": generation, "prompt": "delegate"})
+        start_seq = _append(
+            store,
+            sid,
+            "subagent_start",
+            {
+                "generation_id": generation,
+                "subagent_id": "child-1",
+                "tool_call_id": "task-1",
+                "task": "inspect auth",
+            },
+        )
+        _append(store, sid, "assistant_message", {"generation_id": generation, "text": "done"})
+        stop_seq = _append(store, sid, "turn_stop", {"generation_id": generation})
+        events = list(store.reader(sid).iter_events())
+        expected_start = next(
+            item
+            for item in canonical_interactions(events, generation_id=generation, through_seq=stop_seq)
+            if item.source_type == "subagent_start"
+        )
+
+        turn = build_turn(
+            session_dir_=session_dir(tmp_path, "cursor", sid),
+            session_id=sid,
+            generation_id=generation,
+            stop_seq=stop_seq,
+        )
+
+        assert turn is not None
+        start_record = _interaction_by_id(turn, expected_start.interaction_id)
+        assert start_record["kind"] == "lifecycle"
+        assert start_record["attributes"]["thirdeye.interaction.source_type"] == "subagent_start"
+        assert start_record["attributes"]["thirdeye.interaction.source_seq"] == start_seq
+        assert start_record["attributes"]["thirdeye.interaction.payload"]["task"] == "inspect auth"
+
 
 # --- subagents ---------------------------------------------------------------
 
