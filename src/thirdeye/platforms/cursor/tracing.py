@@ -13,6 +13,10 @@ from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any
 
+from thirdeye.platforms.cursor.interactions import (
+    interaction_messages,
+    session_interactions,
+)
 from thirdeye.platforms.cursor.subagents import (
     CursorSubagentWindow,
     events_for_subagent,
@@ -22,8 +26,9 @@ from thirdeye.platforms.cursor.subagents import (
     window_for_stop,
 )
 from thirdeye.reader import SessionReader
-from thirdeye.span_ids import turn_span_id
+from thirdeye.span_ids import interaction_span_id, turn_span_id
 from thirdeye.tracing.model import (
+    InteractionSpanDict,
     LlmCallSpanDict,
     ToolCallSpanDict,
     TurnSpanDict,
@@ -801,6 +806,44 @@ def build_turn(
 
     committed_tools = committed_tool_call_ids(session_dir_, generation_id)
     tools = [tool for tool in tools if tool["tool_call_id"] not in committed_tools]
+
+    # Build interaction records and compute input_messages from all session interactions.
+    all_interactions = session_interactions(all_events, through_seq=stop_seq)
+    response_seq = int(response_event.get("seq") or 0) if response_event else stop_seq
+    input_msgs = interaction_messages(all_interactions, before_seq=response_seq)
+    output_msgs = (
+        [{"role": "assistant", "parts": [{"type": "text", "content": response}]}]
+        if response
+        else []
+    )
+
+    # Create interaction records for non-tool interactions.
+    turn_span_id_str = str(turn_span_id(_PLATFORM, session_id, turn_seq))
+    interaction_records: list[InteractionSpanDict] = []
+    for interaction in all_interactions:
+        if interaction.kind in {"tool_call", "tool_result"}:
+            continue
+        interaction_records.append(
+            {
+                "interaction_id": interaction.interaction_id,
+                "kind": interaction.kind,
+                "span_id": str(interaction_span_id(_PLATFORM, session_id, interaction.interaction_id)),
+                "parent_span_id": turn_span_id_str,
+                "start_ts": interaction.ts,
+                "end_ts": interaction.ts,
+                "attributes": {
+                    "thirdeye.interaction.kind": interaction.kind,
+                    "thirdeye.interaction.payload": interaction.payload,
+                    "thirdeye.interaction.correlation_id": interaction.correlation_id,
+                    "thirdeye.interaction.source_type": interaction.source_type,
+                    "thirdeye.interaction.source_seq": interaction.source_seq,
+                    "thirdeye.interaction.timestamp": interaction.ts,
+                    "thirdeye.interaction.generation_id": interaction.generation_id,
+                    "thirdeye.interaction.duplicate_seqs": list(interaction.duplicate_seqs),
+                },
+            }
+        )
+
     llm_calls = []
     if prompt or response or model or usage or tools:
         llm_calls.append(
@@ -810,16 +853,8 @@ def build_turn(
                 "model": model,
                 "start_ts": start_ts,
                 "end_ts": str((response_event or stop_event).get("ts") or end_ts),
-                "input_messages": (
-                    [{"role": "user", "parts": [{"type": "text", "content": prompt}]}]
-                    if prompt
-                    else []
-                ),
-                "output_messages": (
-                    [{"role": "assistant", "parts": [{"type": "text", "content": response}]}]
-                    if response
-                    else []
-                ),
+                "input_messages": input_msgs,
+                "output_messages": output_msgs,
                 "usage": usage,
                 "tool_calls": tools,
             }
@@ -833,9 +868,9 @@ def build_turn(
     )
     if not llm_calls and not subagents:
         return None
-    return {
+    turn: TurnSpanDict = {
         "turn_id": str(turn_seq),
-        "turn_span_id": str(turn_span_id(_PLATFORM, session_id, turn_seq)),
+        "turn_span_id": turn_span_id_str,
         "start_ts": start_ts,
         "end_ts": end_ts,
         "input_message": prompt,
@@ -846,3 +881,6 @@ def build_turn(
         "subagents": subagents,
         "attributes": {"cursor.generation.id": generation_id},
     }
+    if interaction_records:
+        turn["interactions"] = interaction_records
+    return turn

@@ -167,6 +167,32 @@ def _normalized_payload(payload: dict[str, Any]) -> str:
     return json.dumps(comparable, sort_keys=True, separators=(",", ":"))
 
 
+def session_interactions(
+    events: Iterable[dict[str, Any]], *, through_seq: int
+) -> list[CanonicalInteraction]:
+    """Return ordered interactions for all generations through a sequence.
+
+    Collects all generations from events and returns them merged and deduplicated.
+    """
+    events_list = list(events)
+    interactions_by_id: dict[str, CanonicalInteraction] = {}
+    generations: set[str] = set()
+
+    for event in events_list:
+        data = event.get("data", {})
+        generation_id = data.get("generation_id") or data.get("generationId")
+        if generation_id:
+            generations.add(generation_id)
+
+    for generation_id in sorted(generations):
+        for interaction in canonical_interactions(
+            events_list, generation_id=generation_id, through_seq=through_seq
+        ):
+            interactions_by_id[interaction.interaction_id] = interaction
+
+    return sorted(interactions_by_id.values(), key=lambda x: x.source_seq)
+
+
 def interaction_messages(
     interactions: Iterable[CanonicalInteraction], *, before_seq: int | None = None
 ) -> list[dict[str, Any]]:
