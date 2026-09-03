@@ -1096,6 +1096,34 @@ def _tool_attributes(
     )
 
 
+def _interaction_attributes(
+    attributes: dict[str, Any],
+    *,
+    session_id: str,
+    platform: str,
+    cwd: str,
+    turn_id: Any = None,
+    turn_span_id: Any = None,
+) -> dict[str, Any]:
+    """Build flattened attributes for an interaction span.
+
+    Merges raw interaction attributes with identity attributes, then flattens
+    once so nested payloads are JSON-encoded with proper schema annotations.
+    """
+    return _flatten_attrs(
+        _merge_raw(
+            attributes,
+            _identity_attributes(
+                session_id=session_id,
+                platform=platform,
+                cwd=cwd,
+                turn_id=turn_id,
+                turn_span_id=turn_span_id,
+            ),
+        )
+    )
+
+
 def _export_spans_batch(
     *,
     config: Config,
@@ -1144,6 +1172,15 @@ def _export_spans_batch(
                 turn_span_id=turn_span_id_,
                 tool_name=span_data.get("tool_name") or name.removeprefix("tool:").strip(),
                 tool_call_id=span_data.get("tool_call_id"),
+            )
+        elif name == "reasoning" or name.startswith("interaction:"):
+            attributes = _interaction_attributes(
+                raw_attributes,
+                session_id=session_id,
+                platform=platform,
+                cwd=cwd,
+                turn_id=turn_id,
+                turn_span_id=turn_span_id_,
             )
         else:
             attributes = _flatten_attrs(raw_attributes)
@@ -1226,6 +1263,30 @@ def _export_turn_subtree(
     turn_span.end(end_time=_ts_to_ns(turn["end_ts"]))
     turn_ctx = turn_span.get_span_context()
     turn_parent_ctx = _parent_context(turn_ctx.trace_id, turn_ctx.span_id)
+
+    for interaction in turn.get("interactions") or []:
+        kind = interaction["kind"]
+        # Every record already carries the ids the producer derived, so this
+        # loop only re-emits them: the supplied `parent_span_id` is
+        # authoritative (it may name a span deeper than the turn, such as the
+        # chat span an interaction belongs to) and is never replaced by the
+        # turn's own context.
+        interaction_span = _start_span_with_id(
+            tracer,
+            "reasoning" if kind == "reasoning" else f"interaction: {kind}",
+            int(interaction["span_id"]),
+            parent_ctx=_parent_context(turn_ctx.trace_id, int(interaction["parent_span_id"])),
+            start_time=_ts_to_ns(interaction["start_ts"]),
+            attributes=_interaction_attributes(
+                interaction["attributes"],
+                session_id=session_id,
+                platform=platform,
+                cwd=cwd,
+                turn_id=turn["turn_id"],
+                turn_span_id=turn.get("turn_span_id"),
+            ),
+        )
+        interaction_span.end(end_time=_ts_to_ns(interaction["end_ts"]))
 
     for llm_call in turn["llm_calls"]:
         model = llm_call.get("model") or ""

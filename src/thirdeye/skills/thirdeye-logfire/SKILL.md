@@ -74,6 +74,42 @@ Do not claim success from `status` alone: it validates local configuration,
 not delivery. If direct Logfire access is unavailable, state that the remote
 appearance still needs user verification.
 
+## Cursor trace content
+
+New Cursor turns export the captured interaction stream into Logfire. Each
+thirdeye session is one trace with this hierarchy:
+
+`session → invoke_agent → chat → tool`
+
+Interaction spans (reasoning, user and assistant messages, subagent lifecycle
+events, and similar) nest under the turn's `invoke_agent` span. Each chat span
+carries cumulative conversation context in `gen_ai.input.messages` — the full
+session history up to that call's response, not just the current turn.
+
+thirdeye exports complete raw captured payloads on interaction spans as
+structured `thirdeye.interaction.payload` attributes (user prompts, assistant
+text, reasoning, and lifecycle details). Tool arguments and results export on
+tool spans (`thirdeye.tool.call.payload` / `thirdeye.tool.result.payload`) and
+in chat `gen_ai.input.messages`. thirdeye does not scrub or truncate this
+content before export; Pydantic Logfire applies its own scrubbing at ingestion
+(for example passwords and API keys). thirdeye only exempts legitimate uses of
+the word "session" in captured agent content from Logfire's default scrub
+patterns.
+
+Live interaction and tool spans can arrive before their turn or chat parents.
+At `turn_stop`, thirdeye uploads the turn and chat spans; Logfire joins
+temporarily orphaned children by trace and span ID. thirdeye never keeps OTel
+spans open across hook processes.
+
+Identical reasoning events from the same hook callback are deduplicated: when
+kind, timestamp, generation ID, correlation ID, and normalized content all
+match, thirdeye emits one span and records duplicate source sequences in
+`thirdeye.interaction.duplicate_seqs`. Repeated reasoning with the same text at
+a different timestamp or with distinct IDs remains separate spans.
+
+Only newly captured turns receive this interaction export. Existing Logfire
+traces are not retroactively updated or backfilled.
+
 ## Troubleshoot missing spans
 
 Check `<thirdeye_home>/logs/usage-errors.jsonl` for recent entries whose

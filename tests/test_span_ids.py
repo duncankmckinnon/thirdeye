@@ -9,6 +9,7 @@ import pytest
 import thirdeye.span_ids as span_ids
 from thirdeye.span_ids import (
     chat_span_id,
+    interaction_span_id,
     root_span_id_for_session,
     tool_span_id,
     trace_id_for_session,
@@ -39,6 +40,11 @@ def expected_id(value: str, digest_size: int) -> int:
             "claude/session-123/tool/tool-789",
             8,
         ),
+        (
+            lambda: interaction_span_id("claude", "session-123", "interaction-456"),
+            "claude/session-123/interaction/interaction-456",
+            8,
+        ),
     ],
 )
 def test_ids_follow_platform_scoped_derivation_contract(derive, expected_input, digest_size):
@@ -52,6 +58,7 @@ def test_same_session_id_differs_across_platforms():
         turn_span_id("claude", "shared-session", 7),
         chat_span_id("claude", "shared-session", "message"),
         tool_span_id("claude", "shared-session", "tool"),
+        interaction_span_id("claude", "shared-session", "interaction"),
     )
     cursor_ids = (
         trace_id_for_session("cursor", "shared-session"),
@@ -59,6 +66,7 @@ def test_same_session_id_differs_across_platforms():
         turn_span_id("cursor", "shared-session", 7),
         chat_span_id("cursor", "shared-session", "message"),
         tool_span_id("cursor", "shared-session", "tool"),
+        interaction_span_id("cursor", "shared-session", "interaction"),
     )
 
     assert all(
@@ -70,6 +78,9 @@ def test_non_ascii_inputs_are_encoded_as_utf8():
     assert chat_span_id("cursør-🖱", "sessiøn-👁", "méssage-雪") == expected_id(
         "cursør-🖱/sessiøn-👁/call/méssage-雪", 8
     )
+    assert interaction_span_id("cursør-🖱", "sessiøn-👁", "interactiøn-雪") == expected_id(
+        "cursør-🖱/sessiøn-👁/interaction/interactiøn-雪", 8
+    )
 
 
 def test_same_platform_inputs_are_deterministic():
@@ -79,6 +90,7 @@ def test_same_platform_inputs_are_deterministic():
         lambda: turn_span_id("claude", "session", 7),
         lambda: chat_span_id("claude", "session", "message"),
         lambda: tool_span_id("claude", "session", "tool"),
+        lambda: interaction_span_id("claude", "session", "interaction"),
     ]
 
     for derive in calls:
@@ -90,6 +102,7 @@ def test_ids_are_stable_across_python_hash_seeds():
 import json
 from thirdeye.span_ids import (
     chat_span_id,
+    interaction_span_id,
     root_span_id_for_session,
     tool_span_id,
     trace_id_for_session,
@@ -102,6 +115,7 @@ print(json.dumps([
     turn_span_id("claude", "session", 7),
     chat_span_id("claude", "session", "message"),
     tool_span_id("claude", "session", "tool"),
+    interaction_span_id("claude", "session", "interaction"),
 ]))
 """
 
@@ -157,6 +171,18 @@ print(json.dumps([
             lambda: tool_span_id("claude", "session", "tool-b"),
         ),
         (
+            lambda: interaction_span_id("claude", "session-a", "1"),
+            lambda: interaction_span_id("claude", "session-b", "1"),
+        ),
+        (
+            lambda: interaction_span_id("claude", "session", "interaction-a"),
+            lambda: interaction_span_id("claude", "session", "interaction-b"),
+        ),
+        (
+            lambda: interaction_span_id("claude", "session", "1"),
+            lambda: interaction_span_id("cursor", "session", "1"),
+        ),
+        (
             lambda: turn_span_id("claude", "session", 1),
             lambda: chat_span_id("claude", "session", "1"),
         ),
@@ -167,6 +193,22 @@ print(json.dumps([
         (
             lambda: chat_span_id("claude", "session", "1"),
             lambda: tool_span_id("claude", "session", "1"),
+        ),
+        (
+            lambda: root_span_id_for_session("claude", "session"),
+            lambda: interaction_span_id("claude", "session", "root"),
+        ),
+        (
+            lambda: turn_span_id("claude", "session", 1),
+            lambda: interaction_span_id("claude", "session", "1"),
+        ),
+        (
+            lambda: chat_span_id("claude", "session", "1"),
+            lambda: interaction_span_id("claude", "session", "1"),
+        ),
+        (
+            lambda: tool_span_id("claude", "session", "1"),
+            lambda: interaction_span_id("claude", "session", "1"),
         ),
     ],
 )
@@ -185,6 +227,8 @@ def test_ids_are_nonzero_and_fit_otel_widths():
         chat_span_id("claude", "session", "message"),
         tool_span_id("claude", "session", ""),
         tool_span_id("claude", "session", "tool"),
+        interaction_span_id("claude", "session", ""),
+        interaction_span_id("claude", "session", "interaction"),
     ]
 
     assert all(0 < value < 2**128 for value in trace_ids)
@@ -211,6 +255,7 @@ def test_all_zero_digest_is_replaced_with_one(monkeypatch):
     assert turn_span_id("claude", "session", 1) == 1
     assert chat_span_id("claude", "session", "message") == 1
     assert tool_span_id("claude", "session", "tool") == 1
+    assert interaction_span_id("claude", "session", "interaction") == 1
 
 
 @pytest.mark.parametrize(
@@ -221,6 +266,7 @@ def test_all_zero_digest_is_replaced_with_one(monkeypatch):
         (turn_span_id, ("session", 1)),
         (chat_span_id, ("session", "message")),
         (tool_span_id, ("session", "tool")),
+        (interaction_span_id, ("session", "interaction")),
     ],
 )
 def test_platform_argument_is_required_without_legacy_overloads(derive, legacy_args):

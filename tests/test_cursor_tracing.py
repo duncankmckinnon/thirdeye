@@ -6,15 +6,18 @@ from pathlib import Path
 
 import pytest
 
-from thirdeye.config import Config
+from thirdeye.config import Config, LogfireSettings
 from thirdeye.paths import session_dir
+from thirdeye.platforms.cursor.interactions import canonical_interactions
+from thirdeye.platforms.cursor.live_spans import emit_live_interactions
 from thirdeye.platforms.cursor.subagents import cursor_subagent_generation_id
 from thirdeye.platforms.cursor.tracing import (
     build_turn,
     resolve_subagent_export,
+    tool_calls_for_generation,
     usage_from_payload,
 )
-from thirdeye.span_ids import turn_span_id
+from thirdeye.span_ids import interaction_span_id, turn_span_id
 from thirdeye.store import Store
 
 
@@ -22,6 +25,16 @@ def _append(store: Store, sid: str, event_type: str, data: dict) -> int:
     return store.append_event(
         session_id=sid, platform="cursor", cwd="/repo", t=event_type, data=data
     )
+
+
+def _set_next_timestamps(monkeypatch: pytest.MonkeyPatch, timestamps: list[str]) -> None:
+    """Stamp the next appended events with exact ``ts`` values in order."""
+    remaining = ["1970-01-01T00:00:00.000Z", *timestamps]
+
+    def _next() -> str:
+        return remaining.pop(0)
+
+    monkeypatch.setattr("thirdeye.writer._utc_iso_ms", _next)
 
 
 def test_usage_from_payload_treats_cursor_input_tokens_as_cache_inclusive():
@@ -479,6 +492,1438 @@ def test_reads_without_echoed_path_pair_fifo(tmp_path: Path):
     ]
 
 
+# --- tool reconstruction -----------------------------------------------------
+
+_TOOL_TS = "2026-09-02T12:00:00.000Z"
+_TOOL_GEN = "gen-reconstruct"
+_TOOL_SID = "cursor-session"
+
+
+def _tool_event(seq: int, event_type: str, ts: str = _TOOL_TS, **data) -> dict:
+    return {
+        "seq": seq,
+        "t": event_type,
+        "ts": ts,
+        "data": {"generation_id": _TOOL_GEN, **data},
+    }
+
+
+def _reconstructed_tools(events: list[dict]):
+    return tool_calls_for_generation(events, _TOOL_SID, _TOOL_GEN)
+
+
+def _tool_attrs(tool: dict) -> dict:
+    return tool["attributes"]
+
+
+class TestToolReconstruction:
+    def test_paired_span_preserves_raw_payloads_and_event_seqs(self):
+        call = _tool_event(
+            2,
+            "tool_call",
+            tool_name="StrReplace",
+            cursor_tool_family="edit",
+            tool_use_id="edit-1",
+            tool_input={"path": "src/a.py", "old_string": "x", "new_string": "y"},
+        )
+        result = _tool_event(
+            5,
+            "tool_result",
+            tool_name="StrReplace",
+            cursor_tool_family="edit",
+            tool_use_id="edit-1",
+            tool_output={"edits": [{"path": "src/a.py"}], "applied": True},
+            exit_code=0,
+        )
+
+        tool = _reconstructed_tools([call, result])[0]
+        attrs = _tool_attrs(tool)
+
+        assert attrs["thirdeye.tool.call.payload"] == call["data"]
+        assert attrs["thirdeye.tool.result.payload"] == result["data"]
+        assert attrs["thirdeye.event.call_seq"] == 2
+        assert attrs["thirdeye.event.result_seq"] == 5
+        assert attrs["gen_ai.tool.call.arguments"] == {
+            "path": "src/a.py",
+            "old_string": "x",
+            "new_string": "y",
+        }
+        assert attrs["gen_ai.tool.call.result"] == {
+            "edits": [{"path": "src/a.py"}],
+            "applied": True,
+        }
+
+    def test_semantic_arguments_use_single_present_candidate(self):
+        call = _tool_event(
+            1,
+            "tool_call",
+            tool_name="shell",
+            cursor_tool_family="shell",
+            command="pytest -q",
+        )
+        result = _tool_event(
+            2,
+            "tool_result",
+            tool_name="shell",
+            cursor_tool_family="shell",
+            command="pytest -q",
+            output="passed",
+        )
+
+        attrs = _tool_attrs(_reconstructed_tools([call, result])[0])
+
+        assert attrs["gen_ai.tool.call.arguments"] == "pytest -q"
+        assert attrs["gen_ai.tool.call.result"] == "passed"
+
+    def test_semantic_arguments_honor_input_key(self):
+        call = _tool_event(1, "tool_call", tool_name="custom", input={"query": "find tests"})
+        result = _tool_event(
+            2,
+            "tool_result",
+            tool_name="custom",
+            response={"matches": 3},
+        )
+
+        attrs = _tool_attrs(_reconstructed_tools([call, result])[0])
+
+        assert attrs["gen_ai.tool.call.arguments"] == {"query": "find tests"}
+        assert attrs["gen_ai.tool.call.result"] == {"matches": 3}
+
+    def test_semantic_arguments_combine_all_present_candidates(self):
+        call = _tool_event(
+            1,
+            "tool_call",
+            tool_name="ApplyPatch",
+            cursor_tool_family="edit",
+            tool_input={"path": "src/a.py"},
+            command="apply",
+            file_path="src/a.py",
+        )
+        result = _tool_event(
+            2,
+            "tool_result",
+            tool_name="ApplyPatch",
+            cursor_tool_family="edit",
+            tool_output={"applied": True},
+            output="done",
+            diff="--- a\n+++ b",
+        )
+
+        attrs = _tool_attrs(_reconstructed_tools([call, result])[0])
+
+        assert attrs["gen_ai.tool.call.arguments"] == {
+            "tool_input": {"path": "src/a.py"},
+            "command": "apply",
+            "file_path": "src/a.py",
+        }
+        assert attrs["gen_ai.tool.call.result"] == {
+            "tool_output": {"applied": True},
+            "output": "done",
+            "diff": "--- a\n+++ b",
+        }
+
+    def test_reverse_explicit_id_completion_pairs_correctly(self):
+        result = _tool_event(
+            1,
+            "tool_result",
+            tool_name="Task",
+            tool_use_id="call-reverse",
+            tool_output={"status": "done"},
+        )
+        call = _tool_event(
+            2,
+            "tool_call",
+            tool_name="Task",
+            tool_use_id="call-reverse",
+            tool_input={"prompt": "delegate"},
+        )
+
+        tool = _reconstructed_tools([result, call])[0]
+
+        assert tool["tool_call_id"] == "call-reverse"
+        attrs = _tool_attrs(tool)
+        assert attrs["thirdeye.tool.call.payload"] == call["data"]
+        assert attrs["thirdeye.tool.result.payload"] == result["data"]
+        assert attrs["thirdeye.event.call_seq"] == 2
+        assert attrs["thirdeye.event.result_seq"] == 1
+        assert attrs["gen_ai.tool.call.arguments"] == {"prompt": "delegate"}
+        assert attrs["gen_ai.tool.call.result"] == {"status": "done"}
+
+    def test_explicit_id_overrides_contradictory_signature(self):
+        call_one = _tool_event(
+            1,
+            "tool_call",
+            tool_name="read_file",
+            cursor_tool_family="read",
+            tool_use_id="call-1",
+            path="src/first.py",
+        )
+        call_two = _tool_event(
+            2,
+            "tool_call",
+            tool_name="read_file",
+            cursor_tool_family="read",
+            tool_use_id="call-2",
+            path="src/second.py",
+        )
+        result_two = _tool_event(
+            3,
+            "tool_result",
+            tool_name="read_file",
+            cursor_tool_family="read",
+            tool_use_id="call-2",
+            path="src/first.py",
+            output="second contents",
+        )
+        result_one = _tool_event(
+            4,
+            "tool_result",
+            tool_name="read_file",
+            cursor_tool_family="read",
+            tool_use_id="call-1",
+            path="src/second.py",
+            output="first contents",
+        )
+
+        tools = _reconstructed_tools([call_one, call_two, result_two, result_one])
+        by_id = {tool["tool_call_id"]: tool for tool in tools}
+
+        assert _tool_attrs(by_id["call-1"])["gen_ai.tool.call.arguments"] == "src/first.py"
+        assert _tool_attrs(by_id["call-1"])["gen_ai.tool.call.result"] == "first contents"
+        assert _tool_attrs(by_id["call-2"])["gen_ai.tool.call.arguments"] == "src/second.py"
+        assert _tool_attrs(by_id["call-2"])["gen_ai.tool.call.result"] == "second contents"
+        assert _tool_attrs(by_id["call-1"])["thirdeye.event.result_seq"] == 4
+        assert _tool_attrs(by_id["call-2"])["thirdeye.event.result_seq"] == 3
+
+    def test_explicit_id_mismatch_does_not_steal_family_call(self):
+        call = _tool_event(
+            1,
+            "tool_call",
+            tool_name="shell",
+            cursor_tool_family="shell",
+            command="only-call",
+        )
+        result = _tool_event(
+            2,
+            "tool_result",
+            tool_name="shell",
+            cursor_tool_family="shell",
+            tool_use_id="missing-call-id",
+            output="orphan-out",
+        )
+
+        tools = _reconstructed_tools([call, result])
+
+        assert len(tools) == 2
+        unmatched_call = next(
+            tool for tool in tools if _tool_attrs(tool).get("thirdeye.tool.unmatched") == "call"
+        )
+        unmatched_result = next(
+            tool for tool in tools if _tool_attrs(tool).get("thirdeye.tool.unmatched") == "result"
+        )
+        assert unmatched_call["tool_call_id"] == f"{_TOOL_GEN}:shell:1"
+        assert unmatched_result["tool_call_id"] == f"{_TOOL_GEN}:shell:result:2"
+        assert "thirdeye.tool.result.payload" not in _tool_attrs(unmatched_call)
+        assert "thirdeye.tool.call.payload" not in _tool_attrs(unmatched_result)
+
+    def test_signature_pairing_retains_payload_metadata(self):
+        call = _tool_event(
+            1,
+            "tool_call",
+            tool_name="shell",
+            cursor_tool_family="shell",
+            command="make build",
+        )
+        result = _tool_event(
+            2,
+            "tool_result",
+            tool_name="shell",
+            cursor_tool_family="shell",
+            command="make build",
+            output="built",
+            exit_code=0,
+        )
+
+        attrs = _tool_attrs(_reconstructed_tools([call, result])[0])
+
+        assert attrs["gen_ai.tool.call.arguments"] == "make build"
+        assert attrs["gen_ai.tool.call.result"] == "built"
+        assert attrs["thirdeye.tool.call.payload"] == call["data"]
+        assert attrs["thirdeye.tool.result.payload"] == result["data"]
+        assert attrs["cursor.tool.exit_code"] == 0
+
+    def test_fifo_pairing_retains_payload_metadata(self):
+        call_first = _tool_event(
+            1,
+            "tool_call",
+            tool_name="shell",
+            cursor_tool_family="shell",
+            command="first",
+        )
+        call_second = _tool_event(
+            2,
+            "tool_call",
+            tool_name="shell",
+            cursor_tool_family="shell",
+            command="second",
+        )
+        result_first = _tool_event(
+            3,
+            "tool_result",
+            tool_name="shell",
+            cursor_tool_family="shell",
+            output="out-first",
+        )
+        result_second = _tool_event(
+            4,
+            "tool_result",
+            tool_name="shell",
+            cursor_tool_family="shell",
+            output="out-second",
+        )
+
+        tools = _reconstructed_tools([call_first, call_second, result_first, result_second])
+
+        assert [
+            (
+                _tool_attrs(tool)["gen_ai.tool.call.arguments"],
+                _tool_attrs(tool)["gen_ai.tool.call.result"],
+                _tool_attrs(tool)["thirdeye.event.call_seq"],
+                _tool_attrs(tool)["thirdeye.event.result_seq"],
+            )
+            for tool in tools
+        ] == [
+            ("first", "out-first", 1, 3),
+            ("second", "out-second", 2, 4),
+        ]
+
+    def test_unmatched_call_emits_call_marker(self):
+        call = _tool_event(
+            7,
+            "tool_call",
+            tool_name="Grep",
+            tool_use_id="grep-1",
+            pattern="tool_calls_for_generation",
+        )
+
+        tool = _reconstructed_tools([call])[0]
+        attrs = _tool_attrs(tool)
+
+        assert attrs["thirdeye.tool.unmatched"] == "call"
+        assert attrs["thirdeye.tool.call.payload"] == call["data"]
+        assert attrs["thirdeye.event.call_seq"] == 7
+        assert "thirdeye.tool.result.payload" not in attrs
+        assert "thirdeye.event.result_seq" not in attrs
+
+    def test_unmatched_result_emits_synthetic_id_and_result_marker(self):
+        result = _tool_event(
+            9,
+            "tool_result",
+            tool_name="mcp.search",
+            tool_use_id="mcp-1",
+            tool_output="found",
+        )
+
+        tool = _reconstructed_tools([result])[0]
+        attrs = _tool_attrs(tool)
+
+        assert tool["tool_call_id"] == f"{_TOOL_GEN}:mcp.search:result:9"
+        assert attrs["thirdeye.tool.unmatched"] == "result"
+        assert attrs["thirdeye.tool.result.payload"] == result["data"]
+        assert attrs["thirdeye.event.result_seq"] == 9
+        assert "thirdeye.tool.call.payload" not in attrs
+        assert "thirdeye.event.call_seq" not in attrs
+
+    def test_build_turn_surfaces_reconstructed_tool_payloads(self, tmp_path: Path):
+        sid, generation = _TOOL_SID, _TOOL_GEN
+        store = Store(Config(root=tmp_path))
+        call_seq = _append(
+            store,
+            sid,
+            "tool_call",
+            {
+                "generation_id": generation,
+                "tool_name": "shell",
+                "cursor_tool_family": "shell",
+                "command": "echo hi",
+            },
+        )
+        result_seq = _append(
+            store,
+            sid,
+            "tool_result",
+            {
+                "generation_id": generation,
+                "tool_name": "shell",
+                "cursor_tool_family": "shell",
+                "command": "echo hi",
+                "output": "hi",
+            },
+        )
+        _append(store, sid, "user_message", {"generation_id": generation, "prompt": "run shell"})
+        stop_seq = _append(store, sid, "turn_stop", {"generation_id": generation})
+
+        tool = _build(tmp_path, sid, generation, stop_seq)["llm_calls"][0]["tool_calls"][0]
+        attrs = tool["attributes"]
+        call_event = _stored_event(store, sid, call_seq)
+        result_event = _stored_event(store, sid, result_seq)
+
+        assert attrs["thirdeye.tool.call.payload"] == call_event["data"]
+        assert attrs["thirdeye.tool.result.payload"] == result_event["data"]
+        assert attrs["thirdeye.event.call_seq"] == call_seq
+        assert attrs["thirdeye.event.result_seq"] == result_seq
+
+    def test_build_turn_keeps_unmatched_tools_without_prompt(self, tmp_path: Path):
+        """Tool-only generations still export their unmatched sides."""
+        sid, generation = _TOOL_SID, _TOOL_GEN
+        store = Store(Config(root=tmp_path))
+        call_seq = _append(
+            store,
+            sid,
+            "tool_call",
+            {
+                "generation_id": generation,
+                "tool_name": "Grep",
+                "tool_use_id": "grep-orphan",
+                "pattern": "orphan",
+            },
+        )
+        stop_seq = _append(store, sid, "turn_stop", {"generation_id": generation})
+
+        turn = build_turn(
+            session_dir_=session_dir(tmp_path, "cursor", sid),
+            session_id=sid,
+            generation_id=generation,
+            stop_seq=stop_seq,
+        )
+
+        assert turn is not None
+        tool = turn["llm_calls"][0]["tool_calls"][0]
+        assert tool["tool_call_id"] == "grep-orphan"
+        assert _tool_attrs(tool)["thirdeye.tool.unmatched"] == "call"
+        assert _tool_attrs(tool)["thirdeye.event.call_seq"] == call_seq
+
+    def test_reverse_signature_completion_pairs_correctly(self):
+        result = _tool_event(
+            1,
+            "tool_result",
+            tool_name="shell",
+            cursor_tool_family="shell",
+            command="make build",
+            output="built",
+        )
+        call = _tool_event(
+            2,
+            "tool_call",
+            tool_name="shell",
+            cursor_tool_family="shell",
+            command="make build",
+        )
+
+        tools = _reconstructed_tools([result, call])
+
+        assert len(tools) == 1
+        attrs = _tool_attrs(tools[0])
+        assert "thirdeye.tool.unmatched" not in attrs
+        assert attrs["thirdeye.event.call_seq"] == 2
+        assert attrs["thirdeye.event.result_seq"] == 1
+        assert attrs["thirdeye.tool.call.payload"] == call["data"]
+        assert attrs["thirdeye.tool.result.payload"] == result["data"]
+
+    def test_reverse_completion_orders_span_timestamps(self):
+        result = _tool_event(
+            1,
+            "tool_result",
+            ts="2026-09-02T12:00:01.000Z",
+            tool_name="Task",
+            tool_use_id="call-reverse",
+            tool_output={"status": "done"},
+        )
+        call = _tool_event(
+            2,
+            "tool_call",
+            ts="2026-09-02T12:00:04.000Z",
+            tool_name="Task",
+            tool_use_id="call-reverse",
+            tool_input={"prompt": "delegate"},
+        )
+
+        tool = _reconstructed_tools([result, call])[0]
+
+        # The callbacks arrived reversed; the span still spans the observed
+        # interval rather than ending before it starts.
+        assert tool["start_ts"] == "2026-09-02T12:00:01.000Z"
+        assert tool["end_ts"] == "2026-09-02T12:00:04.000Z"
+
+    def test_forward_completion_keeps_call_and_result_timestamps(self):
+        call = _tool_event(
+            1,
+            "tool_call",
+            ts="2026-09-02T12:00:01.000Z",
+            tool_name="shell",
+            cursor_tool_family="shell",
+            command="make build",
+        )
+        result = _tool_event(
+            2,
+            "tool_result",
+            ts="2026-09-02T12:00:09.000Z",
+            tool_name="shell",
+            cursor_tool_family="shell",
+            command="make build",
+            output="built",
+        )
+
+        tool = _reconstructed_tools([call, result])[0]
+
+        assert tool["start_ts"] == "2026-09-02T12:00:01.000Z"
+        assert tool["end_ts"] == "2026-09-02T12:00:09.000Z"
+
+    def test_unsigned_result_does_not_claim_explicit_id_call(self):
+        call = _tool_event(
+            1,
+            "tool_call",
+            tool_name="shell",
+            cursor_tool_family="shell",
+            tool_use_id="call-explicit",
+            command="make build",
+        )
+        result = _tool_event(
+            2,
+            "tool_result",
+            tool_name="shell",
+            cursor_tool_family="shell",
+            output="built",
+        )
+
+        tools = _reconstructed_tools([call, result])
+
+        assert [_tool_attrs(tool).get("thirdeye.tool.unmatched") for tool in tools] == [
+            "call",
+            "result",
+        ]
+        assert tools[0]["tool_call_id"] == "call-explicit"
+        assert tools[1]["tool_call_id"] == f"{_TOOL_GEN}:shell:result:2"
+
+    def test_unsigned_result_does_not_reach_past_explicit_id_call(self):
+        """Positional pairing never reorders: it stops at an explicit id it cannot match."""
+        explicit_call = _tool_event(
+            1,
+            "tool_call",
+            tool_name="shell",
+            cursor_tool_family="shell",
+            tool_use_id="call-explicit",
+            command="explicit",
+        )
+        signature_call = _tool_event(
+            2,
+            "tool_call",
+            tool_name="shell",
+            cursor_tool_family="shell",
+            command="signed",
+        )
+        result = _tool_event(
+            3,
+            "tool_result",
+            tool_name="shell",
+            cursor_tool_family="shell",
+            output="built",
+        )
+
+        tools = _reconstructed_tools([explicit_call, signature_call, result])
+
+        assert [_tool_attrs(tool).get("thirdeye.tool.unmatched") for tool in tools] == [
+            "call",
+            "call",
+            "result",
+        ]
+        assert [tool["tool_call_id"] for tool in tools] == [
+            "call-explicit",
+            f"{_TOOL_GEN}:shell:2",
+            f"{_TOOL_GEN}:shell:result:3",
+        ]
+
+    def test_unmatched_call_with_explicit_id_preserves_call_id(self):
+        call = _tool_event(
+            3,
+            "tool_call",
+            tool_name="Read",
+            tool_use_id="read-explicit",
+            path="src/main.py",
+        )
+
+        tool = _reconstructed_tools([call])[0]
+
+        assert tool["tool_call_id"] == "read-explicit"
+        assert _tool_attrs(tool)["thirdeye.tool.unmatched"] == "call"
+
+    def test_instant_tool_keeps_one_payload_on_both_sides(self):
+        """Preserved: an instant callback is a complete call and result at once."""
+        event = _tool_event(
+            1,
+            "tool_result",
+            tool_name="Grep",
+            tool_use_id="grep-instant",
+            cursor_instant=True,
+            tool_input={"pattern": "TODO"},
+            tool_output='{"matches": 3}',
+            duration=25,
+        )
+
+        tools = _reconstructed_tools([event])
+        attrs = _tool_attrs(tools[0])
+
+        assert len(tools) == 1
+        assert tools[0]["tool_call_id"] == "grep-instant"
+        assert "thirdeye.tool.unmatched" not in attrs
+        assert attrs["thirdeye.tool.call.payload"] == event["data"]
+        assert attrs["thirdeye.tool.result.payload"] == event["data"]
+        assert attrs["thirdeye.event.call_seq"] == 1
+        assert attrs["thirdeye.event.result_seq"] == 1
+        # Embedded JSON is decoded rather than pre-stringified.
+        assert attrs["gen_ai.tool.call.result"] == {"matches": 3}
+        assert tools[0]["start_ts"] < tools[0]["end_ts"]
+
+    def test_pairing_tolerates_unusable_timestamps(self):
+        """Preserved fail-open behavior: unparseable or absent `ts` never raises."""
+        malformed = _reconstructed_tools(
+            [
+                _tool_event(1, "tool_result", ts="not-a-timestamp", command="c", output="o"),
+                _tool_event(2, "tool_call", ts="also-not-a-timestamp", command="c"),
+            ]
+        )
+        missing = _reconstructed_tools(
+            [
+                _tool_event(1, "tool_call", ts="", command="c"),
+                _tool_event(2, "tool_result", ts="", command="c", output="o"),
+            ]
+        )
+
+        assert malformed[0]["start_ts"] == "also-not-a-timestamp"
+        assert malformed[0]["end_ts"] == "not-a-timestamp"
+        assert (missing[0]["start_ts"], missing[0]["end_ts"]) == ("", "")
+
+
+# --- turn integration: committed interaction recovery ------------------------
+
+
+def _cursor_config(root: Path) -> Config:
+    return Config(
+        root=root,
+        logfire=LogfireSettings(enabled=True, token="test-write-token"),
+    )
+
+
+def _interaction_id(generation: str, kind: str, source_seq: int, correlation_id: str = "") -> str:
+    return f"{generation}:{kind}:{correlation_id or '-'}:{source_seq}"
+
+
+class TestCommittedInteractionRecovery:
+    def test_build_turn_omits_live_committed_reasoning(self, tmp_path: Path, monkeypatch):
+        config = _cursor_config(tmp_path)
+        store = Store(config)
+        sid, generation = "cursor-session", "gen-live-reasoning"
+        _append(store, sid, "user_message", {"generation_id": generation, "prompt": "go"})
+        thought_seq = _append(
+            store,
+            sid,
+            "assistant_thought",
+            {"generation_id": generation, "text": "plan"},
+        )
+        response_seq = _append(
+            store,
+            sid,
+            "assistant_message",
+            {"generation_id": generation, "text": "done"},
+        )
+        stop_seq = _append(store, sid, "turn_stop", {"generation_id": generation})
+        sd = session_dir(tmp_path, "cursor", sid)
+        monkeypatch.setattr(
+            "thirdeye.platforms.cursor.live_spans.export_spans",
+            lambda *args: True,
+        )
+
+        emit_live_interactions(config, sd, sid, "/repo", generation, thought_seq)
+
+        turn = build_turn(
+            session_dir_=sd,
+            session_id=sid,
+            generation_id=generation,
+            stop_seq=stop_seq,
+        )
+
+        assert turn is not None
+        interactions = turn.get("interactions") or []
+        reasoning_id = _interaction_id(generation, "reasoning", thought_seq)
+        interaction_ids = {item["interaction_id"] for item in interactions}
+        assert reasoning_id not in interaction_ids
+        assert _interaction_id(generation, "assistant_message", response_seq) in interaction_ids
+
+    def test_build_turn_omits_live_committed_assistant_message(self, tmp_path: Path, monkeypatch):
+        config = _cursor_config(tmp_path)
+        store = Store(config)
+        sid, generation = "cursor-session", "gen-live-response"
+        _append(store, sid, "user_message", {"generation_id": generation, "prompt": "go"})
+        response_seq = _append(
+            store,
+            sid,
+            "assistant_message",
+            {"generation_id": generation, "text": "done"},
+        )
+        stop_seq = _append(store, sid, "turn_stop", {"generation_id": generation})
+        sd = session_dir(tmp_path, "cursor", sid)
+        monkeypatch.setattr(
+            "thirdeye.platforms.cursor.live_spans.export_spans",
+            lambda *args: True,
+        )
+
+        emit_live_interactions(config, sd, sid, "/repo", generation, response_seq)
+
+        turn = build_turn(
+            session_dir_=sd,
+            session_id=sid,
+            generation_id=generation,
+            stop_seq=stop_seq,
+        )
+
+        assert turn is not None
+        interactions = turn.get("interactions") or []
+        response_id = _interaction_id(generation, "assistant_message", response_seq)
+        assert response_id not in {item["interaction_id"] for item in interactions}
+        assert any(item["kind"] == "user_message" for item in interactions)
+        assert any(item["kind"] == "lifecycle" for item in interactions)
+
+    def test_build_turn_recovers_failed_live_reasoning(self, tmp_path: Path, monkeypatch):
+        config = _cursor_config(tmp_path)
+        store = Store(config)
+        sid, generation = "cursor-session", "gen-failed-reasoning"
+        turn_seq = _append(
+            store, sid, "user_message", {"generation_id": generation, "prompt": "go"}
+        )
+        thought_seq = _append(
+            store,
+            sid,
+            "assistant_thought",
+            {"generation_id": generation, "text": "plan"},
+        )
+        stop_seq = _append(store, sid, "turn_stop", {"generation_id": generation})
+        sd = session_dir(tmp_path, "cursor", sid)
+        monkeypatch.setattr(
+            "thirdeye.platforms.cursor.live_spans.export_spans",
+            lambda *args: False,
+        )
+
+        emit_live_interactions(config, sd, sid, "/repo", generation, thought_seq)
+
+        turn = build_turn(
+            session_dir_=sd,
+            session_id=sid,
+            generation_id=generation,
+            stop_seq=stop_seq,
+        )
+
+        assert turn is not None
+        reasoning_id = _interaction_id(generation, "reasoning", thought_seq)
+        record = _interaction_by_id(turn, reasoning_id)
+        assert record["kind"] == "reasoning"
+        assert record["parent_span_id"] == str(turn_span_id("cursor", sid, turn_seq))
+
+    def test_build_turn_recovers_failed_live_assistant_message(self, tmp_path: Path, monkeypatch):
+        config = _cursor_config(tmp_path)
+        store = Store(config)
+        sid, generation = "cursor-session", "gen-failed-response"
+        turn_seq = _append(
+            store, sid, "user_message", {"generation_id": generation, "prompt": "go"}
+        )
+        response_seq = _append(
+            store,
+            sid,
+            "assistant_message",
+            {"generation_id": generation, "text": "done"},
+        )
+        stop_seq = _append(store, sid, "turn_stop", {"generation_id": generation})
+        sd = session_dir(tmp_path, "cursor", sid)
+        monkeypatch.setattr(
+            "thirdeye.platforms.cursor.live_spans.export_spans",
+            lambda *args: False,
+        )
+
+        emit_live_interactions(config, sd, sid, "/repo", generation, response_seq)
+
+        turn = build_turn(
+            session_dir_=sd,
+            session_id=sid,
+            generation_id=generation,
+            stop_seq=stop_seq,
+        )
+
+        assert turn is not None
+        response_id = _interaction_id(generation, "assistant_message", response_seq)
+        record = _interaction_by_id(turn, response_id)
+        assert record["kind"] == "assistant_message"
+        assert record["parent_span_id"] == str(turn_span_id("cursor", sid, turn_seq))
+
+    def test_stop_recovery_keeps_user_and_turn_stop_lifecycle(self, tmp_path: Path, monkeypatch):
+        config = _cursor_config(tmp_path)
+        store = Store(config)
+        sid, generation = "cursor-session", "gen-lifecycle-recovery"
+        user_seq = _append(
+            store, sid, "user_message", {"generation_id": generation, "prompt": "go"}
+        )
+        thought_seq = _append(
+            store,
+            sid,
+            "assistant_thought",
+            {"generation_id": generation, "text": "plan"},
+        )
+        response_seq = _append(
+            store,
+            sid,
+            "assistant_message",
+            {"generation_id": generation, "text": "done"},
+        )
+        stop_seq = _append(store, sid, "turn_stop", {"generation_id": generation, "model": "gpt-5"})
+        sd = session_dir(tmp_path, "cursor", sid)
+        monkeypatch.setattr(
+            "thirdeye.platforms.cursor.live_spans.export_spans",
+            lambda *args: True,
+        )
+
+        emit_live_interactions(config, sd, sid, "/repo", generation, response_seq)
+
+        turn = build_turn(
+            session_dir_=sd,
+            session_id=sid,
+            generation_id=generation,
+            stop_seq=stop_seq,
+        )
+
+        assert turn is not None
+        interactions = turn.get("interactions") or []
+        by_kind = {item["kind"]: item for item in interactions}
+        assert by_kind["user_message"]["interaction_id"] == _interaction_id(
+            generation, "user_message", user_seq
+        )
+        lifecycle = by_kind["lifecycle"]
+        assert lifecycle["attributes"]["thirdeye.interaction.source_type"] == "turn_stop"
+        assert lifecycle["attributes"]["thirdeye.interaction.source_seq"] == stop_seq
+        committed_ids = {
+            _interaction_id(generation, "reasoning", thought_seq),
+            _interaction_id(generation, "assistant_message", response_seq),
+        }
+        assert committed_ids.isdisjoint(item["interaction_id"] for item in interactions)
+
+    def test_recovery_parent_ids_match_live_export(self, tmp_path: Path, monkeypatch):
+        config = _cursor_config(tmp_path)
+        store = Store(config)
+        sid, generation = "cursor-session", "gen-parent-match"
+        turn_seq = _append(
+            store, sid, "user_message", {"generation_id": generation, "prompt": "go"}
+        )
+        thought_seq = _append(
+            store,
+            sid,
+            "assistant_thought",
+            {"generation_id": generation, "text": "plan"},
+        )
+        stop_seq = _append(store, sid, "turn_stop", {"generation_id": generation})
+        sd = session_dir(tmp_path, "cursor", sid)
+        exported: list[list[dict]] = []
+        monkeypatch.setattr(
+            "thirdeye.platforms.cursor.live_spans.export_spans",
+            lambda *args: exported.append(args[-1]) or True,
+        )
+
+        emit_live_interactions(config, sd, sid, "/repo", generation, thought_seq)
+
+        live_span = exported[0][0]
+        reasoning_id = _interaction_id(generation, "reasoning", thought_seq)
+        expected_parent = turn_span_id("cursor", sid, turn_seq)
+        assert live_span["parent_span_id"] == expected_parent
+        assert live_span["span_id"] == interaction_span_id("cursor", sid, reasoning_id)
+
+        turn = build_turn(
+            session_dir_=sd,
+            session_id=sid,
+            generation_id=generation,
+            stop_seq=stop_seq,
+        )
+
+        assert turn is not None
+        interaction_ids = {item["interaction_id"] for item in (turn.get("interactions") or [])}
+        assert reasoning_id not in interaction_ids
+
+        # Failed live export on a fresh session must recover the same deterministic IDs.
+        store2 = Store(config)
+        sid2, generation2 = "cursor-session-2", "gen-parent-match-2"
+        turn_seq2 = _append(
+            store2, sid2, "user_message", {"generation_id": generation2, "prompt": "go"}
+        )
+        thought_seq2 = _append(
+            store2,
+            sid2,
+            "assistant_thought",
+            {"generation_id": generation2, "text": "plan"},
+        )
+        stop_seq2 = _append(store2, sid2, "turn_stop", {"generation_id": generation2})
+        sd2 = session_dir(tmp_path, "cursor", sid2)
+        monkeypatch.setattr(
+            "thirdeye.platforms.cursor.live_spans.export_spans",
+            lambda *args: False,
+        )
+        emit_live_interactions(config, sd2, sid2, "/repo", generation2, thought_seq2)
+        recovered_turn = build_turn(
+            session_dir_=sd2,
+            session_id=sid2,
+            generation_id=generation2,
+            stop_seq=stop_seq2,
+        )
+        reasoning_id2 = _interaction_id(generation2, "reasoning", thought_seq2)
+        recovered = _interaction_by_id(recovered_turn, reasoning_id2)
+        expected_parent2 = turn_span_id("cursor", sid2, turn_seq2)
+        expected_span_id2 = interaction_span_id("cursor", sid2, reasoning_id2)
+        assert recovered["parent_span_id"] == str(expected_parent2)
+        assert recovered["span_id"] == str(expected_span_id2)
+
+    def test_build_turn_recovers_failed_live_duplicate_reasoning(self, tmp_path: Path, monkeypatch):
+        config = _cursor_config(tmp_path)
+        store = Store(config)
+        sid, generation = "cursor-session", "gen-failed-dup-reasoning"
+        timestamps = iter(
+            [
+                "1970-01-01T00:00:00.000Z",
+                "2026-09-02T12:00:00.000Z",
+                "2026-09-02T12:00:00.000Z",
+                "2026-09-02T12:00:00.000Z",
+                "2026-09-02T12:00:01.000Z",
+            ]
+        )
+        monkeypatch.setattr("thirdeye.writer._utc_iso_ms", lambda: next(timestamps))
+        turn_seq = _append(
+            store, sid, "user_message", {"generation_id": generation, "prompt": "go"}
+        )
+        first_seq = _append(
+            store,
+            sid,
+            "assistant_thought",
+            {"generation_id": generation, "text": "plan", "model": "claude-4"},
+        )
+        duplicate_seq = _append(
+            store,
+            sid,
+            "assistant_thought",
+            {"generation_id": generation, "text": "plan", "model": "gpt-5"},
+        )
+        stop_seq = _append(store, sid, "turn_stop", {"generation_id": generation})
+        sd = session_dir(tmp_path, "cursor", sid)
+        export_results = iter([True, False])
+        monkeypatch.setattr(
+            "thirdeye.platforms.cursor.live_spans.export_spans",
+            lambda *args: next(export_results),
+        )
+
+        emit_live_interactions(config, sd, sid, "/repo", generation, first_seq)
+        emit_live_interactions(config, sd, sid, "/repo", generation, duplicate_seq)
+
+        turn = build_turn(
+            session_dir_=sd,
+            session_id=sid,
+            generation_id=generation,
+            stop_seq=stop_seq,
+        )
+
+        assert turn is not None
+        reasoning_id = _interaction_id(generation, "reasoning", first_seq)
+        record = _interaction_by_id(turn, reasoning_id)
+        assert record["kind"] == "reasoning"
+        assert record["attributes"]["thirdeye.interaction.duplicate_seqs"] == [duplicate_seq]
+        assert record["parent_span_id"] == str(turn_span_id("cursor", sid, turn_seq))
+
+
+# --- turn reconstruction -----------------------------------------------------
+
+
+def _expected_interaction_attributes(interaction) -> dict:
+    return {
+        "thirdeye.interaction.kind": interaction.kind,
+        "thirdeye.interaction.payload": interaction.payload,
+        "thirdeye.interaction.correlation_id": interaction.correlation_id,
+        "thirdeye.interaction.source_type": interaction.source_type,
+        "thirdeye.interaction.source_seq": interaction.source_seq,
+        "thirdeye.interaction.timestamp": interaction.ts,
+        "thirdeye.interaction.generation_id": interaction.generation_id,
+        "thirdeye.interaction.duplicate_seqs": list(interaction.duplicate_seqs),
+    }
+
+
+def _interaction_by_id(turn, interaction_id: str) -> dict:
+    interactions = turn.get("interactions") or []
+    return next(item for item in interactions if item["interaction_id"] == interaction_id)
+
+
+class TestTurnReconstruction:
+    def test_second_turn_input_includes_prior_turn_context(self, tmp_path: Path):
+        sid = "two-turn-session"
+        gen_one, gen_two = "gen-turn-1", "gen-turn-2"
+        store = Store(Config(root=tmp_path))
+        _append(store, sid, "user_message", {"generation_id": gen_one, "prompt": "first question"})
+        _append(store, sid, "assistant_thought", {"generation_id": gen_one, "text": "plan one"})
+        _shell_call(store, sid, gen_one, tool_use_id="shell-1", command="ls")
+        _shell_result(store, sid, gen_one, tool_use_id="shell-1", output="README.md")
+        _append(
+            store,
+            sid,
+            "assistant_message",
+            {"generation_id": gen_one, "text": "answer one"},
+        )
+        _append(store, sid, "turn_stop", {"generation_id": gen_one})
+        _append(store, sid, "user_message", {"generation_id": gen_two, "prompt": "second question"})
+        _append(store, sid, "assistant_thought", {"generation_id": gen_two, "text": "plan two"})
+        _read_call(store, sid, gen_two, tool_use_id="read-1", path="src/main.py")
+        _read_result(store, sid, gen_two, tool_use_id="read-1", output="contents")
+        _append(
+            store,
+            sid,
+            "assistant_message",
+            {"generation_id": gen_two, "text": "answer two"},
+        )
+        stop_seq = _append(store, sid, "turn_stop", {"generation_id": gen_two})
+
+        turn = build_turn(
+            session_dir_=session_dir(tmp_path, "cursor", sid),
+            session_id=sid,
+            generation_id=gen_two,
+            stop_seq=stop_seq,
+        )
+
+        assert turn is not None
+        assert turn["input_message"] == "second question"
+        assert turn["output_message"] == "answer two"
+        call = turn["llm_calls"][0]
+        assert call["input_messages"] == [
+            {"role": "user", "parts": [{"type": "text", "content": "first question"}]},
+            {
+                "role": "assistant",
+                "thirdeye.kind": "reasoning",
+                "parts": [{"type": "text", "content": "plan one"}],
+            },
+            {
+                "role": "assistant",
+                "parts": [
+                    {
+                        "type": "tool_call",
+                        "id": "shell-1",
+                        "name": "shell",
+                        "arguments": "ls",
+                    }
+                ],
+            },
+            {
+                "role": "tool",
+                "parts": [
+                    {
+                        "type": "tool_call_response",
+                        "id": "shell-1",
+                        "response": "README.md",
+                    }
+                ],
+            },
+            {"role": "assistant", "parts": [{"type": "text", "content": "answer one"}]},
+            {"role": "user", "parts": [{"type": "text", "content": "second question"}]},
+            {
+                "role": "assistant",
+                "thirdeye.kind": "reasoning",
+                "parts": [{"type": "text", "content": "plan two"}],
+            },
+            {
+                "role": "assistant",
+                "parts": [
+                    {
+                        "type": "tool_call",
+                        "id": "read-1",
+                        "name": "read_file",
+                        "arguments": "src/main.py",
+                    }
+                ],
+            },
+            {
+                "role": "tool",
+                "parts": [
+                    {
+                        "type": "tool_call_response",
+                        "id": "read-1",
+                        "response": "contents",
+                    }
+                ],
+            },
+        ]
+        assert call["output_messages"] == [
+            {"role": "assistant", "parts": [{"type": "text", "content": "answer two"}]},
+        ]
+
+    def test_interaction_records_cover_active_generation_only(self, tmp_path: Path):
+        sid = "active-gen-session"
+        gen_one, gen_two = "gen-turn-1", "gen-turn-2"
+        store = Store(Config(root=tmp_path))
+        _append(store, sid, "user_message", {"generation_id": gen_one, "prompt": "first"})
+        _append(store, sid, "assistant_message", {"generation_id": gen_one, "text": "one"})
+        _append(store, sid, "turn_stop", {"generation_id": gen_one})
+        _append(store, sid, "user_message", {"generation_id": gen_two, "prompt": "second"})
+        _append(store, sid, "assistant_message", {"generation_id": gen_two, "text": "two"})
+        stop_seq = _append(store, sid, "turn_stop", {"generation_id": gen_two})
+        events = list(store.reader(sid).iter_events())
+        expected = {
+            item.interaction_id
+            for item in canonical_interactions(events, generation_id=gen_two, through_seq=stop_seq)
+            if item.kind not in {"tool_call", "tool_result"}
+        }
+
+        turn = build_turn(
+            session_dir_=session_dir(tmp_path, "cursor", sid),
+            session_id=sid,
+            generation_id=gen_two,
+            stop_seq=stop_seq,
+        )
+
+        assert turn is not None
+        interactions = turn.get("interactions") or []
+        assert {item["interaction_id"] for item in interactions} == expected
+        assert all(
+            item["attributes"]["thirdeye.interaction.generation_id"] == gen_two
+            for item in interactions
+        )
+
+    def test_final_assistant_message_is_output_not_input(self, tmp_path: Path):
+        sid, generation = "single-turn-session", "gen-single"
+        store = Store(Config(root=tmp_path))
+        _append(store, sid, "user_message", {"generation_id": generation, "prompt": "go"})
+        _append(store, sid, "assistant_thought", {"generation_id": generation, "text": "think"})
+        response_seq = _append(
+            store,
+            sid,
+            "assistant_message",
+            {"generation_id": generation, "text": "done"},
+        )
+        stop_seq = _append(store, sid, "turn_stop", {"generation_id": generation})
+
+        turn = build_turn(
+            session_dir_=session_dir(tmp_path, "cursor", sid),
+            session_id=sid,
+            generation_id=generation,
+            stop_seq=stop_seq,
+        )
+
+        assert turn is not None
+        call = turn["llm_calls"][0]
+        assert call["input_messages"] == [
+            {"role": "user", "parts": [{"type": "text", "content": "go"}]},
+            {
+                "role": "assistant",
+                "thirdeye.kind": "reasoning",
+                "parts": [{"type": "text", "content": "think"}],
+            },
+        ]
+        assert call["output_messages"] == [
+            {"role": "assistant", "parts": [{"type": "text", "content": "done"}]},
+        ]
+        assert response_seq == stop_seq - 1
+
+    def test_build_turn_emits_exact_interaction_recovery_records(self, tmp_path: Path):
+        sid, generation = "recovery-session", "gen-recovery"
+        store = Store(Config(root=tmp_path))
+        turn_seq = _append(
+            store,
+            sid,
+            "user_message",
+            {"generation_id": generation, "prompt": "ship it", "flags": {"urgent": True}},
+        )
+        _append(
+            store,
+            sid,
+            "assistant_thought",
+            {"generation_id": generation, "text": "plan", "model": "claude-4"},
+        )
+        call_seq = _shell_call(
+            store,
+            sid,
+            generation,
+            tool_use_id="shell-1",
+            command="pytest -q",
+        )
+        result_seq = _shell_result(
+            store,
+            sid,
+            generation,
+            tool_use_id="shell-1",
+            output="passed",
+        )
+        response_seq = _append(
+            store,
+            sid,
+            "assistant_message",
+            {"generation_id": generation, "text": "all green"},
+        )
+        stop_seq = _append(
+            store,
+            sid,
+            "turn_stop",
+            {"generation_id": generation, "input_tokens": 12, "output_tokens": 3},
+        )
+        events = list(store.reader(sid).iter_events())
+        expected_turn_span_id = str(turn_span_id("cursor", sid, turn_seq))
+        expected = {
+            item.interaction_id: item
+            for item in canonical_interactions(
+                events, generation_id=generation, through_seq=stop_seq
+            )
+            if item.kind not in {"tool_call", "tool_result"}
+        }
+
+        turn = build_turn(
+            session_dir_=session_dir(tmp_path, "cursor", sid),
+            session_id=sid,
+            generation_id=generation,
+            stop_seq=stop_seq,
+        )
+
+        assert turn is not None
+        interactions = turn.get("interactions") or []
+        assert {item["interaction_id"] for item in interactions} == set(expected)
+        assert all("tool_call" not in item["kind"] for item in interactions)
+        assert all("tool_result" not in item["kind"] for item in interactions)
+
+        for record in interactions:
+            canonical = expected[record["interaction_id"]]
+            assert record["kind"] == canonical.kind
+            assert record["span_id"] == str(
+                interaction_span_id("cursor", sid, canonical.interaction_id)
+            )
+            assert record["parent_span_id"] == expected_turn_span_id
+            assert record["start_ts"] == canonical.ts
+            assert record["end_ts"] == canonical.ts
+            assert record["attributes"] == _expected_interaction_attributes(canonical)
+
+        user_canonical = next(item for item in expected.values() if item.kind == "user_message")
+        user_record = _interaction_by_id(turn, user_canonical.interaction_id)
+        stop_record = next(item for item in interactions if item["kind"] == "lifecycle")
+        assert user_record["attributes"]["thirdeye.interaction.payload"] == {
+            "generation_id": generation,
+            "prompt": "ship it",
+            "flags": {"urgent": True},
+        }
+        assert stop_record["attributes"]["thirdeye.interaction.source_type"] == "turn_stop"
+        assert stop_record["attributes"]["thirdeye.interaction.source_seq"] == stop_seq
+        assert {call_seq, result_seq}.isdisjoint(
+            item["attributes"]["thirdeye.interaction.source_seq"] for item in interactions
+        )
+        assert response_seq in {
+            item["attributes"]["thirdeye.interaction.source_seq"] for item in interactions
+        }
+
+    def test_reasoning_duplicate_produces_one_recovery_record(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ):
+        sid, generation = "dedupe-session", "gen-dedupe"
+        store = Store(Config(root=tmp_path))
+        _set_next_timestamps(
+            monkeypatch,
+            [
+                "2026-09-02T12:00:00.000Z",
+                "2026-09-02T12:00:01.000Z",
+                "2026-09-02T12:00:01.000Z",
+                "2026-09-02T12:00:02.000Z",
+                "2026-09-02T12:00:03.000Z",
+            ],
+        )
+        turn_seq = _append(
+            store, sid, "user_message", {"generation_id": generation, "prompt": "go"}
+        )
+        _append(
+            store,
+            sid,
+            "assistant_thought",
+            {"generation_id": generation, "text": "plan", "model": "claude-4"},
+        )
+        _append(
+            store,
+            sid,
+            "assistant_thought",
+            {"generation_id": generation, "text": "plan", "model": "gpt-5"},
+        )
+        _append(
+            store,
+            sid,
+            "assistant_message",
+            {"generation_id": generation, "text": "done"},
+        )
+        stop_seq = _append(store, sid, "turn_stop", {"generation_id": generation})
+        events = list(store.reader(sid).iter_events())
+        reasoning = next(
+            item
+            for item in canonical_interactions(
+                events, generation_id=generation, through_seq=stop_seq
+            )
+            if item.kind == "reasoning"
+        )
+
+        turn = build_turn(
+            session_dir_=session_dir(tmp_path, "cursor", sid),
+            session_id=sid,
+            generation_id=generation,
+            stop_seq=stop_seq,
+        )
+
+        assert turn is not None
+        reasoning_records = [
+            item for item in (turn.get("interactions") or []) if item["kind"] == "reasoning"
+        ]
+        assert len(reasoning_records) == 1
+        record = reasoning_records[0]
+        assert record["interaction_id"] == reasoning.interaction_id
+        assert record["attributes"]["thirdeye.interaction.duplicate_seqs"] == list(
+            reasoning.duplicate_seqs
+        )
+        assert record["attributes"]["thirdeye.interaction.payload"] == reasoning.payload
+
+    def test_recovery_records_parent_to_deterministic_turn_span_id(self, tmp_path: Path):
+        sid, generation = "parent-session", "gen-parent"
+        store = Store(Config(root=tmp_path))
+        turn_seq = _append(
+            store, sid, "user_message", {"generation_id": generation, "prompt": "hi"}
+        )
+        stop_seq = _append(store, sid, "turn_stop", {"generation_id": generation})
+        expected_parent = str(turn_span_id("cursor", sid, turn_seq))
+
+        turn = build_turn(
+            session_dir_=session_dir(tmp_path, "cursor", sid),
+            session_id=sid,
+            generation_id=generation,
+            stop_seq=stop_seq,
+        )
+
+        assert turn is not None
+        assert turn["turn_span_id"] == expected_parent
+        interactions = turn.get("interactions") or []
+        assert interactions
+        assert all(item["parent_span_id"] == expected_parent for item in interactions)
+
+    def test_build_turn_without_assistant_uses_stop_seq_for_input_messages(self, tmp_path: Path):
+        """When no assistant_message exists, ``before_seq`` falls back to ``stop_seq``."""
+        sid, generation = "no-response-session", "gen-no-response"
+        store = Store(Config(root=tmp_path))
+        _append(store, sid, "user_message", {"generation_id": generation, "prompt": "run tools"})
+        _shell_call(store, sid, generation, tool_use_id="shell-1", command="pytest -q")
+        _shell_result(store, sid, generation, tool_use_id="shell-1", output="passed")
+        stop_seq = _append(store, sid, "turn_stop", {"generation_id": generation})
+
+        turn = build_turn(
+            session_dir_=session_dir(tmp_path, "cursor", sid),
+            session_id=sid,
+            generation_id=generation,
+            stop_seq=stop_seq,
+        )
+
+        assert turn is not None
+        assert turn["output_message"] == ""
+        call = turn["llm_calls"][0]
+        assert call["input_messages"] == [
+            {"role": "user", "parts": [{"type": "text", "content": "run tools"}]},
+            {
+                "role": "assistant",
+                "parts": [
+                    {
+                        "type": "tool_call",
+                        "id": "shell-1",
+                        "name": "shell",
+                        "arguments": "pytest -q",
+                    }
+                ],
+            },
+            {
+                "role": "tool",
+                "parts": [
+                    {
+                        "type": "tool_call_response",
+                        "id": "shell-1",
+                        "response": "passed",
+                    }
+                ],
+            },
+        ]
+        assert call["output_messages"] == []
+
+    def test_interaction_records_include_subagent_lifecycle_in_active_generation(
+        self, tmp_path: Path
+    ):
+        sid, generation = "lifecycle-session", "gen-lifecycle"
+        store = Store(Config(root=tmp_path))
+        _append(store, sid, "user_message", {"generation_id": generation, "prompt": "delegate"})
+        start_seq = _append(
+            store,
+            sid,
+            "subagent_start",
+            {
+                "generation_id": generation,
+                "subagent_id": "child-1",
+                "tool_call_id": "task-1",
+                "task": "inspect auth",
+            },
+        )
+        _append(store, sid, "assistant_message", {"generation_id": generation, "text": "done"})
+        stop_seq = _append(store, sid, "turn_stop", {"generation_id": generation})
+        events = list(store.reader(sid).iter_events())
+        expected_start = next(
+            item
+            for item in canonical_interactions(
+                events, generation_id=generation, through_seq=stop_seq
+            )
+            if item.source_type == "subagent_start"
+        )
+
+        turn = build_turn(
+            session_dir_=session_dir(tmp_path, "cursor", sid),
+            session_id=sid,
+            generation_id=generation,
+            stop_seq=stop_seq,
+        )
+
+        assert turn is not None
+        start_record = _interaction_by_id(turn, expected_start.interaction_id)
+        assert start_record["kind"] == "lifecycle"
+        assert start_record["attributes"]["thirdeye.interaction.source_type"] == "subagent_start"
+        assert start_record["attributes"]["thirdeye.interaction.source_seq"] == start_seq
+        assert start_record["attributes"]["thirdeye.interaction.payload"]["task"] == "inspect auth"
+
+    def test_build_turn_returns_interaction_only_turn(self, tmp_path: Path):
+        """Reasoning/lifecycle events without LLM convenience fields still export recovery records."""
+        sid, generation = "reasoning-only-session", "gen-reasoning-only"
+        store = Store(Config(root=tmp_path))
+        _append(store, sid, "assistant_thought", {"generation_id": generation, "text": "plan"})
+        stop_seq = _append(store, sid, "turn_stop", {"generation_id": generation})
+        events = list(store.reader(sid).iter_events())
+        expected = {
+            item.interaction_id
+            for item in canonical_interactions(
+                events, generation_id=generation, through_seq=stop_seq
+            )
+            if item.kind not in {"tool_call", "tool_result"}
+        }
+
+        turn = build_turn(
+            session_dir_=session_dir(tmp_path, "cursor", sid),
+            session_id=sid,
+            generation_id=generation,
+            stop_seq=stop_seq,
+        )
+
+        assert turn is not None
+        assert turn["llm_calls"] == []
+        interactions = turn.get("interactions") or []
+        assert {item["interaction_id"] for item in interactions} == expected
+        assert any(item["kind"] == "reasoning" for item in interactions)
+        assert any(item["kind"] == "lifecycle" for item in interactions)
+
+
 # --- subagents ---------------------------------------------------------------
 
 
@@ -853,9 +2298,15 @@ class TestSubagentToolOwnership:
                 )
             ],
         )
+        child_gen = cursor_subagent_generation_id("call-owner")
         tool = turn["llm_calls"][0]["tool_calls"][0]
+        attrs = tool["attributes"]
         assert tool["name"] == "mcp.search"
-        assert tool["tool_call_id"] == "mcp-1"
+        assert tool["tool_call_id"] == (
+            f"{child_gen}:mcp.search:result:{attrs['thirdeye.event.result_seq']}"
+        )
+        assert attrs["thirdeye.tool.unmatched"] == "result"
+        assert attrs["thirdeye.tool.result.payload"]["tool_use_id"] == "mcp-1"
         assert _parse(tool["end_ts"]) > _parse(tool["start_ts"])
 
     def test_transcript_tool_use_does_not_create_tool_span(self, tmp_path: Path):
@@ -1113,7 +2564,8 @@ class TestLegacySubagentCompatibility:
         assert _only_subagent(_build(tmp_path, sid, generation, stop_seq))["status"] == expected
 
 
-def test_build_turn_without_user_message_returns_none(tmp_path: Path):
+def test_build_turn_without_user_message_keeps_unmatched_tool(tmp_path: Path):
+    """A tool-only generation is still a turn: its unmatched call stays visible."""
     sid, generation = "cursor-session", "gen-tools-only"
     store = Store(Config(root=tmp_path))
     _append(
@@ -1124,12 +2576,46 @@ def test_build_turn_without_user_message_returns_none(tmp_path: Path):
     )
     stop_seq = _append(store, sid, "turn_stop", {"generation_id": generation})
 
+    turn = build_turn(
+        session_dir_=session_dir(tmp_path, "cursor", sid),
+        session_id=sid,
+        generation_id=generation,
+        stop_seq=stop_seq,
+    )
+
+    assert turn is not None
+    assert turn["input_message"] == ""
+    tool = turn["llm_calls"][0]["tool_calls"][0]
+    assert tool["attributes"]["thirdeye.tool.unmatched"] == "call"
+    assert tool["attributes"]["gen_ai.tool.call.arguments"] == "ls"
+
+
+def test_build_turn_without_llm_content_returns_none(tmp_path: Path):
+    sid, generation = "cursor-session", "gen-empty"
+    store = Store(Config(root=tmp_path))
+    _append(store, sid, "reasoning", {"generation_id": generation, "text": "thinking"})
+    stop_seq = _append(store, sid, "turn_stop", {"generation_id": generation})
+
+    turn = build_turn(
+        session_dir_=session_dir(tmp_path, "cursor", sid),
+        session_id=sid,
+        generation_id=generation,
+        stop_seq=stop_seq,
+    )
+    assert turn is not None
+    assert turn["llm_calls"] == []
+    assert len(turn.get("interactions") or []) == 1
+    assert (turn.get("interactions") or [])[0]["kind"] == "lifecycle"
+
+    # Non-canonical event types alone produce no exportable turn content.
+    sid2 = "cursor-session-2"
+    _append(store, sid2, "reasoning", {"generation_id": generation, "text": "orphan"})
     assert (
         build_turn(
-            session_dir_=session_dir(tmp_path, "cursor", sid),
-            session_id=sid,
+            session_dir_=session_dir(tmp_path, "cursor", sid2),
+            session_id=sid2,
             generation_id=generation,
-            stop_seq=stop_seq,
+            stop_seq=1,
         )
         is None
     )
