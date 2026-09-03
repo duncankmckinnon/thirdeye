@@ -207,42 +207,81 @@ def test_hook_captures_cursor_turn_and_dispatches_logfire_export(tmp_path: Path,
     assert turn["output_message"] == "hi"
 
 
-def test_session_end_exports_latest_turn_when_cursor_omits_stop(tmp_path: Path, monkeypatch):
+def test_session_end_exports_complete_cli_invocation_when_cursor_omits_stop(
+    tmp_path: Path, monkeypatch
+):
     monkeypatch.setenv("THIRDEYE_HOME", str(tmp_path))
     exported = []
     monkeypatch.setattr("thirdeye.otel_export.export_turn", lambda *args: exported.append(args))
-    common = {
-        "conversation_id": "session-1",
-        "generation_id": "generation-1",
-        "cwd": "/repo",
-    }
-    _invoke(monkeypatch, {**common, "hook_event_name": "beforeSubmitPrompt", "prompt": "hello"})
+    common = {"conversation_id": "session-1", "cwd": "/repo", "model": "cursor-model"}
+    _invoke(monkeypatch, {**common, "hook_event_name": "sessionStart"})
     _invoke(
         monkeypatch,
-        {**common, "hook_event_name": "afterAgentResponse", "text": "hi", "model": "gpt-5"},
+        {
+            **common,
+            "generation_id": "generation-1",
+            "hook_event_name": "afterAgentThought",
+            "text": "first reasoning",
+        },
+    )
+    _invoke(
+        monkeypatch,
+        {**common, "hook_event_name": "beforeShellExecution", "command": "pytest"},
+    )
+    _invoke(
+        monkeypatch,
+        {**common, "hook_event_name": "afterShellExecution", "output": "passed"},
+    )
+    _invoke(
+        monkeypatch,
+        {
+            **common,
+            "generation_id": "generation-2",
+            "hook_event_name": "afterAgentThought",
+            "text": "second reasoning",
+        },
     )
 
     _invoke(
         monkeypatch,
         {
-            "conversation_id": "session-1",
-            "cwd": "/repo",
+            **common,
             "hook_event_name": "sessionEnd",
-            "status": "completed",
+            "final_status": "completed",
         },
     )
 
     assert [event["t"] for event in _events()] == [
-        "user_message",
-        "assistant_message",
+        "session_start",
+        "assistant_thought",
+        "tool_call",
+        "tool_result",
+        "assistant_thought",
         "turn_stop",
         "session_end",
     ]
     assert len(exported) == 1
     turn = exported[0][-1]
-    assert turn["input_message"] == "hello"
-    assert turn["output_message"] == "hi"
-    assert turn["attributes"]["cursor.generation.id"] == "generation-1"
+    assert turn["turn_id"] == "0"
+    assert turn["start_ts"] == _events()[0]["ts"]
+    assert turn["end_ts"] == _events()[-2]["ts"]
+    assert [call["call_id"] for call in turn["llm_calls"]] == [
+        "generation-1",
+        "generation-2",
+    ]
+    assert turn["llm_calls"][0]["output_messages"] == [
+        {
+            "role": "assistant",
+            "parts": [{"type": "reasoning", "content": "first reasoning"}],
+        }
+    ]
+    assert [tool["name"] for tool in turn["llm_calls"][0]["tool_calls"]] == ["shell"]
+    assert turn["llm_calls"][1]["output_messages"] == [
+        {
+            "role": "assistant",
+            "parts": [{"type": "reasoning", "content": "second reasoning"}],
+        }
+    ]
 
 
 def test_session_end_does_not_export_turn_already_stopped(tmp_path: Path, monkeypatch):
@@ -294,6 +333,10 @@ def test_session_end_logs_fallback_export_failure(tmp_path: Path, monkeypatch):
         "cwd": "/repo",
     }
     _invoke(monkeypatch, {**common, "hook_event_name": "beforeSubmitPrompt", "prompt": "hello"})
+    _invoke(
+        monkeypatch,
+        {**common, "hook_event_name": "afterAgentThought", "text": "reasoning"},
+    )
     monkeypatch.setattr(
         "thirdeye.otel_export.export_turn",
         lambda *_args: (_ for _ in ()).throw(RuntimeError("export failed")),
