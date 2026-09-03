@@ -26,6 +26,16 @@ def _append(store: Store, sid: str, event_type: str, data: dict) -> int:
     )
 
 
+def _set_next_timestamps(monkeypatch: pytest.MonkeyPatch, timestamps: list[str]) -> None:
+    """Stamp the next appended events with exact ``ts`` values in order."""
+    remaining = ["1970-01-01T00:00:00.000Z", *timestamps]
+
+    def _next() -> str:
+        return remaining.pop(0)
+
+    monkeypatch.setattr("thirdeye.writer._utc_iso_ms", _next)
+
+
 def test_usage_from_payload_treats_cursor_input_tokens_as_cache_inclusive():
     """Cursor ``stop`` reports ``input_tokens`` as the turn total, cache included."""
     assert usage_from_payload(
@@ -1214,6 +1224,38 @@ class TestTurnReconstruction:
             {"role": "assistant", "parts": [{"type": "text", "content": "answer two"}]},
         ]
 
+    def test_interaction_records_cover_active_generation_only(self, tmp_path: Path):
+        sid = "active-gen-session"
+        gen_one, gen_two = "gen-turn-1", "gen-turn-2"
+        store = Store(Config(root=tmp_path))
+        _append(store, sid, "user_message", {"generation_id": gen_one, "prompt": "first"})
+        _append(store, sid, "assistant_message", {"generation_id": gen_one, "text": "one"})
+        _append(store, sid, "turn_stop", {"generation_id": gen_one})
+        _append(store, sid, "user_message", {"generation_id": gen_two, "prompt": "second"})
+        _append(store, sid, "assistant_message", {"generation_id": gen_two, "text": "two"})
+        stop_seq = _append(store, sid, "turn_stop", {"generation_id": gen_two})
+        events = list(store.reader(sid).iter_events())
+        expected = {
+            item.interaction_id
+            for item in canonical_interactions(events, generation_id=gen_two, through_seq=stop_seq)
+            if item.kind not in {"tool_call", "tool_result"}
+        }
+
+        turn = build_turn(
+            session_dir_=session_dir(tmp_path, "cursor", sid),
+            session_id=sid,
+            generation_id=gen_two,
+            stop_seq=stop_seq,
+        )
+
+        assert turn is not None
+        interactions = turn.get("interactions") or []
+        assert {item["interaction_id"] for item in interactions} == expected
+        assert all(
+            item["attributes"]["thirdeye.interaction.generation_id"] == gen_two
+            for item in interactions
+        )
+
     def test_final_assistant_message_is_output_not_input(self, tmp_path: Path):
         sid, generation = "single-turn-session", "gen-single"
         store = Store(Config(root=tmp_path))
@@ -1332,13 +1374,28 @@ class TestTurnReconstruction:
         }
         assert stop_record["attributes"]["thirdeye.interaction.source_type"] == "turn_stop"
         assert stop_record["attributes"]["thirdeye.interaction.source_seq"] == stop_seq
-        assert {call_seq, result_seq, response_seq}.isdisjoint(
+        assert {call_seq, result_seq}.isdisjoint(
             item["attributes"]["thirdeye.interaction.source_seq"] for item in interactions
         )
+        assert response_seq in {
+            item["attributes"]["thirdeye.interaction.source_seq"] for item in interactions
+        }
 
-    def test_reasoning_duplicate_produces_one_recovery_record(self, tmp_path: Path):
+    def test_reasoning_duplicate_produces_one_recovery_record(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ):
         sid, generation = "dedupe-session", "gen-dedupe"
         store = Store(Config(root=tmp_path))
+        _set_next_timestamps(
+            monkeypatch,
+            [
+                "2026-09-02T12:00:00.000Z",
+                "2026-09-02T12:00:01.000Z",
+                "2026-09-02T12:00:01.000Z",
+                "2026-09-02T12:00:02.000Z",
+                "2026-09-02T12:00:03.000Z",
+            ],
+        )
         turn_seq = _append(store, sid, "user_message", {"generation_id": generation, "prompt": "go"})
         _append(
             store,
