@@ -6,9 +6,10 @@ from pathlib import Path
 
 import pytest
 
-from thirdeye.config import Config
+from thirdeye.config import Config, LogfireSettings
 from thirdeye.paths import session_dir
 from thirdeye.platforms.cursor.interactions import canonical_interactions
+from thirdeye.platforms.cursor.live_spans import emit_live_interactions
 from thirdeye.platforms.cursor.subagents import cursor_subagent_generation_id
 from thirdeye.platforms.cursor.tracing import (
     build_turn,
@@ -1101,6 +1102,263 @@ class TestToolReconstruction:
         assert malformed[0]["start_ts"] == "also-not-a-timestamp"
         assert malformed[0]["end_ts"] == "not-a-timestamp"
         assert (missing[0]["start_ts"], missing[0]["end_ts"]) == ("", "")
+
+
+# --- turn integration: committed interaction recovery ------------------------
+
+
+def _cursor_config(root: Path) -> Config:
+    return Config(
+        root=root,
+        logfire=LogfireSettings(enabled=True, token="test-write-token"),
+    )
+
+
+def _interaction_id(generation: str, kind: str, source_seq: int, correlation_id: str = "") -> str:
+    return f"{generation}:{kind}:{correlation_id or '-'}:{source_seq}"
+
+
+class TestCommittedInteractionRecovery:
+    def test_build_turn_omits_live_committed_reasoning(self, tmp_path: Path, monkeypatch):
+        config = _cursor_config(tmp_path)
+        store = Store(config)
+        sid, generation = "cursor-session", "gen-live-reasoning"
+        _append(store, sid, "user_message", {"generation_id": generation, "prompt": "go"})
+        thought_seq = _append(
+            store,
+            sid,
+            "assistant_thought",
+            {"generation_id": generation, "text": "plan"},
+        )
+        response_seq = _append(
+            store,
+            sid,
+            "assistant_message",
+            {"generation_id": generation, "text": "done"},
+        )
+        stop_seq = _append(store, sid, "turn_stop", {"generation_id": generation})
+        sd = session_dir(tmp_path, "cursor", sid)
+        monkeypatch.setattr(
+            "thirdeye.platforms.cursor.live_spans.export_spans",
+            lambda *args: True,
+        )
+
+        emit_live_interactions(config, sd, sid, "/repo", generation, thought_seq)
+
+        turn = build_turn(
+            session_dir_=sd,
+            session_id=sid,
+            generation_id=generation,
+            stop_seq=stop_seq,
+        )
+
+        assert turn is not None
+        interactions = turn.get("interactions") or []
+        reasoning_id = _interaction_id(generation, "reasoning", thought_seq)
+        interaction_ids = {item["interaction_id"] for item in interactions}
+        assert reasoning_id not in interaction_ids
+        assert _interaction_id(generation, "assistant_message", response_seq) in interaction_ids
+
+    def test_build_turn_omits_live_committed_assistant_message(self, tmp_path: Path, monkeypatch):
+        config = _cursor_config(tmp_path)
+        store = Store(config)
+        sid, generation = "cursor-session", "gen-live-response"
+        _append(store, sid, "user_message", {"generation_id": generation, "prompt": "go"})
+        response_seq = _append(
+            store,
+            sid,
+            "assistant_message",
+            {"generation_id": generation, "text": "done"},
+        )
+        stop_seq = _append(store, sid, "turn_stop", {"generation_id": generation})
+        sd = session_dir(tmp_path, "cursor", sid)
+        monkeypatch.setattr(
+            "thirdeye.platforms.cursor.live_spans.export_spans",
+            lambda *args: True,
+        )
+
+        emit_live_interactions(config, sd, sid, "/repo", generation, response_seq)
+
+        turn = build_turn(
+            session_dir_=sd,
+            session_id=sid,
+            generation_id=generation,
+            stop_seq=stop_seq,
+        )
+
+        assert turn is not None
+        interactions = turn.get("interactions") or []
+        response_id = _interaction_id(generation, "assistant_message", response_seq)
+        assert response_id not in {item["interaction_id"] for item in interactions}
+        assert any(item["kind"] == "user_message" for item in interactions)
+        assert any(item["kind"] == "lifecycle" for item in interactions)
+
+    def test_build_turn_recovers_failed_live_reasoning(self, tmp_path: Path, monkeypatch):
+        config = _cursor_config(tmp_path)
+        store = Store(config)
+        sid, generation = "cursor-session", "gen-failed-reasoning"
+        turn_seq = _append(store, sid, "user_message", {"generation_id": generation, "prompt": "go"})
+        thought_seq = _append(
+            store,
+            sid,
+            "assistant_thought",
+            {"generation_id": generation, "text": "plan"},
+        )
+        stop_seq = _append(store, sid, "turn_stop", {"generation_id": generation})
+        sd = session_dir(tmp_path, "cursor", sid)
+        monkeypatch.setattr(
+            "thirdeye.platforms.cursor.live_spans.export_spans",
+            lambda *args: False,
+        )
+
+        emit_live_interactions(config, sd, sid, "/repo", generation, thought_seq)
+
+        turn = build_turn(
+            session_dir_=sd,
+            session_id=sid,
+            generation_id=generation,
+            stop_seq=stop_seq,
+        )
+
+        assert turn is not None
+        reasoning_id = _interaction_id(generation, "reasoning", thought_seq)
+        record = _interaction_by_id(turn, reasoning_id)
+        assert record["kind"] == "reasoning"
+        assert record["parent_span_id"] == str(turn_span_id("cursor", sid, turn_seq))
+
+    def test_build_turn_recovers_failed_live_assistant_message(self, tmp_path: Path, monkeypatch):
+        config = _cursor_config(tmp_path)
+        store = Store(config)
+        sid, generation = "cursor-session", "gen-failed-response"
+        turn_seq = _append(store, sid, "user_message", {"generation_id": generation, "prompt": "go"})
+        response_seq = _append(
+            store,
+            sid,
+            "assistant_message",
+            {"generation_id": generation, "text": "done"},
+        )
+        stop_seq = _append(store, sid, "turn_stop", {"generation_id": generation})
+        sd = session_dir(tmp_path, "cursor", sid)
+        monkeypatch.setattr(
+            "thirdeye.platforms.cursor.live_spans.export_spans",
+            lambda *args: False,
+        )
+
+        emit_live_interactions(config, sd, sid, "/repo", generation, response_seq)
+
+        turn = build_turn(
+            session_dir_=sd,
+            session_id=sid,
+            generation_id=generation,
+            stop_seq=stop_seq,
+        )
+
+        assert turn is not None
+        response_id = _interaction_id(generation, "assistant_message", response_seq)
+        record = _interaction_by_id(turn, response_id)
+        assert record["kind"] == "assistant_message"
+        assert record["parent_span_id"] == str(turn_span_id("cursor", sid, turn_seq))
+
+    def test_stop_recovery_keeps_user_and_turn_stop_lifecycle(self, tmp_path: Path, monkeypatch):
+        config = _cursor_config(tmp_path)
+        store = Store(config)
+        sid, generation = "cursor-session", "gen-lifecycle-recovery"
+        user_seq = _append(store, sid, "user_message", {"generation_id": generation, "prompt": "go"})
+        thought_seq = _append(
+            store,
+            sid,
+            "assistant_thought",
+            {"generation_id": generation, "text": "plan"},
+        )
+        response_seq = _append(
+            store,
+            sid,
+            "assistant_message",
+            {"generation_id": generation, "text": "done"},
+        )
+        stop_seq = _append(store, sid, "turn_stop", {"generation_id": generation, "model": "gpt-5"})
+        sd = session_dir(tmp_path, "cursor", sid)
+        monkeypatch.setattr(
+            "thirdeye.platforms.cursor.live_spans.export_spans",
+            lambda *args: True,
+        )
+
+        emit_live_interactions(config, sd, sid, "/repo", generation, response_seq)
+
+        turn = build_turn(
+            session_dir_=sd,
+            session_id=sid,
+            generation_id=generation,
+            stop_seq=stop_seq,
+        )
+
+        assert turn is not None
+        interactions = turn.get("interactions") or []
+        by_kind = {item["kind"]: item for item in interactions}
+        assert by_kind["user_message"]["interaction_id"] == _interaction_id(
+            generation, "user_message", user_seq
+        )
+        lifecycle = by_kind["lifecycle"]
+        assert lifecycle["attributes"]["thirdeye.interaction.source_type"] == "turn_stop"
+        assert lifecycle["attributes"]["thirdeye.interaction.source_seq"] == stop_seq
+        committed_ids = {
+            _interaction_id(generation, "reasoning", thought_seq),
+            _interaction_id(generation, "assistant_message", response_seq),
+        }
+        assert committed_ids.isdisjoint(item["interaction_id"] for item in interactions)
+
+    def test_recovery_parent_ids_match_live_export(self, tmp_path: Path, monkeypatch):
+        config = _cursor_config(tmp_path)
+        store = Store(config)
+        sid, generation = "cursor-session", "gen-parent-match"
+        turn_seq = _append(store, sid, "user_message", {"generation_id": generation, "prompt": "go"})
+        thought_seq = _append(
+            store,
+            sid,
+            "assistant_thought",
+            {"generation_id": generation, "text": "plan"},
+        )
+        stop_seq = _append(store, sid, "turn_stop", {"generation_id": generation})
+        sd = session_dir(tmp_path, "cursor", sid)
+        exported: list[list[dict]] = []
+        monkeypatch.setattr(
+            "thirdeye.platforms.cursor.live_spans.export_spans",
+            lambda *args: exported.append(args[-1]) or True,
+        )
+
+        emit_live_interactions(config, sd, sid, "/repo", generation, thought_seq)
+
+        live_span = exported[0][0]
+        reasoning_id = _interaction_id(generation, "reasoning", thought_seq)
+        expected_parent = turn_span_id("cursor", sid, turn_seq)
+        assert live_span["parent_span_id"] == expected_parent
+        assert live_span["span_id"] == interaction_span_id("cursor", sid, reasoning_id)
+
+        turn = build_turn(
+            session_dir_=sd,
+            session_id=sid,
+            generation_id=generation,
+            stop_seq=stop_seq,
+        )
+
+        assert turn is not None
+        interaction_ids = {item["interaction_id"] for item in (turn.get("interactions") or [])}
+        assert reasoning_id not in interaction_ids
+
+        monkeypatch.setattr(
+            "thirdeye.platforms.cursor.live_spans.export_spans",
+            lambda *args: False,
+        )
+        emit_live_interactions(config, sd, sid, "/repo", generation, thought_seq)
+        recovered_turn = build_turn(
+            session_dir_=sd,
+            session_id=sid,
+            generation_id=generation,
+            stop_seq=stop_seq,
+        )
+        recovered = _interaction_by_id(recovered_turn, reasoning_id)
+        assert recovered["parent_span_id"] == str(expected_parent)
+        assert recovered["span_id"] == str(live_span["span_id"])
 
 
 # --- turn reconstruction -----------------------------------------------------

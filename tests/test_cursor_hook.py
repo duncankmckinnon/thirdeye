@@ -1080,3 +1080,189 @@ def test_subagent_exporter_exception_is_fail_open(tmp_path: Path, monkeypatch, c
 
     assert capfd.readouterr().out == '{"continue": true}{"continue": true}'
     assert _events()[-1]["t"] == "subagent_message"
+
+
+# --- turn integration: live interaction dispatch -----------------------------
+
+
+def _live_interaction_calls(monkeypatch) -> list[tuple]:
+    calls: list[tuple] = []
+
+    def capture(*args):
+        calls.append(args)
+        return None
+
+    monkeypatch.setattr(
+        "thirdeye.platforms.cursor.live_spans.emit_live_interactions",
+        capture,
+    )
+    return calls
+
+
+def _forbid_live_tools(monkeypatch) -> None:
+    def unexpected(*_args, **_kwargs):
+        raise AssertionError("emit_live_tools must not be called after turn integration")
+
+    monkeypatch.setattr("thirdeye.platforms.cursor.live_spans.emit_live_tools", unexpected)
+
+
+@pytest.mark.parametrize(
+    ("event_name", "extra_payload"),
+    [
+        ("afterAgentThought", {"text": "planning", "model": "gpt-5"}),
+        ("afterAgentResponse", {"text": "done", "model": "gpt-5"}),
+    ],
+)
+def test_thought_and_response_hooks_dispatch_live_interactions(
+    tmp_path: Path,
+    monkeypatch,
+    event_name: str,
+    extra_payload: dict,
+):
+    monkeypatch.setenv("THIRDEYE_HOME", str(tmp_path))
+    Config(root=tmp_path).write_logfire_settings(LogfireSettings(enabled=True, token="test-token"))
+    calls = _live_interaction_calls(monkeypatch)
+    _forbid_live_tools(monkeypatch)
+    common = {
+        "conversation_id": "session-1",
+        "generation_id": "generation-1",
+        "cwd": "/repo",
+    }
+
+    _invoke(monkeypatch, {**common, "hook_event_name": "beforeSubmitPrompt", "prompt": "go"})
+    _invoke(monkeypatch, {**common, "hook_event_name": event_name, **extra_payload})
+
+    assert len(calls) == 1
+    config, _sd, session_id, cwd, generation_id, through_seq = calls[0]
+    assert session_id == "session-1"
+    assert cwd == "/repo"
+    assert generation_id == "generation-1"
+    assert through_seq == _events()[-1]["seq"]
+
+
+def test_user_prompt_does_not_dispatch_live_interactions(tmp_path: Path, monkeypatch):
+    monkeypatch.setenv("THIRDEYE_HOME", str(tmp_path))
+    calls = _live_interaction_calls(monkeypatch)
+    _forbid_live_tools(monkeypatch)
+
+    _invoke(
+        monkeypatch,
+        _cursor_payload("beforeSubmitPrompt", prompt="hello"),
+    )
+
+    assert calls == []
+
+
+def test_stop_does_not_dispatch_live_interactions(tmp_path: Path, monkeypatch):
+    monkeypatch.setenv("THIRDEYE_HOME", str(tmp_path))
+    calls = _live_interaction_calls(monkeypatch)
+    _forbid_live_tools(monkeypatch)
+
+    _invoke(monkeypatch, _cursor_payload("beforeSubmitPrompt", prompt="go"))
+    _invoke(monkeypatch, _cursor_payload("stop", model="gpt-5", input_tokens=1, output_tokens=1))
+
+    assert calls == []
+
+
+@pytest.mark.parametrize("event_name", ["subagentStart", "subagentStop"])
+def test_subagent_lifecycle_does_not_dispatch_live_interactions(
+    tmp_path: Path, monkeypatch, event_name: str
+):
+    monkeypatch.setenv("THIRDEYE_HOME", str(tmp_path))
+    calls = _live_interaction_calls(monkeypatch)
+    _forbid_live_tools(monkeypatch)
+
+    _invoke(
+        monkeypatch,
+        _cursor_payload(
+            event_name,
+            subagent_id="child-1",
+            tool_call_id="call-1",
+            task="inspect",
+        ),
+    )
+
+    assert calls == []
+
+
+def test_tool_result_dispatches_emit_live_interactions(tmp_path: Path, monkeypatch):
+    monkeypatch.setenv("THIRDEYE_HOME", str(tmp_path))
+    Config(root=tmp_path).write_logfire_settings(LogfireSettings(enabled=True, token="test-token"))
+    calls = _live_interaction_calls(monkeypatch)
+    _forbid_live_tools(monkeypatch)
+    common = {
+        "conversation_id": "session-1",
+        "generation_id": "generation-1",
+        "cwd": "/repo",
+    }
+
+    _invoke(
+        monkeypatch,
+        {**common, "hook_event_name": "beforeShellExecution", "command": "pytest"},
+    )
+    assert calls == []
+
+    _invoke(
+        monkeypatch,
+        {**common, "hook_event_name": "afterShellExecution", "output": "passed"},
+    )
+    assert len(calls) == 1
+    assert calls[0][4] == "generation-1"
+    assert calls[0][5] == _events()[-1]["seq"]
+
+
+def test_read_result_dispatches_emit_live_interactions(tmp_path: Path, monkeypatch):
+    monkeypatch.setenv("THIRDEYE_HOME", str(tmp_path))
+    Config(root=tmp_path).write_logfire_settings(LogfireSettings(enabled=True, token="test-token"))
+    calls = _live_interaction_calls(monkeypatch)
+    _forbid_live_tools(monkeypatch)
+    common = {
+        "conversation_id": "session-1",
+        "generation_id": "generation-1",
+        "cwd": "/repo",
+    }
+
+    _invoke(
+        monkeypatch,
+        {**common, "hook_event_name": "beforeReadFile", "path": "src/app.py"},
+    )
+    assert calls == []
+
+    _invoke(
+        monkeypatch,
+        {
+            **common,
+            "hook_event_name": "postToolUse",
+            "tool_name": "Read",
+            "result": "file contents",
+        },
+    )
+    assert len(calls) == 1
+    assert calls[0][5] == _events()[-1]["seq"]
+
+
+def test_generic_post_tool_dispatches_emit_live_interactions(tmp_path: Path, monkeypatch):
+    monkeypatch.setenv("THIRDEYE_HOME", str(tmp_path))
+    Config(root=tmp_path).write_logfire_settings(LogfireSettings(enabled=True, token="test-token"))
+    calls = _live_interaction_calls(monkeypatch)
+    _forbid_live_tools(monkeypatch)
+    common = {
+        "conversation_id": "session-1",
+        "generation_id": "generation-1",
+        "cwd": "/repo",
+        "tool_name": "search_web",
+        "tool_use_id": "search-1",
+    }
+
+    _invoke(
+        monkeypatch,
+        {**common, "hook_event_name": "preToolUse", "tool_input": {"query": "sample"}},
+    )
+    assert calls == []
+
+    _invoke(
+        monkeypatch,
+        {**common, "hook_event_name": "postToolUse", "result": {"matches": 3}},
+    )
+    assert len(calls) == 1
+    assert calls[0][5] == _events()[-1]["seq"]
