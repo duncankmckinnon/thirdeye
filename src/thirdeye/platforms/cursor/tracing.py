@@ -14,6 +14,7 @@ from pathlib import Path
 from typing import Any
 
 from thirdeye.platforms.cursor.interactions import (
+    canonical_interactions,
     interaction_messages,
     session_interactions,
 )
@@ -817,10 +818,13 @@ def build_turn(
         else []
     )
 
-    # Create interaction records for non-tool interactions.
+    # Recovery records cover the active generation only; input_messages use full session history.
     turn_span_id_str = str(turn_span_id(_PLATFORM, session_id, turn_seq))
+    active_interactions = canonical_interactions(
+        all_events, generation_id=generation_id, through_seq=stop_seq
+    )
     interaction_records: list[InteractionSpanDict] = []
-    for interaction in all_interactions:
+    for interaction in active_interactions:
         if interaction.kind in {"tool_call", "tool_result"}:
             continue
         interaction_records.append(
@@ -866,7 +870,7 @@ def build_turn(
         session_id=session_id,
         generation_id=generation_id,
     )
-    if not llm_calls and not subagents:
+    if not llm_calls and not subagents and not interaction_records:
         return None
     turn: TurnSpanDict = {
         "turn_id": str(turn_seq),

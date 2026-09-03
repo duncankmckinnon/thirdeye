@@ -1547,6 +1547,33 @@ class TestTurnReconstruction:
         assert start_record["attributes"]["thirdeye.interaction.source_seq"] == start_seq
         assert start_record["attributes"]["thirdeye.interaction.payload"]["task"] == "inspect auth"
 
+    def test_build_turn_returns_interaction_only_turn(self, tmp_path: Path):
+        """Reasoning/lifecycle events without LLM convenience fields still export recovery records."""
+        sid, generation = "reasoning-only-session", "gen-reasoning-only"
+        store = Store(Config(root=tmp_path))
+        _append(store, sid, "assistant_thought", {"generation_id": generation, "text": "plan"})
+        stop_seq = _append(store, sid, "turn_stop", {"generation_id": generation})
+        events = list(store.reader(sid).iter_events())
+        expected = {
+            item.interaction_id
+            for item in canonical_interactions(events, generation_id=generation, through_seq=stop_seq)
+            if item.kind not in {"tool_call", "tool_result"}
+        }
+
+        turn = build_turn(
+            session_dir_=session_dir(tmp_path, "cursor", sid),
+            session_id=sid,
+            generation_id=generation,
+            stop_seq=stop_seq,
+        )
+
+        assert turn is not None
+        assert turn["llm_calls"] == []
+        interactions = turn.get("interactions") or []
+        assert {item["interaction_id"] for item in interactions} == expected
+        assert any(item["kind"] == "reasoning" for item in interactions)
+        assert any(item["kind"] == "lifecycle" for item in interactions)
+
 
 # --- subagents ---------------------------------------------------------------
 
@@ -2220,12 +2247,26 @@ def test_build_turn_without_llm_content_returns_none(tmp_path: Path):
     _append(store, sid, "reasoning", {"generation_id": generation, "text": "thinking"})
     stop_seq = _append(store, sid, "turn_stop", {"generation_id": generation})
 
+    turn = build_turn(
+        session_dir_=session_dir(tmp_path, "cursor", sid),
+        session_id=sid,
+        generation_id=generation,
+        stop_seq=stop_seq,
+    )
+    assert turn is not None
+    assert turn["llm_calls"] == []
+    assert len(turn.get("interactions") or []) == 1
+    assert (turn.get("interactions") or [])[0]["kind"] == "lifecycle"
+
+    # Non-canonical event types alone produce no exportable turn content.
+    sid2 = "cursor-session-2"
+    _append(store, sid2, "reasoning", {"generation_id": generation, "text": "orphan"})
     assert (
         build_turn(
-            session_dir_=session_dir(tmp_path, "cursor", sid),
-            session_id=sid,
+            session_dir_=session_dir(tmp_path, "cursor", sid2),
+            session_id=sid2,
             generation_id=generation,
-            stop_seq=stop_seq,
+            stop_seq=1,
         )
         is None
     )
