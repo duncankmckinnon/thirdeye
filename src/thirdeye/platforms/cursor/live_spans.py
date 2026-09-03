@@ -36,8 +36,10 @@ from thirdeye.span_ids import (
 from thirdeye.usage.errlog import log_capture_error
 
 _PLATFORM = "cursor"
-_INTERACTION_STATE_PREFIX = "i:"
-_INTERACTION_DUP_SUFFIX = "::d::"
+# Tool call IDs are arbitrary Cursor strings and may start with "i:". Use a
+# null-byte sentinel so interaction entries cannot collide with legacy tools.
+_INTERACTION_STATE_PREFIX = "\x00thirdeye:cursor:interaction:"
+_INTERACTION_DUP_SUFFIX = "\x00d\x00"
 
 
 def _interaction_state_entry(interaction_id: str, duplicate_count: int = 0) -> str:

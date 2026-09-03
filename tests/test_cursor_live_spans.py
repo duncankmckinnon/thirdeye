@@ -15,6 +15,7 @@ from thirdeye.platforms.cursor.live_spans import (
     committed_tool_call_ids,
     emit_live_interactions,
     emit_live_tools,
+    _interaction_state_entry,
 )
 from thirdeye.platforms.cursor.subagents import cursor_subagent_generation_id
 from thirdeye.platforms.cursor.tracing import build_turn, resolve_subagent_export
@@ -713,8 +714,57 @@ def test_live_state_classifies_colon_containing_tool_and_interaction_ids(
     assert committed_tool_call_ids(sd, generation) == {tool_call_id}
     assert committed_interaction_ids(sd, generation) == {interaction_id}
     persisted = json.loads(_live_state_path(sd).read_text())
-    assert f"i:{interaction_id}" in persisted[generation]
+    assert f"i:{interaction_id}" not in persisted[generation]
+    assert _interaction_state_entry(interaction_id) in persisted[generation]
     assert tool_call_id in persisted[generation]
+
+
+def test_live_state_treats_i_colon_prefixed_tool_id_as_tool_not_interaction(
+    tmp_path: Path, monkeypatch
+):
+    config = _config(tmp_path)
+    store = Store(config)
+    sid = "cursor-session"
+    generation = "generation-1"
+    tool_call_id = "i:legacy-tool-like-id"
+    _append(store, sid, "user_message", {"generation_id": generation, "prompt": "go"})
+    _append(
+        store,
+        sid,
+        "tool_call",
+        {
+            "generation_id": generation,
+            "tool_name": "shell",
+            "tool_call_id": tool_call_id,
+            "command": "ls",
+        },
+    )
+    result_seq = _append(
+        store,
+        sid,
+        "tool_result",
+        {
+            "generation_id": generation,
+            "tool_name": "shell",
+            "tool_call_id": tool_call_id,
+            "output": "ok",
+        },
+    )
+    monkeypatch.setattr(
+        "thirdeye.platforms.cursor.live_spans.export_spans",
+        lambda *args: True,
+    )
+    sd = session_dir(tmp_path, "cursor", sid)
+    state_path = _live_state_path(sd)
+    state_path.parent.mkdir(parents=True, exist_ok=True)
+    state_path.write_text(json.dumps({generation: [tool_call_id]}, separators=(",", ":")))
+
+    emit_live_interactions(config, sd, sid, "/repo", generation, result_seq)
+
+    assert committed_tool_call_ids(sd, generation) == {tool_call_id}
+    assert committed_interaction_ids(sd, generation) == set()
+    persisted = json.loads(state_path.read_text())
+    assert persisted[generation] == [tool_call_id]
 
 
 def test_live_assistant_message_parents_to_turn_span(tmp_path: Path, monkeypatch):
@@ -956,7 +1006,7 @@ def test_live_interaction_state_keeps_generation_list_json_compatible(tmp_path: 
     assert set(persisted[generation]) == {
         "legacy-tool",
         "call-1",
-        f"i:{interaction_id}",
+        _interaction_state_entry(interaction_id),
     }
     assert committed_tool_call_ids(sd, generation) == {"legacy-tool", "call-1"}
     assert committed_interaction_ids(sd, generation) == {interaction_id}
