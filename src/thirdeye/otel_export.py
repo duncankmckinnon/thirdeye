@@ -62,6 +62,7 @@ import subprocess
 import sys
 import time
 import warnings
+from collections import Counter
 from datetime import datetime
 from functools import lru_cache
 from pathlib import Path
@@ -103,6 +104,14 @@ _FLUSH_TIMEOUT_MS = 2000
 # other platform is used verbatim. Deliberately separate from `thirdeye.platform`
 # and from the configured service name, which both stay the internal key.
 _AGENT_NAMES = {"claude": "claude-code", "cursor": "cursor"}
+
+# Where a turn's model hides when the turn records no individual model calls to
+# read it off. A subagent invocation reconstructed from a start/stop hook pair
+# is the case: the hook payload names the model it dispatched, but the calls it
+# made were never captured, so the free-form `attributes` bag is the only copy.
+# Most preferred first; Cursor's own spelling before the bare key any other
+# producer might use.
+_TURN_MODEL_ATTRS = ("cursor.subagent.model", "model")
 
 # The provider a platform talks to, for spans that describe no single LLM call
 # and so have no provider of their own to report. A chat span always prefers
@@ -838,9 +847,51 @@ def _repo_name(cwd: str) -> str | None:
     return None
 
 
-def _agent_name(platform: str) -> str:
-    """The `gen_ai.agent.name` a platform's spans are attributed to."""
-    return _AGENT_NAMES.get(platform, platform)
+def _agent_name(platform: str, model: str | None = None) -> str:
+    """The `gen_ai.agent.name` a platform's spans are attributed to.
+
+    Qualified by `model` when one is known, e.g. `claude-code[claude-opus-4-5]`.
+    Logfire's Agents page groups solely on this attribute, so a bare platform
+    name collapses every model a CLI ever ran into one agent, and that agent
+    can only ever show a single underlying LLM. Appending the model splits them
+    into one agent per LLM while keeping the platform as a shared prefix, so a
+    CLI's variants still sort together in the list.
+
+    Bracketed rather than joined with a separator: model ids contain `-`, `.`,
+    and `:` already, and a bracket is the one delimiter that stays unambiguous
+    against all of them.
+    """
+    name = _AGENT_NAMES.get(platform, platform)
+    return f"{name}[{model}]" if model else name
+
+
+def _turn_model(turn: TurnSpanDict) -> str | None:
+    """The model a turn is attributed to, or None when it made no model call.
+
+    A turn is usually one model end to end, but not always: a harness can slip
+    a small-model call (a summary, a topic label) into a turn driven by a large
+    one. Attributing the turn to whichever model it called *most* keeps that
+    kind of sidecall from relabelling the whole invocation, where taking the
+    first call would let one cheap call at the front rename it outright.
+
+    Ties go to the earliest model, since `Counter.most_common` preserves
+    insertion order among equal counts -- with one call, or an even split, the
+    turn is named after the model that opened it.
+
+    Falls back to the turn's attributes when it made no call at all, which is
+    how a hook-reconstructed subagent invocation reports the model it ran on.
+    Actual calls win: they are what the turn really spent, where the attribute
+    is only what the dispatcher asked for.
+    """
+    models = [call["model"] for call in turn["llm_calls"] if call.get("model")]
+    if models:
+        return Counter(models).most_common(1)[0][0]
+    attributes = turn.get("attributes") or {}
+    for key in _TURN_MODEL_ATTRS:
+        value = attributes.get(key)
+        if isinstance(value, str) and value:
+            return value
+    return None
 
 
 def _provider_name(platform: str) -> str | None:
@@ -856,6 +907,7 @@ def _identity_attributes(
     turn_id: Any = None,
     turn_span_id: Any = None,
     provider: str | None = None,
+    model: str | None = None,
 ) -> dict[str, Any]:
     """Attributes naming the session and turn a span belongs to.
 
@@ -864,12 +916,13 @@ def _identity_attributes(
     to a turn until the turn ends. Applied on the completed-turn path too, so
     the two paths keep one vocabulary.
 
-    `gen_ai.agent.name` is the platform rather than anything per-session, so
-    one Logfire agent covers every session a given CLI ever ran.
+    `gen_ai.agent.name` is the platform (optionally qualified by `model`)
+    rather than anything per-session, so one Logfire agent covers every session
+    a given CLI ever ran on a given model.
     """
     attributes: dict[str, Any] = {
         "gen_ai.conversation.id": session_id,
-        "gen_ai.agent.name": _agent_name(platform),
+        "gen_ai.agent.name": _agent_name(platform, model),
         # A call's own provider when there is one, else the platform's. Dropped
         # by `_flatten_attrs` when neither is known.
         "gen_ai.provider.name": provider or _provider_name(platform),
@@ -1166,7 +1219,15 @@ def _export_turn_subtree(
     from opentelemetry.trace import SpanKind
 
     turn_attrs: dict[str, Any] = {
-        **_identity_attributes(session_id=session_id, platform=platform, cwd=cwd),
+        # The model is applied here and nowhere else: this is the one span the
+        # Agents page groups on, and the only one whose model is settled at the
+        # time it is written. A chat span exported live, mid-turn, cannot know
+        # what the rest of the turn will call, so qualifying descendants too
+        # would name the same turn's spans inconsistently depending on which
+        # export path emitted them.
+        **_identity_attributes(
+            session_id=session_id, platform=platform, cwd=cwd, model=_turn_model(turn)
+        ),
         "thirdeye.turn.status": turn["status"],
         "thirdeye.turn.id": turn["turn_id"],
         # What Logfire's Agents page matches a span on: an `invoke_agent`

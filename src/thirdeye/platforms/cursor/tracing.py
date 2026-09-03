@@ -901,3 +901,73 @@ def build_turn(
     if interaction_records:
         turn["interactions"] = interaction_records
     return turn
+
+
+def build_session_turn(
+    *, session_dir_: Path, session_id: str, stop_seq: int
+) -> TurnSpanDict | None:
+    """Build one Cursor CLI invocation from its complete session window."""
+    events = list(SessionReader(session_dir_).iter_events(seq_range=(0, stop_seq + 1)))
+    if not events:
+        return None
+    start_event = next((event for event in events if event.get("t") == "session_start"), events[0])
+    stop_event = next(
+        (
+            event
+            for event in reversed(events)
+            if event.get("t") == "turn_stop" and int(event.get("seq") or 0) == stop_seq
+        ),
+        events[-1],
+    )
+    signal_indexes = [
+        index
+        for index, event in enumerate(events)
+        if event.get("t") in {"assistant_thought", "assistant_message"}
+        and _event_generation_id(event)
+    ]
+    llm_calls: list[LlmCallSpanDict] = []
+    for position, index in enumerate(signal_indexes):
+        signal = events[index]
+        generation_id = _event_generation_id(signal)
+        if bogus_generation_id(generation_id, session_id):
+            continue
+        next_index = (
+            signal_indexes[position + 1] if position + 1 < len(signal_indexes) else len(events)
+        )
+        owned = events[index:next_index]
+        data = _data(signal)
+        text = _text(data, "text", "response", "output")
+        part_type = "reasoning" if signal.get("t") == "assistant_thought" else "text"
+        tools = tool_calls_for_generation(owned, session_id, generation_id)
+        llm_calls.append(
+            {
+                "call_id": generation_id,
+                "provider": _provider(_text(data, "model", "model_name")),
+                "model": _text(data, "model", "model_name"),
+                "start_ts": _start_ts(signal),
+                "end_ts": str(owned[-1].get("ts") or signal.get("ts") or ""),
+                "input_messages": [],
+                "output_messages": (
+                    [{"role": "assistant", "parts": [{"type": part_type, "content": text}]}]
+                    if text
+                    else []
+                ),
+                "usage": usage_from_payload(data),
+                "tool_calls": tools,
+            }
+        )
+    if not llm_calls:
+        return None
+    return {
+        "turn_id": str(start_event.get("seq") or 0),
+        "turn_span_id": str(turn_span_id(_PLATFORM, session_id, int(start_event.get("seq") or 0))),
+        "start_ts": str(start_event.get("ts") or ""),
+        "end_ts": str(stop_event.get("ts") or start_event.get("ts") or ""),
+        "input_message": "",
+        "output_message": "",
+        "status": _status(_data(stop_event)),
+        "llm_calls": llm_calls,
+        "permission_requests": [],
+        "subagents": [],
+        "attributes": {"cursor.session_wide": True},
+    }

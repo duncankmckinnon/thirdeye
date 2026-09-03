@@ -1843,6 +1843,7 @@ class TestGenAiAgentSemantics:
             span for span in exporter.exported_spans_as_dict() if span["name"] == "invoke_agent"
         ]
         assert turn_span["attributes"]["gen_ai.operation.name"] == "invoke_agent"
+        # `_turn()` makes no model call, so there is no model to qualify with.
         assert turn_span["attributes"]["gen_ai.agent.name"] == "claude-code"
 
     def test_subagent_turn_is_an_agent_invocation_too(
@@ -1866,7 +1867,8 @@ class TestGenAiAgentSemantics:
         ]
         assert subagent_span["name"] == "invoke_agent"
         assert subagent_span["attributes"]["gen_ai.operation.name"] == "invoke_agent"
-        # A platform whose CLI name needs no translating is used verbatim.
+        # A platform whose CLI name needs no translating is used verbatim, and
+        # this subagent makes no model call, so nothing qualifies it either.
         assert subagent_span["attributes"]["gen_ai.agent.name"] == "codex"
 
     def test_chat_span_names_the_requested_model_and_provider(self):
@@ -1911,13 +1913,183 @@ class TestGenAiAgentSemantics:
 
         spans = {span["name"]: span for span in exporter.exported_spans_as_dict()}
         assert spans["invoke_agent"]["attributes"]["gen_ai.operation.name"] == "invoke_agent"
-        assert spans["invoke_agent"]["attributes"]["gen_ai.agent.name"] == "cursor"
+        assert spans["invoke_agent"]["attributes"]["gen_ai.agent.name"] == "cursor[gpt-5]"
         assert spans["chat gpt-5"]["attributes"]["gen_ai.operation.name"] == "chat"
         tool_attrs = spans["tool: shell"]["attributes"]
         assert tool_attrs["gen_ai.operation.name"] == "execute_tool"
         assert tool_attrs["gen_ai.tool.name"] == "shell"
         assert tool_attrs["gen_ai.tool.call.id"] == "cursor-call-1"
         assert not any(key.startswith("openinference") for key in tool_attrs)
+
+    def test_turn_agent_name_is_qualified_by_the_model_it_ran_on(
+        self, tmp_path: Path, enabled_config: Config, wired_instance, exporter
+    ):
+        """The Agents page groups on this attribute alone, so the model has to be in it."""
+        otel_export._export_turn_inner(
+            config=enabled_config,
+            session_dir_=tmp_path / "traces" / "claude" / "s1",
+            session_id="s1",
+            platform="claude",
+            cwd="/proj",
+            turn=_turn(llm_calls=[_llm_call(model="claude-opus-4-5")]),
+        )
+
+        [turn_span] = [
+            span for span in exporter.exported_spans_as_dict() if span["name"] == "invoke_agent"
+        ]
+        assert turn_span["attributes"]["gen_ai.agent.name"] == "claude-code[claude-opus-4-5]"
+
+    def test_two_models_yield_two_agent_names_for_the_same_platform(
+        self, tmp_path: Path, enabled_config: Config, wired_instance, exporter
+    ):
+        """The whole point: one CLI on two LLMs must not collapse into one agent."""
+        for session_id, model in (("s1", "claude-opus-4-5"), ("s2", "claude-sonnet-5")):
+            otel_export._export_turn_inner(
+                config=enabled_config,
+                session_dir_=tmp_path / "traces" / "claude" / session_id,
+                session_id=session_id,
+                platform="claude",
+                cwd="/proj",
+                turn=_turn(llm_calls=[_llm_call(model=model)]),
+            )
+
+        names = {
+            span["attributes"]["gen_ai.agent.name"]
+            for span in exporter.exported_spans_as_dict()
+            if span["name"] == "invoke_agent"
+        }
+        assert names == {"claude-code[claude-opus-4-5]", "claude-code[claude-sonnet-5]"}
+
+    def test_subagent_turn_is_named_after_its_own_model(
+        self, tmp_path: Path, enabled_config: Config, wired_instance, exporter
+    ):
+        """A subagent on a different model is a different agent, not its parent's."""
+        turn = _turn(
+            llm_calls=[_llm_call(model="claude-opus-4-5")],
+            subagents=[
+                _turn(
+                    turn_id="turn_1.1",
+                    llm_calls=[_llm_call(call_id="call_2", model="claude-haiku-4-5")],
+                )
+            ],
+        )
+
+        otel_export._export_turn_inner(
+            config=enabled_config,
+            session_dir_=tmp_path / "traces" / "claude" / "s1",
+            session_id="s1",
+            platform="claude",
+            cwd="/proj",
+            turn=turn,
+        )
+
+        by_turn = {
+            span["attributes"]["thirdeye.turn.id"]: span["attributes"]["gen_ai.agent.name"]
+            for span in exporter.exported_spans_as_dict()
+            if span["name"] == "invoke_agent"
+        }
+        assert by_turn["turn_1"] == "claude-code[claude-opus-4-5]"
+        assert by_turn["turn_1.1"] == "claude-code[claude-haiku-4-5]"
+
+    def test_a_sidecall_does_not_relabel_the_turn_it_sits_in(
+        self, tmp_path: Path, enabled_config: Config, wired_instance, exporter
+    ):
+        """A small-model summary call inside a large-model turn is not the turn's model."""
+        turn = _turn(
+            llm_calls=[
+                _llm_call(call_id="call_1", model="claude-haiku-4-5"),
+                _llm_call(call_id="call_2", model="claude-opus-4-5"),
+                _llm_call(call_id="call_3", model="claude-opus-4-5"),
+            ]
+        )
+        otel_export._export_turn_inner(
+            config=enabled_config,
+            session_dir_=tmp_path / "traces" / "claude" / "s1",
+            session_id="s1",
+            platform="claude",
+            cwd="/proj",
+            turn=turn,
+        )
+
+        [turn_span] = [
+            span for span in exporter.exported_spans_as_dict() if span["name"] == "invoke_agent"
+        ]
+        assert turn_span["attributes"]["gen_ai.agent.name"] == "claude-code[claude-opus-4-5]"
+
+    def test_evenly_split_turn_is_named_after_the_model_that_opened_it(self):
+        """With no majority there is no better answer than the first call's model."""
+        turn = _turn(
+            llm_calls=[
+                _llm_call(call_id="call_1", model="claude-opus-4-5"),
+                _llm_call(call_id="call_2", model="claude-sonnet-5"),
+            ]
+        )
+        assert otel_export._turn_model(turn) == "claude-opus-4-5"
+
+    def test_modelless_turn_has_no_qualifier(self):
+        assert otel_export._turn_model(_turn()) is None
+        assert otel_export._turn_model(_turn(llm_calls=[_llm_call(model="")])) is None
+
+    def test_hook_reconstructed_subagent_falls_back_to_its_attributes(
+        self, tmp_path: Path, enabled_config: Config, wired_instance, exporter
+    ):
+        """A subagent invocation with no captured calls still knows its model.
+
+        Cursor reconstructs one from a start/stop hook pair, so it records no
+        individual calls -- but the payload names the model it dispatched, and
+        that copy lands in the free-form attributes bag.
+        """
+        subagent = _turn(
+            turn_id="turn_1.1",
+            attributes={"cursor.subagent.model": "claude-sonnet-4"},
+        )
+        otel_export._export_turn_inner(
+            config=enabled_config,
+            session_dir_=tmp_path / "traces" / "cursor" / "s1",
+            session_id="s1",
+            platform="cursor",
+            cwd="/proj",
+            turn=_turn(llm_calls=[_llm_call(model="gpt-5")], subagents=[subagent]),
+        )
+
+        by_turn = {
+            span["attributes"]["thirdeye.turn.id"]: span["attributes"]["gen_ai.agent.name"]
+            for span in exporter.exported_spans_as_dict()
+            if span["name"] == "invoke_agent"
+        }
+        assert by_turn["turn_1"] == "cursor[gpt-5]"
+        assert by_turn["turn_1.1"] == "cursor[claude-sonnet-4]"
+
+    def test_actual_calls_outrank_the_attribute_copy(self):
+        """The attribute is what the dispatcher asked for; calls are what was spent."""
+        turn = _turn(
+            llm_calls=[_llm_call(model="claude-opus-4-5")],
+            attributes={"cursor.subagent.model": "claude-sonnet-4"},
+        )
+        assert otel_export._turn_model(turn) == "claude-opus-4-5"
+
+    def test_descendant_spans_keep_the_unqualified_agent_name(
+        self, tmp_path: Path, enabled_config: Config, wired_instance, exporter
+    ):
+        """Only the turn span is qualified.
+
+        A chat span exported live cannot know what the rest of its turn will
+        call, so qualifying descendants would name the same turn's spans
+        differently depending on which export path emitted them.
+        """
+        call = _llm_call(model="claude-opus-4-5", tool_calls=[_tool_call()])
+        otel_export._export_turn_inner(
+            config=enabled_config,
+            session_dir_=tmp_path / "traces" / "claude" / "s1",
+            session_id="s1",
+            platform="claude",
+            cwd="/proj",
+            turn=_turn(llm_calls=[call]),
+        )
+
+        spans = {span["name"]: span for span in exporter.exported_spans_as_dict()}
+        assert spans["chat claude-opus-4-5"]["attributes"]["gen_ai.agent.name"] == "claude-code"
+        assert spans["tool: Bash"]["attributes"]["gen_ai.agent.name"] == "claude-code"
 
     def test_chat_span_is_attributed_to_the_agent_that_made_the_call(self):
         attributes = otel_export._chat_attributes(
