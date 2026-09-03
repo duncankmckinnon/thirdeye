@@ -521,8 +521,10 @@ def test_same_reasoning_text_at_later_timestamp_emits_second_span(tmp_path: Path
     config = _config(tmp_path)
     store = Store(config)
     sid, generation = "cursor-session", "generation-1"
+    # First append_event also stamps SessionMeta.started_at from the same clock.
     timestamps = iter(
         [
+            "1970-01-01T00:00:00.000Z",
             "2026-09-02T12:00:00.000Z",
             "2026-09-02T12:00:00.100Z",
             "2026-09-02T12:00:01.000Z",
