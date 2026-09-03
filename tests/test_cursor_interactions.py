@@ -10,6 +10,7 @@ from thirdeye.platforms.cursor.interactions import (
     InteractionKind,
     canonical_interactions,
     interaction_messages,
+    session_interactions,
 )
 
 GENERATION = "gen-abc"
@@ -936,3 +937,115 @@ def test_projects_direct_canonical_interactions_without_events():
             ],
         },
     ]
+
+
+# --- session_interactions ----------------------------------------------------
+
+
+def _session(
+    events: list[dict],
+    *,
+    through_seq: int | None = None,
+) -> list[CanonicalInteraction]:
+    if through_seq is None:
+        through_seq = max((event["seq"] for event in events), default=0)
+    return session_interactions(events, through_seq=through_seq)
+
+
+def test_session_interactions_merges_generations_by_source_sequence():
+    events = [
+        _event(0, "user_message", generation_id="gen-a", prompt="first"),
+        _event(1, "assistant_message", generation_id="gen-a", text="done-a"),
+        _event(2, "user_message", generation_id="gen-b", prompt="second"),
+        _event(3, "assistant_thought", generation_id="gen-b", text="plan-b"),
+    ]
+    result = _session(events)
+
+    assert [item.source_seq for item in result] == [0, 1, 2, 3]
+    assert [item.generation_id for item in result] == ["gen-a", "gen-a", "gen-b", "gen-b"]
+    assert result[0].kind == "user_message"
+    assert result[3].kind == "reasoning"
+
+
+def test_session_interactions_excludes_events_missing_generation():
+    events = [
+        _event(0, "user_message", generation_id=GENERATION, prompt="keep"),
+        {
+            "seq": 1,
+            "t": "assistant_message",
+            "ts": TS,
+            "data": {"text": "drop"},
+        },
+        _event(2, "user_message", generation_id=GENERATION, prompt="also keep"),
+    ]
+    result = _session(events)
+
+    assert [item.source_seq for item in result] == [0, 2]
+    assert [item.payload["prompt"] for item in result] == ["keep", "also keep"]
+
+
+def test_session_interactions_respects_through_seq():
+    events = [
+        _event(0, "user_message", generation_id="gen-a", prompt="first"),
+        _event(1, "assistant_message", generation_id="gen-a", text="done-a"),
+        _event(2, "user_message", generation_id="gen-b", prompt="second"),
+        _event(3, "assistant_message", generation_id="gen-b", text="done-b"),
+    ]
+    result = _session(events, through_seq=1)
+
+    assert [item.source_seq for item in result] == [0, 1]
+    assert all(item.generation_id == "gen-a" for item in result)
+
+
+def test_session_interactions_deduplicates_reasoning_within_each_generation():
+    events = [
+        _event(0, "assistant_thought", generation_id="gen-a", text="plan", model="a"),
+        _event(1, "assistant_thought", generation_id="gen-a", text="plan", model="b"),
+        _event(2, "assistant_thought", generation_id="gen-b", text="plan", model="c"),
+        _event(3, "assistant_thought", generation_id="gen-b", text="plan", model="d"),
+    ]
+    result = _session(events)
+
+    assert len(result) == 2
+    assert result[0].source_seq == 0
+    assert result[0].duplicate_seqs == (1,)
+    assert result[1].source_seq == 2
+    assert result[1].duplicate_seqs == (3,)
+
+
+def test_session_interactions_keeps_same_reasoning_across_generations_separate():
+    events = [
+        _event(0, "assistant_thought", generation_id="gen-a", text="shared"),
+        _event(1, "assistant_thought", generation_id="gen-b", text="shared"),
+    ]
+    result = _session(events)
+
+    assert len(result) == 2
+    assert result[0].generation_id == "gen-a"
+    assert result[1].generation_id == "gen-b"
+
+
+def test_session_interactions_returns_empty_for_no_eligible_events():
+    assert _session([]) == []
+    assert _session([_event(0, "session_start", detail="ignored")]) == []
+    assert _session(
+        [
+            {
+                "seq": 0,
+                "t": "user_message",
+                "ts": TS,
+                "data": {"prompt": "no generation"},
+            }
+        ]
+    ) == []
+
+
+def test_session_interactions_does_not_mutate_input_events():
+    original = [
+        _event(0, "user_message", generation_id="gen-a", prompt="hello"),
+        _event(1, "assistant_message", generation_id="gen-b", text="world"),
+    ]
+    snapshot = copy.deepcopy(original)
+    _session(original)
+
+    assert original == snapshot
