@@ -355,6 +355,18 @@ def test_keeps_same_reasoning_text_at_different_timestamps_separate():
     assert result[1].duplicate_seqs == ()
 
 
+def test_keeps_same_reasoning_text_within_same_second_separate():
+    events = [
+        _event(0, "assistant_thought", ts="2026-09-02T12:00:00.000Z", text="plan"),
+        _event(1, "assistant_thought", ts="2026-09-02T12:00:00.900Z", text="plan"),
+    ]
+    result = _canonicalize(events)
+
+    assert len(result) == 2
+    assert result[0].duplicate_seqs == ()
+    assert result[1].duplicate_seqs == ()
+
+
 def test_records_multiple_reasoning_duplicate_sequences():
     events = [
         _event(0, "assistant_thought", text="plan", model="a"),
