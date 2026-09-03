@@ -134,10 +134,56 @@ def _session_end(payload: dict[str, Any]) -> None:
     if not session_id:
         return
     config = Config.load()
+    try:
+        generation_id = _latest_unstopped_generation(config, session_id)
+        if generation_id:
+            stop_payload = {**payload, "generation_id": generation_id}
+            _finalize_turn(
+                stop_payload,
+                capture_usage=False,
+                error_phase="cursor_session_end_export",
+            )
+    except Exception as exc:
+        try:
+            log_capture_error(
+                thirdeye_home=config.root,
+                phase="cursor_session_end_export",
+                error=exc,
+                platform=_PLATFORM,
+                session_id=session_id,
+            )
+        except Exception:
+            pass
     seq = _emit(payload, "session_end")
     if seq is not None:
         _capture_usage(config, session_id, payload, seq)
     Store(config).close_session(session_id, platform=_PLATFORM)
+
+
+def _latest_unstopped_generation(config: Config, session_id: str) -> str:
+    from thirdeye.reader import SessionReader
+
+    sd = session_dir(config.root, _PLATFORM, session_id)
+    if not sd.is_dir():
+        return ""
+    events = list(SessionReader(sd).iter_events())
+    stopped = {
+        str(event.get("data", {}).get("generation_id") or "")
+        for event in events
+        if event.get("t") == "turn_stop" and isinstance(event.get("data"), dict)
+    }
+    for event in reversed(events):
+        data = event.get("data")
+        if not isinstance(data, dict):
+            continue
+        generation_id = str(data.get("generation_id") or "")
+        if (
+            generation_id
+            and generation_id not in stopped
+            and not bogus_generation_id(generation_id, session_id)
+        ):
+            return generation_id
+    return ""
 
 
 def _before_submit(payload: dict[str, Any]) -> None:
@@ -300,6 +346,15 @@ def _capture_usage(config: Config, session_id: str, payload: dict[str, Any], seq
 
 
 def _stop(payload: dict[str, Any]) -> None:
+    _finalize_turn(payload)
+
+
+def _finalize_turn(
+    payload: dict[str, Any],
+    *,
+    capture_usage: bool = True,
+    error_phase: str = "",
+) -> None:
     session_id = _session_id(payload)
     if not session_id:
         return
@@ -308,7 +363,8 @@ def _stop(payload: dict[str, Any]) -> None:
     seq = _emit(payload, "turn_stop")
     if seq is None:
         return
-    _capture_usage(config, session_id, payload, seq)
+    if capture_usage:
+        _capture_usage(config, session_id, payload, seq)
     generation_id = _generation_id(payload)
     if not generation_id:
         _finalize_background_subagents(payload)
@@ -326,8 +382,18 @@ def _stop(payload: dict[str, Any]) -> None:
         )
         if turn is not None:
             export_turn(config, sd, session_id, _PLATFORM, cwd, turn)
-    except Exception:
-        pass
+    except Exception as exc:
+        if error_phase:
+            try:
+                log_capture_error(
+                    thirdeye_home=config.root,
+                    phase=error_phase,
+                    error=exc,
+                    platform=_PLATFORM,
+                    session_id=session_id,
+                )
+            except Exception:
+                pass
     _finalize_background_subagents(payload)
 
 
