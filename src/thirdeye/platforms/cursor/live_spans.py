@@ -485,11 +485,7 @@ def _emit_live_interactions(
         tools = tool_calls_for_generation(
             _generation_events(session_dir_, generation_id, through_seq), session_id, generation_id
         )
-        fresh_tools = [
-            tool
-            for tool in tools
-            if tool["tool_call_id"] not in committed_tools
-        ]
+        fresh_tools = [tool for tool in tools if tool["tool_call_id"] not in committed_tools]
 
         interaction_spans = [
             _interaction_span_dict(

@@ -11,11 +11,11 @@ from thirdeye.config import Config, LogfireSettings
 from thirdeye.paths import otel_state_path, session_dir
 from thirdeye.platforms.cursor import hook
 from thirdeye.platforms.cursor.live_spans import (
+    _interaction_state_entry,
     committed_interaction_ids,
     committed_tool_call_ids,
     emit_live_interactions,
     emit_live_tools,
-    _interaction_state_entry,
 )
 from thirdeye.platforms.cursor.subagents import cursor_subagent_generation_id
 from thirdeye.platforms.cursor.tracing import build_turn, resolve_subagent_export
@@ -776,7 +776,11 @@ def test_live_assistant_message_parents_to_turn_span(tmp_path: Path, monkeypatch
         store,
         sid,
         "assistant_message",
-        {"generation_id": generation, "text": "done", "parts": [{"type": "text", "content": "done"}]},
+        {
+            "generation_id": generation,
+            "text": "done",
+            "parts": [{"type": "text", "content": "done"}],
+        },
     )
     exported: list[list[dict]] = []
     monkeypatch.setattr(

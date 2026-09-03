@@ -842,7 +842,9 @@ def build_turn(
             {
                 "interaction_id": interaction.interaction_id,
                 "kind": interaction.kind,
-                "span_id": str(interaction_span_id(_PLATFORM, session_id, interaction.interaction_id)),
+                "span_id": str(
+                    interaction_span_id(_PLATFORM, session_id, interaction.interaction_id)
+                ),
                 "parent_span_id": turn_span_id_str,
                 "start_ts": interaction.ts,
                 "end_ts": interaction.ts,

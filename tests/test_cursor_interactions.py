@@ -1040,16 +1040,19 @@ def test_session_interactions_keeps_same_reasoning_across_generations_separate()
 def test_session_interactions_returns_empty_for_no_eligible_events():
     assert _session([]) == []
     assert _session([_event(0, "session_start", detail="ignored")]) == []
-    assert _session(
-        [
-            {
-                "seq": 0,
-                "t": "user_message",
-                "ts": TS,
-                "data": {"prompt": "no generation"},
-            }
-        ]
-    ) == []
+    assert (
+        _session(
+            [
+                {
+                    "seq": 0,
+                    "t": "user_message",
+                    "ts": TS,
+                    "data": {"prompt": "no generation"},
+                }
+            ]
+        )
+        == []
+    )
 
 
 def test_session_interactions_does_not_mutate_input_events():

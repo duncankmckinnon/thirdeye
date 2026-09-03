@@ -1197,7 +1197,9 @@ class TestCommittedInteractionRecovery:
         config = _cursor_config(tmp_path)
         store = Store(config)
         sid, generation = "cursor-session", "gen-failed-reasoning"
-        turn_seq = _append(store, sid, "user_message", {"generation_id": generation, "prompt": "go"})
+        turn_seq = _append(
+            store, sid, "user_message", {"generation_id": generation, "prompt": "go"}
+        )
         thought_seq = _append(
             store,
             sid,
@@ -1230,7 +1232,9 @@ class TestCommittedInteractionRecovery:
         config = _cursor_config(tmp_path)
         store = Store(config)
         sid, generation = "cursor-session", "gen-failed-response"
-        turn_seq = _append(store, sid, "user_message", {"generation_id": generation, "prompt": "go"})
+        turn_seq = _append(
+            store, sid, "user_message", {"generation_id": generation, "prompt": "go"}
+        )
         response_seq = _append(
             store,
             sid,
@@ -1263,7 +1267,9 @@ class TestCommittedInteractionRecovery:
         config = _cursor_config(tmp_path)
         store = Store(config)
         sid, generation = "cursor-session", "gen-lifecycle-recovery"
-        user_seq = _append(store, sid, "user_message", {"generation_id": generation, "prompt": "go"})
+        user_seq = _append(
+            store, sid, "user_message", {"generation_id": generation, "prompt": "go"}
+        )
         thought_seq = _append(
             store,
             sid,
@@ -1311,7 +1317,9 @@ class TestCommittedInteractionRecovery:
         config = _cursor_config(tmp_path)
         store = Store(config)
         sid, generation = "cursor-session", "gen-parent-match"
-        turn_seq = _append(store, sid, "user_message", {"generation_id": generation, "prompt": "go"})
+        turn_seq = _append(
+            store, sid, "user_message", {"generation_id": generation, "prompt": "go"}
+        )
         thought_seq = _append(
             store,
             sid,
@@ -1391,7 +1399,9 @@ class TestCommittedInteractionRecovery:
             ]
         )
         monkeypatch.setattr("thirdeye.writer._utc_iso_ms", lambda: next(timestamps))
-        turn_seq = _append(store, sid, "user_message", {"generation_id": generation, "prompt": "go"})
+        turn_seq = _append(
+            store, sid, "user_message", {"generation_id": generation, "prompt": "go"}
+        )
         first_seq = _append(
             store,
             sid,
@@ -1663,7 +1673,9 @@ class TestTurnReconstruction:
         expected_turn_span_id = str(turn_span_id("cursor", sid, turn_seq))
         expected = {
             item.interaction_id: item
-            for item in canonical_interactions(events, generation_id=generation, through_seq=stop_seq)
+            for item in canonical_interactions(
+                events, generation_id=generation, through_seq=stop_seq
+            )
             if item.kind not in {"tool_call", "tool_result"}
         }
 
@@ -1723,7 +1735,9 @@ class TestTurnReconstruction:
                 "2026-09-02T12:00:03.000Z",
             ],
         )
-        turn_seq = _append(store, sid, "user_message", {"generation_id": generation, "prompt": "go"})
+        turn_seq = _append(
+            store, sid, "user_message", {"generation_id": generation, "prompt": "go"}
+        )
         _append(
             store,
             sid,
@@ -1746,7 +1760,9 @@ class TestTurnReconstruction:
         events = list(store.reader(sid).iter_events())
         reasoning = next(
             item
-            for item in canonical_interactions(events, generation_id=generation, through_seq=stop_seq)
+            for item in canonical_interactions(
+                events, generation_id=generation, through_seq=stop_seq
+            )
             if item.kind == "reasoning"
         )
 
@@ -1772,7 +1788,9 @@ class TestTurnReconstruction:
     def test_recovery_records_parent_to_deterministic_turn_span_id(self, tmp_path: Path):
         sid, generation = "parent-session", "gen-parent"
         store = Store(Config(root=tmp_path))
-        turn_seq = _append(store, sid, "user_message", {"generation_id": generation, "prompt": "hi"})
+        turn_seq = _append(
+            store, sid, "user_message", {"generation_id": generation, "prompt": "hi"}
+        )
         stop_seq = _append(store, sid, "turn_stop", {"generation_id": generation})
         expected_parent = str(turn_span_id("cursor", sid, turn_seq))
 
@@ -1856,7 +1874,9 @@ class TestTurnReconstruction:
         events = list(store.reader(sid).iter_events())
         expected_start = next(
             item
-            for item in canonical_interactions(events, generation_id=generation, through_seq=stop_seq)
+            for item in canonical_interactions(
+                events, generation_id=generation, through_seq=stop_seq
+            )
             if item.source_type == "subagent_start"
         )
 
@@ -1883,7 +1903,9 @@ class TestTurnReconstruction:
         events = list(store.reader(sid).iter_events())
         expected = {
             item.interaction_id
-            for item in canonical_interactions(events, generation_id=generation, through_seq=stop_seq)
+            for item in canonical_interactions(
+                events, generation_id=generation, through_seq=stop_seq
+            )
             if item.kind not in {"tool_call", "tool_result"}
         }
 
