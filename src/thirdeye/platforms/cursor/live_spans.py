@@ -19,13 +19,20 @@ from typing import Any
 from thirdeye.config import Config
 from thirdeye.otel_export import export_spans
 from thirdeye.paths import otel_state_path
+from thirdeye.platforms.cursor.interactions import canonical_interactions
 from thirdeye.platforms.cursor.subagents import cursor_subagent_generation_id
 from thirdeye.platforms.cursor.tracing import (
     resolve_turn_seq,
     tool_calls_for_generation,
 )
 from thirdeye.reader import SessionReader
-from thirdeye.span_ids import chat_span_id, tool_span_id, trace_id_for_session, turn_span_id
+from thirdeye.span_ids import (
+    chat_span_id,
+    interaction_span_id,
+    tool_span_id,
+    trace_id_for_session,
+    turn_span_id,
+)
 from thirdeye.usage.errlog import log_capture_error
 
 _PLATFORM = "cursor"
@@ -83,7 +90,24 @@ def _write_state(session_dir_: Path, state: dict[str, list[str]]) -> None:
 
 def committed_tool_call_ids(session_dir_: Path, generation_id: str) -> set[str]:
     with _locked(session_dir_):
-        return set(_read_state(session_dir_).get(generation_id, []))
+        all_ids = _read_state(session_dir_).get(generation_id, [])
+        result = set()
+        for id_ in all_ids:
+            parts = id_.split(":")
+            if not (
+                len(parts) == 4
+                and parts[1]
+                in (
+                    "user_message",
+                    "assistant_message",
+                    "reasoning",
+                    "tool_call",
+                    "tool_result",
+                    "lifecycle",
+                )
+            ):
+                result.add(id_)
+        return result
 
 
 def _event_data(event: dict[str, Any]) -> dict[str, Any]:
@@ -341,6 +365,155 @@ def emit_live_tools(
             log_capture_error(
                 thirdeye_home=config.root,
                 phase="emit_live_spans_failed",
+                level="error",
+                platform=_PLATFORM,
+                session_id=session_id,
+                error=exc,
+                message=f"generation_id={generation_id!r}",
+            )
+        except Exception:
+            pass
+
+
+def committed_interaction_ids(session_dir_: Path, generation_id: str) -> set[str]:
+    with _locked(session_dir_):
+        all_ids = _read_state(session_dir_).get(generation_id, [])
+        result = set()
+        for id_ in all_ids:
+            parts = id_.split(":")
+            if len(parts) == 4 and parts[1] in (
+                "user_message",
+                "assistant_message",
+                "reasoning",
+                "tool_call",
+                "tool_result",
+                "lifecycle",
+            ):
+                result.add(id_)
+        return result
+
+
+def _emit_live_interactions(
+    config: Config,
+    session_dir_: Path,
+    session_id: str,
+    cwd: str,
+    generation_id: str,
+    through_seq: int,
+) -> None:
+    if not config.logfire.enabled or not config.logfire.token:
+        return
+    with _locked(session_dir_):
+        state = _read_state(session_dir_)
+        committed = set(state.get(generation_id, []))
+        all_events = list(SessionReader(session_dir_).iter_events(seq_range=(0, through_seq + 1)))
+        interactions = canonical_interactions(
+            all_events, generation_id=generation_id, through_seq=through_seq
+        )
+        if not interactions and not all_events:
+            return
+        turn_seq = resolve_turn_seq(
+            all_events,
+            generation_id=generation_id,
+            session_id=session_id,
+            through_seq=through_seq,
+        )
+        if turn_seq is None:
+            return
+        turn_id = turn_span_id(_PLATFORM, session_id, turn_seq)
+        fresh_interactions = [
+            interaction
+            for interaction in interactions
+            if interaction.interaction_id not in committed
+            and interaction.kind in ("reasoning", "assistant_message")
+        ]
+        tools = tool_calls_for_generation(all_events, session_id, generation_id)
+        fresh_tools = [
+            tool
+            for tool in tools
+            if tool["tool_call_id"] not in committed
+        ]
+
+        interaction_spans = [
+            {
+                "name": interaction.kind if interaction.kind == "reasoning" else f"interaction: {interaction.kind}",
+                "span_id": interaction_span_id(_PLATFORM, session_id, interaction.interaction_id),
+                "parent_span_id": turn_id,
+                "turn_seq": turn_seq,
+                "turn_span_id": str(turn_id),
+                "start_ts": interaction.ts,
+                "end_ts": interaction.ts,
+                "attributes": {
+                    "thirdeye.interaction.kind": interaction.kind,
+                    "thirdeye.interaction.payload": interaction.payload,
+                    "thirdeye.interaction.correlation_id": interaction.correlation_id,
+                    "thirdeye.interaction.source_type": interaction.source_type,
+                    "thirdeye.interaction.source_seq": interaction.source_seq,
+                    "thirdeye.interaction.generation_id": interaction.generation_id,
+                    **(
+                        {"thirdeye.interaction.duplicate_seqs": list(interaction.duplicate_seqs)}
+                        if interaction.duplicate_seqs
+                        else {}
+                    ),
+                },
+            }
+            for interaction in fresh_interactions
+        ]
+
+        chat_id = chat_span_id(_PLATFORM, session_id, generation_id)
+        tool_spans = [
+            {
+                "name": f"tool: {tool['name']}",
+                "tool_name": tool["name"],
+                "tool_call_id": tool["tool_call_id"],
+                "span_id": tool_span_id(_PLATFORM, session_id, tool["tool_call_id"]),
+                "parent_span_id": chat_id,
+                "turn_seq": turn_seq,
+                "turn_span_id": str(turn_id),
+                "start_ts": tool["start_ts"],
+                "end_ts": tool["end_ts"],
+                "attributes": tool["attributes"],
+            }
+            for tool in fresh_tools
+        ]
+
+        spans = interaction_spans + tool_spans
+        if not spans:
+            return
+
+        if not export_spans(
+            config,
+            session_dir_,
+            session_id,
+            _PLATFORM,
+            cwd,
+            _trace_id(session_dir_, session_id),
+            spans,
+        ):
+            return
+        state[generation_id] = sorted(
+            committed
+            | {interaction.interaction_id for interaction in fresh_interactions}
+            | {tool["tool_call_id"] for tool in fresh_tools}
+        )
+        _write_state(session_dir_, state)
+
+
+def emit_live_interactions(
+    config: Config,
+    session_dir_: Path,
+    session_id: str,
+    cwd: str,
+    generation_id: str,
+    through_seq: int,
+) -> None:
+    try:
+        _emit_live_interactions(config, session_dir_, session_id, cwd, generation_id, through_seq)
+    except Exception as exc:
+        try:
+            log_capture_error(
+                thirdeye_home=config.root,
+                phase="emit_live_interactions_failed",
                 level="error",
                 platform=_PLATFORM,
                 session_id=session_id,

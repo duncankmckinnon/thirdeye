@@ -49,6 +49,13 @@ _TOOL_OUTPUT_KEYS = (
 _MISSING = object()
 
 
+def _timestamp_bucket(ts: str) -> str:
+    """Return timestamp rounded to second precision for dedup matching."""
+    if len(ts) >= 19:
+        return ts[:19] + "Z"
+    return ts
+
+
 @dataclass(frozen=True)
 class CanonicalInteraction:
     interaction_id: str
@@ -140,7 +147,7 @@ def canonical_interactions(
 
         dedup_key = (
             interaction.kind,
-            interaction.ts,
+            _timestamp_bucket(interaction.ts),
             interaction.generation_id,
             interaction.correlation_id,
             _normalized_payload(payload),
