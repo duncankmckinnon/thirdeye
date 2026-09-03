@@ -804,11 +804,11 @@ def build_turn(
     # Tools already dispatched live keep the same deterministic parent IDs and
     # must not be emitted again with the completed turn.
     from thirdeye.platforms.cursor.live_spans import (
-        committed_interaction_ids,
+        committed_interaction_dup_counts,
         committed_tool_call_ids,
     )
 
-    committed_interactions = committed_interaction_ids(session_dir_, generation_id)
+    committed_interactions = committed_interaction_dup_counts(session_dir_, generation_id)
     committed_tools = committed_tool_call_ids(session_dir_, generation_id)
     tools = [tool for tool in tools if tool["tool_call_id"] not in committed_tools]
 
@@ -831,11 +831,13 @@ def build_turn(
     for interaction in active_interactions:
         if interaction.kind in {"tool_call", "tool_result"}:
             continue
-        if (
-            interaction.kind in {"reasoning", "assistant_message"}
-            and interaction.interaction_id in committed_interactions
-        ):
-            continue
+        if interaction.kind in {"reasoning", "assistant_message"}:
+            committed_dup_count = committed_interactions.get(interaction.interaction_id)
+            if (
+                committed_dup_count is not None
+                and len(interaction.duplicate_seqs) <= committed_dup_count
+            ):
+                continue
         interaction_records.append(
             {
                 "interaction_id": interaction.interaction_id,

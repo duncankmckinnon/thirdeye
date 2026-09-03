@@ -1377,6 +1377,58 @@ class TestCommittedInteractionRecovery:
         assert recovered["parent_span_id"] == str(expected_parent2)
         assert recovered["span_id"] == str(expected_span_id2)
 
+    def test_build_turn_recovers_failed_live_duplicate_reasoning(self, tmp_path: Path, monkeypatch):
+        config = _cursor_config(tmp_path)
+        store = Store(config)
+        sid, generation = "cursor-session", "gen-failed-dup-reasoning"
+        timestamps = iter(
+            [
+                "1970-01-01T00:00:00.000Z",
+                "2026-09-02T12:00:00.000Z",
+                "2026-09-02T12:00:00.000Z",
+                "2026-09-02T12:00:00.000Z",
+                "2026-09-02T12:00:01.000Z",
+            ]
+        )
+        monkeypatch.setattr("thirdeye.writer._utc_iso_ms", lambda: next(timestamps))
+        turn_seq = _append(store, sid, "user_message", {"generation_id": generation, "prompt": "go"})
+        first_seq = _append(
+            store,
+            sid,
+            "assistant_thought",
+            {"generation_id": generation, "text": "plan", "model": "claude-4"},
+        )
+        duplicate_seq = _append(
+            store,
+            sid,
+            "assistant_thought",
+            {"generation_id": generation, "text": "plan", "model": "gpt-5"},
+        )
+        stop_seq = _append(store, sid, "turn_stop", {"generation_id": generation})
+        sd = session_dir(tmp_path, "cursor", sid)
+        export_results = iter([True, False])
+        monkeypatch.setattr(
+            "thirdeye.platforms.cursor.live_spans.export_spans",
+            lambda *args: next(export_results),
+        )
+
+        emit_live_interactions(config, sd, sid, "/repo", generation, first_seq)
+        emit_live_interactions(config, sd, sid, "/repo", generation, duplicate_seq)
+
+        turn = build_turn(
+            session_dir_=sd,
+            session_id=sid,
+            generation_id=generation,
+            stop_seq=stop_seq,
+        )
+
+        assert turn is not None
+        reasoning_id = _interaction_id(generation, "reasoning", first_seq)
+        record = _interaction_by_id(turn, reasoning_id)
+        assert record["kind"] == "reasoning"
+        assert record["attributes"]["thirdeye.interaction.duplicate_seqs"] == [duplicate_seq]
+        assert record["parent_span_id"] == str(turn_span_id("cursor", sid, turn_seq))
+
 
 # --- turn reconstruction -----------------------------------------------------
 

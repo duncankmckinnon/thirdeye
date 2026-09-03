@@ -431,12 +431,16 @@ def emit_live_tools(
             pass
 
 
-def committed_interaction_ids(session_dir_: Path, generation_id: str) -> set[str]:
+def committed_interaction_dup_counts(session_dir_: Path, generation_id: str) -> dict[str, int]:
     with _locked(session_dir_):
         _, interaction_dup_counts = _parse_committed_state(
             _read_state(session_dir_).get(generation_id, [])
         )
-        return set(interaction_dup_counts)
+        return interaction_dup_counts
+
+
+def committed_interaction_ids(session_dir_: Path, generation_id: str) -> set[str]:
+    return set(committed_interaction_dup_counts(session_dir_, generation_id))
 
 
 def _emit_live_interactions(
