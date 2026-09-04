@@ -10,17 +10,43 @@ from thirdeye.logfire_auth import LogfireAuthError, mint_write_token
 
 
 class _FakeClient:
-    def __init__(self, projects: list[dict[str, str]], token: str = "minted-token") -> None:
+    def __init__(
+        self,
+        projects: list[dict[str, str]],
+        token: str = "minted-token",
+        *,
+        organizations: list[dict[str, str]] | None = None,
+        default_organization: str | None = None,
+        write_token_error: Exception | None = None,
+    ) -> None:
         self.projects = projects
         self.token = token
+        self.organizations = organizations or []
+        self.default_organization = default_organization
+        self.write_token_error = write_token_error
         self.created: list[tuple[str, str]] = []
+        self.created_projects: list[tuple[str, str]] = []
 
     def get_user_projects(self) -> list[dict[str, str]]:
         return self.projects
 
+    def get_user_organizations(self) -> list[dict[str, str]]:
+        return self.organizations
+
+    def get_user_information(self) -> dict[str, object]:
+        if not self.default_organization:
+            return {}
+        return {"default_organization": {"organization_name": self.default_organization}}
+
     def create_write_token(self, organization: str, project_name: str) -> dict[str, str]:
+        if self.write_token_error:
+            raise self.write_token_error
         self.created.append((organization, project_name))
         return {"token": self.token, "project_name": project_name}
+
+    def create_new_project(self, organization: str, project_name: str) -> dict[str, str]:
+        self.created_projects.append((organization, project_name))
+        return {"token": self.token, "project_name": project_name, "project_url": "https://example"}
 
 
 def test_mint_uses_only_project_without_prompt(monkeypatch: pytest.MonkeyPatch):
@@ -49,15 +75,61 @@ def test_mint_prompts_when_multiple_projects(monkeypatch: pytest.MonkeyPatch):
     assert client.created == [("acme", "two")]
 
 
-def test_mint_errors_when_account_has_no_projects(monkeypatch: pytest.MonkeyPatch):
+def test_mint_errors_when_account_has_no_organization(monkeypatch: pytest.MonkeyPatch):
     client = _FakeClient([])
     monkeypatch.setattr(
         "thirdeye.logfire_auth._authenticated_client", lambda force_auth=False: client
     )
 
-    with pytest.raises(LogfireAuthError, match="no writable"):
+    with pytest.raises(LogfireAuthError, match="no organization"):
         mint_write_token()
     assert client.created == []
+    assert client.created_projects == []
+
+
+def test_mint_creates_project_when_none_are_listed(monkeypatch: pytest.MonkeyPatch):
+    client = _FakeClient(
+        [],
+        organizations=[{"organization_name": "acme"}],
+        write_token_error=RuntimeError("missing"),
+    )
+    monkeypatch.setattr(
+        "thirdeye.logfire_auth._authenticated_client", lambda force_auth=False: client
+    )
+    monkeypatch.setattr("thirdeye.logfire_auth.click.confirm", lambda *args, **kwargs: True)
+    monkeypatch.setattr("thirdeye.logfire_auth.click.prompt", lambda *args, **kwargs: "thirdeye")
+
+    assert mint_write_token() == "minted-token"
+    assert client.created_projects == [("acme", "thirdeye")]
+
+
+def test_mint_uses_account_default_org_when_org_list_is_empty(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    client = _FakeClient([], default_organization="acme", write_token_error=RuntimeError("missing"))
+    monkeypatch.setattr(
+        "thirdeye.logfire_auth._authenticated_client", lambda force_auth=False: client
+    )
+    monkeypatch.setattr("thirdeye.logfire_auth.click.confirm", lambda *args, **kwargs: True)
+    monkeypatch.setattr("thirdeye.logfire_auth.click.prompt", lambda *args, **kwargs: "traces")
+
+    assert mint_write_token() == "minted-token"
+    assert client.created_projects == [("acme", "traces")]
+
+
+def test_mint_mints_write_token_for_named_project_when_list_is_empty(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    client = _FakeClient([], default_organization="acme")
+    monkeypatch.setattr(
+        "thirdeye.logfire_auth._authenticated_client", lambda force_auth=False: client
+    )
+    monkeypatch.setattr("thirdeye.logfire_auth.click.confirm", lambda *args, **kwargs: True)
+    monkeypatch.setattr("thirdeye.logfire_auth.click.prompt", lambda *args, **kwargs: "existing")
+
+    assert mint_write_token() == "minted-token"
+    assert client.created == [("acme", "existing")]
+    assert client.created_projects == []
 
 
 def test_mint_errors_when_write_token_missing(monkeypatch: pytest.MonkeyPatch):
