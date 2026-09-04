@@ -8,6 +8,7 @@ from click.testing import CliRunner
 
 from thirdeye.cli import main
 from thirdeye.config import Config, LogfireSettings
+from thirdeye.logfire_auth import LogfireAuthError
 
 
 @pytest.fixture(autouse=True)
@@ -47,11 +48,14 @@ def test_setup_multiselects_agents_skills_and_logfire(
     platforms = {name: _fake_platform(name) for name in ("claude", "codex", "cursor")}
     _fake_resolver(monkeypatch, platforms)
     monkeypatch.setattr("thirdeye.commands.setup.logfire_cmd.is_available", lambda: True)
+    monkeypatch.setattr(
+        "thirdeye.commands.setup.logfire_cmd.mint_write_token", lambda: "pylf_v1_us_test"
+    )
 
     result = CliRunner().invoke(
         main,
         ["setup"],
-        input="1,3\nall\ny\npylf_v1_us_test\n",
+        input="1,3\nall\ny\n",
     )
 
     assert result.exit_code == 0, result.output
@@ -217,14 +221,31 @@ def test_setup_can_replace_existing_logfire_token(monkeypatch: pytest.MonkeyPatc
     _fake_resolver(monkeypatch, platforms)
     monkeypatch.setattr("thirdeye.commands.setup._install_new_skills", lambda _: "up to date")
     monkeypatch.setattr("thirdeye.commands.setup.logfire_cmd.is_available", lambda: True)
+    monkeypatch.setattr("thirdeye.commands.setup.logfire_cmd.mint_write_token", lambda: "new-token")
     Config.load().write_logfire_settings(LogfireSettings(enabled=True, token="old-token"))
 
-    result = CliRunner().invoke(main, ["setup"], input="y\nnew-token\n")
+    result = CliRunner().invoke(main, ["setup"], input="y\n")
 
     assert result.exit_code == 0, result.output
     assert Config.load().logfire.token == "new-token"
     assert "old-token" not in result.output
     assert "new-token" not in result.output
+
+
+def test_setup_surfaces_logfire_auth_failure(monkeypatch: pytest.MonkeyPatch) -> None:
+    platforms = {name: _fake_platform(name) for name in ("claude", "codex", "cursor")}
+    _fake_resolver(monkeypatch, platforms)
+    monkeypatch.setattr("thirdeye.commands.setup.logfire_cmd.is_available", lambda: True)
+    monkeypatch.setattr(
+        "thirdeye.commands.setup.logfire_cmd.mint_write_token",
+        MagicMock(side_effect=LogfireAuthError("login cancelled")),
+    )
+
+    result = CliRunner().invoke(main, ["setup"], input="none\nnone\ny\n")
+
+    assert result.exit_code != 0
+    assert "login cancelled" in result.output
+    assert Config.load().logfire.token is None
 
 
 def test_setup_can_enable_an_existing_disabled_logfire_token(

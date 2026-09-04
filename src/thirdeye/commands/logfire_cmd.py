@@ -3,6 +3,7 @@ from __future__ import annotations
 import click
 
 from thirdeye.config import Config, LogfireSettings
+from thirdeye.logfire_auth import LogfireAuthError, mint_write_token
 from thirdeye.otel_export import is_available, status
 
 
@@ -24,12 +25,31 @@ def logfire_group() -> None:
 
 
 @logfire_group.command("enable", help="Turn on Logfire export and persist the write token.")
-def enable() -> None:
+@click.option(
+    "--auth",
+    "force_auth",
+    is_flag=True,
+    help="Re-authenticate with Logfire and mint a new write token.",
+)
+def enable(force_auth: bool) -> None:
     if not is_available():
         raise click.ClickException(
             "the `logfire` package is not installed. Install with: pip install 'thrdi[logfire]'"
         )
-    token = click.prompt("Logfire write token (gateway key)", hide_input=True)
+    config = Config.load()
+    token = config.logfire.token
+    if (
+        token
+        and not force_auth
+        and click.confirm("Use the saved Logfire write token?", default=True)
+    ):
+        enable_with_token(token)
+        click.echo(f"logfire export enabled (token {_mask(token)})")
+        return
+    try:
+        token = mint_write_token(force_auth=True) if force_auth else mint_write_token()
+    except LogfireAuthError as exc:
+        raise click.ClickException(str(exc)) from exc
     enable_with_token(token)
     click.echo(f"logfire export enabled (token {_mask(token)})")
 
