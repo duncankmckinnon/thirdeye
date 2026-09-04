@@ -73,6 +73,19 @@ def test_enable_mints_token_when_saved_token_declined(monkeypatch: pytest.Monkey
     mint.assert_called_once()
 
 
+def test_enable_auth_mints_even_when_token_is_saved(monkeypatch: pytest.MonkeyPatch):
+    Config.load().write_logfire_settings(LogfireSettings(enabled=True, token="old-token"))
+    mint = MagicMock(return_value="new-minted")
+    monkeypatch.setattr("thirdeye.commands.logfire_cmd.mint_write_token", mint)
+
+    result = CliRunner().invoke(logfire_group, ["enable", "--auth"])
+
+    assert result.exit_code == 0, result.output
+    assert "Use the saved Logfire write token?" not in result.output
+    assert Config.load().logfire.token == "new-minted"
+    mint.assert_called_once_with(force_auth=True)
+
+
 def test_enable_surfaces_auth_failure(monkeypatch: pytest.MonkeyPatch):
     monkeypatch.setattr(
         "thirdeye.commands.logfire_cmd.mint_write_token",

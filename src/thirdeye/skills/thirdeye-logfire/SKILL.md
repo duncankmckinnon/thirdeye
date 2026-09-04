@@ -40,6 +40,12 @@ If a token is already saved, the command offers to reuse it. Otherwise it wraps
 `logfire auth`, lets the user pick a writable project, and mints a write token.
 Do not paste a token into the shell or process arguments.
 
+To sign in again (different account or expired login):
+
+```bash
+thirdeye logfire enable --auth
+```
+
 Never invent, search broadly for, print, or commit a token. If browser login
 cannot run, the user can still paste a gateway key on the Settings page in
 `thirdeye ui`.

@@ -128,6 +128,7 @@ Within a trace, subagents dispatched in local Cursor IDE and CLI sessions are ex
 
 ```bash
 thirdeye logfire enable                                           # reuse a saved token, or sign in to mint one
+thirdeye logfire enable --auth                                    # force a fresh Logfire login, then mint
 thirdeye logfire status
 thirdeye logfire disable                                          # keeps the saved key
 ```

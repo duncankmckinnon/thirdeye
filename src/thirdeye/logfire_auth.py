@@ -12,9 +12,9 @@ class LogfireAuthError(RuntimeError):
     """Logfire login or write-token minting failed."""
 
 
-def mint_write_token() -> str:
+def mint_write_token(*, force_auth: bool = False) -> str:
     """Run Logfire login if needed, then mint a project write token."""
-    client = _authenticated_client()
+    client = _authenticated_client(force_auth=force_auth)
     try:
         projects = client.get_user_projects()
     except LogfireAuthError:
@@ -24,7 +24,9 @@ def mint_write_token() -> str:
     return _write_token_for_projects(projects, create_token=client.create_write_token)
 
 
-def _authenticated_client() -> Any:
+def _authenticated_client(*, force_auth: bool = False) -> Any:
+    if force_auth:
+        subprocess.run([sys.executable, "-m", "logfire", "auth", "logout"])
     click.echo("Signing in to Logfire...")
     result = subprocess.run([sys.executable, "-m", "logfire", "auth"])
     if result.returncode != 0:
