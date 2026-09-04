@@ -12,7 +12,7 @@ from thirdeye.commands.reads import event, events, list_sessions, search, show, 
 from thirdeye.commands.setup import setup
 from thirdeye.commands.skill import skills_group
 from thirdeye.commands.tags import tag, tags
-from thirdeye.commands.ui import ui
+from thirdeye.commands.ui import serve, ui
 from thirdeye.commands.usage import usage
 from thirdeye.commands.views import views_group
 
@@ -39,6 +39,7 @@ main.add_command(stats)
 main.add_command(usage)
 main.add_command(eval_group)
 main.add_command(ui)
+main.add_command(serve)
 main.add_command(views_group)
 main.add_command(agent_cmd)
 main.add_command(logfire_group)

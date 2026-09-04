@@ -10,10 +10,10 @@ don't directly exercise:
 * htmx is vendored as real bytes-on-disk with the canonical
   ``hx-*`` attribute names referenced by feature templates downstream.
 * The ``ui`` CLI command exposes the documented ``--host``, ``--port``,
-  ``--no-browser`` flags.
+  ``--no-browser`` flags. ``serve`` is a full alias of ``ui``.
 * The stub route modules don't touch ``app.routes`` (they exist purely to
   give Wave 2 a stable import surface).
-* ``cli.py`` registers the new ``ui`` command on the top-level group.
+* ``cli.py`` registers the ``ui`` and ``serve`` commands on the top-level group.
 * No module outside ``src/thirdeye/web/`` and ``src/thirdeye/commands/ui.py``
   imports starlette / uvicorn / jinja2 — i.e. the ``ui`` extra stays opt-in.
 """
@@ -216,6 +216,62 @@ def test_cli_main_registers_ui_command():
     assert result.exit_code == 0
     # The "ui" subcommand should appear in the top-level command list.
     assert re.search(r"^\s*ui\b", result.output, re.MULTILINE), result.output
+
+
+def test_cli_main_registers_serve_command():
+    from click.testing import CliRunner
+
+    from thirdeye.cli import main
+
+    result = CliRunner().invoke(main, ["--help"])
+    assert result.exit_code == 0
+    assert re.search(r"^\s*serve\b", result.output, re.MULTILINE), result.output
+
+
+def test_serve_command_has_documented_options():
+    from click.testing import CliRunner
+
+    from thirdeye.commands.ui import serve
+
+    result = CliRunner().invoke(serve, ["--help"])
+    assert result.exit_code == 0, result.output
+    out = result.output
+    assert "--host" in out
+    assert "--port" in out
+    assert "--no-browser" in out
+    assert "127.0.0.1" in out
+    assert "alias" in out.lower()
+
+
+def test_serve_and_ui_forward_the_same_options(monkeypatch):
+    from click.testing import CliRunner
+
+    from thirdeye.cli import main
+
+    calls: list[dict] = []
+
+    def fake_run_server(*, host: str, port: int, open_browser: bool) -> None:
+        calls.append({"host": host, "port": port, "open_browser": open_browser})
+
+    monkeypatch.setattr("thirdeye.web.server.run_server", fake_run_server)
+    runner = CliRunner()
+    cases = (
+        (
+            ["--host", "127.0.0.1", "--port", "9000", "--no-browser"],
+            {"host": "127.0.0.1", "port": 9000, "open_browser": False},
+        ),
+        (
+            ["--host", "127.0.0.1", "--port", "9000"],
+            {"host": "127.0.0.1", "port": 9000, "open_browser": True},
+        ),
+    )
+
+    for name in ("ui", "serve"):
+        for args, expected in cases:
+            calls.clear()
+            result = runner.invoke(main, [name, *args])
+            assert result.exit_code == 0, result.output
+            assert calls == [expected]
 
 
 # --------------------------------------------------------------------------- #

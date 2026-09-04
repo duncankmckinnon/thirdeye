@@ -23,7 +23,9 @@ pipx inject thrdi starlette uvicorn jinja2
 
 ```bash
 thirdeye ui                        # http://127.0.0.1:8765 by default
+thirdeye serve                     # alias for `thirdeye ui`
 thirdeye ui --port 9000            # pick a port
+thirdeye serve --port 9000         # same flags as `ui`
 thirdeye ui --host 127.0.0.1       # interface to bind (loopback only)
 thirdeye ui --no-browser           # don't auto-open the browser
 ```
