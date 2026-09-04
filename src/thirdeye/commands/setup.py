@@ -8,6 +8,7 @@ import click
 from thirdeye.commands import add as add_commands
 from thirdeye.commands import logfire_cmd, skill
 from thirdeye.config import Config
+from thirdeye.logfire_auth import LogfireAuthError
 from thirdeye.platforms.base import Platform
 from thirdeye.platforms.codex.install import CodexPlatform
 
@@ -135,6 +136,13 @@ def _install_new_skills(platforms: list[str]) -> str:
     return f"installed {installed} new"
 
 
+def _mint_logfire_token() -> str:
+    try:
+        return logfire_cmd.mint_write_token()
+    except LogfireAuthError as exc:
+        raise click.ClickException(str(exc)) from exc
+
+
 def _configure_logfire() -> str:
     settings = Config.load().logfire
 
@@ -142,8 +150,7 @@ def _configure_logfire() -> str:
         state = "enabled" if settings.enabled else "disabled"
         click.echo(f"  Logfire export is {state} with a saved token (********)")
         if click.confirm("Change the saved Logfire write token?", default=False):
-            token = click.prompt("New Logfire write token (gateway key)", hide_input=True)
-            logfire_cmd.enable_with_token(token)
+            logfire_cmd.enable_with_token(_mint_logfire_token())
             click.echo("  Updated the token and enabled Logfire export (********)")
             return "token updated"
         if settings.enabled:
@@ -157,8 +164,7 @@ def _configure_logfire() -> str:
     if not click.confirm("Enable live Logfire export?", default=False):
         click.echo("  Skipped Logfire export")
         return "skipped"
-    token = click.prompt("Logfire write token (gateway key)", hide_input=True)
-    logfire_cmd.enable_with_token(token)
+    logfire_cmd.enable_with_token(_mint_logfire_token())
     click.echo("  Logfire export enabled (token ********)")
     return "enabled"
 

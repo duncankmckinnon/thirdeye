@@ -30,19 +30,19 @@ method appropriate to that environment, such as:
 pip install 'thrdi[logfire]'
 ```
 
-Enabling requires a Logfire project write token (gateway key):
+Enabling persists a Logfire project write token (gateway key):
 
 ```bash
 thirdeye logfire enable
 ```
 
-The command prompts for the write token with hidden input so it is not placed
-in shell history or process arguments.
+If a token is already saved, the command offers to reuse it. Otherwise it wraps
+`logfire auth`, lets the user pick a writable project, and mints a write token.
+Do not paste a token into the shell or process arguments.
 
-Never invent, search broadly for, print, or commit a token. Ask the user to
-provide it when it is unavailable, and explain that thirdeye persists it in
-its config. The user can enter it through the command's hidden prompt or the
-Settings page in `thirdeye ui`.
+Never invent, search broadly for, print, or commit a token. If browser login
+cannot run, the user can still paste a gateway key on the Settings page in
+`thirdeye ui`.
 
 Ensure tracing hooks are installed for each requested harness (`thirdeye add
 --codex`, `--claude`, or another supported platform). Logfire export does not

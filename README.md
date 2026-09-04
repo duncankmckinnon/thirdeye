@@ -48,9 +48,9 @@ thirdeye setup
 ```
 
 The wizard prompts for each supported agent, installs skills in the matching
-agent directories, and securely prompts for a Logfire write token only if you
-choose to enable remote export. The commands below remain available when you
-want to configure each piece separately.
+agent directories, and can sign in to Logfire in the browser to mint a write
+token if you choose to enable remote export. The commands below remain available
+when you want to configure each piece separately.
 
 ## Install agent skills locally
 
@@ -127,7 +127,7 @@ On Claude Code, each individual model call within a turn gets its own `chat <mod
 Within a trace, subagents dispatched in local Cursor IDE and CLI sessions are exported beneath their dispatching `Task` span — including background, parallel, and nested children — and each child's tool calls are attributed to it by the child hook generation derived from its Task call identity, never by timing, nearest-turn heuristics, or tool-completion order.
 
 ```bash
-thirdeye logfire enable                                           # securely prompts for gateway key
+thirdeye logfire enable                                           # reuse a saved token, or sign in to mint one
 thirdeye logfire status
 thirdeye logfire disable                                          # keeps the saved key
 ```

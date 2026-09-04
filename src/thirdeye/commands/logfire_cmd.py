@@ -3,6 +3,7 @@ from __future__ import annotations
 import click
 
 from thirdeye.config import Config, LogfireSettings
+from thirdeye.logfire_auth import LogfireAuthError, mint_write_token
 from thirdeye.otel_export import is_available, status
 
 
@@ -29,7 +30,16 @@ def enable() -> None:
         raise click.ClickException(
             "the `logfire` package is not installed. Install with: pip install 'thrdi[logfire]'"
         )
-    token = click.prompt("Logfire write token (gateway key)", hide_input=True)
+    config = Config.load()
+    token = config.logfire.token
+    if token and click.confirm("Use the saved Logfire write token?", default=True):
+        enable_with_token(token)
+        click.echo(f"logfire export enabled (token {_mask(token)})")
+        return
+    try:
+        token = mint_write_token()
+    except LogfireAuthError as exc:
+        raise click.ClickException(str(exc)) from exc
     enable_with_token(token)
     click.echo(f"logfire export enabled (token {_mask(token)})")
 
