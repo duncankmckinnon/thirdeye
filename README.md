@@ -153,7 +153,7 @@ available for direct lookup.
 For a richer experience than the CLI, install the UI extra and launch:
 
 ```bash
-thirdeye ui
+thirdeye ui      # or: thirdeye serve
 ```
 
 The local browser UI covers:
