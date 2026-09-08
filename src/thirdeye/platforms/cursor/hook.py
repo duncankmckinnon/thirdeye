@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import io
 import json
 import os
 import sys
@@ -28,8 +29,12 @@ _PLATFORM = "cursor"
 
 def _read_stdin() -> dict[str, Any]:
     try:
-        raw = sys.stdin.read()
-    except OSError:
+        buffer = getattr(sys.stdin, "buffer", None)
+        if buffer is None:
+            raw = sys.stdin.read()
+        else:
+            raw = io.TextIOWrapper(buffer, encoding="utf-8").read()
+    except (OSError, ValueError):
         return {}
     if not raw:
         return {}

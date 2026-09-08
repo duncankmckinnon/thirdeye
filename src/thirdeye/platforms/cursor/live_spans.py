@@ -75,7 +75,7 @@ def _parse_committed_state(entries: list[str]) -> tuple[set[str], dict[str, int]
 
 def _trace_id(session_dir_: Path, session_id: str) -> int:
     try:
-        state = json.loads(otel_state_path(session_dir_).read_text())
+        state = json.loads(otel_state_path(session_dir_).read_text(encoding="utf-8"))
         return int(state["trace_id"], 16)
     except (OSError, TypeError, ValueError, KeyError, json.JSONDecodeError):
         return trace_id_for_session(_PLATFORM, session_id)
@@ -97,7 +97,7 @@ def _locked(session_dir_: Path) -> Iterator[None]:
 
 def _read_state(session_dir_: Path) -> dict[str, list[str]]:
     try:
-        raw = json.loads(_state_path(session_dir_).read_text())
+        raw = json.loads(_state_path(session_dir_).read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError):
         return {}
     if not isinstance(raw, dict):
@@ -113,7 +113,7 @@ def _write_state(session_dir_: Path, state: dict[str, list[str]]) -> None:
     path = _state_path(session_dir_)
     path.parent.mkdir(parents=True, exist_ok=True)
     tmp = path.with_suffix(f".tmp.{os.getpid()}")
-    tmp.write_text(json.dumps(state, separators=(",", ":")))
+    tmp.write_text(json.dumps(state, separators=(",", ":")), encoding="utf-8", newline="\n")
     fsops.replace(tmp, path)
 
 

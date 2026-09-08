@@ -457,7 +457,7 @@ class TestExportTurnDispatch:
         otel_export.export_turn(enabled_config, tmp_path, "s1", "claude", "/proj", turn)
         job_path = Path(calls[0][3])
         assert job_path.parent == otel_export.otel_jobs_dir(tmp_path)
-        payload = json.loads(job_path.read_text())
+        payload = json.loads(job_path.read_text(encoding="utf-8"))
         assert payload["kind"] == "turn"
         assert payload["session_id"] == "s1"
         assert payload["platform"] == "claude"
@@ -520,7 +520,7 @@ class TestExportSubagentTurnDispatch:
         )
 
         job_path = Path(spawned[0][3])
-        payload = json.loads(job_path.read_text())
+        payload = json.loads(job_path.read_text(encoding="utf-8"))
         assert payload["trace_id"] == str(trace_id_for_session("cursor", session_id))
         assert payload["parent_span_id"] == str(tool_span_id("cursor", session_id, tool_use_id))
 
@@ -618,7 +618,7 @@ class TestExportSpansDispatch:
         else:
             assert kwargs["start_new_session"] is True
         job_path = Path(argv[3])
-        payload = json.loads(job_path.read_text())
+        payload = json.loads(job_path.read_text(encoding="utf-8"))
         assert payload == {
             "kind": "spans",
             "session_dir": str(tmp_path / "traces" / "claude" / "s1"),

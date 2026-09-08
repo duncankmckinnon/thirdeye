@@ -24,6 +24,7 @@ trust entries in ``config.toml`` once approved, has no ``Notification`` or
 
 from __future__ import annotations
 
+import io
 import json
 import os
 import sys
@@ -67,8 +68,12 @@ def _read_stdin() -> dict:
     # tag mutation, and _emit. Moving the check into handlers would reintroduce
     # the ordering bug this guard exists to prevent.
     try:
-        raw = sys.stdin.read()
-    except OSError:
+        buffer = getattr(sys.stdin, "buffer", None)
+        if buffer is None:
+            raw = sys.stdin.read()
+        else:
+            raw = io.TextIOWrapper(buffer, encoding="utf-8").read()
+    except (OSError, ValueError):
         return {}
     if not raw:
         return {}

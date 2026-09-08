@@ -30,7 +30,7 @@ def main(argv: list[str] | None = None) -> None:
         return
     job_path = Path(argv[0])
     try:
-        payload = json.loads(job_path.read_text())
+        payload = json.loads(job_path.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError) as exc:
         _log_worker_failure(kind="job_read", payload={}, error=exc)
         return

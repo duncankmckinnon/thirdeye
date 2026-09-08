@@ -35,7 +35,7 @@ def _start_turn(
     *,
     session_id: str = "live-session",
 ) -> Path:
-    transcript.write_text("")
+    transcript.write_text("", encoding="utf-8", newline="\n")
     _stdin(
         monkeypatch,
         {

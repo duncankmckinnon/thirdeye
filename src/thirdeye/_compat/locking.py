@@ -144,6 +144,6 @@ def locked(path: Path, mode: LockMode, *, timeout: float | None = None) -> Itera
     have on disk -- and closes it on exit.
     """
     path.parent.mkdir(parents=True, exist_ok=True)
-    with path.open("a+") as handle:
+    with path.open("a+", encoding="utf-8") as handle:
         with locked_fd(handle.fileno(), mode, timeout=timeout):
             yield

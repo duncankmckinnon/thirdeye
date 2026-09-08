@@ -240,7 +240,7 @@ def run_eval_background(
         definition_name,
         agent_name,
     ]
-    log_file = log_path.open("w", encoding="utf-8")
+    log_file = log_path.open("w", encoding="utf-8", newline="\n")
     try:
         worker = proc.spawn_detached(
             worker_cmd,

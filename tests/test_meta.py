@@ -191,7 +191,7 @@ class TestReadMeta:
         """schema_version is written to YAML but not part of the dataclass."""
         p = tmp_path / "meta.yaml"
         write_meta(p, _sample())
-        with open(p) as f:
+        with open(p, encoding="utf-8") as f:
             raw = yaml.safe_load(f)
         assert "schema_version" in raw
         got = read_meta(p)
@@ -212,7 +212,7 @@ class TestReadMeta:
             "last_seq": -1,
             "last_ts": None,
         }
-        with open(p, "w") as f:
+        with open(p, "w", encoding="utf-8", newline="\n") as f:
             yaml.safe_dump(data, f, sort_keys=False)
         got = read_meta(p)
         assert got is not None
@@ -226,7 +226,7 @@ class TestYamlContent:
     def test_schema_version_in_file(self, tmp_path: Path):
         p = tmp_path / "meta.yaml"
         write_meta(p, _sample())
-        with open(p) as f:
+        with open(p, encoding="utf-8") as f:
             raw = yaml.safe_load(f)
         assert raw["schema_version"] == SCHEMA_VERSION
 
@@ -240,7 +240,7 @@ class TestYamlContent:
     def test_yaml_is_valid(self, tmp_path: Path):
         p = tmp_path / "meta.yaml"
         write_meta(p, _sample())
-        with open(p) as f:
+        with open(p, encoding="utf-8") as f:
             raw = yaml.safe_load(f)
         assert isinstance(raw, dict)
         assert raw["session_id"] == "01J9G7XK4P"
@@ -345,7 +345,7 @@ class TestWriteMetaEmitsTagCount:
         p = tmp_path / "meta.yaml"
         m = _sample(tag_count=3)
         write_meta(p, m)
-        with open(p) as f:
+        with open(p, encoding="utf-8") as f:
             raw = yaml.safe_load(f)
         assert raw["tag_count"] == 3
         assert raw["schema_version"] == 2
@@ -367,7 +367,7 @@ class TestReadV1Compat:
             "last_ts": None,
             "extra": {},
         }
-        with open(p, "w") as f:
+        with open(p, "w", encoding="utf-8", newline="\n") as f:
             yaml.safe_dump(data, f, sort_keys=False)
         got = read_meta(p)
         assert got is not None
@@ -391,7 +391,7 @@ class TestReadV2:
             "tag_count": 7,
             "extra": {},
         }
-        with open(p, "w") as f:
+        with open(p, "w", encoding="utf-8", newline="\n") as f:
             yaml.safe_dump(data, f, sort_keys=False)
         got = read_meta(p)
         assert got is not None

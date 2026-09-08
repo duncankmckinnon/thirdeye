@@ -37,6 +37,19 @@ def _stdin(monkeypatch, payload: dict) -> None:
     monkeypatch.setattr("sys.stdin", io.StringIO(json.dumps(payload)))
 
 
+def test_hook_accepts_utf8_stdin_payload(monkeypatch, env: Path) -> None:
+    payload = {"session_id": "utf8-session", "cwd": "/p", "source": "🤖 日本語 café"}
+    stdin = io.TextIOWrapper(
+        io.BytesIO(json.dumps(payload, ensure_ascii=False).encode("utf-8")), encoding="ascii"
+    )
+    monkeypatch.setattr("sys.stdin", stdin)
+
+    hooks.session_start()
+
+    events = list(Store(Config.load()).reader("utf8-session").iter_events())
+    assert events[0]["data"]["source"] == payload["source"]
+
+
 # -- _read_stdin ---------------------------------------------------------------
 
 

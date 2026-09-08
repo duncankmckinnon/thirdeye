@@ -517,7 +517,9 @@ def test_parse_then_persist_matches_capture_usage_claude(tmp_path: Path) -> None
 
 
 def _write_transcript(path: Path, *frames: object) -> None:
-    path.write_text("".join(json.dumps(frame) + "\n" for frame in frames))
+    path.write_text(
+        "".join(json.dumps(frame) + "\n" for frame in frames), encoding="utf-8", newline="\n"
+    )
 
 
 def _assistant_frame(

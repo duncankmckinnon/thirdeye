@@ -75,5 +75,6 @@ class ViewStore:
                 separators=(",", ":"),
             ),
             encoding="utf-8",
+            newline="\n",
         )
         fsops.replace(tmp, self.file)

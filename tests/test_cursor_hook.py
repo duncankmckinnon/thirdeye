@@ -51,7 +51,7 @@ def _cursor_payload(event: str, generation_id: str = "parent-gen", **values) -> 
 
 
 def _job(path: Path) -> dict:
-    return json.loads(path.read_text())
+    return json.loads(path.read_text(encoding="utf-8"))
 
 
 @pytest.mark.parametrize(

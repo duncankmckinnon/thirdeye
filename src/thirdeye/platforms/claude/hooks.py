@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import contextlib
+import io
 import json
 import os
 import sys
@@ -33,8 +34,12 @@ _STRIP_KEYS = frozenset({"session_id", "cwd", "transcript_path", "agent_transcri
 
 def _read_stdin() -> dict:
     try:
-        raw = sys.stdin.read()
-    except OSError:
+        buffer = getattr(sys.stdin, "buffer", None)
+        if buffer is None:
+            raw = sys.stdin.read()
+        else:
+            raw = io.TextIOWrapper(buffer, encoding="utf-8").read()
+    except (OSError, ValueError):
         return {}
     if not raw:
         return {}
@@ -251,7 +256,7 @@ def _locked_open_turn(session_dir_: Path, mode: LockMode) -> Iterator[None]:
 
 def _read_open_turn_unlocked(session_dir_: Path) -> OpenTurnMarker | None:
     try:
-        marker = json.loads(_open_turn_path(session_dir_).read_text())
+        marker = json.loads(_open_turn_path(session_dir_).read_text(encoding="utf-8"))
     except (OSError, UnicodeError, json.JSONDecodeError):
         return None
     if not isinstance(marker, dict) or not _OPEN_TURN_FIELDS.issubset(marker):
@@ -334,7 +339,7 @@ def _read_open_turn(session_dir_: Path) -> OpenTurnMarker | None:
 
 def _write_open_turn(session_dir_: Path, marker: OpenTurnMarker) -> None:
     with _locked_open_turn(session_dir_, LockMode.EXCLUSIVE):
-        _open_turn_path(session_dir_).write_text(json.dumps(marker))
+        _open_turn_path(session_dir_).write_text(json.dumps(marker), encoding="utf-8", newline="\n")
 
 
 def _advance_turn_cursor(
@@ -382,7 +387,9 @@ def _advance_turn_cursor(
                     i for i in newly_committed_tool_use_ids if i not in merged_tools
                 )
                 marker["committed_tool_use_ids"] = merged_tools[-_COMMITTED_CALL_ID_LIMIT:]
-            _open_turn_path(session_dir_).write_text(json.dumps(marker))
+            _open_turn_path(session_dir_).write_text(
+                json.dumps(marker), encoding="utf-8", newline="\n"
+            )
             return True
     except OSError:
         return False

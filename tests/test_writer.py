@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import re
 import threading
 from pathlib import Path
@@ -11,6 +12,7 @@ from thirdeye.index import IndexReader
 from thirdeye.meta import SessionMeta, read_meta, write_meta
 from thirdeye.paths import events_path, index_path, meta_path
 from thirdeye.reader import SessionReader
+from thirdeye.tags import TagStore
 from thirdeye.writer import SessionWriter, _utc_iso_ms
 
 # -- helpers -------------------------------------------------------------------
@@ -23,6 +25,31 @@ def _open_writer(tmp_path: Path, sid: str = "01J9G7XK4P", **kw) -> SessionWriter
     defaults = dict(session_id=sid, platform="claude", cwd="/proj")
     defaults.update(kw)
     return SessionWriter.open(sd, **defaults)
+
+
+def test_unicode_round_trips_through_session(tmp_path: Path) -> None:
+    """Session text sidecars preserve UTF-8 event, tag, and metadata values."""
+    sid = "01J9G7XK4P"
+    session_dir = tmp_path / sid
+    event_data = {"emoji": "🤖", "cjk": "日本語", "accented": "café"}
+    tag_source = "🤖 日本語 café"
+    extra = {"tags": ["🤖", "日本語", "café"]}
+
+    writer = SessionWriter.open(
+        session_dir,
+        session_id=sid,
+        platform="claude",
+        cwd="/p",
+        extra=extra,
+    )
+    seq = writer.append("user_message", event_data)
+    writer.close()
+    TagStore(session_dir).add(seq, "unicode", source=tag_source)
+
+    assert SessionReader(session_dir).get_event(seq)["data"] == event_data
+    assert read_meta(meta_path(session_dir)).extra == extra
+    tag_entry = json.loads(TagStore(session_dir).path.read_text(encoding="utf-8"))
+    assert tag_entry["source"] == tag_source
 
 
 # -- open / directory creation -------------------------------------------------

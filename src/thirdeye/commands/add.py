@@ -57,7 +57,7 @@ def find_orphaned_hooks(
     found: list[tuple[Path, str]] = []
     for path in config_paths:
         try:
-            data = json.loads(path.read_text())
+            data = json.loads(path.read_text(encoding="utf-8"))
         except (OSError, json.JSONDecodeError):
             continue
         for command in _iter_commands(data):

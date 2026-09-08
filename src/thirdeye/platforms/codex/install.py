@@ -33,14 +33,14 @@ def _read_text(path: Path) -> str:
     if not path.is_file():
         return ""
     try:
-        return path.read_text()
+        return path.read_text(encoding="utf-8")
     except OSError:
         return ""
 
 
 def _read_json(path: Path) -> dict[str, Any]:
     try:
-        data = json.loads(path.read_text())
+        data = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, ValueError):
         return {}
     return data if isinstance(data, dict) else {}
@@ -229,7 +229,7 @@ class CodexPlatform(Platform):
                 prefix = text + ("\n" if text and not text.endswith("\n") else "")
                 new_text = prefix + notify_line
         self._config_file.parent.mkdir(parents=True, exist_ok=True)
-        self._config_file.write_text(new_text)
+        self._config_file.write_text(new_text, encoding="utf-8", newline="\n")
 
     def uninstall(self) -> None:
         """Remove the notify handler, but only when thirdeye owns slot 0.
@@ -258,7 +258,7 @@ class CodexPlatform(Platform):
             if self._config_file.exists():
                 self._config_file.unlink()
         else:
-            self._config_file.write_text(new_text)
+            self._config_file.write_text(new_text, encoding="utf-8", newline="\n")
         self._uninstall_hooks_json()
 
     def _install_hooks_json(self) -> None:
@@ -284,7 +284,9 @@ class CodexPlatform(Platform):
             return
         data["hooks"] = hooks
         self._hooks_file.parent.mkdir(parents=True, exist_ok=True)
-        self._hooks_file.write_text(json.dumps(data, indent=2) + "\n")
+        self._hooks_file.write_text(
+            json.dumps(data, indent=2) + "\n", encoding="utf-8", newline="\n"
+        )
 
     def _uninstall_hooks_json(self) -> None:
         data = _read_json(self._hooks_file)
@@ -299,6 +301,8 @@ class CodexPlatform(Platform):
             return
         data["hooks"] = hooks
         if hooks or set(data) != {"hooks"}:
-            self._hooks_file.write_text(json.dumps(data, indent=2) + "\n")
+            self._hooks_file.write_text(
+                json.dumps(data, indent=2) + "\n", encoding="utf-8", newline="\n"
+            )
         elif self._hooks_file.exists():
             self._hooks_file.unlink()

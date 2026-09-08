@@ -6,6 +6,7 @@ from pathlib import Path
 from click.testing import CliRunner
 
 from thirdeye.cli import main
+from thirdeye.reader import SessionReader
 
 
 def _runner_with_home(tmp_path: Path) -> tuple[CliRunner, dict]:
@@ -181,6 +182,27 @@ def test_ingest_empty_stdin(tmp_path: Path):
     assert r.exit_code == 0
     # 0 events written
     assert "0 events" in (r.output + getattr(r, "stderr", ""))
+
+
+def test_ingest_handles_crlf_input(tmp_path: Path):
+    runner, env = _runner_with_home(tmp_path)
+    payload = (
+        json.dumps({"t": "user_message", "data": "café"})
+        + "\r\n"
+        + json.dumps({"t": "assistant_message", "data": "日本語"})
+        + "\r\n"
+    )
+    r = runner.invoke(
+        main,
+        ["ingest", "--platform", "claude", "--session-id", "CRLF1"],
+        input=payload,
+        env=env,
+    )
+
+    assert r.exit_code == 0, r.output
+    events = list(SessionReader(tmp_path / "traces" / "claude" / "CRLF1").iter_events())
+    assert [event["data"] for event in events] == ["café", "日本語"]
+    assert all("\r" not in event["data"] for event in events)
 
 
 # -- event field defaults -----------------------------------------------------
