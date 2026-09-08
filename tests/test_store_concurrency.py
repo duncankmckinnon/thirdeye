@@ -17,7 +17,9 @@ _WRITER_COUNT = 8
 _EVENTS_PER_WRITER = 25
 _SESSION_ID = "CONCURRENT_SESSION"
 _PLATFORM = "claude"
-_WRITER_SCRIPT = """
+_CWD = "/concurrency-test"
+_WRITER_TIMEOUT = 30
+_WRITER_SCRIPT = f"""
 from pathlib import Path
 import sys
 import time
@@ -28,22 +30,22 @@ from thirdeye.store import Store
 root = Path(sys.argv[1])
 start_signal = Path(sys.argv[2])
 writer_id = int(sys.argv[3])
-event_count = int(sys.argv[4])
 
 while not start_signal.exists():
     time.sleep(0.001)
 
 store = Store(Config(root=root))
 with store.open_session(
-    "CONCURRENT_SESSION", platform="claude", cwd="/concurrency-test"
+    {_SESSION_ID!r}, platform={_PLATFORM!r}, cwd={_CWD!r}
 ) as writer:
-    for event_id in range(event_count):
-        writer.append("concurrent_event", {"writer": writer_id, "event": event_id})
+    for event_id in range({_EVENTS_PER_WRITER}):
+        writer.append("concurrent_event", {{"writer": writer_id, "event": event_id}})
 """
 
 
-def _spawn_writers(tmp_path: Path) -> tuple[list[subprocess.Popen[str]], Path]:
+def _spawn_writers(tmp_path: Path) -> tuple[list[subprocess.Popen[str]], float]:
     start_signal = tmp_path / "start-writers"
+    deadline = time.monotonic() + _WRITER_TIMEOUT
     processes = [
         subprocess.Popen(
             [
@@ -53,25 +55,26 @@ def _spawn_writers(tmp_path: Path) -> tuple[list[subprocess.Popen[str]], Path]:
                 str(tmp_path),
                 str(start_signal),
                 str(writer_id),
-                str(_EVENTS_PER_WRITER),
             ],
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             text=True,
+            encoding="utf-8",
         )
         for writer_id in range(_WRITER_COUNT)
     ]
     start_signal.touch()
-    return processes, start_signal
+    return processes, deadline
 
 
-def _assert_writers_succeeded(processes: list[subprocess.Popen[str]]) -> None:
+def _assert_writers_succeeded(processes: list[subprocess.Popen[str]], deadline: float) -> None:
     failures: list[str] = []
     for process in processes:
         try:
-            stdout, stderr = process.communicate(timeout=10)
+            stdout, stderr = process.communicate(timeout=max(0, deadline - time.monotonic()))
         except subprocess.TimeoutExpired:
-            process.kill()
+            if process.poll() is None:
+                process.kill()
             stdout, stderr = process.communicate()
             failures.append(f"writer timed out\nstdout:\n{stdout}\nstderr:\n{stderr}")
             continue
@@ -83,8 +86,8 @@ def _assert_writers_succeeded(processes: list[subprocess.Popen[str]]) -> None:
 
 
 def test_concurrent_writers_preserve_seq_continuity(tmp_path: Path) -> None:
-    processes, _ = _spawn_writers(tmp_path)
-    _assert_writers_succeeded(processes)
+    processes, deadline = _spawn_writers(tmp_path)
+    _assert_writers_succeeded(processes, deadline)
 
     store = Store(Config(root=tmp_path))
     events = list(store.reader(_SESSION_ID).iter_events())
@@ -98,21 +101,29 @@ def test_concurrent_writers_preserve_seq_continuity(tmp_path: Path) -> None:
 
 def test_reader_never_sees_partial_frame(tmp_path: Path) -> None:
     store = Store(Config(root=tmp_path))
-    with store.open_session(_SESSION_ID, platform=_PLATFORM, cwd="/concurrency-test"):
+    with store.open_session(_SESSION_ID, platform=_PLATFORM, cwd=_CWD):
         pass
 
-    processes, _ = _spawn_writers(tmp_path)
+    processes, deadline = _spawn_writers(tmp_path)
     sd = session_dir(tmp_path, _PLATFORM, _SESSION_ID)
     reader_iterations = 0
-    while any(process.poll() is None for process in processes):
-        events = list(SessionReader(sd).iter_events())
-        assert all(event["t"] == "concurrent_event" for event in events)
-        reader_iterations += 1
-        time.sleep(0.001)
+    try:
+        while any(process.poll() is None for process in processes):
+            reader = SessionReader(sd)
+            events = list(reader.iter_events())
+            assert reader.truncated_tail is False
+            assert [event["seq"] for event in events] == list(range(len(events)))
+            assert all(event["t"] == "concurrent_event" for event in events)
+            reader_iterations += 1
+            time.sleep(0.001)
+    finally:
+        _assert_writers_succeeded(processes, deadline)
 
-    _assert_writers_succeeded(processes)
-    events = list(SessionReader(sd).iter_events())
+    reader = SessionReader(sd)
+    events = list(reader.iter_events())
 
     assert reader_iterations > 0
+    assert reader.truncated_tail is False
     assert len(events) == _WRITER_COUNT * _EVENTS_PER_WRITER
+    assert [event["seq"] for event in events] == list(range(len(events)))
     assert all(event["t"] == "concurrent_event" for event in events)
