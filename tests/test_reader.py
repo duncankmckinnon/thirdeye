@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+import subprocess
+import sys
+import time
 from pathlib import Path
 
 import pytest
@@ -72,6 +75,40 @@ class TestIterEvents:
         assert len(events) == 100
         assert events[0]["data"] == 0
         assert events[99]["data"] == 99
+
+    def test_reader_snapshot_during_concurrent_append(self, tmp_path: Path):
+        session_dir = _make_session(tmp_path, [("initial", 0)])
+        worker = subprocess.Popen(
+            [
+                sys.executable,
+                "-c",
+                "\n".join(
+                    [
+                        "from pathlib import Path",
+                        "from thirdeye.writer import SessionWriter",
+                        f"session_dir = Path({str(session_dir)!r})",
+                        "writer = SessionWriter.open("
+                        "session_dir, session_id='01J9G7', platform='claude', cwd='/p')",
+                        "for value in range(100):",
+                        "    writer.append('concurrent', value)",
+                        "writer.close()",
+                    ]
+                ),
+            ]
+        )
+        snapshots: list[list[dict]] = []
+        try:
+            while worker.poll() is None:
+                snapshots.append(list(SessionReader(session_dir).iter_events()))
+                time.sleep(0.001)
+        finally:
+            assert worker.wait(timeout=10) == 0
+
+        snapshots.append(list(SessionReader(session_dir).iter_events()))
+        assert snapshots
+        for events in snapshots:
+            assert [event["seq"] for event in events] == list(range(len(events)))
+        assert [event["data"] for event in snapshots[-1]] == [0, *range(100)]
 
 
 # -- filter by type ------------------------------------------------------------
