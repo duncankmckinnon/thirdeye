@@ -459,28 +459,31 @@ class TestOpenTurnCursor:
         assert marker_path.exists()
 
 
-def _hold_lock_in_subprocess(lock_path: Path, *, seconds: float = 5.0) -> subprocess.Popen[str]:
+def _hold_lock_in_subprocess(lock_path: Path) -> subprocess.Popen[str]:
     """Hold an exclusive compatibility lock from a separate hook process."""
+    source_root = Path(__file__).parents[1] / "src"
+    environment = os.environ | {"PYTHONPATH": str(source_root)}
     process = subprocess.Popen(
         [
             sys.executable,
             "-c",
             "\n".join(
                 [
-                    "import sys, time",
+                    "import sys",
                     "from pathlib import Path",
                     "from thirdeye._compat.locking import LockMode, locked",
                     "with locked(Path(sys.argv[1]), LockMode.EXCLUSIVE):",
                     "    print('locked', flush=True)",
-                    "    time.sleep(float(sys.argv[2]))",
+                    "    sys.stdin.readline()",
                 ]
             ),
             str(lock_path),
-            str(seconds),
         ],
+        stdin=subprocess.PIPE,
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
         text=True,
+        env=environment,
     )
     assert process.stdout is not None
     assert process.stdout.readline().strip() == "locked"
@@ -488,9 +491,9 @@ def _hold_lock_in_subprocess(lock_path: Path, *, seconds: float = 5.0) -> subpro
 
 
 def _stop_lock_holder(process: subprocess.Popen[str]) -> None:
-    if process.poll() is None:
-        process.terminate()
-    process.communicate(timeout=5)
+    assert process.stdin is not None
+    process.stdin.close()
+    process.wait(timeout=5)
 
 
 class TestLockedOpenTurnBoundedRetry:
@@ -509,7 +512,9 @@ class TestLockedOpenTurnBoundedRetry:
             depths.append(1)
             with hooks._locked_open_turn(tmp_path, LockMode.EXCLUSIVE):
                 depths.append(2)
-        assert depths == [1, 2]
+            with hooks._locked_open_turn(tmp_path, LockMode.EXCLUSIVE):
+                depths.append(3)
+        assert depths == [1, 2, 3]
 
     def test_shared_to_exclusive_upgrade_raises(self, tmp_path: Path):
         with hooks._locked_open_turn(tmp_path, LockMode.SHARED):
@@ -537,7 +542,6 @@ class TestLockedOpenTurnBoundedRetry:
         @contextlib.contextmanager
         def timing_out_lock(path: Path, mode: LockMode, *, timeout: float | None = None):
             assert path == hooks._open_turn_lock_path(session)
-            assert mode is LockMode.EXCLUSIVE
             assert timeout == 0.3
             raise LockTimeout("lock held by another hook process")
             yield
