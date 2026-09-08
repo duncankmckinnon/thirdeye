@@ -1,11 +1,11 @@
 from __future__ import annotations
 
 import json
-import os
 from collections.abc import Iterator
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
+from thirdeye._compat import fsops
 from thirdeye.eval.result import EvalResult
 from thirdeye.paths import (
     eval_job_path,
@@ -83,7 +83,7 @@ class EvalStore:
         path.parent.mkdir(parents=True, exist_ok=True)
         tmp = path.with_suffix(path.suffix + ".tmp")
         tmp.write_text(json.dumps(payload, separators=(",", ":")), encoding="utf-8")
-        os.replace(tmp, path)
+        fsops.replace(tmp, path)
         return path
 
     def read_job(self, job_id: str) -> dict[str, Any] | None:
@@ -98,7 +98,7 @@ class EvalStore:
     def remove_job(self, job_id: str) -> bool:
         path = eval_job_path(self.session_dir, job_id)
         if path.is_file():
-            path.unlink()
+            fsops.unlink(path)
             return True
         return False
 

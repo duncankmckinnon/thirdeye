@@ -8,6 +8,8 @@ from typing import Any
 
 import yaml
 
+from thirdeye._compat import fsops
+
 SCHEMA_VERSION = 2
 
 
@@ -41,9 +43,9 @@ def write_meta(path: Path, meta: SessionMeta) -> None:
             yaml.safe_dump(payload, f, sort_keys=False)
             f.flush()
             os.fsync(f.fileno())
-        os.replace(tmp_name, path)
+        fsops.replace(tmp_name, path)
     except BaseException:
-        os.unlink(tmp_name)
+        fsops.unlink(Path(tmp_name))
         raise
 
 

@@ -1,11 +1,11 @@
 from __future__ import annotations
 
 import json
-import os
 from collections.abc import Iterator
 from pathlib import Path
 from typing import Any
 
+from thirdeye._compat import fsops
 from thirdeye.paths import usage_jsonl_path, usage_state_path
 from thirdeye.usage.types import UsageRow
 
@@ -73,4 +73,4 @@ class UsageStore:
         self.state_path.parent.mkdir(parents=True, exist_ok=True)
         tmp = self.state_path.with_suffix(self.state_path.suffix + ".tmp")
         tmp.write_text(json.dumps(current, separators=(",", ":")), encoding="utf-8")
-        os.replace(tmp, self.state_path)
+        fsops.replace(tmp, self.state_path)

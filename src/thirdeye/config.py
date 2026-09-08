@@ -7,6 +7,8 @@ from typing import Any
 
 import yaml
 
+from thirdeye._compat import fsops
+
 
 def default_root() -> Path:
     env = os.environ.get("THIRDEYE_HOME")
@@ -66,7 +68,7 @@ def _write_config_yaml(config_file: Path, data: dict[str, Any]) -> None:
         yaml.safe_dump(data, f, sort_keys=False)
         f.flush()
         os.fsync(f.fileno())
-    os.replace(tmp, config_file)
+    fsops.replace(tmp, config_file)
 
 
 @dataclass(frozen=True)
