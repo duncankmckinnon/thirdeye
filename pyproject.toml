@@ -125,7 +125,13 @@ line-length = 100
 target-version = "py311"
 
 [tool.ruff.lint]
+# Preview is on solely to reach PLW1514 (unspecified-encoding), which guards the
+# UTF-8 invariant this codebase relies on for cross-platform text I/O.
+# `explicit-preview-rules` keeps that opt-in narrow: a preview rule is enabled
+# only when selected by its exact code, so the `B`/`E`/`F`/... prefixes below
+# stay at their stable rule sets instead of silently acquiring new rules.
 preview = true
+explicit-preview-rules = true
 select = ["E", "F", "W", "I", "B", "UP", "PLW1514"]
 ignore = [
   "E501",   # line length handled by formatter
