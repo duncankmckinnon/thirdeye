@@ -1,11 +1,11 @@
 from __future__ import annotations
 
-import os
 from datetime import datetime
 from pathlib import Path
 
 import click
 
+from thirdeye._compat import proc
 from thirdeye.config import Config
 from thirdeye.eval.agents import list_agent_names
 from thirdeye.eval.definition import (
@@ -344,13 +344,11 @@ def results_cmd(definition_name: str, as_json: bool) -> None:
 
 
 def _pid_alive(pid: int) -> bool:
-    try:
-        os.kill(pid, 0)
-    except ProcessLookupError:
-        return False
-    except PermissionError:
-        return True
-    return True
+    # `os.kill(pid, 0)` is not a portable liveness probe: on Windows CPython's
+    # `os.kill` calls `TerminateProcess` for any signal but the Ctrl events, so
+    # probing this way would kill the eval worker. `proc.pid_alive` observes the
+    # process without signalling it on every platform.
+    return proc.pid_alive(pid)
 
 
 # --- def subgroup ---
