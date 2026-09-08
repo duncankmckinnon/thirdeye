@@ -7,10 +7,11 @@ import time
 from pathlib import Path
 
 import pytest
+
 from thirdeye._compat.locking import LockMode, LockTimeout, locked, locked_fd
 
 
-def _lock_holder(path: Path) -> subprocess.Popen[str]:
+def _lock_holder(path: Path, mode: LockMode = LockMode.EXCLUSIVE) -> subprocess.Popen[str]:
     source_root = Path(__file__).parents[1] / "src"
     environment = os.environ | {"PYTHONPATH": str(source_root)}
     script = """
@@ -18,12 +19,12 @@ from pathlib import Path
 import sys
 from thirdeye._compat.locking import LockMode, locked
 
-with locked(Path(sys.argv[1]), LockMode.EXCLUSIVE):
+with locked(Path(sys.argv[1]), LockMode(int(sys.argv[2]))):
     print("locked", flush=True)
     sys.stdin.readline()
 """
     process = subprocess.Popen(
-        [sys.executable, "-c", script, str(path)],
+        [sys.executable, "-c", script, str(path), str(mode.value)],
         stdin=subprocess.PIPE,
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
@@ -60,9 +61,12 @@ def test_exclusive_excludes_across_processes(tmp_path: Path) -> None:
 @pytest.mark.skipif(sys.platform == "win32", reason="Windows shared locks are exclusive")
 def test_shared_does_not_exclude_shared(tmp_path: Path) -> None:
     path = tmp_path / "index.lock"
-    with locked(path, LockMode.SHARED):
+    holder = _lock_holder(path, LockMode.SHARED)
+    try:
         with locked(path, LockMode.SHARED, timeout=0.05):
             pass
+    finally:
+        _release(holder)
 
 
 def test_bounded_timeout_raises_lock_timeout(tmp_path: Path) -> None:
