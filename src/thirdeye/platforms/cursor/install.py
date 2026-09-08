@@ -1,10 +1,10 @@
 from __future__ import annotations
 
 import json
-import shutil
+import shutil  # noqa: F401  -- kept importable so tests can monkeypatch shutil.which
 from pathlib import Path
 
-from thirdeye.platforms.base import Platform
+from thirdeye.platforms.base import Platform, command_matches, resolve_command
 from thirdeye.platforms.cursor.constants import (
     DISPLAY_NAME,
     HOOK_BIN_NAME,
@@ -36,7 +36,7 @@ def _save(path: Path, data: dict) -> None:
 
 
 def _is_ours(entry: object) -> bool:
-    return isinstance(entry, dict) and Path(str(entry.get("command") or "")).name == HOOK_BIN_NAME
+    return isinstance(entry, dict) and command_matches(entry.get("command"), HOOK_BIN_NAME)
 
 
 class CursorPlatform(Platform):
@@ -49,7 +49,7 @@ class CursorPlatform(Platform):
     def install(self) -> None:
         data = _load(self._hooks_file)
         hooks = data["hooks"]
-        command = shutil.which(HOOK_BIN_NAME) or HOOK_BIN_NAME
+        command = resolve_command(HOOK_BIN_NAME)
         for event in TRACED_EVENTS:
             entries = hooks.setdefault(event, [])
             if not isinstance(entries, list):

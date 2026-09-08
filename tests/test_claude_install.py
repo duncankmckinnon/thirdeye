@@ -434,3 +434,79 @@ class TestUninstallMixedEntries:
         assert "/other/tool" in [
             h["command"] for entry in settings["hooks"]["SessionStart"] for h in entry["hooks"]
         ]
+
+
+class TestInstallerIdentity:
+    def test_install_then_is_installed(self, tmp_path: Path, monkeypatch):
+        monkeypatch.setattr("thirdeye.platforms.claude.install.shutil.which", lambda _: None)
+        platform = ClaudePlatform(settings_file=tmp_path / "settings.json")
+
+        platform.install()
+
+        assert platform.is_installed()
+
+    def test_install_twice_appends_no_duplicate(self, tmp_path: Path, monkeypatch):
+        monkeypatch.setattr("thirdeye._compat.IS_WINDOWS", True)
+        monkeypatch.setattr(
+            "thirdeye.platforms.claude.install.shutil.which",
+            lambda name: rf"C:\Users\First Last\Scripts\{name}.exe",
+        )
+        settings_file = tmp_path / "settings.json"
+        platform = ClaudePlatform(settings_file=settings_file)
+        platform.install()
+        first = json.loads(settings_file.read_text())
+        platform.install()
+        second = json.loads(settings_file.read_text())
+
+        for event in HOOK_EVENTS:
+            assert len(second["hooks"][event]) == len(first["hooks"][event])
+
+    def test_absolute_then_bare_appends_no_duplicate(self, tmp_path: Path, monkeypatch):
+        settings_file = tmp_path / "settings.json"
+        platform = ClaudePlatform(settings_file=settings_file)
+        monkeypatch.setattr(
+            "thirdeye.platforms.claude.install.shutil.which", lambda name: f"/opt/bin/{name}"
+        )
+        platform.install()
+        monkeypatch.setattr("thirdeye.platforms.claude.install.shutil.which", lambda _: None)
+        platform.install()
+        settings = json.loads(settings_file.read_text())
+
+        assert all(len(settings["hooks"][event]) == 1 for event in HOOK_EVENTS)
+
+    def test_uninstall_removes_ours_keeps_foreign(self, tmp_path: Path, monkeypatch):
+        monkeypatch.setattr("thirdeye._compat.IS_WINDOWS", True)
+        monkeypatch.setattr(
+            "thirdeye.platforms.claude.install.shutil.which",
+            lambda name: rf"C:\Tools\Scripts\{name}.exe",
+        )
+        settings_file = tmp_path / "settings.json"
+        platform = ClaudePlatform(settings_file=settings_file)
+        platform.install()
+        settings = json.loads(settings_file.read_text())
+        settings["hooks"]["SessionStart"].append(
+            {"hooks": [{"type": "command", "command": "/opt/foreign-hook"}]}
+        )
+        settings_file.write_text(json.dumps(settings))
+
+        platform.uninstall()
+
+        settings = json.loads(settings_file.read_text())
+        assert settings["hooks"] == {
+            "SessionStart": [{"hooks": [{"type": "command", "command": "/opt/foreign-hook"}]}]
+        }
+
+    def test_windows_exe_resolution_round_trips(self, tmp_path: Path, monkeypatch):
+        monkeypatch.setattr("thirdeye._compat.IS_WINDOWS", True)
+        monkeypatch.setattr(
+            "thirdeye.platforms.claude.install.shutil.which",
+            lambda name: rf"C:\Tools\Scripts\{name}.exe",
+        )
+        settings_file = tmp_path / "settings.json"
+        platform = ClaudePlatform(settings_file=settings_file)
+
+        platform.install()
+        assert platform.is_installed()
+        platform.uninstall()
+
+        assert "hooks" not in json.loads(settings_file.read_text())

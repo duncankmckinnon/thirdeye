@@ -73,3 +73,75 @@ def test_install_and_uninstall_preserve_foreign_hooks(tmp_path: Path):
     data = json.loads(path.read_text())
     assert data["theme"] == "dark"
     assert data["hooks"] == {"stop": [foreign]}
+
+
+class TestInstallerIdentity:
+    def test_install_then_is_installed(self, tmp_path: Path, monkeypatch):
+        monkeypatch.setattr("thirdeye.platforms.cursor.install.shutil.which", lambda _: None)
+        platform = CursorPlatform(hooks_file=tmp_path / "hooks.json")
+
+        platform.install()
+
+        assert platform.is_installed()
+
+    def test_install_twice_appends_no_duplicate(self, tmp_path: Path, monkeypatch):
+        monkeypatch.setattr("thirdeye._compat.IS_WINDOWS", True)
+        monkeypatch.setattr(
+            "thirdeye.platforms.cursor.install.shutil.which",
+            lambda name: rf"C:\Users\First Last\Scripts\{name}.exe",
+        )
+        path = tmp_path / "hooks.json"
+        platform = CursorPlatform(hooks_file=path)
+        platform.install()
+        first = json.loads(path.read_text())
+        platform.install()
+        second = json.loads(path.read_text())
+
+        for event in TRACED_EVENTS:
+            assert len(second["hooks"][event]) == len(first["hooks"][event])
+
+    def test_absolute_then_bare_appends_no_duplicate(self, tmp_path: Path, monkeypatch):
+        path = tmp_path / "hooks.json"
+        platform = CursorPlatform(hooks_file=path)
+        monkeypatch.setattr(
+            "thirdeye.platforms.cursor.install.shutil.which", lambda name: f"/opt/bin/{name}"
+        )
+        platform.install()
+        monkeypatch.setattr("thirdeye.platforms.cursor.install.shutil.which", lambda _: None)
+        platform.install()
+        data = json.loads(path.read_text())
+
+        assert all(len(data["hooks"][event]) == 1 for event in TRACED_EVENTS)
+
+    def test_uninstall_removes_ours_keeps_foreign(self, tmp_path: Path, monkeypatch):
+        monkeypatch.setattr("thirdeye._compat.IS_WINDOWS", True)
+        monkeypatch.setattr(
+            "thirdeye.platforms.cursor.install.shutil.which",
+            lambda name: rf"C:\Tools\Scripts\{name}.exe",
+        )
+        path = tmp_path / "hooks.json"
+        platform = CursorPlatform(hooks_file=path)
+        platform.install()
+        data = json.loads(path.read_text())
+        foreign = {"type": "command", "command": "/opt/foreign-hook", "timeout": 10}
+        data["hooks"]["stop"].append(foreign)
+        path.write_text(json.dumps(data))
+
+        platform.uninstall()
+
+        assert json.loads(path.read_text())["hooks"] == {"stop": [foreign]}
+
+    def test_windows_exe_resolution_round_trips(self, tmp_path: Path, monkeypatch):
+        monkeypatch.setattr("thirdeye._compat.IS_WINDOWS", True)
+        monkeypatch.setattr(
+            "thirdeye.platforms.cursor.install.shutil.which",
+            lambda name: rf"C:\Tools\Scripts\{name}.exe",
+        )
+        path = tmp_path / "hooks.json"
+        platform = CursorPlatform(hooks_file=path)
+
+        platform.install()
+        assert platform.is_installed()
+        platform.uninstall()
+
+        assert json.loads(path.read_text())["hooks"] == {}
