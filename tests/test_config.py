@@ -41,6 +41,13 @@ def test_logfire_settings_default_disabled() -> None:
 
 
 class TestLogfireSettingsPersistence:
+    def test_config_write_has_no_carriage_returns(self, tmp_path: Path) -> None:
+        config = Config(root=tmp_path)
+
+        config.write_logfire_settings(LogfireSettings(enabled=True, token="tok"))
+
+        assert b"\r" not in config.config_file.read_bytes()
+
     def test_load_reads_persisted_settings(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
         monkeypatch.setenv("THIRDEYE_HOME", str(tmp_path))
         Config.load().write_logfire_settings(LogfireSettings(enabled=True, token="tok"))
