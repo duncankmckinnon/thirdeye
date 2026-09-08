@@ -1062,3 +1062,97 @@ class TestHooksJsonUninstall:
         hooks_file = tmp_path / "hooks.json"
         CodexPlatform(config_file=tmp_path / "config.toml", hooks_file=hooks_file).uninstall()
         assert not hooks_file.exists()
+
+
+class TestInstallerIdentity:
+    def test_install_then_is_installed(self, tmp_path: Path, monkeypatch):
+        from thirdeye.platforms.codex.install import CodexPlatform
+
+        _no_which(monkeypatch)
+        platform = CodexPlatform(
+            config_file=tmp_path / "config.toml", hooks_file=tmp_path / "hooks.json"
+        )
+
+        platform.install()
+
+        assert platform.is_installed()
+
+    def test_install_twice_appends_no_duplicate(self, tmp_path: Path, monkeypatch):
+        from thirdeye.platforms.codex.install import CodexPlatform
+
+        monkeypatch.setattr("thirdeye._compat.IS_WINDOWS", True)
+        monkeypatch.setattr(
+            "thirdeye.platforms.codex.install.shutil.which",
+            lambda name: rf"C:\Users\First Last\Scripts\{name}.exe",
+        )
+        config_file = tmp_path / "config.toml"
+        hooks_file = tmp_path / "hooks.json"
+        platform = CodexPlatform(config_file=config_file, hooks_file=hooks_file)
+        platform.install()
+        first_hooks = json.loads(hooks_file.read_text())
+        platform.install()
+        second_hooks = json.loads(hooks_file.read_text())
+
+        assert _toml_read.loads(config_file.read_text())["notify"] == ["thirdeye-codex-notify"]
+        for event in SUPPORTED_HOOKS_JSON_EVENTS:
+            assert len(_commands_for(second_hooks, event)) == len(_commands_for(first_hooks, event))
+
+    def test_absolute_then_bare_appends_no_duplicate(self, tmp_path: Path, monkeypatch):
+        from thirdeye.platforms.codex.install import CodexPlatform
+
+        config_file = tmp_path / "config.toml"
+        hooks_file = tmp_path / "hooks.json"
+        platform = CodexPlatform(config_file=config_file, hooks_file=hooks_file)
+        monkeypatch.setattr(
+            "thirdeye.platforms.codex.install.shutil.which", lambda name: f"/opt/bin/{name}"
+        )
+        platform.install()
+        _no_which(monkeypatch)
+        platform.install()
+
+        assert _toml_read.loads(config_file.read_text())["notify"] == [
+            "/opt/bin/thirdeye-codex-notify"
+        ]
+        hooks = json.loads(hooks_file.read_text())
+        assert all(len(_commands_for(hooks, event)) == 1 for event in SUPPORTED_HOOKS_JSON_EVENTS)
+
+    def test_uninstall_removes_ours_keeps_foreign(self, tmp_path: Path, monkeypatch):
+        from thirdeye.platforms.codex.install import CodexPlatform
+
+        monkeypatch.setattr("thirdeye._compat.IS_WINDOWS", True)
+        monkeypatch.setattr(
+            "thirdeye.platforms.codex.install.shutil.which",
+            lambda name: rf"C:\Tools\Scripts\{name}.exe",
+        )
+        config_file = tmp_path / "config.toml"
+        hooks_file = tmp_path / "hooks.json"
+        platform = CodexPlatform(config_file=config_file, hooks_file=hooks_file)
+        platform.install()
+        hooks = json.loads(hooks_file.read_text())
+        foreign = "/opt/foreign-hook"
+        hooks["hooks"]["SessionStart"].append({"hooks": [{"type": "command", "command": foreign}]})
+        hooks_file.write_text(json.dumps(hooks))
+
+        platform.uninstall()
+
+        assert not config_file.exists()
+        assert _commands_for(json.loads(hooks_file.read_text()), "SessionStart") == [foreign]
+
+    def test_windows_exe_resolution_round_trips(self, tmp_path: Path, monkeypatch):
+        from thirdeye.platforms.codex.install import CodexPlatform
+
+        monkeypatch.setattr("thirdeye._compat.IS_WINDOWS", True)
+        monkeypatch.setattr(
+            "thirdeye.platforms.codex.install.shutil.which",
+            lambda name: rf"C:\Tools\Scripts\{name}.exe",
+        )
+        config_file = tmp_path / "config.toml"
+        hooks_file = tmp_path / "hooks.json"
+        platform = CodexPlatform(config_file=config_file, hooks_file=hooks_file)
+
+        platform.install()
+        assert platform.is_installed()
+        platform.uninstall()
+
+        assert not config_file.exists()
+        assert not hooks_file.exists()

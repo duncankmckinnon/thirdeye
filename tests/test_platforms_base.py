@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import pytest
 
-from thirdeye.platforms.base import Platform
+from thirdeye.platforms.base import Platform, command_matches, resolve_command
 
 
 class TestPlatformIsAbstract:
@@ -75,3 +75,42 @@ class TestConcreteSubclass:
 
         p = Concrete()
         assert p.uninstall() is None
+
+
+def test_command_matches_bare_and_absolute():
+    bin_name = "thirdeye-claude-session-start"
+
+    assert command_matches(bin_name, bin_name)
+    assert command_matches(f"/usr/local/bin/{bin_name}", bin_name)
+
+
+def test_command_matches_exe_only_on_windows(monkeypatch):
+    command = r"C:\Users\thirdeye\Scripts\thirdeye-claude-session-start.exe"
+    bin_name = "thirdeye-claude-session-start"
+
+    monkeypatch.setattr("thirdeye._compat.IS_WINDOWS", True)
+    assert command_matches(command, bin_name)
+
+    monkeypatch.setattr("thirdeye._compat.IS_WINDOWS", False)
+    assert not command_matches(command, bin_name)
+
+
+def test_command_matches_rejects_shell_wrapper():
+    assert not command_matches("thirdeye-claude-session-start.sh", "thirdeye-claude-session-start")
+
+
+def test_command_matches_rejects_non_strings():
+    assert not command_matches(None, "thirdeye-claude-session-start")
+    assert not command_matches(42, "thirdeye-claude-session-start")
+
+
+def test_resolve_command_falls_back_only_on_windows(monkeypatch):
+    bin_name = "thirdeye-claude-session-start"
+    resolved = f"/Users/First Last/.local/bin/{bin_name}"
+    monkeypatch.setattr("thirdeye.platforms.base.shutil.which", lambda _: resolved)
+
+    monkeypatch.setattr("thirdeye._compat.IS_WINDOWS", False)
+    assert resolve_command(bin_name) == resolved
+
+    monkeypatch.setattr("thirdeye._compat.IS_WINDOWS", True)
+    assert resolve_command(bin_name) == bin_name
