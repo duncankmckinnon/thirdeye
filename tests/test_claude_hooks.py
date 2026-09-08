@@ -1,17 +1,21 @@
 from __future__ import annotations
 
-import fcntl
+import contextlib
 import io
 import json
-import threading
+import os
+import subprocess
+import sys
 import time
 from pathlib import Path
 
 import pytest
 
+from thirdeye._compat.locking import LockMode, LockTimeout, locked_fd
 from thirdeye.config import Config
 from thirdeye.paths import session_dir, tags_path
 from thirdeye.platforms.claude import hooks
+from thirdeye.platforms.codex import interrupt_marker
 from thirdeye.platforms.provenance import foreign_payload_reason
 from thirdeye.reader import SessionReader
 from thirdeye.span_ids import turn_span_id
@@ -455,6 +459,43 @@ class TestOpenTurnCursor:
         assert marker_path.exists()
 
 
+def _hold_lock_in_subprocess(lock_path: Path) -> subprocess.Popen[str]:
+    """Hold an exclusive compatibility lock from a separate hook process."""
+    source_root = Path(__file__).parents[1] / "src"
+    environment = os.environ | {"PYTHONPATH": str(source_root)}
+    process = subprocess.Popen(
+        [
+            sys.executable,
+            "-c",
+            "\n".join(
+                [
+                    "import sys",
+                    "from pathlib import Path",
+                    "from thirdeye._compat.locking import LockMode, locked",
+                    "with locked(Path(sys.argv[1]), LockMode.EXCLUSIVE):",
+                    "    print('locked', flush=True)",
+                    "    sys.stdin.readline()",
+                ]
+            ),
+            str(lock_path),
+        ],
+        stdin=subprocess.PIPE,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        env=environment,
+    )
+    assert process.stdout is not None
+    assert process.stdout.readline().strip() == "locked"
+    return process
+
+
+def _stop_lock_holder(process: subprocess.Popen[str]) -> None:
+    assert process.stdin is not None
+    process.stdin.close()
+    process.wait(timeout=5)
+
+
 class TestLockedOpenTurnBoundedRetry:
     """A background subagent's dispatching PostToolUse and its own
     SubagentStart can fire concurrently, both wanting this lock. Blocking
@@ -465,75 +506,72 @@ class TestLockedOpenTurnBoundedRetry:
     the lock must give up after a bounded wait instead of blocking forever.
     """
 
-    def test_uncontended_acquisition_still_works(self, tmp_path: Path):
-        entered = False
-        with hooks._locked_open_turn(tmp_path, fcntl.LOCK_EX):
-            entered = True
-        assert entered
-
-    def test_reentrant_acquisition_still_works(self, tmp_path: Path):
+    def test_reentrant_acquire_does_not_deadlock(self, tmp_path: Path):
         depths = []
-        with hooks._locked_open_turn(tmp_path, fcntl.LOCK_EX):
+        with hooks._locked_open_turn(tmp_path, LockMode.EXCLUSIVE):
             depths.append(1)
-            with hooks._locked_open_turn(tmp_path, fcntl.LOCK_EX):
+            with hooks._locked_open_turn(tmp_path, LockMode.EXCLUSIVE):
                 depths.append(2)
-        assert depths == [1, 2]
+            with hooks._locked_open_turn(tmp_path, LockMode.EXCLUSIVE):
+                depths.append(3)
+        assert depths == [1, 2, 3]
 
-    def test_gives_up_with_timeout_error_instead_of_blocking_forever(self, tmp_path: Path):
+    def test_shared_to_exclusive_upgrade_raises(self, tmp_path: Path):
+        with hooks._locked_open_turn(tmp_path, LockMode.SHARED):
+            with pytest.raises(RuntimeError, match="cannot upgrade a shared open-turn lock"):
+                with hooks._locked_open_turn(tmp_path, LockMode.EXCLUSIVE):
+                    pass
+
+    def test_bounded_acquire_raises_when_subprocess_holds_lock(self, tmp_path: Path):
         lock_path = hooks._open_turn_lock_path(tmp_path)
-        lock_path.parent.mkdir(parents=True, exist_ok=True)
-        # A separate open file description on the same path -- flock locks
-        # are scoped to the open file description, not the process, so this
-        # genuinely contends with a fresh `_locked_open_turn` call the same
-        # way a different hook process holding the lock would.
-        holder = lock_path.open("a+")
-        fcntl.flock(holder.fileno(), fcntl.LOCK_EX)
+        holder = _hold_lock_in_subprocess(lock_path)
         try:
             start = time.monotonic()
-            with pytest.raises(TimeoutError):
-                with hooks._locked_open_turn(tmp_path, fcntl.LOCK_EX):
+            with pytest.raises(LockTimeout):
+                with hooks._locked_open_turn(tmp_path, LockMode.EXCLUSIVE):
                     pass
             elapsed = time.monotonic() - start
-            assert elapsed < 2.0, "must give up well before a realistic hook timeout, not hang"
+            assert 0.25 <= elapsed < 1.0
         finally:
-            fcntl.flock(holder.fileno(), fcntl.LOCK_UN)
-            holder.close()
+            _stop_lock_holder(holder)
 
-    def test_succeeds_once_contention_clears_within_budget(self, tmp_path: Path):
-        lock_path = hooks._open_turn_lock_path(tmp_path)
-        lock_path.parent.mkdir(parents=True, exist_ok=True)
-        holder = lock_path.open("a+")
-        fcntl.flock(holder.fileno(), fcntl.LOCK_EX)
+    def test_hook_survives_lock_timeout(self, monkeypatch, env: Path):
+        sid = "lock-timeout"
+        session = session_dir(env, "claude", sid)
 
-        def release_shortly() -> None:
-            time.sleep(0.05)
-            fcntl.flock(holder.fileno(), fcntl.LOCK_UN)
-            holder.close()
+        @contextlib.contextmanager
+        def timing_out_lock(path: Path, mode: LockMode, *, timeout: float | None = None):
+            assert path == hooks._open_turn_lock_path(session)
+            assert timeout == 0.3
+            raise LockTimeout("lock held by another hook process")
+            yield
 
-        releaser = threading.Thread(target=release_shortly)
-        releaser.start()
-        try:
-            entered = False
-            with hooks._locked_open_turn(tmp_path, fcntl.LOCK_EX):
-                entered = True
-            assert (
-                entered
-            ), "must retry and succeed once the other holder releases, not give up early"
-        finally:
-            releaser.join()
+        monkeypatch.setattr(hooks, "locked", timing_out_lock)
+        _stdin(monkeypatch, {"session_id": sid, "cwd": "/p", "prompt": "hello"})
+        hooks.user_prompt_submit()
 
-    def test_shared_lock_also_gives_up_under_contention(self, tmp_path: Path):
-        lock_path = hooks._open_turn_lock_path(tmp_path)
-        lock_path.parent.mkdir(parents=True, exist_ok=True)
-        holder = lock_path.open("a+")
-        fcntl.flock(holder.fileno(), fcntl.LOCK_EX)
-        try:
-            with pytest.raises(TimeoutError):
-                with hooks._locked_open_turn(tmp_path, fcntl.LOCK_SH):
-                    pass
-        finally:
-            fcntl.flock(holder.fileno(), fcntl.LOCK_UN)
-            holder.close()
+        assert list(Store(Config.load()).reader(sid).iter_events())[0]["t"] == "user_message"
+        assert not hooks._open_turn_path(session).exists()
+
+    def test_interrupt_marker_round_trips_under_lock(self, monkeypatch, tmp_path: Path):
+        calls: list[tuple[int, LockMode, float | None]] = []
+
+        @contextlib.contextmanager
+        def tracking_locked_fd(fd: int, mode: LockMode, *, timeout: float | None = None):
+            calls.append((fd, mode, timeout))
+            with locked_fd(fd, mode, timeout=timeout):
+                yield
+
+        monkeypatch.setattr(interrupt_marker, "locked_fd", tracking_locked_fd)
+        expected = {"turn_id": "turn-1", "input_message": "hello"}
+        with interrupt_marker._locked_marker(tmp_path) as fd:
+            interrupt_marker._write_locked(fd, expected)
+        with interrupt_marker._locked_marker(tmp_path) as fd:
+            os.lseek(fd, 0, os.SEEK_SET)
+            assert json.loads(os.read(fd, 1 << 20)) == expected
+
+        assert [mode for _, mode, _ in calls] == [LockMode.EXCLUSIVE, LockMode.EXCLUSIVE]
+        assert [timeout for _, _, timeout in calls] == [0.3, 0.3]
 
 
 class TestUserPromptSubmitTranscriptOffset:

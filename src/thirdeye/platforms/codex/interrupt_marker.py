@@ -3,15 +3,14 @@
 from __future__ import annotations
 
 import contextlib
-import fcntl
 import json
 import os
-import time
 from collections.abc import Iterator
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
+from thirdeye._compat.locking import LockMode, locked_fd
 from thirdeye.ids import new_ulid
 from thirdeye.tracing.model import TurnSpanDict
 from thirdeye.usage.errlog import log_capture_error
@@ -45,27 +44,9 @@ def _parse_ts(ts: str) -> datetime:
 # transcript parsing, no span building -- `export_turn` always runs after
 # the `with _locked_marker(...)` block exits), so they're smaller than the
 # Claude `claude-open-turn.lock` critical sections this budget was measured
-# against; the same budget is generous here too.
-_LOCK_RETRY_BUDGET_S = 0.3
-_LOCK_RETRY_INITIAL_DELAY_S = 0.005
-_LOCK_RETRY_MAX_DELAY_S = 0.025
-
-
-def _acquire_with_bounded_retry(fd: int) -> None:
-    deadline = time.monotonic() + _LOCK_RETRY_BUDGET_S
-    delay = _LOCK_RETRY_INITIAL_DELAY_S
-    while True:
-        try:
-            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
-            return
-        except BlockingIOError:
-            remaining = deadline - time.monotonic()
-            if remaining <= 0:
-                raise TimeoutError(
-                    f"timed out after {_LOCK_RETRY_BUDGET_S}s waiting for codex-open-turn.json"
-                ) from None
-            time.sleep(max(0.0, min(delay, remaining)))
-            delay = min(delay * 2, _LOCK_RETRY_MAX_DELAY_S)
+# against; the same budget is generous here too. `locked_fd()` raises
+# `LockTimeout` (an `OSError`) on expiry rather than blocking.
+_LOCK_TIMEOUT_S = 0.3
 
 
 @contextlib.contextmanager
@@ -73,11 +54,8 @@ def _locked_marker(session_dir_: Path) -> Iterator[int]:
     session_dir_.mkdir(parents=True, exist_ok=True)
     fd = os.open(_marker_path(session_dir_), os.O_RDWR | os.O_CREAT, 0o644)
     try:
-        _acquire_with_bounded_retry(fd)
-        try:
+        with locked_fd(fd, LockMode.EXCLUSIVE, timeout=_LOCK_TIMEOUT_S):
             yield fd
-        finally:
-            fcntl.flock(fd, fcntl.LOCK_UN)
     finally:
         os.close(fd)
 
