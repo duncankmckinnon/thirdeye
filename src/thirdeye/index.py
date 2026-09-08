@@ -3,6 +3,7 @@ from __future__ import annotations
 import contextlib
 import os
 import struct
+import tempfile
 from pathlib import Path
 
 import zstandard as zstd
@@ -98,11 +99,15 @@ def rebuild_index(events_log: Path, idx_path: Path) -> int:
             remaining = len(dobj.unused_data)
             pos = len(data) - remaining
 
-    tmp_path = idx_path.with_name(f"{idx_path.name}.rebuild-{os.getpid()}.tmp")
-    with IndexWriter(tmp_path) as w:
-        for off in offsets:
-            w.append(off)
+    fd, tmp_name = tempfile.mkstemp(
+        prefix=f"{idx_path.name}.rebuild-", suffix=".tmp", dir=idx_path.parent
+    )
+    os.close(fd)
+    tmp_path = Path(tmp_name)
     try:
+        with IndexWriter(tmp_path) as w:
+            for off in offsets:
+                w.append(off)
         fsops.replace(tmp_path, idx_path)
     except BaseException:
         with contextlib.suppress(OSError):

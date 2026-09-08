@@ -24,11 +24,12 @@ def utc_iso_ms() -> str:
 
 
 def _has_content(path: Path) -> bool:
-    """`path.exists()` followed by a separate `path.stat()` is a TOCTOU race:
-    `rebuild_index` starts by unlinking the index file, so a checker can
-    observe "it exists" and then have the file vanish before its own `stat()`
-    call runs. A single `stat()` call, with a missing file treated as empty,
-    has no such gap.
+    """Return whether ``path`` exists and contains data with one stat call.
+
+    ``rebuild_index`` atomically replaces the index, so an unlocked check sees
+    either the old index or the completed replacement. The locked double-check
+    in ``_repair_index_if_needed`` then prevents a redundant rebuild when
+    another process repaired an empty index while this process waited.
     """
     try:
         return path.stat().st_size > 0

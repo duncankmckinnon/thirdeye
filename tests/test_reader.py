@@ -97,14 +97,28 @@ class TestIterEvents:
             ]
         )
         snapshots: list[list[dict]] = []
+
+        def take_snapshot() -> list[dict]:
+            reader = SessionReader(session_dir)
+            events = list(reader.iter_events())
+            assert reader.truncated_tail is False
+            return events
+
         try:
             while worker.poll() is None:
-                snapshots.append(list(SessionReader(session_dir).iter_events()))
+                snapshots.append(take_snapshot())
                 time.sleep(0.001)
         finally:
-            assert worker.wait(timeout=10) == 0
+            try:
+                return_code = worker.wait(timeout=60)
+            except subprocess.TimeoutExpired:
+                if worker.poll() is None:
+                    worker.kill()
+                worker.wait(timeout=60)
+                raise
+            assert return_code == 0
 
-        snapshots.append(list(SessionReader(session_dir).iter_events()))
+        snapshots.append(take_snapshot())
         assert snapshots
         for events in snapshots:
             assert [event["seq"] for event in events] == list(range(len(events)))
