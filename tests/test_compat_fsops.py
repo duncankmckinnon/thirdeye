@@ -86,5 +86,5 @@ def test_windows_reraises_after_budget(monkeypatch: pytest.MonkeyPatch, tmp_path
 
     with pytest.raises(PermissionError, match="still locked"):
         fsops.replace(tmp_path / "source", tmp_path / "destination")
-    assert calls >= 1
-    assert now <= fsops._RETRY_BUDGET_S
+    assert calls > 10
+    assert now == pytest.approx(fsops._RETRY_BUDGET_S)

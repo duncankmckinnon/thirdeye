@@ -100,12 +100,13 @@ def _locked_fd_windows(fd: int, mode: LockMode, timeout: float | None) -> Iterat
     # ``msvcrt.locking`` operates at the current file position and must be
     # unlocked at the same offset, so seek to 0 around each call and restore the
     # caller's position afterwards. Both LockMode values lock exclusively here.
+    _ = mode
     original_position = os.lseek(fd, 0, os.SEEK_CUR)
     os.lseek(fd, 0, os.SEEK_SET)
     try:
         _acquire_with_backoff(
             lambda: msvcrt.locking(fd, msvcrt.LK_NBLCK, 1),
-            contention_errors=(OSError,),
+            contention_errors=(PermissionError,),
             timeout=timeout,
         )
     finally:

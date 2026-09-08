@@ -17,9 +17,18 @@ from thirdeye._compat import IS_WINDOWS
 
 if IS_WINDOWS:
     import ctypes
+    from ctypes import wintypes
 
     _PROCESS_SYNCHRONIZE = 0x00100000
     _WAIT_TIMEOUT = 0x00000102
+
+    _kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    _kernel32.OpenProcess.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.DWORD]
+    _kernel32.OpenProcess.restype = wintypes.HANDLE
+    _kernel32.WaitForSingleObject.argtypes = [wintypes.HANDLE, wintypes.DWORD]
+    _kernel32.WaitForSingleObject.restype = wintypes.DWORD
+    _kernel32.CloseHandle.argtypes = [wintypes.HANDLE]
+    _kernel32.CloseHandle.restype = wintypes.BOOL
 
 
 def spawn_detached(
@@ -52,17 +61,16 @@ def spawn_detached(
 
 
 def _pid_alive_windows(pid: int) -> bool:
-    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
-    handle = kernel32.OpenProcess(_PROCESS_SYNCHRONIZE, False, pid)
+    handle = _kernel32.OpenProcess(_PROCESS_SYNCHRONIZE, False, pid)
     if not handle:
         return False
     try:
         # WAIT_TIMEOUT means the process object is not signalled: still running.
         # Prefer this over GetExitCodeProcess, whose STILL_ACTIVE (259) is
         # ambiguous with a worker legitimately exiting 259.
-        return kernel32.WaitForSingleObject(handle, 0) == _WAIT_TIMEOUT
+        return _kernel32.WaitForSingleObject(handle, 0) == _WAIT_TIMEOUT
     finally:
-        kernel32.CloseHandle(handle)
+        _kernel32.CloseHandle(handle)
 
 
 def pid_alive(pid: int) -> bool:
