@@ -27,9 +27,10 @@ def _with_windows_retry(operation: Callable[[], None]) -> None:
             operation()
             return
         except PermissionError:
-            if time.monotonic() >= deadline:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
                 raise
-            time.sleep(delay)
+            time.sleep(min(delay, remaining))
             delay = min(delay * 2, _RETRY_MAX_DELAY_S)
 
 
