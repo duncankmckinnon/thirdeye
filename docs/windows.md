@@ -32,7 +32,7 @@ Creating a symlink on Windows requires Developer Mode or administrator rights;
 without them, thirdeye falls back to copying the directory instead.
 
 A copied skill does not track a thirdeye upgrade the way a symlink does. After
-`pipx upgrade thrdi` (or `uv tool upgrade`), rerun `thirdeye skills add --force`
+`pipx upgrade thrdi` (or `uv tool upgrade thrdi`), rerun `thirdeye skills add --force`
 to refresh the copied skills.
 
 ### 3. Unverified Codex and Cursor hooks

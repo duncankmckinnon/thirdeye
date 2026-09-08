@@ -70,9 +70,11 @@ thirdeye skills add --only thirdeye-review           # just one
 thirdeye skills add --force                          # replace existing entries
 ```
 
-Skills install as symlinks, so upgrading thirdeye (`brew upgrade thirdeye` or
-`pipx upgrade thrdi`) automatically refreshes them in every repository where
-they are installed.
+On macOS and Linux, skills install as symlinks, so upgrading thirdeye
+(`brew upgrade thirdeye` or `pipx upgrade thrdi`) automatically refreshes them.
+On Windows without Developer Mode, skills are copied instead; after upgrading,
+rerun `thirdeye skills add --force` to refresh them. See
+[Windows support](docs/windows.md#2-copied-skills) for details.
 
 ## Enable tracing
 
