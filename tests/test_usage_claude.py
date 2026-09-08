@@ -1034,6 +1034,10 @@ def test_naive_timestamps_are_pinned_to_utc(tmp_path: Path) -> None:
     assert calls[0]["end_ts"] == "2026-08-22T10:00:02.000+00:00"
 
 
+@pytest.mark.skipif(
+    not hasattr(time, "tzset"),
+    reason="time.tzset() is POSIX-only; the TZ swap this asserts over is unavailable",
+)
 def test_mixed_naive_and_offset_bounds_stay_ordered_after_export(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

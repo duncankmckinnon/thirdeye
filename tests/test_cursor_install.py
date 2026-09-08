@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+from thirdeye.platforms.base import command_basename
 from thirdeye.platforms.cursor.constants import HOOK_BIN_NAME, HOOK_TIMEOUT_S, TRACED_EVENTS
 from thirdeye.platforms.cursor.install import CursorPlatform
 
@@ -16,7 +17,9 @@ def test_install_registers_every_cursor_event_and_is_idempotent(tmp_path: Path):
     assert set(data["hooks"]) == set(TRACED_EVENTS)
     for entries in data["hooks"].values():
         assert len(entries) == 1
-        assert Path(entries[0]["command"]).name == HOOK_BIN_NAME
+        # Not Path(...).name: on Windows `which` resolves to a ".EXE" that
+        # command_basename (what install matching itself uses) strips.
+        assert command_basename(entries[0]["command"]) == HOOK_BIN_NAME
 
 
 def test_install_registers_subagent_lifecycle_and_pre_tool(tmp_path: Path, monkeypatch):

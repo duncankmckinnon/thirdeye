@@ -85,7 +85,10 @@ def test_install_custom_target_folder(fake_skill: Path, tmp_path: Path) -> None:
 def test_install_expands_user(
     fake_skill: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    # expanduser() reads HOME on POSIX but USERPROFILE on Windows (ntpath never
+    # consults HOME), so set both to redirect "~" on either host.
     monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setenv("USERPROFILE", str(tmp_path))
     result = _run(fake_skill, ["--path", "~/.claude/skills"])
     assert result.exit_code == 0
     assert (

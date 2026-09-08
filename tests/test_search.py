@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -224,8 +225,10 @@ class TestStringify:
 
     def test_handles_non_serializable(self):
         # default=str should handle non-serializable types
-        result = _stringify({"path": Path("/foo/bar")})
-        assert "/foo/bar" in result
+        path = Path("/foo/bar")
+        result = _stringify({"path": path})
+        # str(Path) uses the host separator, which JSON then escapes on Windows.
+        assert json.dumps(str(path)) in result
 
     def test_ensure_ascii_false(self):
         result = _stringify({"data": "unicode: \u00e9\u00e8\u00ea"})
