@@ -1,13 +1,13 @@
 from __future__ import annotations
 
 import contextlib
-import fcntl
 from collections.abc import Iterable, Iterator
 from pathlib import Path
 from typing import Any
 
 import zstandard as zstd
 
+from thirdeye._compat.locking import LockMode, locked
 from thirdeye.codec import decode_event
 from thirdeye.index import IndexReader
 from thirdeye.paths import events_lock_path, events_path, index_path
@@ -23,13 +23,8 @@ class SessionReader:
 
     @contextlib.contextmanager
     def _locked_snapshot(self) -> Iterator[None]:
-        self._lock_path.parent.mkdir(parents=True, exist_ok=True)
-        with self._lock_path.open("a+") as lock_file:
-            fcntl.flock(lock_file.fileno(), fcntl.LOCK_SH)
-            try:
-                yield
-            finally:
-                fcntl.flock(lock_file.fileno(), fcntl.LOCK_UN)
+        with locked(self._lock_path, LockMode.SHARED):
+            yield
 
     def get_event(self, seq: int) -> dict[str, Any]:
         if seq < 0:
