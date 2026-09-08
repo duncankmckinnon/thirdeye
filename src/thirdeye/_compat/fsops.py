@@ -7,6 +7,8 @@ on the first try, unchanged. On Windows they retry ``PermissionError`` (and only
 ``PermissionError``) with bounded exponential backoff.
 """
 
+from __future__ import annotations
+
 import os
 import time
 from collections.abc import Callable

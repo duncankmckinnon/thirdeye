@@ -8,6 +8,10 @@ The package ``__init__`` intentionally exports only :data:`IS_WINDOWS`; submodul
 imports stay explicit (``from thirdeye._compat.locking import LockMode, locked``).
 """
 
-import sys
+from __future__ import annotations
 
-IS_WINDOWS: bool = sys.platform.startswith("win")
+import sys as _sys
+
+__all__ = ("IS_WINDOWS",)
+
+IS_WINDOWS: bool = _sys.platform.startswith("win")

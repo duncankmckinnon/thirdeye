@@ -16,6 +16,8 @@ single process deadlocks on POSIX. Callers that need reentrancy (for example
 depth counting or an "already held" check here.
 """
 
+from __future__ import annotations
+
 import contextlib
 import os
 import time
@@ -106,7 +108,7 @@ def _locked_fd_windows(fd: int, mode: LockMode, timeout: float | None) -> Iterat
     try:
         _acquire_with_backoff(
             lambda: msvcrt.locking(fd, msvcrt.LK_NBLCK, 1),
-            contention_errors=(PermissionError,),
+            contention_errors=(OSError,),
             timeout=timeout,
         )
     finally:
@@ -144,6 +146,6 @@ def locked(path: Path, mode: LockMode, *, timeout: float | None = None) -> Itera
     have on disk -- and closes it on exit.
     """
     path.parent.mkdir(parents=True, exist_ok=True)
-    with path.open("a+", encoding="utf-8") as handle:
+    with path.open("a+") as handle:  # noqa: PLW1514 -- preserve the exact existing open call
         with locked_fd(handle.fileno(), mode, timeout=timeout):
             yield

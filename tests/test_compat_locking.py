@@ -1,5 +1,7 @@
 """Behavioral tests for the cross-platform lock shim."""
 
+from __future__ import annotations
+
 import os
 import subprocess
 import sys
@@ -8,6 +10,7 @@ from pathlib import Path
 
 import pytest
 
+from thirdeye._compat import locking
 from thirdeye._compat.locking import LockMode, LockTimeout, locked, locked_fd
 
 
@@ -103,3 +106,30 @@ def test_locked_fd_restores_file_position(tmp_path: Path) -> None:
         assert os.lseek(fd, 0, os.SEEK_CUR) == 4
     finally:
         os.close(fd)
+
+
+def test_windows_retries_generic_oserror(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    calls = 0
+
+    class FakeMsvcrt:
+        LK_NBLCK = 1
+        LK_UNLCK = 2
+
+        @staticmethod
+        def locking(fd: int, operation: int, size: int) -> None:
+            nonlocal calls
+            _ = fd, size
+            if operation == FakeMsvcrt.LK_NBLCK:
+                calls += 1
+                if calls == 1:
+                    raise OSError("lock contended")
+
+    monkeypatch.setattr(locking, "IS_WINDOWS", True)
+    monkeypatch.setattr(locking, "msvcrt", FakeMsvcrt, raising=False)
+    monkeypatch.setattr(locking.time, "sleep", lambda delay: None)
+
+    with (tmp_path / "index.lock").open("a+") as handle:
+        with locked_fd(handle.fileno(), LockMode.EXCLUSIVE, timeout=0.05):
+            pass
+
+    assert calls == 2

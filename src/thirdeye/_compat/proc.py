@@ -8,6 +8,8 @@ kill the process being probed, so ``pid_alive`` probes via ``OpenProcess`` /
 ``WaitForSingleObject`` instead.
 """
 
+from __future__ import annotations
+
 import os
 import subprocess
 from pathlib import Path

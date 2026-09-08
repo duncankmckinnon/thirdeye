@@ -1,5 +1,7 @@
 """Tests for cross-platform detached-process helpers."""
 
+from __future__ import annotations
+
 import subprocess
 import sys
 import time

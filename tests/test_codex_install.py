@@ -898,11 +898,18 @@ def _commands_for(hooks_data: dict, event: str) -> list[str]:
     return out
 
 
-def _hooks_json_with(events: dict[str, str]) -> dict:
+def _hooks_json_with(events: dict[str, str | list[str]]) -> dict:
     return {
         "hooks": {
-            event: [{"hooks": [{"type": "command", "command": cmd}]}]
-            for event, cmd in events.items()
+            event: [
+                {
+                    "hooks": [
+                        {"type": "command", "command": command}
+                        for command in ([commands] if isinstance(commands, str) else commands)
+                    ]
+                }
+            ]
+            for event, commands in events.items()
         }
     }
 
@@ -962,14 +969,20 @@ class TestHooksJsonInstall:
         hooks_file.write_text(
             json.dumps(
                 _hooks_json_with(
-                    {"SessionStart": "/opt/homebrew/bin/thirdeye-claude-session-start"}
+                    {
+                        "SessionStart": [
+                            "/opt/homebrew/bin/thirdeye-claude-session-start",
+                            "/opt/homebrew/bin/thirdeye-claude-custom",
+                        ]
+                    }
                 )
             )
         )
         CodexPlatform(config_file=tmp_path / "config.toml", hooks_file=hooks_file).install()
         data = json.loads(hooks_file.read_text())
         commands = _commands_for(data, "SessionStart")
-        assert not any("thirdeye-claude-" in c for c in commands)
+        assert "/opt/homebrew/bin/thirdeye-claude-session-start" not in commands
+        assert "/opt/homebrew/bin/thirdeye-claude-custom" in commands
         assert any(Path(c).name == "thirdeye-codex-session-start" for c in commands)
 
     def test_stale_claude_entry_on_unsupported_event_is_stripped_not_replaced(
@@ -1048,12 +1061,21 @@ class TestHooksJsonUninstall:
 
         _no_which(monkeypatch)
         hooks_file = tmp_path / "hooks.json"
-        hooks_file.write_text(json.dumps(_hooks_json_with({"SessionStart": "/some/other/tool"})))
+        hooks_file.write_text(
+            json.dumps(
+                _hooks_json_with(
+                    {"SessionStart": ["/some/other/tool", "/opt/bin/thirdeye-codex-custom"]}
+                )
+            )
+        )
         p = CodexPlatform(config_file=tmp_path / "config.toml", hooks_file=hooks_file)
         p.install()
         p.uninstall()
         data = json.loads(hooks_file.read_text())
-        assert _commands_for(data, "SessionStart") == ["/some/other/tool"]
+        assert _commands_for(data, "SessionStart") == [
+            "/some/other/tool",
+            "/opt/bin/thirdeye-codex-custom",
+        ]
 
     def test_missing_file_is_noop(self, tmp_path: Path, monkeypatch):
         from thirdeye.platforms.codex.install import CodexPlatform

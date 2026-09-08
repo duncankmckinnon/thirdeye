@@ -10,10 +10,10 @@ import click
 
 from thirdeye.platforms.base import (
     Platform,
-    command_basename,
     command_matches,
     resolve_command,
 )
+from thirdeye.platforms.claude.constants import HOOK_EVENTS as CLAUDE_HOOK_EVENTS
 from thirdeye.platforms.codex.constants import (
     CODEX_CONFIG_FILE,
     CODEX_HOOKS_FILE,
@@ -25,8 +25,6 @@ from thirdeye.platforms.codex.constants import (
 )
 
 _NOTIFY_LINE_RE = re.compile(r"^notify\s*=\s*(\[.*?\])\s*$", re.MULTILINE | re.DOTALL)
-_STALE_CLAUDE_PREFIX = "thirdeye-claude-"
-_OWN_PREFIX = "thirdeye-codex-"
 
 
 def _read_text(path: Path) -> str:
@@ -46,13 +44,9 @@ def _read_json(path: Path) -> dict[str, Any]:
     return data if isinstance(data, dict) else {}
 
 
-def _command_name(command: object) -> str:
-    return command_basename(command) if isinstance(command, str) and command else ""
-
-
-def _filter_event_commands(hooks: dict[str, Any], event: str, drop_prefix: str) -> bool:
-    """Remove hook entries under `event` whose command basename starts with
-    `drop_prefix`, pruning now-empty groups and the event key itself.
+def _filter_event_commands(hooks: dict[str, Any], event: str, bin_names: tuple[str, ...]) -> bool:
+    """Remove hook entries under `event` matching an owned binary name,
+    pruning now-empty groups and the event key itself.
     Returns whether anything changed.
     """
     groups = hooks.get(event)
@@ -68,7 +62,10 @@ def _filter_event_commands(hooks: dict[str, Any], event: str, drop_prefix: str) 
         kept_entries = [
             e
             for e in entries
-            if not (isinstance(e, dict) and _command_name(e.get("command")).startswith(drop_prefix))
+            if not (
+                isinstance(e, dict)
+                and any(command_matches(e.get("command"), bin_name) for bin_name in bin_names)
+            )
         ]
         if len(kept_entries) != len(entries):
             changed = True
@@ -272,7 +269,7 @@ class CodexPlatform(Platform):
         # wires it: a stale thirdeye-claude-* entry under any of them,
         # including the three thirdeye deliberately skips, is always wrong.
         for event in set(hooks) | set(HOOKS_JSON_BIN_NAMES) | set(HOOKS_JSON_UNSUPPORTED_EVENTS):
-            if _filter_event_commands(hooks, event, _STALE_CLAUDE_PREFIX):
+            if _filter_event_commands(hooks, event, tuple(CLAUDE_HOOK_EVENTS.values())):
                 changed = True
 
         for event, bin_name in HOOKS_JSON_BIN_NAMES.items():
@@ -295,7 +292,7 @@ class CodexPlatform(Platform):
             return
         changed = False
         for event in list(hooks):
-            if _filter_event_commands(hooks, event, _OWN_PREFIX):
+            if _filter_event_commands(hooks, event, tuple(HOOKS_JSON_BIN_NAMES.values())):
                 changed = True
         if not changed:
             return
