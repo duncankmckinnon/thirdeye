@@ -7,6 +7,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
+from thirdeye._compat import proc
 from thirdeye.config import Config
 from thirdeye.eval._ulid import ulid_now
 from thirdeye.eval.agents import get_adapter
@@ -241,13 +242,12 @@ def run_eval_background(
     ]
     log_file = log_path.open("w", encoding="utf-8")
     try:
-        proc = subprocess.Popen(
+        worker = proc.spawn_detached(
             worker_cmd,
             cwd=cwd or sd,
             stdin=subprocess.DEVNULL,
             stdout=log_file,
             stderr=subprocess.STDOUT,
-            start_new_session=True,
         )
     finally:
         log_file.close()
@@ -262,7 +262,7 @@ def run_eval_background(
             "platform": platform,
             "status": "running",
             "started_at": _now_iso(),
-            "pid": proc.pid,
+            "pid": worker.pid,
             "log_path": str(log_path),
         },
     )
