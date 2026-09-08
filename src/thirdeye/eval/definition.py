@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import os
 from dataclasses import asdict, dataclass
 from importlib import resources
 from pathlib import Path
@@ -8,6 +7,7 @@ from typing import Any
 
 import yaml
 
+from thirdeye._compat import fsops
 from thirdeye.paths import eval_def_path, eval_defs_dir
 
 SHIPPED_NAMES = ("default", "token-efficiency", "tool-quality")
@@ -74,7 +74,7 @@ def save_definition(thirdeye_home: Path, defn: EvalDefinition, *, force: bool = 
     path.parent.mkdir(parents=True, exist_ok=True)
     tmp = path.with_suffix(path.suffix + ".tmp")
     tmp.write_text(defn.to_yaml(), encoding="utf-8")
-    os.replace(tmp, path)
+    fsops.replace(tmp, path)
     return path
 
 
@@ -85,7 +85,7 @@ def delete_definition(thirdeye_home: Path, name: str) -> bool:
     """
     path = eval_def_path(thirdeye_home, name)
     if path.is_file():
-        path.unlink()
+        fsops.unlink(path)
         return True
     return False
 
