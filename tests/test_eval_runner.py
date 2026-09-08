@@ -364,7 +364,11 @@ def test_eval_runner_records_live_pid(home: Path, monkeypatch: pytest.MonkeyPatc
 
     def fake_spawn_detached(argv, **kwargs):
         worker = subprocess.Popen(
-            [sys.executable, "-c", "import time; print('worker is live', flush=True); time.sleep(30)"],
+            [
+                sys.executable,
+                "-c",
+                "import time; print('worker is live', flush=True); time.sleep(30)",
+            ],
             cwd=kwargs.get("cwd"),
             stdin=kwargs.get("stdin", subprocess.DEVNULL),
             stdout=kwargs["stdout"],
