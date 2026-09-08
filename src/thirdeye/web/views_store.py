@@ -1,11 +1,12 @@
 from __future__ import annotations
 
 import json
-import os
 import re
 from dataclasses import asdict, dataclass
 from datetime import UTC, datetime
 from pathlib import Path
+
+from thirdeye._compat import fsops
 
 NAME_RE = re.compile(r"^[a-zA-Z0-9 _-]{1,64}$")
 PATH_RE = re.compile(r"^\?[A-Za-z0-9._~%&=+\-]*$")
@@ -74,5 +75,6 @@ class ViewStore:
                 separators=(",", ":"),
             ),
             encoding="utf-8",
+            newline="\n",
         )
-        os.replace(tmp, self.file)
+        fsops.replace(tmp, self.file)

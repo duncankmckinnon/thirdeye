@@ -2,13 +2,18 @@ from __future__ import annotations
 
 import json
 import re
-import shutil
+import shutil  # noqa: F401  -- kept importable so tests can monkeypatch shutil.which
 from pathlib import Path
 from typing import Any
 
 import click
 
-from thirdeye.platforms.base import Platform
+from thirdeye.platforms.base import (
+    Platform,
+    command_matches,
+    resolve_command,
+)
+from thirdeye.platforms.claude.constants import HOOK_EVENTS as CLAUDE_HOOK_EVENTS
 from thirdeye.platforms.codex.constants import (
     CODEX_CONFIG_FILE,
     CODEX_HOOKS_FILE,
@@ -20,34 +25,28 @@ from thirdeye.platforms.codex.constants import (
 )
 
 _NOTIFY_LINE_RE = re.compile(r"^notify\s*=\s*(\[.*?\])\s*$", re.MULTILINE | re.DOTALL)
-_STALE_CLAUDE_PREFIX = "thirdeye-claude-"
-_OWN_PREFIX = "thirdeye-codex-"
 
 
 def _read_text(path: Path) -> str:
     if not path.is_file():
         return ""
     try:
-        return path.read_text()
+        return path.read_text(encoding="utf-8")
     except OSError:
         return ""
 
 
 def _read_json(path: Path) -> dict[str, Any]:
     try:
-        data = json.loads(path.read_text())
+        data = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, ValueError):
         return {}
     return data if isinstance(data, dict) else {}
 
 
-def _command_name(command: object) -> str:
-    return Path(str(command)).name if isinstance(command, str) and command else ""
-
-
-def _filter_event_commands(hooks: dict[str, Any], event: str, drop_prefix: str) -> bool:
-    """Remove hook entries under `event` whose command basename starts with
-    `drop_prefix`, pruning now-empty groups and the event key itself.
+def _filter_event_commands(hooks: dict[str, Any], event: str, bin_names: tuple[str, ...]) -> bool:
+    """Remove hook entries under `event` matching an owned binary name,
+    pruning now-empty groups and the event key itself.
     Returns whether anything changed.
     """
     groups = hooks.get(event)
@@ -63,7 +62,10 @@ def _filter_event_commands(hooks: dict[str, Any], event: str, drop_prefix: str) 
         kept_entries = [
             e
             for e in entries
-            if not (isinstance(e, dict) and _command_name(e.get("command")).startswith(drop_prefix))
+            if not (
+                isinstance(e, dict)
+                and any(command_matches(e.get("command"), bin_name) for bin_name in bin_names)
+            )
         ]
         if len(kept_entries) != len(entries):
             changed = True
@@ -77,9 +79,10 @@ def _filter_event_commands(hooks: dict[str, Any], event: str, drop_prefix: str) 
     return changed
 
 
-def _ensure_event_command(hooks: dict[str, Any], event: str, cmd: str) -> bool:
-    """Add `cmd` as a hook for `event` unless already present. Returns
-    whether anything changed.
+def _ensure_event_command(hooks: dict[str, Any], event: str, cmd: str, bin_name: str) -> bool:
+    """Add `cmd` as a hook for `event` unless a hook already refers to
+    `bin_name` (in either bare or resolved-path form). Returns whether
+    anything changed.
     """
     groups = hooks.get(event)
     if not isinstance(groups, list):
@@ -88,7 +91,7 @@ def _ensure_event_command(hooks: dict[str, Any], event: str, cmd: str) -> bool:
         if not isinstance(group, dict):
             continue
         for entry in group.get("hooks") or []:
-            if isinstance(entry, dict) and entry.get("command") == cmd:
+            if isinstance(entry, dict) and command_matches(entry.get("command"), bin_name):
                 return False
     groups.append({"hooks": [{"type": "command", "command": cmd}]})
     hooks[event] = groups
@@ -124,12 +127,11 @@ class CodexPlatform(Platform):
 
     def notify_conflict(self) -> str | None:
         """Return the program that currently owns Codex's notify slot, if foreign."""
-        cmd = shutil.which(NOTIFY_BIN_NAME) or NOTIFY_BIN_NAME
         match = _NOTIFY_LINE_RE.search(_read_text(self._config_file))
         if not match:
             return None
         existing = _parse_notify_array(match.group(1))
-        if not existing or existing == [cmd]:
+        if not existing or (len(existing) == 1 and command_matches(existing[0], NOTIFY_BIN_NAME)):
             return None
         return existing[0]
 
@@ -140,7 +142,7 @@ class CodexPlatform(Platform):
         if not match:
             return False
         notify = _parse_notify_array(match.group(1))
-        if not notify or Path(notify[0]).name != NOTIFY_BIN_NAME:
+        if not notify or not command_matches(notify[0], NOTIFY_BIN_NAME):
             return False
 
         hooks = _read_json(self._hooks_file).get("hooks")
@@ -155,7 +157,7 @@ class CodexPlatform(Platform):
                 if not isinstance(group, dict) or not isinstance(group.get("hooks"), list):
                     continue
                 if any(
-                    isinstance(entry, dict) and _command_name(entry.get("command")) == bin_name
+                    isinstance(entry, dict) and command_matches(entry.get("command"), bin_name)
                     for entry in group["hooks"]
                 ):
                     found = True
@@ -188,13 +190,13 @@ class CodexPlatform(Platform):
         never a legitimate integration.
         """
         self._install_hooks_json()
-        cmd = shutil.which(NOTIFY_BIN_NAME) or NOTIFY_BIN_NAME
+        cmd = resolve_command(NOTIFY_BIN_NAME)
         text = _read_text(self._config_file)
         match = _NOTIFY_LINE_RE.search(text)
         if match:
             existing = _parse_notify_array(match.group(1))
-            if existing == [cmd]:
-                # Already ours; nothing to do.
+            if len(existing) == 1 and command_matches(existing[0], NOTIFY_BIN_NAME):
+                # Already ours (bare name or resolved path); nothing to do.
                 return
             if existing and not self._force:
                 # A foreign notify program owns the slot. Validate before
@@ -224,7 +226,7 @@ class CodexPlatform(Platform):
                 prefix = text + ("\n" if text and not text.endswith("\n") else "")
                 new_text = prefix + notify_line
         self._config_file.parent.mkdir(parents=True, exist_ok=True)
-        self._config_file.write_text(new_text)
+        self._config_file.write_text(new_text, encoding="utf-8", newline="\n")
 
     def uninstall(self) -> None:
         """Remove the notify handler, but only when thirdeye owns slot 0.
@@ -240,7 +242,7 @@ class CodexPlatform(Platform):
         if not match:
             return
         existing = _parse_notify_array(match.group(1))
-        if not existing or Path(existing[0]).name != NOTIFY_BIN_NAME:
+        if not existing or not command_matches(existing[0], NOTIFY_BIN_NAME):
             # We don't own the program slot; leave everything as-is.
             return
         # Remove the entire notify line (and one trailing newline).
@@ -253,7 +255,7 @@ class CodexPlatform(Platform):
             if self._config_file.exists():
                 self._config_file.unlink()
         else:
-            self._config_file.write_text(new_text)
+            self._config_file.write_text(new_text, encoding="utf-8", newline="\n")
         self._uninstall_hooks_json()
 
     def _install_hooks_json(self) -> None:
@@ -267,19 +269,21 @@ class CodexPlatform(Platform):
         # wires it: a stale thirdeye-claude-* entry under any of them,
         # including the three thirdeye deliberately skips, is always wrong.
         for event in set(hooks) | set(HOOKS_JSON_BIN_NAMES) | set(HOOKS_JSON_UNSUPPORTED_EVENTS):
-            if _filter_event_commands(hooks, event, _STALE_CLAUDE_PREFIX):
+            if _filter_event_commands(hooks, event, tuple(CLAUDE_HOOK_EVENTS.values())):
                 changed = True
 
         for event, bin_name in HOOKS_JSON_BIN_NAMES.items():
-            cmd = shutil.which(bin_name) or bin_name
-            if _ensure_event_command(hooks, event, cmd):
+            cmd = resolve_command(bin_name)
+            if _ensure_event_command(hooks, event, cmd, bin_name):
                 changed = True
 
         if not changed:
             return
         data["hooks"] = hooks
         self._hooks_file.parent.mkdir(parents=True, exist_ok=True)
-        self._hooks_file.write_text(json.dumps(data, indent=2) + "\n")
+        self._hooks_file.write_text(
+            json.dumps(data, indent=2) + "\n", encoding="utf-8", newline="\n"
+        )
 
     def _uninstall_hooks_json(self) -> None:
         data = _read_json(self._hooks_file)
@@ -288,12 +292,14 @@ class CodexPlatform(Platform):
             return
         changed = False
         for event in list(hooks):
-            if _filter_event_commands(hooks, event, _OWN_PREFIX):
+            if _filter_event_commands(hooks, event, tuple(HOOKS_JSON_BIN_NAMES.values())):
                 changed = True
         if not changed:
             return
         data["hooks"] = hooks
         if hooks or set(data) != {"hooks"}:
-            self._hooks_file.write_text(json.dumps(data, indent=2) + "\n")
+            self._hooks_file.write_text(
+                json.dumps(data, indent=2) + "\n", encoding="utf-8", newline="\n"
+            )
         elif self._hooks_file.exists():
             self._hooks_file.unlink()

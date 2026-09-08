@@ -23,6 +23,8 @@ import sys
 from pathlib import Path
 from typing import Any
 
+from thirdeye._compat import fsops
+
 
 def main(argv: list[str] | None = None) -> None:
     argv = sys.argv[1:] if argv is None else argv
@@ -30,12 +32,12 @@ def main(argv: list[str] | None = None) -> None:
         return
     job_path = Path(argv[0])
     try:
-        payload = json.loads(job_path.read_text())
+        payload = json.loads(job_path.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError) as exc:
         _log_worker_failure(kind="job_read", payload={}, error=exc)
         return
     finally:
-        job_path.unlink(missing_ok=True)
+        fsops.unlink(job_path, missing_ok=True)
 
     kind = payload.get("kind")
     try:

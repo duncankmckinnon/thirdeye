@@ -2,13 +2,16 @@
 
 from __future__ import annotations
 
+import os
 import threading
 from dataclasses import asdict
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 import yaml
 
+from thirdeye._compat import fsops
 from thirdeye.meta import SCHEMA_VERSION, SessionMeta, read_meta, write_meta
 
 
@@ -116,6 +119,29 @@ class TestAtomicWrite:
         assert got.status == "closed"
         assert got.ended_at == "2026-04-30T18:00:00.000Z"
 
+    def test_write_meta_retries_on_windows_permission_error(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ):
+        path = tmp_path / "meta.yaml"
+        meta = _sample()
+        calls = 0
+        real_replace = os.replace
+
+        def replace_once_locked(src: str | Path, dst: str | Path) -> None:
+            nonlocal calls
+            calls += 1
+            if calls == 1:
+                raise PermissionError
+            real_replace(src, dst)
+
+        monkeypatch.setattr(fsops, "IS_WINDOWS", True)
+        monkeypatch.setattr(fsops, "os", SimpleNamespace(replace=replace_once_locked))
+
+        write_meta(path, meta)
+
+        assert calls == 2
+        assert read_meta(path) == meta
+
 
 # -- Concurrent writers ----------------------------------------------------------
 
@@ -165,7 +191,7 @@ class TestReadMeta:
         """schema_version is written to YAML but not part of the dataclass."""
         p = tmp_path / "meta.yaml"
         write_meta(p, _sample())
-        with open(p) as f:
+        with open(p, encoding="utf-8") as f:
             raw = yaml.safe_load(f)
         assert "schema_version" in raw
         got = read_meta(p)
@@ -186,7 +212,7 @@ class TestReadMeta:
             "last_seq": -1,
             "last_ts": None,
         }
-        with open(p, "w") as f:
+        with open(p, "w", encoding="utf-8", newline="\n") as f:
             yaml.safe_dump(data, f, sort_keys=False)
         got = read_meta(p)
         assert got is not None
@@ -200,7 +226,7 @@ class TestYamlContent:
     def test_schema_version_in_file(self, tmp_path: Path):
         p = tmp_path / "meta.yaml"
         write_meta(p, _sample())
-        with open(p) as f:
+        with open(p, encoding="utf-8") as f:
             raw = yaml.safe_load(f)
         assert raw["schema_version"] == SCHEMA_VERSION
 
@@ -214,7 +240,7 @@ class TestYamlContent:
     def test_yaml_is_valid(self, tmp_path: Path):
         p = tmp_path / "meta.yaml"
         write_meta(p, _sample())
-        with open(p) as f:
+        with open(p, encoding="utf-8") as f:
             raw = yaml.safe_load(f)
         assert isinstance(raw, dict)
         assert raw["session_id"] == "01J9G7XK4P"
@@ -319,7 +345,7 @@ class TestWriteMetaEmitsTagCount:
         p = tmp_path / "meta.yaml"
         m = _sample(tag_count=3)
         write_meta(p, m)
-        with open(p) as f:
+        with open(p, encoding="utf-8") as f:
             raw = yaml.safe_load(f)
         assert raw["tag_count"] == 3
         assert raw["schema_version"] == 2
@@ -341,7 +367,7 @@ class TestReadV1Compat:
             "last_ts": None,
             "extra": {},
         }
-        with open(p, "w") as f:
+        with open(p, "w", encoding="utf-8", newline="\n") as f:
             yaml.safe_dump(data, f, sort_keys=False)
         got = read_meta(p)
         assert got is not None
@@ -365,7 +391,7 @@ class TestReadV2:
             "tag_count": 7,
             "extra": {},
         }
-        with open(p, "w") as f:
+        with open(p, "w", encoding="utf-8", newline="\n") as f:
             yaml.safe_dump(data, f, sort_keys=False)
         got = read_meta(p)
         assert got is not None
@@ -394,3 +420,53 @@ class TestStatusValues:
         m = _sample(status=status)
         write_meta(p, m)
         assert read_meta(p) == m
+
+
+# -- Windows sharing semantics -------------------------------------------------
+
+
+class TestConcurrentReplaceRace:
+    """write_meta publishes by replacing, which Windows briefly makes unopenable.
+
+    Eight concurrent hook processes writing one session all call read_meta on
+    open_session while others replace the same file, so this race is routine.
+    """
+
+    def test_read_meta_survives_a_transient_permission_error(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        p = tmp_path / "meta.yaml"
+        m = _sample()
+        write_meta(p, m)
+        real_read_text = Path.read_text
+        calls = 0
+
+        def flaky(self: Path, *args: object, **kwargs: object) -> str:
+            nonlocal calls
+            calls += 1
+            if calls == 1:
+                raise PermissionError(13, "The process cannot access the file")
+            return real_read_text(self, *args, **kwargs)
+
+        monkeypatch.setattr(fsops, "IS_WINDOWS", True)
+        monkeypatch.setattr(fsops.Path, "read_text", flaky)
+
+        assert read_meta(p) == m
+        assert calls == 2, "should have retried the denied open exactly once"
+
+    def test_read_meta_still_reports_a_persistent_denial(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Retrying must not turn a real, lasting permission problem into silence."""
+        p = tmp_path / "meta.yaml"
+        write_meta(p, _sample())
+
+        def denied(self: Path, *args: object, **kwargs: object) -> str:
+            raise PermissionError(13, "The process cannot access the file")
+
+        monkeypatch.setattr(fsops, "IS_WINDOWS", True)
+        monkeypatch.setattr(fsops.Path, "read_text", denied)
+        monkeypatch.setattr(fsops.time, "sleep", lambda delay: None)
+
+        with pytest.raises(PermissionError):
+            read_meta(p)

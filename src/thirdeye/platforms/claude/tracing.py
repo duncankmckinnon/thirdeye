@@ -257,7 +257,10 @@ def _already_exported_as_subagent(session_dir_: Path, turn_id: str) -> bool:
     from thirdeye.otel_export import _turn_claim_path
 
     try:
-        return _turn_claim_path(session_dir_, f"subagent:{turn_id}").read_text() == "sent"
+        return (
+            _turn_claim_path(session_dir_, f"subagent:{turn_id}").read_text(encoding="utf-8")
+            == "sent"
+        )
     except OSError:
         return False
 

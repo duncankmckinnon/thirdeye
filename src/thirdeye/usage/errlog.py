@@ -41,7 +41,7 @@ def log_capture_error(
             "message": message or (str(error) if error else ""),
             "traceback": "".join(traceback.format_exception(error)) if error else "",
         }
-        with log.open("a", encoding="utf-8") as f:
+        with log.open("a", encoding="utf-8", newline="\n") as f:
             f.write(json.dumps(entry, separators=(",", ":")) + "\n")
     except Exception as fallback_err:
         if not silent_fallback:

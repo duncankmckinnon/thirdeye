@@ -16,7 +16,7 @@ async def _stream(request: Request):
     store = request.app.state.store
     prefix = request.path_params["sid"]
     try:
-        platform, sid = store.resolve_session_id(prefix)
+        _, sid = store.resolve_session_id(prefix)
     except (KeyError, ValueError) as e:
         raise HTTPException(status_code=404, detail=str(e)) from e
 

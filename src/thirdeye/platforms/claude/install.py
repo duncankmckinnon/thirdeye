@@ -1,10 +1,10 @@
 from __future__ import annotations
 
 import json
-import shutil
+import shutil  # noqa: F401  -- kept importable so tests can monkeypatch shutil.which
 from pathlib import Path
 
-from thirdeye.platforms.base import Platform
+from thirdeye.platforms.base import Platform, command_matches, resolve_command
 from thirdeye.platforms.claude.constants import (
     DISPLAY_NAME,
     HOOK_EVENTS,
@@ -17,18 +17,14 @@ def _load(path: Path) -> dict:
     if not path.exists():
         return {}
     try:
-        return json.loads(path.read_text())
+        return json.loads(path.read_text(encoding="utf-8"))
     except (json.JSONDecodeError, OSError):
         return {}
 
 
 def _save(path: Path, data: dict) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(data, indent=2) + "\n")
-
-
-def _resolve_command(script_name: str) -> str:
-    return shutil.which(script_name) or script_name
+    path.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8", newline="\n")
 
 
 class ClaudePlatform(Platform):
@@ -42,10 +38,12 @@ class ClaudePlatform(Platform):
         settings = _load(self._settings_file)
         hooks = settings.setdefault("hooks", {})
         for event, script in HOOK_EVENTS.items():
-            cmd = _resolve_command(script)
+            cmd = resolve_command(script)
             entries = hooks.setdefault(event, [])
             already = any(
-                h.get("command") == cmd for entry in entries for h in entry.get("hooks", [])
+                command_matches(h.get("command"), script)
+                for entry in entries
+                for h in entry.get("hooks", [])
             )
             if not already:
                 entries.append({"hooks": [{"type": "command", "command": cmd}]})
@@ -64,7 +62,7 @@ class ClaudePlatform(Platform):
                 if not isinstance(entry, dict) or not isinstance(entry.get("hooks"), list):
                     continue
                 if any(
-                    isinstance(h, dict) and Path(str(h.get("command") or "")).name == script
+                    isinstance(h, dict) and command_matches(h.get("command"), script)
                     for h in entry["hooks"]
                 ):
                     found = True
@@ -87,7 +85,8 @@ class ClaudePlatform(Platform):
                 entry
                 for entry in entries
                 if not all(
-                    Path(h.get("command", "")).name in our_scripts for h in entry.get("hooks", [])
+                    any(command_matches(h.get("command"), script) for script in our_scripts)
+                    for h in entry.get("hooks", [])
                 )
             ]
             if filtered:

@@ -1,10 +1,10 @@
 from __future__ import annotations
 
 import json
-import shutil
+import shutil  # noqa: F401  -- kept importable so tests can monkeypatch shutil.which
 from pathlib import Path
 
-from thirdeye.platforms.base import Platform
+from thirdeye.platforms.base import Platform, command_matches, resolve_command
 from thirdeye.platforms.cursor.constants import (
     DISPLAY_NAME,
     HOOK_BIN_NAME,
@@ -19,7 +19,7 @@ def _load(path: Path) -> dict:
     if not path.exists():
         return {"version": 1, "hooks": {}}
     try:
-        data = json.loads(path.read_text())
+        data = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError):
         return {"version": 1, "hooks": {}}
     if not isinstance(data, dict):
@@ -32,11 +32,11 @@ def _load(path: Path) -> dict:
 
 def _save(path: Path, data: dict) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(data, indent=2) + "\n")
+    path.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8", newline="\n")
 
 
 def _is_ours(entry: object) -> bool:
-    return isinstance(entry, dict) and Path(str(entry.get("command") or "")).name == HOOK_BIN_NAME
+    return isinstance(entry, dict) and command_matches(entry.get("command"), HOOK_BIN_NAME)
 
 
 class CursorPlatform(Platform):
@@ -49,7 +49,7 @@ class CursorPlatform(Platform):
     def install(self) -> None:
         data = _load(self._hooks_file)
         hooks = data["hooks"]
-        command = shutil.which(HOOK_BIN_NAME) or HOOK_BIN_NAME
+        command = resolve_command(HOOK_BIN_NAME)
         for event in TRACED_EVENTS:
             entries = hooks.setdefault(event, [])
             if not isinstance(entries, list):

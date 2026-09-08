@@ -11,10 +11,11 @@ lives in test_codex_turn.py, which this file does not duplicate.
 
 from __future__ import annotations
 
-import fcntl
 import io
 import json
-import threading
+import os
+import subprocess
+import sys
 import time
 from pathlib import Path
 from typing import Any
@@ -29,6 +30,39 @@ from thirdeye.store import Store
 FIXTURE = Path(__file__).parent / "fixtures" / "usage" / "codex_rollout.jsonl"
 FIXTURE_SID = "019fb579-cdda-7a03-86df-65c87b6c4ae2"
 FIXTURE_TURN_ID = "019fb57a-12ee-7870-a8d8-76808c75b368"
+
+
+def _marker_lock_holder(path: Path) -> subprocess.Popen[str]:
+    source_root = Path(__file__).parents[1] / "src"
+    environment = os.environ | {"PYTHONPATH": str(source_root)}
+    script = """
+from pathlib import Path
+import sys
+from thirdeye._compat.locking import LockMode, locked_fd
+
+with Path(sys.argv[1]).open("a+") as marker:
+    with locked_fd(marker.fileno(), LockMode.EXCLUSIVE):
+        print("locked", flush=True)
+        sys.stdin.readline()
+"""
+    process = subprocess.Popen(
+        [sys.executable, "-c", script, str(path)],
+        stdin=subprocess.PIPE,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        encoding="utf-8",
+        env=environment,
+    )
+    assert process.stdout is not None
+    assert process.stdout.readline().strip() == "locked"
+    return process
+
+
+def _release_marker_lock(process: subprocess.Popen[str]) -> None:
+    assert process.stdin is not None
+    process.stdin.close()
+    process.wait(timeout=2)
 
 
 @pytest.fixture
@@ -537,12 +571,7 @@ class TestLockedMarkerBoundedRetry:
 
         sd = tmp_path / "s1"
         sd.mkdir()
-        # A separate open file description on the same path -- flock locks
-        # are scoped to the open file description, not the process, so this
-        # genuinely contends with a fresh `_locked_marker` call the same way
-        # a different hook process holding the lock would.
-        holder = _marker_path(sd).open("a+")
-        fcntl.flock(holder.fileno(), fcntl.LOCK_EX)
+        holder = _marker_lock_holder(_marker_path(sd))
         try:
             start = time.monotonic()
             with pytest.raises(TimeoutError):
@@ -551,31 +580,25 @@ class TestLockedMarkerBoundedRetry:
             elapsed = time.monotonic() - start
             assert elapsed < 2.0, "must give up well before a realistic hook timeout, not hang"
         finally:
-            fcntl.flock(holder.fileno(), fcntl.LOCK_UN)
-            holder.close()
+            _release_marker_lock(holder)
 
     def test_succeeds_once_contention_clears_within_budget(self, tmp_path: Path):
         from thirdeye.platforms.codex.interrupt_marker import _locked_marker, _marker_path
 
         sd = tmp_path / "s1"
         sd.mkdir()
-        holder = _marker_path(sd).open("a+")
-        fcntl.flock(holder.fileno(), fcntl.LOCK_EX)
-
-        def release_shortly() -> None:
-            time.sleep(0.05)
-            fcntl.flock(holder.fileno(), fcntl.LOCK_UN)
-            holder.close()
-
-        releaser = threading.Thread(target=release_shortly)
-        releaser.start()
+        holder = _marker_lock_holder(_marker_path(sd))
+        assert holder.stdin is not None
+        holder.stdin.write("release\n")
+        holder.stdin.flush()
         try:
             entered = False
             with _locked_marker(sd):
                 entered = True
             assert entered
         finally:
-            releaser.join()
+            holder.stdin.close()
+            holder.wait(timeout=2)
 
 
 # -- hooks_json.py wiring: user_prompt_submit / session_end -------------------

@@ -517,7 +517,9 @@ def test_parse_then_persist_matches_capture_usage_claude(tmp_path: Path) -> None
 
 
 def _write_transcript(path: Path, *frames: object) -> None:
-    path.write_text("".join(json.dumps(frame) + "\n" for frame in frames))
+    path.write_text(
+        "".join(json.dumps(frame) + "\n" for frame in frames), encoding="utf-8", newline="\n"
+    )
 
 
 def _assistant_frame(
@@ -1032,6 +1034,10 @@ def test_naive_timestamps_are_pinned_to_utc(tmp_path: Path) -> None:
     assert calls[0]["end_ts"] == "2026-08-22T10:00:02.000+00:00"
 
 
+@pytest.mark.skipif(
+    not hasattr(time, "tzset"),
+    reason="time.tzset() is POSIX-only; the TZ swap this asserts over is unavailable",
+)
 def test_mixed_naive_and_offset_bounds_stay_ordered_after_export(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

@@ -136,7 +136,7 @@ def extract_turn_codex(rollout_path: str, turn_id: str) -> dict[str, Any] | None
     pending: dict[str, dict[str, Any]] = {}
 
     try:
-        lines = path.read_text().splitlines()
+        lines = path.read_text(encoding="utf-8").splitlines()
     except OSError:
         return None
 

@@ -9,13 +9,14 @@ when the completed turn arrives a moment later.
 from __future__ import annotations
 
 import contextlib
-import fcntl
 import json
 import os
 from collections.abc import Iterator
 from pathlib import Path
 from typing import Any
 
+from thirdeye._compat import fsops
+from thirdeye._compat.locking import LockMode, locked
 from thirdeye.config import Config
 from thirdeye.otel_export import export_spans
 from thirdeye.paths import otel_state_path
@@ -74,7 +75,7 @@ def _parse_committed_state(entries: list[str]) -> tuple[set[str], dict[str, int]
 
 def _trace_id(session_dir_: Path, session_id: str) -> int:
     try:
-        state = json.loads(otel_state_path(session_dir_).read_text())
+        state = json.loads(otel_state_path(session_dir_).read_text(encoding="utf-8"))
         return int(state["trace_id"], 16)
     except (OSError, TypeError, ValueError, KeyError, json.JSONDecodeError):
         return trace_id_for_session(_PLATFORM, session_id)
@@ -90,19 +91,13 @@ def _lock_path(session_dir_: Path) -> Path:
 
 @contextlib.contextmanager
 def _locked(session_dir_: Path) -> Iterator[None]:
-    path = _lock_path(session_dir_)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    with path.open("a+") as lock:
-        fcntl.flock(lock.fileno(), fcntl.LOCK_EX)
-        try:
-            yield
-        finally:
-            fcntl.flock(lock.fileno(), fcntl.LOCK_UN)
+    with locked(_lock_path(session_dir_), LockMode.EXCLUSIVE):
+        yield
 
 
 def _read_state(session_dir_: Path) -> dict[str, list[str]]:
     try:
-        raw = json.loads(_state_path(session_dir_).read_text())
+        raw = json.loads(_state_path(session_dir_).read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError):
         return {}
     if not isinstance(raw, dict):
@@ -118,8 +113,8 @@ def _write_state(session_dir_: Path, state: dict[str, list[str]]) -> None:
     path = _state_path(session_dir_)
     path.parent.mkdir(parents=True, exist_ok=True)
     tmp = path.with_suffix(f".tmp.{os.getpid()}")
-    tmp.write_text(json.dumps(state, separators=(",", ":")))
-    os.replace(tmp, path)
+    tmp.write_text(json.dumps(state, separators=(",", ":")), encoding="utf-8", newline="\n")
+    fsops.replace(tmp, path)
 
 
 def committed_tool_call_ids(session_dir_: Path, generation_id: str) -> set[str]:

@@ -29,6 +29,20 @@ SID = "019fb579-cdda-7a03-86df-65c87b6c4ae2"
 SID_V0626 = "019f0542-0112-7583-bdbe-e55f44ef80b5"
 
 
+# Codex writes rollout files as UTF-8 with LF on every platform, and the usage
+# reader tracks a byte offset into them. Text-mode writes would translate "\n"
+# to CRLF on Windows, producing a fixture one byte per line longer than the
+# rollout it stands for -- so pin both, rather than inheriting the host's
+# defaults.
+def _write_rollout(path: Path, text: str) -> None:
+    path.write_text(text, encoding="utf-8", newline="\n")
+
+
+def _append_rollout(path: Path, text: str) -> None:
+    with path.open("a", encoding="utf-8", newline="\n") as f:
+        f.write(text)
+
+
 @pytest.fixture
 def expected() -> dict:
     return json.loads((FIXTURES / "codex_rollout.expected.json").read_text())
@@ -198,13 +212,14 @@ def test_offset_advances_incrementally(tmp_path: Path) -> None:
     root = tmp_path / "root" / "2026" / "07" / "30"
     root.mkdir(parents=True)
     rp = root / f"rollout-2026-07-30T00-00-00-{SID}.jsonl"
-    rp.write_text(
+    _write_rollout(
+        rp,
         _meta_line(SID)
         + "\n"
         + _turn_context_line("gpt-5.5")
         + "\n"
         + _token_count_line(100, 90, 10)
-        + "\n"
+        + "\n",
     )
     sessions_root = tmp_path / "root"
 
@@ -217,8 +232,7 @@ def test_offset_advances_incrementally(tmp_path: Path) -> None:
     assert off1 > 0
 
     # Append a new frame — only the new row is captured.
-    with rp.open("a") as f:
-        f.write(_token_count_line(250, 140, 10) + "\n")
+    _append_rollout(rp, _token_count_line(250, 140, 10) + "\n")
     second = capture_usage_codex(
         thirdeye_home=tmp_path, session_id=SID, triggering_seq=2, sessions_root=sessions_root
     )
@@ -266,7 +280,7 @@ def test_rollout_path_bypasses_resolution(tmp_path: Path) -> None:
     # A rollout placed OUTSIDE any sessions_root — resolution would never find it.
     rp = tmp_path / "loose" / "some-rollout.jsonl"
     rp.parent.mkdir(parents=True)
-    rp.write_text(_turn_context_line("gpt-5.5") + "\n" + _token_count_line(100, 90, 10) + "\n")
+    _write_rollout(rp, _turn_context_line("gpt-5.5") + "\n" + _token_count_line(100, 90, 10) + "\n")
     rows = capture_usage_codex(
         thirdeye_home=tmp_path,
         session_id="sid",
@@ -283,7 +297,7 @@ def test_model_param_used_without_turn_context(tmp_path: Path) -> None:
     rp = tmp_path / "loose" / "r.jsonl"
     rp.parent.mkdir(parents=True)
     # No turn_context frame at all.
-    rp.write_text(_token_count_line(100, 90, 10) + "\n")
+    _write_rollout(rp, _token_count_line(100, 90, 10) + "\n")
     capture_usage_codex(
         thirdeye_home=tmp_path,
         session_id="sid",
@@ -303,7 +317,7 @@ def test_truncated_final_line_ignored_and_offset_intact(tmp_path: Path) -> None:
     good = _token_count_line(100, 90, 10) + "\n"
     # Trailing line has no newline — a rollout mid-write.
     truncated = _token_count_line(250, 140, 10)
-    rp.write_text(good + truncated)
+    _write_rollout(rp, good + truncated)
 
     first = capture_usage_codex(
         thirdeye_home=tmp_path, session_id="sid", triggering_seq=1, rollout_path=str(rp)
@@ -314,8 +328,7 @@ def test_truncated_final_line_ignored_and_offset_intact(tmp_path: Path) -> None:
     assert offset == len(good.encode())
 
     # Complete the truncated line — it is now captured, offset was not corrupted.
-    with rp.open("a") as f:
-        f.write("\n")
+    _append_rollout(rp, "\n")
     second = capture_usage_codex(
         thirdeye_home=tmp_path, session_id="sid", triggering_seq=2, rollout_path=str(rp)
     )

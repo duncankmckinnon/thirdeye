@@ -1,11 +1,11 @@
 from __future__ import annotations
 
 import json
-import os
 from collections.abc import Iterator
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
+from thirdeye._compat import fsops
 from thirdeye.eval.result import EvalResult
 from thirdeye.paths import (
     eval_job_path,
@@ -39,7 +39,7 @@ class EvalStore:
 
     def append(self, result: EvalResult) -> None:
         self.session_dir.mkdir(parents=True, exist_ok=True)
-        with self.jsonl_path.open("a", encoding="utf-8") as f:
+        with self.jsonl_path.open("a", encoding="utf-8", newline="\n") as f:
             f.write(json.dumps(result.to_dict(), separators=(",", ":")) + "\n")
 
     def iter_results(self) -> Iterator[EvalResult]:
@@ -82,8 +82,8 @@ class EvalStore:
         path = eval_job_path(self.session_dir, job_id)
         path.parent.mkdir(parents=True, exist_ok=True)
         tmp = path.with_suffix(path.suffix + ".tmp")
-        tmp.write_text(json.dumps(payload, separators=(",", ":")), encoding="utf-8")
-        os.replace(tmp, path)
+        tmp.write_text(json.dumps(payload, separators=(",", ":")), encoding="utf-8", newline="\n")
+        fsops.replace(tmp, path)
         return path
 
     def read_job(self, job_id: str) -> dict[str, Any] | None:
@@ -98,7 +98,7 @@ class EvalStore:
     def remove_job(self, job_id: str) -> bool:
         path = eval_job_path(self.session_dir, job_id)
         if path.is_file():
-            path.unlink()
+            fsops.unlink(path)
             return True
         return False
 

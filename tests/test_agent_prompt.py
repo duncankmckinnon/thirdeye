@@ -55,13 +55,16 @@ def test_context_block_contains_date():
 
 
 def test_context_block_contains_cwd_when_provided():
-    result = build_agent_prompt("x", cwd=Path("/my/project"))
-    assert "cwd: /my/project" in result
+    cwd = Path("/my/project")
+    result = build_agent_prompt("x", cwd=cwd)
+    # The block interpolates the Path, so the separator is the host's, not "/".
+    assert f"cwd: {cwd}" in result
 
 
 def test_context_block_contains_thirdeye_home_when_provided():
-    result = build_agent_prompt("x", thirdeye_home=Path("/home/user/.thirdeye"))
-    assert "thirdeye_home: /home/user/.thirdeye" in result
+    home = Path("/home/user/.thirdeye")
+    result = build_agent_prompt("x", thirdeye_home=home)
+    assert f"thirdeye_home: {home}" in result
 
 
 def test_context_block_omits_cwd_when_not_provided():

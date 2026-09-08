@@ -117,12 +117,12 @@ def test_write_state_atomic_on_rename_failure(
     store = UsageStore(session)
     store.write_state(transcript_offset=1)
 
-    import thirdeye.usage.store as store_mod
+    import thirdeye._compat.fsops as fsops
 
     def boom(src, dst):
         raise OSError("simulated crash")
 
-    monkeypatch.setattr(store_mod.os, "replace", boom)
+    monkeypatch.setattr(fsops.os, "replace", boom)
     with pytest.raises(OSError):
         store.write_state(transcript_offset=999)
     # Restore so test cleanup works

@@ -1,16 +1,16 @@
 from __future__ import annotations
 
 import contextlib
-import fcntl
+import io
 import json
 import os
 import sys
 import threading
-import time
 from collections.abc import Iterator
 from pathlib import Path
 from typing import TypedDict, cast
 
+from thirdeye._compat.locking import LockMode, locked
 from thirdeye.config import Config
 from thirdeye.env_capture import capture_env, env_to_tag
 from thirdeye.meta import read_meta, write_meta
@@ -34,8 +34,12 @@ _STRIP_KEYS = frozenset({"session_id", "cwd", "transcript_path", "agent_transcri
 
 def _read_stdin() -> dict:
     try:
-        raw = sys.stdin.read()
-    except OSError:
+        buffer = getattr(sys.stdin, "buffer", None)
+        if buffer is None:
+            raw = sys.stdin.read()
+        else:
+            raw = io.TextIOWrapper(buffer, encoding="utf-8").read()
+    except (OSError, ValueError):
         return {}
     if not raw:
         return {}
@@ -219,60 +223,40 @@ _OPEN_TURN_LOCK_STATE = threading.local()
 # a bounded wait -- comfortably under any realistic hook timeout -- is
 # strictly safer than blocking. Measured critical sections under this lock
 # are sub-millisecond local disk I/O even under 5-way contention, so this
-# budget is generous, not tight.
-_LOCK_RETRY_BUDGET_S = 0.3
-_LOCK_RETRY_INITIAL_DELAY_S = 0.005
-_LOCK_RETRY_MAX_DELAY_S = 0.025
-
-
-def _acquire_with_bounded_retry(fd: int, operation: int) -> None:
-    deadline = time.monotonic() + _LOCK_RETRY_BUDGET_S
-    delay = _LOCK_RETRY_INITIAL_DELAY_S
-    while True:
-        try:
-            fcntl.flock(fd, operation | fcntl.LOCK_NB)
-            return
-        except BlockingIOError:
-            remaining = deadline - time.monotonic()
-            if remaining <= 0:
-                raise TimeoutError(
-                    f"timed out after {_LOCK_RETRY_BUDGET_S}s waiting for claude-open-turn.lock"
-                ) from None
-            time.sleep(max(0.0, min(delay, remaining)))
-            delay = min(delay * 2, _LOCK_RETRY_MAX_DELAY_S)
+# budget is generous, not tight. `locked()` raises `LockTimeout` (an
+# `OSError`) on expiry rather than blocking, which is what every caller's
+# `except OSError` fallback relies on.
+_LOCK_TIMEOUT_S = 0.3
 
 
 @contextlib.contextmanager
-def _locked_open_turn(session_dir_: Path, operation: int) -> Iterator[None]:
+def _locked_open_turn(session_dir_: Path, mode: LockMode) -> Iterator[None]:
     key = str(session_dir_.absolute())
     held = getattr(_OPEN_TURN_LOCK_STATE, "held", {})
     current = held.get(key)
     if current is not None:
-        current_operation, depth = current
-        if current_operation != fcntl.LOCK_EX and operation == fcntl.LOCK_EX:
+        current_mode, depth = current
+        if current_mode is not LockMode.EXCLUSIVE and mode is LockMode.EXCLUSIVE:
             raise RuntimeError("cannot upgrade a shared open-turn lock")
-        held[key] = (current_operation, depth + 1)
+        held[key] = (current_mode, depth + 1)
         try:
             yield
         finally:
-            held[key] = (current_operation, depth)
+            held[key] = (current_mode, depth)
         return
 
-    session_dir_.mkdir(parents=True, exist_ok=True)
-    with _open_turn_lock_path(session_dir_).open("a+") as lock:
-        _acquire_with_bounded_retry(lock.fileno(), operation)
-        held[key] = (operation, 1)
+    with locked(_open_turn_lock_path(session_dir_), mode, timeout=_LOCK_TIMEOUT_S):
+        held[key] = (mode, 1)
         _OPEN_TURN_LOCK_STATE.held = held
         try:
             yield
         finally:
             held.pop(key, None)
-            fcntl.flock(lock.fileno(), fcntl.LOCK_UN)
 
 
 def _read_open_turn_unlocked(session_dir_: Path) -> OpenTurnMarker | None:
     try:
-        marker = json.loads(_open_turn_path(session_dir_).read_text())
+        marker = json.loads(_open_turn_path(session_dir_).read_text(encoding="utf-8"))
     except (OSError, UnicodeError, json.JSONDecodeError):
         return None
     if not isinstance(marker, dict) or not _OPEN_TURN_FIELDS.issubset(marker):
@@ -347,15 +331,15 @@ def turn_start_offset(marker: OpenTurnMarker) -> int:
 def _read_open_turn(session_dir_: Path) -> OpenTurnMarker | None:
     """Read the current marker without observing a cursor write in progress."""
     try:
-        with _locked_open_turn(session_dir_, fcntl.LOCK_SH):
+        with _locked_open_turn(session_dir_, LockMode.SHARED):
             return _read_open_turn_unlocked(session_dir_)
     except OSError:
         return None
 
 
 def _write_open_turn(session_dir_: Path, marker: OpenTurnMarker) -> None:
-    with _locked_open_turn(session_dir_, fcntl.LOCK_EX):
-        _open_turn_path(session_dir_).write_text(json.dumps(marker))
+    with _locked_open_turn(session_dir_, LockMode.EXCLUSIVE):
+        _open_turn_path(session_dir_).write_text(json.dumps(marker), encoding="utf-8", newline="\n")
 
 
 def _advance_turn_cursor(
@@ -378,7 +362,7 @@ def _advance_turn_cursor(
     ):
         return False
     try:
-        with _locked_open_turn(session_dir_, fcntl.LOCK_EX):
+        with _locked_open_turn(session_dir_, LockMode.EXCLUSIVE):
             marker = _read_open_turn_unlocked(session_dir_)
             if marker is None:
                 return False
@@ -403,7 +387,9 @@ def _advance_turn_cursor(
                     i for i in newly_committed_tool_use_ids if i not in merged_tools
                 )
                 marker["committed_tool_use_ids"] = merged_tools[-_COMMITTED_CALL_ID_LIMIT:]
-            _open_turn_path(session_dir_).write_text(json.dumps(marker))
+            _open_turn_path(session_dir_).write_text(
+                json.dumps(marker), encoding="utf-8", newline="\n"
+            )
             return True
     except OSError:
         return False
@@ -412,7 +398,7 @@ def _advance_turn_cursor(
 def _delete_open_turn(session_dir_: Path, *, expected_turn_seq: int) -> bool:
     """Delete only the marker belonging to ``expected_turn_seq``."""
     try:
-        with _locked_open_turn(session_dir_, fcntl.LOCK_EX):
+        with _locked_open_turn(session_dir_, LockMode.EXCLUSIVE):
             marker = _read_open_turn_unlocked(session_dir_)
             if marker is None:
                 return False

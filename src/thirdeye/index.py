@@ -1,28 +1,45 @@
 from __future__ import annotations
 
+import contextlib
 import os
 import struct
+import tempfile
 from pathlib import Path
 
 import zstandard as zstd
+
+from thirdeye._compat import fsops
 
 _ENTRY_FMT = "<Q"
 _ENTRY_SIZE = 8
 
 
 class IndexWriter:
+    """Append-only writer for the offset index.
+
+    Holds no file handle between calls: ``__init__`` only ensures the file
+    exists, ``append`` opens/flushes/fsyncs/closes per call, and ``close`` is a
+    no-op kept for interface compatibility. This keeps every writer honest about
+    the exclusive store lock -- an instance created before ``rebuild_index``
+    replaces the file will transparently append to the replacement.
+    """
+
     def __init__(self, path: Path) -> None:
         self.path = path
         path.parent.mkdir(parents=True, exist_ok=True)
-        self._fp = open(path, "ab")
+        # Create the file if missing without truncating an existing one, and
+        # without keeping the handle open.
+        with open(path, "ab"):
+            pass
 
     def append(self, offset: int) -> None:
-        self._fp.write(struct.pack(_ENTRY_FMT, offset))
-        self._fp.flush()
-        os.fsync(self._fp.fileno())
+        with open(self.path, "ab") as fp:
+            fp.write(struct.pack(_ENTRY_FMT, offset))
+            fp.flush()
+            os.fsync(fp.fileno())
 
     def close(self) -> None:
-        self._fp.close()
+        """No-op: open-per-append leaves nothing buffered to lose."""
 
     def __enter__(self) -> IndexWriter:
         return self
@@ -59,28 +76,41 @@ class IndexReader:
 
 
 def rebuild_index(events_log: Path, idx_path: Path) -> int:
-    """Walk events.alog frame-by-frame; rewrite idx_path. Returns event count."""
-    if idx_path.exists():
-        idx_path.unlink()
-    if not events_log.exists() or events_log.stat().st_size == 0:
-        idx_path.touch()
-        return 0
+    """Walk events.alog frame-by-frame; rewrite idx_path. Returns event count.
 
-    data = events_log.read_bytes()
+    Builds the fresh index into a sibling temp file and atomically replaces the
+    destination, so a crash mid-rebuild leaves the previous index untouched
+    rather than a truncated one.
+    """
+    idx_path.parent.mkdir(parents=True, exist_ok=True)
+
     offsets: list[int] = []
-    pos = 0
-    while pos < len(data):
-        offsets.append(pos)
-        dobj = zstd.ZstdDecompressor().decompressobj()
-        try:
-            dobj.decompress(data[pos:])
-        except zstd.ZstdError:
-            offsets.pop()
-            break
-        remaining = len(dobj.unused_data)
-        pos = len(data) - remaining
+    if events_log.exists() and events_log.stat().st_size > 0:
+        data = events_log.read_bytes()
+        pos = 0
+        while pos < len(data):
+            offsets.append(pos)
+            dobj = zstd.ZstdDecompressor().decompressobj()
+            try:
+                dobj.decompress(data[pos:])
+            except zstd.ZstdError:
+                offsets.pop()
+                break
+            remaining = len(dobj.unused_data)
+            pos = len(data) - remaining
 
-    with IndexWriter(idx_path) as w:
-        for off in offsets:
-            w.append(off)
+    fd, tmp_name = tempfile.mkstemp(
+        prefix=f"{idx_path.name}.rebuild-", suffix=".tmp", dir=idx_path.parent
+    )
+    os.close(fd)
+    tmp_path = Path(tmp_name)
+    try:
+        with IndexWriter(tmp_path) as w:
+            for off in offsets:
+                w.append(off)
+        fsops.replace(tmp_path, idx_path)
+    except BaseException:
+        with contextlib.suppress(OSError):
+            tmp_path.unlink()
+        raise
     return len(offsets)

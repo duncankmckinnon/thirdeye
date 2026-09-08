@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+import subprocess
+import sys
+import time
 from pathlib import Path
 
 import pytest
@@ -72,6 +75,54 @@ class TestIterEvents:
         assert len(events) == 100
         assert events[0]["data"] == 0
         assert events[99]["data"] == 99
+
+    def test_reader_snapshot_during_concurrent_append(self, tmp_path: Path):
+        session_dir = _make_session(tmp_path, [("initial", 0)])
+        worker = subprocess.Popen(
+            [
+                sys.executable,
+                "-c",
+                "\n".join(
+                    [
+                        "from pathlib import Path",
+                        "from thirdeye.writer import SessionWriter",
+                        f"session_dir = Path({str(session_dir)!r})",
+                        "writer = SessionWriter.open("
+                        "session_dir, session_id='01J9G7', platform='claude', cwd='/p')",
+                        "for value in range(100):",
+                        "    writer.append('concurrent', value)",
+                        "writer.close()",
+                    ]
+                ),
+            ]
+        )
+        snapshots: list[list[dict]] = []
+
+        def take_snapshot() -> list[dict]:
+            reader = SessionReader(session_dir)
+            events = list(reader.iter_events())
+            assert reader.truncated_tail is False
+            return events
+
+        try:
+            while worker.poll() is None:
+                snapshots.append(take_snapshot())
+                time.sleep(0.001)
+        finally:
+            try:
+                return_code = worker.wait(timeout=60)
+            except subprocess.TimeoutExpired:
+                if worker.poll() is None:
+                    worker.kill()
+                worker.wait(timeout=60)
+                raise
+            assert return_code == 0
+
+        snapshots.append(take_snapshot())
+        assert snapshots
+        for events in snapshots:
+            assert [event["seq"] for event in events] == list(range(len(events)))
+        assert [event["data"] for event in snapshots[-1]] == [0, *range(100)]
 
 
 # -- filter by type ------------------------------------------------------------

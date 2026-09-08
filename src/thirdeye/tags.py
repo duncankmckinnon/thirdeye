@@ -71,7 +71,7 @@ class TagStore:
         }
         self._path.parent.mkdir(parents=True, exist_ok=True)
         line = json.dumps(entry, default=str, ensure_ascii=False) + "\n"
-        with open(self._path, "a") as f:
+        with open(self._path, "a", encoding="utf-8", newline="\n") as f:
             f.write(line)
             f.flush()
             os.fsync(f.fileno())
@@ -86,7 +86,7 @@ class TagStore:
         result: dict[int, set[str]] = {}
         if not self._path.exists():
             return result
-        with open(self._path) as f:
+        with open(self._path, encoding="utf-8") as f:
             for line in f:
                 line = line.rstrip("\n")
                 if not line:

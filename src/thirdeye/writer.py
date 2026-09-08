@@ -1,13 +1,13 @@
 from __future__ import annotations
 
 import contextlib
-import fcntl
 import os
 from collections.abc import Iterator
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
+from thirdeye._compat.locking import LockMode, locked
 from thirdeye.codec import encode_event
 from thirdeye.index import IndexReader, IndexWriter, rebuild_index
 from thirdeye.meta import SessionMeta, read_meta, write_meta
@@ -24,11 +24,12 @@ def utc_iso_ms() -> str:
 
 
 def _has_content(path: Path) -> bool:
-    """`path.exists()` followed by a separate `path.stat()` is a TOCTOU race:
-    `rebuild_index` starts by unlinking the index file, so a checker can
-    observe "it exists" and then have the file vanish before its own `stat()`
-    call runs. A single `stat()` call, with a missing file treated as empty,
-    has no such gap.
+    """Return whether ``path`` exists and contains data with one stat call.
+
+    ``rebuild_index`` atomically replaces the index, so an unlocked check sees
+    either the old index or the completed replacement. The locked double-check
+    in ``_repair_index_if_needed`` then prevents a redundant rebuild when
+    another process repaired an empty index while this process waited.
     """
     try:
         return path.stat().st_size > 0
@@ -69,13 +70,8 @@ class SessionWriter:
 
     @contextlib.contextmanager
     def _locked(self) -> Iterator[None]:
-        self._lock_path.parent.mkdir(parents=True, exist_ok=True)
-        with self._lock_path.open("a+") as lf:
-            fcntl.flock(lf.fileno(), fcntl.LOCK_EX)
-            try:
-                yield
-            finally:
-                fcntl.flock(lf.fileno(), fcntl.LOCK_UN)
+        with locked(self._lock_path, LockMode.EXCLUSIVE):
+            yield
 
     @classmethod
     def open(

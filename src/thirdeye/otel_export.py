@@ -41,9 +41,11 @@ The actual Logfire call — including a flush, a real network round trip —
 never happens in the hook process itself. ``export_turn`` only ever writes a
 small job file and spawns a detached, unwaited-for child process
 (``thirdeye.otel_worker``) to do the work, so a slow or unreachable Logfire
-endpoint adds no latency to the hook invocation that triggered it.
-``start_new_session=True`` detaches the child from the hook's process group
-so it survives even if the harness kills that group once the hook returns.
+endpoint adds no latency to the hook invocation that triggered it. The spawn
+goes through ``thirdeye._compat.proc.spawn_detached``, which detaches the child
+from the hook's process group (its own session on POSIX, its own console-less
+process on Windows) so it survives even if the harness kills that group once
+the hook returns.
 
 Safety: this module runs inside hook subprocesses whose stdout the harness
 may treat as a hook decision. Every public function here must never raise and
@@ -58,7 +60,11 @@ import hashlib
 import json
 import logging
 import os
-import subprocess
+
+# Spawning now goes through `thirdeye._compat.proc`, but the symbol stays
+# imported because existing baseline tests patch `otel_export.subprocess.Popen`;
+# the shared module object also patches the compatibility shim's underlying call.
+import subprocess  # noqa: F401
 import sys
 import time
 import warnings
@@ -68,6 +74,7 @@ from functools import lru_cache
 from pathlib import Path
 from typing import Any
 
+from thirdeye._compat import fsops, proc
 from thirdeye.config import Config
 from thirdeye.ids import new_ulid
 from thirdeye.paths import otel_jobs_dir, otel_state_path
@@ -382,7 +389,7 @@ def _message(role: str, content: str) -> list[dict[str, Any]]:
 
 def _read_root(path: Path) -> tuple[int, int] | None:
     try:
-        raw = json.loads(path.read_text())
+        raw = json.loads(path.read_text(encoding="utf-8"))
         return int(raw["trace_id"], 16), int(raw["span_id"], 16)
     except (OSError, ValueError, KeyError, json.JSONDecodeError):
         return None
@@ -429,7 +436,7 @@ def _root_or_ownership(root_path: Path) -> tuple[tuple[int, int] | None, Path | 
     # otherwise decline this export rather than emitting a split trace.
     try:
         if time.time() - lock_path.stat().st_mtime > 2.0:
-            lock_path.unlink(missing_ok=True)
+            fsops.unlink(lock_path, missing_ok=True)
             if _atomic_create(lock_path, str(os.getpid())):
                 return None, lock_path
     except OSError:
@@ -470,7 +477,7 @@ def _write_job(thirdeye_home: Path, payload: dict[str, Any]) -> Path:
     jobs_dir = otel_jobs_dir(thirdeye_home)
     jobs_dir.mkdir(parents=True, exist_ok=True)
     job_path = jobs_dir / f"{new_ulid()}.json"
-    job_path.write_text(json.dumps(payload, default=str))
+    job_path.write_text(json.dumps(payload, default=str), encoding="utf-8", newline="\n")
     return job_path
 
 
@@ -480,17 +487,11 @@ def _spawn(job_path: Path) -> None:
     A job *file*, not a pipe: writing to a subprocess's stdin can itself block
     the caller if the payload is large and the child hasn't started reading
     yet (a big tool output could fill the pipe buffer). A local file write has
-    no such risk. ``start_new_session=True`` gives the child its own process
-    group so it isn't killed alongside the hook that spawned it.
+    no such risk. ``spawn_detached`` gives the child its own process group (or,
+    on Windows, its own detached process with no console) so it isn't killed
+    alongside the hook that spawned it.
     """
-    subprocess.Popen(
-        [sys.executable, "-m", "thirdeye.otel_worker", str(job_path)],
-        stdin=subprocess.DEVNULL,
-        stdout=subprocess.DEVNULL,
-        stderr=subprocess.DEVNULL,
-        start_new_session=True,
-        close_fds=True,
-    )
+    proc.spawn_detached([sys.executable, "-m", "thirdeye.otel_worker", str(job_path)])
 
 
 # How long a "pending" turn claim is honored before being treated as
@@ -510,7 +511,7 @@ def _turn_claim_path(session_dir_: Path, turn_id: str) -> Path:
 def turn_export_sent(session_dir_: Path, turn_id: str) -> bool:
     """Whether a turn's span tree was fully exported to Logfire."""
     try:
-        return _turn_claim_path(session_dir_, turn_id).read_text() == "sent"
+        return _turn_claim_path(session_dir_, turn_id).read_text(encoding="utf-8") == "sent"
     except OSError:
         return False
 
@@ -527,7 +528,7 @@ def _claim_turn_export(session_dir_: Path, turn_id: str) -> bool:
     """
     claim_path = _turn_claim_path(session_dir_, turn_id)
     try:
-        state = claim_path.read_text()
+        state = claim_path.read_text(encoding="utf-8")
     except OSError:
         state = ""
     if state == "sent":
@@ -539,7 +540,7 @@ def _claim_turn_export(session_dir_: Path, turn_id: str) -> bool:
             stale = True
         if not stale:
             return False
-        claim_path.unlink(missing_ok=True)
+        fsops.unlink(claim_path, missing_ok=True)
     return _atomic_create(claim_path, "pending")
 
 
@@ -662,7 +663,7 @@ def export_subagent_turn(
         return
     try:
         try:
-            state = json.loads(otel_state_path(session_dir_).read_text())
+            state = json.loads(otel_state_path(session_dir_).read_text(encoding="utf-8"))
             trace_id = int(state["trace_id"], 16)
         except (OSError, TypeError, ValueError, KeyError, json.JSONDecodeError):
             trace_id = trace_id_for_session(platform, session_id)
@@ -756,7 +757,7 @@ def _export_turn_inner(
                     root_span.end(end_time=root_ns)
         finally:
             if root_lock is not None:
-                root_lock.unlink(missing_ok=True)
+                fsops.unlink(root_lock, missing_ok=True)
 
         parent_ctx = _parent_context(*parent)
         _export_turn_subtree(
@@ -765,9 +766,9 @@ def _export_turn_inner(
         if instance.force_flush(timeout_millis=_FLUSH_TIMEOUT_MS) is False:
             raise RuntimeError("turn export was not flushed")
     except Exception:
-        claim_path.unlink(missing_ok=True)
+        fsops.unlink(claim_path, missing_ok=True)
         raise
-    claim_path.write_text("sent")
+    claim_path.write_text("sent", encoding="utf-8", newline="\n")
 
 
 def _export_subagent_turn_inner(
@@ -815,9 +816,9 @@ def _export_subagent_turn_inner(
         if instance.force_flush(timeout_millis=_FLUSH_TIMEOUT_MS) is False:
             raise RuntimeError("subagent turn export was not flushed")
     except Exception:
-        claim_path.unlink(missing_ok=True)
+        fsops.unlink(claim_path, missing_ok=True)
         raise
-    claim_path.write_text("sent")
+    claim_path.write_text("sent", encoding="utf-8", newline="\n")
 
 
 @lru_cache(maxsize=128)

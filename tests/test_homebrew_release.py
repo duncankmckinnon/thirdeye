@@ -3,13 +3,24 @@ from __future__ import annotations
 import hashlib
 import http.server
 import subprocess
+import sys
 import threading
 from collections.abc import Iterator
 from contextlib import contextmanager
 from pathlib import Path
 
+import pytest
+
 ROOT = Path(__file__).parents[1]
 DOWNLOAD_SCRIPT = ROOT / ".github/actions/update-homebrew-tap/download-pypi-sdist.sh"
+
+# This module drives a bash script that only ever runs on the ubuntu release
+# job, via a hardcoded POSIX PATH. On a Windows runner `bash` resolves to WSL's
+# bash.exe, which reports "no installed distributions" and exits 1 before the
+# script is read at all -- a failure about the runner, not about the script.
+pytestmark = pytest.mark.skipif(
+    sys.platform == "win32", reason="release script is POSIX-only (bash resolves to WSL)"
+)
 
 
 class _ArchiveHandler(http.server.BaseHTTPRequestHandler):

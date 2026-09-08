@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import json
+import subprocess
+import sys
 from pathlib import Path
 from typing import Any
 
@@ -419,8 +421,32 @@ class TestExportTurnDispatch:
         argv, kwargs = calls[0]
         assert argv[0] == otel_export.sys.executable
         assert argv[1:3] == ["-m", "thirdeye.otel_worker"]
-        assert kwargs["start_new_session"] is True
+        if sys.platform == "win32":
+            assert kwargs.get("creationflags", 0) & subprocess.DETACHED_PROCESS
+        else:
+            assert kwargs["start_new_session"] is True
         assert kwargs["stdin"] is otel_export.subprocess.DEVNULL
+
+    def test_otel_spawn_delegates_to_spawn_detached(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ):
+        job_path = otel_export._write_job(tmp_path, {"kind": "turn"})
+        calls = []
+
+        def fake_spawn_detached(argv, **kwargs):
+            assert job_path.exists()
+            calls.append((argv, kwargs))
+
+        monkeypatch.setattr(otel_export.proc, "spawn_detached", fake_spawn_detached)
+
+        otel_export._spawn(job_path)
+
+        assert calls == [
+            (
+                [otel_export.sys.executable, "-m", "thirdeye.otel_worker", str(job_path)],
+                {},
+            )
+        ]
 
     def test_job_file_carries_the_full_turn(
         self, tmp_path: Path, enabled_config: Config, monkeypatch: pytest.MonkeyPatch
@@ -431,7 +457,7 @@ class TestExportTurnDispatch:
         otel_export.export_turn(enabled_config, tmp_path, "s1", "claude", "/proj", turn)
         job_path = Path(calls[0][3])
         assert job_path.parent == otel_export.otel_jobs_dir(tmp_path)
-        payload = json.loads(job_path.read_text())
+        payload = json.loads(job_path.read_text(encoding="utf-8"))
         assert payload["kind"] == "turn"
         assert payload["session_id"] == "s1"
         assert payload["platform"] == "claude"
@@ -494,7 +520,7 @@ class TestExportSubagentTurnDispatch:
         )
 
         job_path = Path(spawned[0][3])
-        payload = json.loads(job_path.read_text())
+        payload = json.loads(job_path.read_text(encoding="utf-8"))
         assert payload["trace_id"] == str(trace_id_for_session("cursor", session_id))
         assert payload["parent_span_id"] == str(tool_span_id("cursor", session_id, tool_use_id))
 
@@ -587,9 +613,12 @@ class TestExportSpansDispatch:
         assert len(calls) == 1
         argv, kwargs = calls[0]
         assert argv[:3] == [otel_export.sys.executable, "-m", "thirdeye.otel_worker"]
-        assert kwargs["start_new_session"] is True
+        if sys.platform == "win32":
+            assert kwargs.get("creationflags", 0) & subprocess.DETACHED_PROCESS
+        else:
+            assert kwargs["start_new_session"] is True
         job_path = Path(argv[3])
-        payload = json.loads(job_path.read_text())
+        payload = json.loads(job_path.read_text(encoding="utf-8"))
         assert payload == {
             "kind": "spans",
             "session_dir": str(tmp_path / "traces" / "claude" / "s1"),

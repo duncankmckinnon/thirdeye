@@ -4,6 +4,7 @@ from pathlib import Path
 
 import pytest
 
+import thirdeye.index as index_module
 from thirdeye.codec import encode_event
 from thirdeye.index import IndexReader, IndexWriter, rebuild_index
 
@@ -55,6 +56,23 @@ class TestIndexWriter:
             w.append(20)
         assert p.stat().st_size == 16
         assert IndexReader(p).all_offsets() == [10, 20]
+
+    def test_two_writers_interleave_appends(self, tmp_path: Path):
+        """Writers created before a rebuild append to its replacement index."""
+        events_log = tmp_path / "events.alog"
+        index = tmp_path / "events.idx"
+        offsets = TestRebuildIndex()._write_events_log(events_log, 2)
+        first = IndexWriter(index)
+        second = IndexWriter(index)
+        try:
+            rebuild_index(events_log, index)
+            first.append(100)
+            second.append(200)
+        finally:
+            first.close()
+            second.close()
+
+        assert IndexReader(index).all_offsets() == [*offsets, 100, 200]
 
 
 class TestIndexReader:
@@ -172,6 +190,25 @@ class TestRebuildIndex:
         rebuild_index(events_log, idx)
         assert IndexReader(idx).all_offsets() == offsets
         assert IndexReader(idx).count() == 2
+
+    def test_rebuild_leaves_old_index_on_failure(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ):
+        events_log = tmp_path / "events.alog"
+        idx = tmp_path / "events.idx"
+        self._write_events_log(events_log, 2)
+        with IndexWriter(idx) as writer:
+            writer.append(999)
+
+        def replace_fails(src: Path, dst: Path) -> None:
+            raise OSError("simulated replacement failure")
+
+        monkeypatch.setattr(index_module.fsops, "replace", replace_fails)
+
+        with pytest.raises(OSError, match="simulated replacement failure"):
+            rebuild_index(events_log, idx)
+
+        assert IndexReader(idx).all_offsets() == [999]
 
     def test_rebuild_single_event(self, tmp_path: Path):
         events_log = tmp_path / "events.alog"

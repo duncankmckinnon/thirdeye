@@ -1,6 +1,5 @@
 """Tests for project setup: package layout, metadata, dependencies, and entrypoint."""
 
-import importlib
 import importlib.metadata
 from pathlib import Path
 
@@ -102,7 +101,7 @@ class TestMainModule:
     def test_main_imports_from_cli(self):
         main_path = ROOT / "src" / "thirdeye" / "__main__.py"
         content = main_path.read_text()
-        assert "from thirdeye.cli import main" in content
+        assert "from thirdeye.cli import run" in content
 
     def test_main_has_name_guard(self):
         main_path = ROOT / "src" / "thirdeye" / "__main__.py"
@@ -115,7 +114,9 @@ class TestConsoleScript:
         eps = importlib.metadata.entry_points(group="console_scripts")
         thirdeye_eps = [ep for ep in eps if ep.name == "thirdeye"]
         assert len(thirdeye_eps) == 1
-        assert thirdeye_eps[0].value == "thirdeye.cli:main"
+        # `run`, not `main`: the console script sets stdio to UTF-8 before
+        # handing off to the Click group. See thirdeye.cli.run.
+        assert thirdeye_eps[0].value == "thirdeye.cli:run"
 
 
 class TestPyprojectContent:
@@ -145,4 +146,6 @@ class TestPyprojectContent:
         assert '"pytest>=8.0"' in self.content
 
     def test_console_script_target(self):
-        assert 'thirdeye = "thirdeye.cli:main"' in self.content
+        # `run`, not `main`: the console script has to set stdio to UTF-8
+        # before Click writes anything. See thirdeye.cli.run.
+        assert 'thirdeye = "thirdeye.cli:run"' in self.content

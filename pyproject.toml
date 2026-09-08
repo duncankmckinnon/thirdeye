@@ -15,6 +15,7 @@ classifiers = [
   "Programming Language :: Python :: 3.14",
   "Operating System :: POSIX",
   "Operating System :: MacOS",
+  "Operating System :: Microsoft :: Windows",
   "Topic :: Software Development",
   "Topic :: Utilities",
 ]
@@ -31,8 +32,8 @@ Homepage = "https://github.com/duncankmckinnon/thirdeye"
 Issues = "https://github.com/duncankmckinnon/thirdeye/issues"
 
 [project.scripts]
-thirdeye = "thirdeye.cli:main"
-thrdi = "thirdeye.cli:main"
+thirdeye = "thirdeye.cli:run"
+thrdi = "thirdeye.cli:run"
 thirdeye-claude-session-start = "thirdeye.platforms.claude.hooks:session_start"
 thirdeye-claude-user-prompt-submit = "thirdeye.platforms.claude.hooks:user_prompt_submit"
 thirdeye-claude-pre-tool-use = "thirdeye.platforms.claude.hooks:pre_tool_use"
@@ -124,10 +125,16 @@ line-length = 100
 target-version = "py311"
 
 [tool.ruff.lint]
-select = ["E", "F", "W", "I", "B", "UP"]
+# Preview is on solely to reach PLW1514 (unspecified-encoding), which guards the
+# UTF-8 invariant this codebase relies on for cross-platform text I/O.
+# `explicit-preview-rules` keeps that opt-in narrow: a preview rule is enabled
+# only when selected by its exact code, so the `B`/`E`/`F`/... prefixes below
+# stay at their stable rule sets instead of silently acquiring new rules.
+preview = true
+explicit-preview-rules = true
+select = ["E", "F", "W", "I", "B", "UP", "PLW1514"]
 ignore = [
   "E501",   # line length handled by formatter
-  "UP038",  # isinstance(x, (A, B)) is fine; X | Y is a stylistic preference
 ]
 
 [tool.ruff.lint.per-file-ignores]

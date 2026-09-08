@@ -3,6 +3,7 @@ from __future__ import annotations
 import click
 
 from thirdeye import __version__
+from thirdeye._compat.streams import force_utf8_stdio
 from thirdeye.commands.add import add, remove
 from thirdeye.commands.agent import agent_cmd
 from thirdeye.commands.eval import eval_group
@@ -44,3 +45,16 @@ main.add_command(views_group)
 main.add_command(agent_cmd)
 main.add_command(logfire_group)
 main.add_command(setup)
+
+
+def run() -> None:
+    """Console-script entry point.
+
+    Wraps the ``main`` group rather than folding the stdio setup into it so the
+    encoding is fixed before Click can emit anything -- ``--help`` and
+    ``--version`` are handled during parsing, before a group callback would run
+    -- and so in-process callers (tests using Click's ``CliRunner``) keep
+    invoking ``main`` against the streams they installed.
+    """
+    force_utf8_stdio()
+    main()

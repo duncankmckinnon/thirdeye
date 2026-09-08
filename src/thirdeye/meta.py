@@ -8,6 +8,8 @@ from typing import Any
 
 import yaml
 
+from thirdeye._compat import fsops
+
 SCHEMA_VERSION = 2
 
 
@@ -37,21 +39,24 @@ def write_meta(path: Path, meta: SessionMeta) -> None:
     # writer renames only a file it created itself.
     fd, tmp_name = tempfile.mkstemp(dir=path.parent, prefix=f"{path.name}.", suffix=".tmp")
     try:
-        with os.fdopen(fd, "w") as f:
+        with os.fdopen(fd, "w", encoding="utf-8", newline="\n") as f:
             yaml.safe_dump(payload, f, sort_keys=False)
             f.flush()
             os.fsync(f.fileno())
-        os.replace(tmp_name, path)
+        fsops.replace(tmp_name, path)
     except BaseException:
-        os.unlink(tmp_name)
+        fsops.unlink(Path(tmp_name))
         raise
 
 
 def read_meta(path: Path) -> SessionMeta | None:
     if not path.exists():
         return None
-    with open(path) as f:
-        raw = yaml.safe_load(f) or {}
+    # Via fsops, not a bare open(): write_meta publishes this file by replacing
+    # it, and on Windows a reader racing that replace gets PermissionError on a
+    # file that is present and intact. Concurrent hook processes all call this
+    # on open_session, so the race is routine rather than exotic.
+    raw = yaml.safe_load(fsops.read_text(path)) or {}
     raw.pop("schema_version", None)
     raw.setdefault("extra", {})
     raw.setdefault("tag_count", 0)

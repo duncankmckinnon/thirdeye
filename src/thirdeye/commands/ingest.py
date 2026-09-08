@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import io
 import json
 import sys
 
@@ -19,8 +20,9 @@ def ingest(platform: str, session_id: str | None, cwd: str | None) -> None:
     cwd_val = cwd or "."
     store = Store(Config.load())
     written = 0
+    stdin = io.TextIOWrapper(sys.stdin.buffer, encoding="utf-8")
     with store.open_session(sid, platform=platform, cwd=cwd_val) as w:
-        for line in sys.stdin:
+        for line in stdin:
             line = line.strip()
             if not line:
                 continue

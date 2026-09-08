@@ -1,12 +1,14 @@
 from __future__ import annotations
 
 import json
+import subprocess
+import sys
 from pathlib import Path
 
 import pytest
 from click.testing import CliRunner
 
-from thirdeye.commands.eval import eval_group
+from thirdeye.commands.eval import _pid_alive, eval_group
 from thirdeye.eval.result import EvalResult
 from thirdeye.eval.store import EvalStore
 from thirdeye.paths import eval_def_path, session_dir
@@ -156,6 +158,18 @@ def test_status_orphan_detection(home: Path):
     result = CliRunner().invoke(eval_group, ["status", "abc"], catch_exceptions=False)
     assert result.exit_code == 0
     assert "orphaned" in result.output
+
+
+def test_pid_alive_does_not_terminate_worker():
+    """Liveness checks must observe a worker without signalling it."""
+    worker = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(30)"])
+    try:
+        assert _pid_alive(worker.pid) is True
+        assert _pid_alive(worker.pid) is True
+        assert worker.poll() is None
+    finally:
+        worker.terminate()
+        worker.wait(timeout=5)
 
 
 def test_def_list_shows_shipped(home: Path):

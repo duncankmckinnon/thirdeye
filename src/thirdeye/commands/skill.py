@@ -16,6 +16,11 @@ DEFAULT_TARGET = Path(".agents/skills")
 CLAUDE_TARGET = Path(".claude/skills")
 CODEX_TARGET = Path(".codex/skills")
 
+#: Marker file dropped inside a copied skill directory when the platform cannot
+#: create a directory symlink (e.g. Windows without Developer Mode). Holds the
+#: absolute path of the bundled source the copy was made from.
+SKILL_SRC_MARKER = ".thirdeye-skill-src"
+
 
 def _bundled_skills_root() -> Path:
     """Return the absolute path to the bundled skills package directory."""
@@ -38,13 +43,29 @@ def _bundled_skill_root(name: str = "use-thirdeye") -> Path:
     return path.resolve()
 
 
+def _copy_marker_matches(dest: Path, source: Path) -> bool:
+    """True when ``dest`` is a copy-installed skill whose marker names ``source``."""
+    marker = dest / SKILL_SRC_MARKER
+    if not (dest.is_dir() and marker.is_file()):
+        return False
+    try:
+        return marker.read_text(encoding="utf-8").strip() == str(source)
+    except OSError:
+        return False
+
+
 def _install_one(name: str, dest: Path, *, force: bool) -> str:
-    """Symlink the named bundled skill at `dest`. Returns a status message."""
+    """Install the named bundled skill at `dest`. Returns a status message.
+
+    Prefers a directory symlink. Where the platform refuses one (Windows without
+    Developer Mode raises ``OSError``), falls back to copying the tree and
+    dropping a ``.thirdeye-skill-src`` marker so the install stays recognisable.
+    """
     source = _bundled_skill_root(name).resolve()
     dest = dest.expanduser().absolute()
     dest.parent.mkdir(parents=True, exist_ok=True)
 
-    if dest.is_symlink() and dest.resolve() == source:
+    if _install_state(name, dest) == "installed":
         return f"{name} skill already installed at {dest}"
 
     if dest.exists() or dest.is_symlink():
@@ -55,7 +76,11 @@ def _install_one(name: str, dest: Path, *, force: bool) -> str:
         else:
             shutil.rmtree(dest)
 
-    dest.symlink_to(source, target_is_directory=True)
+    try:
+        dest.symlink_to(source, target_is_directory=True)
+    except OSError:
+        shutil.copytree(source, dest)
+        (dest / SKILL_SRC_MARKER).write_text(str(source), encoding="utf-8", newline="\n")
     return f"Installed {name} skill at {dest}"
 
 
@@ -68,6 +93,8 @@ def _install_state(name: str, dest: Path) -> str:
             return "installed"
     except OSError:
         pass
+    if _copy_marker_matches(dest, source):
+        return "installed"
     if dest.exists() or dest.is_symlink():
         return "conflict"
     return "missing"
