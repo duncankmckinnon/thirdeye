@@ -422,6 +422,27 @@ class TestExportTurnDispatch:
         assert kwargs["start_new_session"] is True
         assert kwargs["stdin"] is otel_export.subprocess.DEVNULL
 
+    def test_otel_spawn_delegates_to_spawn_detached(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ):
+        job_path = otel_export._write_job(tmp_path, {"kind": "turn"})
+        calls = []
+
+        def fake_spawn_detached(argv, **kwargs):
+            assert job_path.exists()
+            calls.append((argv, kwargs))
+
+        monkeypatch.setattr(otel_export.proc, "spawn_detached", fake_spawn_detached)
+
+        otel_export._spawn(job_path)
+
+        assert calls == [
+            (
+                [otel_export.sys.executable, "-m", "thirdeye.otel_worker", str(job_path)],
+                {},
+            )
+        ]
+
     def test_job_file_carries_the_full_turn(
         self, tmp_path: Path, enabled_config: Config, monkeypatch: pytest.MonkeyPatch
     ):

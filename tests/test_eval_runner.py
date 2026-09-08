@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import json
 import subprocess
+import sys
+import time
 from pathlib import Path
 
 import pytest
@@ -354,3 +356,47 @@ def test_run_eval_background_writes_stub_and_returns_job_id(
     assert job["pid"] == 99999
     assert recorded["cmd"][1:5] == ["eval", "_run-worker", job_id, "claude"]
     assert recorded["kwargs"].get("start_new_session") is True
+
+
+def test_eval_runner_records_live_pid(home: Path, monkeypatch: pytest.MonkeyPatch):
+    """The background job records the detached worker while its log remains usable."""
+    workers: list[subprocess.Popen] = []
+
+    def fake_spawn_detached(argv, **kwargs):
+        worker = subprocess.Popen(
+            [sys.executable, "-c", "import time; print('worker is live', flush=True); time.sleep(30)"],
+            cwd=kwargs.get("cwd"),
+            stdin=kwargs.get("stdin", subprocess.DEVNULL),
+            stdout=kwargs["stdout"],
+            stderr=kwargs.get("stderr", subprocess.DEVNULL),
+        )
+        workers.append(worker)
+        return worker
+
+    monkeypatch.setattr("thirdeye.eval.runner.proc.spawn_detached", fake_spawn_detached)
+    try:
+        job_id = run_eval_background(
+            thirdeye_home=home,
+            platform="claude",
+            session_id="abc",
+            definition_name="test",
+            agent_name="claude",
+            thirdeye_bin="/usr/bin/thirdeye",
+        )
+        job = EvalStore(session_dir(home, "claude", "abc")).read_job(job_id)
+        assert job is not None
+        assert job["pid"] == workers[0].pid
+
+        from thirdeye._compat.proc import pid_alive
+
+        assert pid_alive(job["pid"]) is True
+        log_path = Path(job["log_path"])
+        for _ in range(100):
+            if "worker is live" in log_path.read_text():
+                break
+            time.sleep(0.01)
+        assert "worker is live" in log_path.read_text()
+    finally:
+        for worker in workers:
+            worker.terminate()
+            worker.wait(timeout=5)
