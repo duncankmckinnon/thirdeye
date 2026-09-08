@@ -114,7 +114,9 @@ class TestConsoleScript:
         eps = importlib.metadata.entry_points(group="console_scripts")
         thirdeye_eps = [ep for ep in eps if ep.name == "thirdeye"]
         assert len(thirdeye_eps) == 1
-        assert thirdeye_eps[0].value == "thirdeye.cli:main"
+        # `run`, not `main`: the console script sets stdio to UTF-8 before
+        # handing off to the Click group. See thirdeye.cli.run.
+        assert thirdeye_eps[0].value == "thirdeye.cli:run"
 
 
 class TestPyprojectContent:
