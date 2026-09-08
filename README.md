@@ -13,10 +13,15 @@ Trace every agent session on your machine — Claude Code, Codex, Cursor — int
 
 ## Install
 
-> **macOS and Linux only, for now.** thirdeye is not yet supported on Windows —
-> Windows support is planned.
+> **Windows support is experimental.** The test suite runs on Windows in CI, and
+> Claude Code tracing is the verified integration there. The Codex CLI and Cursor
+> installers are implemented but have not been verified against those tools on
+> Windows. Please report Windows problems at the
+> [issue tracker](https://github.com/duncankmckinnon/thirdeye/issues). See
+> [docs/windows.md](docs/windows.md) for the deliberate platform differences.
 
-The easiest installation approach is to use [homebrew](https://brew.sh/). This will package all thirdeye extras as a globally available CLI tool.
+The easiest installation approach is to use [homebrew](https://brew.sh/). This will package all thirdeye extras as a globally available CLI tool. Homebrew is
+macOS / Linux only — on Windows, install with `pipx` or `uv` (below).
 
 ```bash
 brew install duncankmckinnon/tap/thirdeye    # macOS / Linux
