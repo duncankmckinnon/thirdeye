@@ -39,7 +39,7 @@ def write_meta(path: Path, meta: SessionMeta) -> None:
     # writer renames only a file it created itself.
     fd, tmp_name = tempfile.mkstemp(dir=path.parent, prefix=f"{path.name}.", suffix=".tmp")
     try:
-        with os.fdopen(fd, "w") as f:
+        with os.fdopen(fd, "w", encoding="utf-8", newline="\n") as f:
             yaml.safe_dump(payload, f, sort_keys=False)
             f.flush()
             os.fsync(f.fileno())
@@ -52,7 +52,7 @@ def write_meta(path: Path, meta: SessionMeta) -> None:
 def read_meta(path: Path) -> SessionMeta | None:
     if not path.exists():
         return None
-    with open(path) as f:
+    with open(path, encoding="utf-8") as f:
         raw = yaml.safe_load(f) or {}
     raw.pop("schema_version", None)
     raw.setdefault("extra", {})

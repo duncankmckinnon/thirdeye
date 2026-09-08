@@ -1,6 +1,5 @@
 """Tests for project setup: package layout, metadata, dependencies, and entrypoint."""
 
-import importlib
 import importlib.metadata
 from pathlib import Path
 

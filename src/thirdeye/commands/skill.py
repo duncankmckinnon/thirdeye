@@ -80,7 +80,7 @@ def _install_one(name: str, dest: Path, *, force: bool) -> str:
         dest.symlink_to(source, target_is_directory=True)
     except OSError:
         shutil.copytree(source, dest)
-        (dest / SKILL_SRC_MARKER).write_text(str(source), encoding="utf-8")
+        (dest / SKILL_SRC_MARKER).write_text(str(source), encoding="utf-8", newline="\n")
     return f"Installed {name} skill at {dest}"
 
 

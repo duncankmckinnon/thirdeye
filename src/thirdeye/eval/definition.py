@@ -61,7 +61,7 @@ def load_definition(thirdeye_home: Path, name: str) -> EvalDefinition:
                 f"no eval definition named '{name}' (checked {user_path} and shipped defaults)"
             )
         user_path.parent.mkdir(parents=True, exist_ok=True)
-        user_path.write_text(shipped.read_text(encoding="utf-8"), encoding="utf-8")
+        user_path.write_text(shipped.read_text(encoding="utf-8"), encoding="utf-8", newline="\n")
     data = yaml.safe_load(user_path.read_text(encoding="utf-8")) or {}
     return EvalDefinition.from_dict(data)
 
@@ -73,7 +73,7 @@ def save_definition(thirdeye_home: Path, defn: EvalDefinition, *, force: bool = 
         raise FileExistsError(f"definition '{defn.name}' already exists at {path}")
     path.parent.mkdir(parents=True, exist_ok=True)
     tmp = path.with_suffix(path.suffix + ".tmp")
-    tmp.write_text(defn.to_yaml(), encoding="utf-8")
+    tmp.write_text(defn.to_yaml(), encoding="utf-8", newline="\n")
     fsops.replace(tmp, path)
     return path
 

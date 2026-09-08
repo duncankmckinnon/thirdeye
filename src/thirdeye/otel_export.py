@@ -389,7 +389,7 @@ def _message(role: str, content: str) -> list[dict[str, Any]]:
 
 def _read_root(path: Path) -> tuple[int, int] | None:
     try:
-        raw = json.loads(path.read_text())
+        raw = json.loads(path.read_text(encoding="utf-8"))
         return int(raw["trace_id"], 16), int(raw["span_id"], 16)
     except (OSError, ValueError, KeyError, json.JSONDecodeError):
         return None
@@ -477,7 +477,7 @@ def _write_job(thirdeye_home: Path, payload: dict[str, Any]) -> Path:
     jobs_dir = otel_jobs_dir(thirdeye_home)
     jobs_dir.mkdir(parents=True, exist_ok=True)
     job_path = jobs_dir / f"{new_ulid()}.json"
-    job_path.write_text(json.dumps(payload, default=str))
+    job_path.write_text(json.dumps(payload, default=str), encoding="utf-8", newline="\n")
     return job_path
 
 
@@ -511,7 +511,7 @@ def _turn_claim_path(session_dir_: Path, turn_id: str) -> Path:
 def turn_export_sent(session_dir_: Path, turn_id: str) -> bool:
     """Whether a turn's span tree was fully exported to Logfire."""
     try:
-        return _turn_claim_path(session_dir_, turn_id).read_text() == "sent"
+        return _turn_claim_path(session_dir_, turn_id).read_text(encoding="utf-8") == "sent"
     except OSError:
         return False
 
@@ -528,7 +528,7 @@ def _claim_turn_export(session_dir_: Path, turn_id: str) -> bool:
     """
     claim_path = _turn_claim_path(session_dir_, turn_id)
     try:
-        state = claim_path.read_text()
+        state = claim_path.read_text(encoding="utf-8")
     except OSError:
         state = ""
     if state == "sent":
@@ -663,7 +663,7 @@ def export_subagent_turn(
         return
     try:
         try:
-            state = json.loads(otel_state_path(session_dir_).read_text())
+            state = json.loads(otel_state_path(session_dir_).read_text(encoding="utf-8"))
             trace_id = int(state["trace_id"], 16)
         except (OSError, TypeError, ValueError, KeyError, json.JSONDecodeError):
             trace_id = trace_id_for_session(platform, session_id)
@@ -768,7 +768,7 @@ def _export_turn_inner(
     except Exception:
         fsops.unlink(claim_path, missing_ok=True)
         raise
-    claim_path.write_text("sent")
+    claim_path.write_text("sent", encoding="utf-8", newline="\n")
 
 
 def _export_subagent_turn_inner(
@@ -818,7 +818,7 @@ def _export_subagent_turn_inner(
     except Exception:
         fsops.unlink(claim_path, missing_ok=True)
         raise
-    claim_path.write_text("sent")
+    claim_path.write_text("sent", encoding="utf-8", newline="\n")
 
 
 @lru_cache(maxsize=128)

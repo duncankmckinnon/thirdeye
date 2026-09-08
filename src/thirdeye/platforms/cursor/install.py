@@ -19,7 +19,7 @@ def _load(path: Path) -> dict:
     if not path.exists():
         return {"version": 1, "hooks": {}}
     try:
-        data = json.loads(path.read_text())
+        data = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError):
         return {"version": 1, "hooks": {}}
     if not isinstance(data, dict):
@@ -32,7 +32,7 @@ def _load(path: Path) -> dict:
 
 def _save(path: Path, data: dict) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(data, indent=2) + "\n")
+    path.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8", newline="\n")
 
 
 def _is_ours(entry: object) -> bool:

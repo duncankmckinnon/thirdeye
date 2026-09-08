@@ -396,10 +396,10 @@ def test_eval_runner_records_live_pid(home: Path, monkeypatch: pytest.MonkeyPatc
         assert pid_alive(job["pid"]) is True
         log_path = Path(job["log_path"])
         for _ in range(100):
-            if "worker is live" in log_path.read_text():
+            if "worker is live" in log_path.read_text(encoding="utf-8"):
                 break
             time.sleep(0.01)
-        assert "worker is live" in log_path.read_text()
+        assert "worker is live" in log_path.read_text(encoding="utf-8")
     finally:
         for worker in workers:
             worker.terminate()

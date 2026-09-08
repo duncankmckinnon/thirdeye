@@ -81,9 +81,9 @@ def test_htmx_vendored_with_version_comment(client):
     body = r.content
     # The plan requires the first line to be a vendor comment naming v2.0.4.
     first_line = body.splitlines()[0]
-    assert (
-        b"htmx" in first_line and b"v2.0.4" in first_line
-    ), f"missing vendor comment header, got: {first_line!r}"
+    assert b"htmx" in first_line and b"v2.0.4" in first_line, (
+        f"missing vendor comment header, got: {first_line!r}"
+    )
     # File must be more than just a stub: still has to define the htmx global
     # / canonical attribute string referenced by future templates.
     assert b"htmx" in body

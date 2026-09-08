@@ -15,6 +15,7 @@ classifiers = [
   "Programming Language :: Python :: 3.14",
   "Operating System :: POSIX",
   "Operating System :: MacOS",
+  "Operating System :: Microsoft :: Windows",
   "Topic :: Software Development",
   "Topic :: Utilities",
 ]
@@ -124,10 +125,10 @@ line-length = 100
 target-version = "py311"
 
 [tool.ruff.lint]
-select = ["E", "F", "W", "I", "B", "UP"]
+preview = true
+select = ["E", "F", "W", "I", "B", "UP", "PLW1514"]
 ignore = [
   "E501",   # line length handled by formatter
-  "UP038",  # isinstance(x, (A, B)) is fine; X | Y is a stylistic preference
 ]
 
 [tool.ruff.lint.per-file-ignores]

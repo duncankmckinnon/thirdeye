@@ -102,7 +102,7 @@ class TestTagStoreAdd:
         store.add(1, "foo")
         store.add(1, "bar")
         store.add(2, "baz")
-        with open(tags_path(tmp_path)) as f:
+        with open(tags_path(tmp_path), encoding="utf-8") as f:
             lines = [ln for ln in f.read().splitlines() if ln]
         assert len(lines) == 3
 
@@ -110,7 +110,7 @@ class TestTagStoreAdd:
         store = TagStore(tmp_path)
         store.add(1, "foo")
         store.add(1, "foo")
-        with open(tags_path(tmp_path)) as f:
+        with open(tags_path(tmp_path), encoding="utf-8") as f:
             lines = [ln for ln in f.read().splitlines() if ln]
         assert len(lines) == 2
 
@@ -123,7 +123,7 @@ class TestTagStoreAdd:
     def test_line_shape(self, tmp_path: Path):
         store = TagStore(tmp_path)
         store.add(7, "foo", source="manual")
-        with open(tags_path(tmp_path)) as f:
+        with open(tags_path(tmp_path), encoding="utf-8") as f:
             line = f.readline().rstrip("\n")
         entry = json.loads(line)
         assert entry["seq"] == 7
@@ -135,7 +135,7 @@ class TestTagStoreAdd:
     def test_auto_source(self, tmp_path: Path):
         store = TagStore(tmp_path)
         store.add(1, "foo", source="auto")
-        with open(tags_path(tmp_path)) as f:
+        with open(tags_path(tmp_path), encoding="utf-8") as f:
             entry = json.loads(f.readline())
         assert entry["source"] == "auto"
 
@@ -155,7 +155,7 @@ class TestTagStoreRemove:
     def test_remove_absent_tag_appended_but_set_empty(self, tmp_path: Path):
         store = TagStore(tmp_path)
         store.remove(1, "foo")
-        with open(tags_path(tmp_path)) as f:
+        with open(tags_path(tmp_path), encoding="utf-8") as f:
             lines = [ln for ln in f.read().splitlines() if ln]
         assert len(lines) == 1
         assert store.tags_for(1) == set()
@@ -184,7 +184,7 @@ class TestTagStoreCorruptLine:
     def test_skips_garbage_with_warning(self, tmp_path: Path, capsys):
         path = tags_path(tmp_path)
         path.parent.mkdir(parents=True, exist_ok=True)
-        with open(path, "w") as f:
+        with open(path, "w", encoding="utf-8", newline="\n") as f:
             f.write(json.dumps({"seq": 1, "tag": "foo", "op": "add"}) + "\n")
             f.write("this is not json\n")
             f.write(json.dumps({"seq": 2, "tag": "bar", "op": "add"}) + "\n")
@@ -197,7 +197,7 @@ class TestTagStoreCorruptLine:
     def test_skips_missing_field_with_warning(self, tmp_path: Path, capsys):
         path = tags_path(tmp_path)
         path.parent.mkdir(parents=True, exist_ok=True)
-        with open(path, "w") as f:
+        with open(path, "w", encoding="utf-8", newline="\n") as f:
             f.write(json.dumps({"seq": 1, "tag": "foo", "op": "add"}) + "\n")
             f.write(json.dumps({"seq": 2, "tag": "bar"}) + "\n")  # no op
             f.write(json.dumps({"seq": 3, "tag": "baz", "op": "add"}) + "\n")
