@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import json
-import os  # noqa: F401  -- re-exported for tests that monkeypatch `store.os.replace`
 from collections.abc import Iterator
 from pathlib import Path
 from typing import Any
