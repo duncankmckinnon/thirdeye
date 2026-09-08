@@ -2,13 +2,16 @@
 
 from __future__ import annotations
 
+import os
 import threading
 from dataclasses import asdict
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 import yaml
 
+from thirdeye._compat import fsops
 from thirdeye.meta import SCHEMA_VERSION, SessionMeta, read_meta, write_meta
 
 
@@ -115,6 +118,29 @@ class TestAtomicWrite:
         got = read_meta(p)
         assert got.status == "closed"
         assert got.ended_at == "2026-04-30T18:00:00.000Z"
+
+    def test_write_meta_retries_on_windows_permission_error(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ):
+        path = tmp_path / "meta.yaml"
+        meta = _sample()
+        calls = 0
+        real_replace = os.replace
+
+        def replace_once_locked(src: str | Path, dst: str | Path) -> None:
+            nonlocal calls
+            calls += 1
+            if calls == 1:
+                raise PermissionError
+            real_replace(src, dst)
+
+        monkeypatch.setattr(fsops, "IS_WINDOWS", True)
+        monkeypatch.setattr(fsops, "os", SimpleNamespace(replace=replace_once_locked))
+
+        write_meta(path, meta)
+
+        assert calls == 2
+        assert read_meta(path) == meta
 
 
 # -- Concurrent writers ----------------------------------------------------------
