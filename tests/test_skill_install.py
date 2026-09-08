@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import shutil
 from pathlib import Path
 from unittest.mock import patch
 
@@ -7,7 +8,7 @@ import pytest
 from click.testing import CliRunner
 
 from thirdeye.cli import main
-from thirdeye.commands.skill import _list_bundled_skills, add, skills_group
+from thirdeye.commands.skill import _install_state, _list_bundled_skills, add, skills_group
 
 
 @pytest.fixture
@@ -24,6 +25,11 @@ def _run(fake_skill: Path, args: list[str]) -> object:
         return runner.invoke(add, args, catch_exceptions=False)
 
 
+def _install_state_for(fake_skill: Path, dest: Path) -> str:
+    with patch("thirdeye.commands.skill._bundled_skill_root", return_value=fake_skill):
+        return _install_state("use-thirdeye", dest)
+
+
 def test_install_creates_symlink_at_default(
     fake_skill: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -31,8 +37,7 @@ def test_install_creates_symlink_at_default(
     result = _run(fake_skill, [])
     assert result.exit_code == 0
     dest = tmp_path / ".agents" / "skills" / "use-thirdeye"
-    assert dest.is_symlink()
-    assert dest.resolve() == fake_skill.resolve()
+    assert _install_state_for(fake_skill, dest) == "installed"
 
 
 def test_install_idempotent(
@@ -66,7 +71,7 @@ def test_install_force_replaces(
     dest.write_text("not a symlink")
     result = _run(fake_skill, ["--force"])
     assert result.exit_code == 0
-    assert dest.is_symlink()
+    assert _install_state_for(fake_skill, dest) == "installed"
 
 
 def test_install_custom_target_folder(fake_skill: Path, tmp_path: Path) -> None:
@@ -74,8 +79,7 @@ def test_install_custom_target_folder(fake_skill: Path, tmp_path: Path) -> None:
     result = _run(fake_skill, ["-p", str(custom)])
     assert result.exit_code == 0
     installed = custom / "use-thirdeye"
-    assert installed.is_symlink()
-    assert installed.resolve() == fake_skill.resolve()
+    assert _install_state_for(fake_skill, installed) == "installed"
 
 
 def test_install_expands_user(
@@ -84,7 +88,10 @@ def test_install_expands_user(
     monkeypatch.setenv("HOME", str(tmp_path))
     result = _run(fake_skill, ["--path", "~/.claude/skills"])
     assert result.exit_code == 0
-    assert (tmp_path / ".claude" / "skills" / "use-thirdeye").is_symlink()
+    assert (
+        _install_state_for(fake_skill, tmp_path / ".claude" / "skills" / "use-thirdeye")
+        == "installed"
+    )
 
 
 def test_install_rejects_custom_path_with_agent_flag(fake_skill: Path, tmp_path: Path) -> None:
@@ -138,8 +145,14 @@ def test_install_claude_and_codex_together(
     monkeypatch.chdir(tmp_path)
     result = _run(fake_skill, ["--claude", "--codex"])
     assert result.exit_code == 0
-    assert (tmp_path / ".claude" / "skills" / "use-thirdeye").is_symlink()
-    assert (tmp_path / ".codex" / "skills" / "use-thirdeye").is_symlink()
+    assert (
+        _install_state_for(fake_skill, tmp_path / ".claude" / "skills" / "use-thirdeye")
+        == "installed"
+    )
+    assert (
+        _install_state_for(fake_skill, tmp_path / ".codex" / "skills" / "use-thirdeye")
+        == "installed"
+    )
 
 
 def test_plural_top_level_command_replaces_singular() -> None:
@@ -154,4 +167,65 @@ def test_long_path_option_accepts_equals_syntax(fake_skill: Path, tmp_path: Path
     target = tmp_path / "skills"
     result = _run(fake_skill, [f"--path={target}"])
     assert result.exit_code == 0
-    assert (target / "use-thirdeye").is_symlink()
+    assert _install_state_for(fake_skill, target / "use-thirdeye") == "installed"
+
+
+def test_copy_fallback_when_symlink_unsupported(
+    fake_skill: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.chdir(tmp_path)
+
+    def unsupported_symlink(
+        self: Path, target: str | Path, target_is_directory: bool = False
+    ) -> None:
+        raise OSError("directory symlinks unsupported")
+
+    monkeypatch.setattr(Path, "symlink_to", unsupported_symlink)
+    result = _run(fake_skill, [])
+
+    assert result.exit_code == 0
+    dest = tmp_path / ".agents" / "skills" / "use-thirdeye"
+    assert dest.is_dir()
+    assert (dest / "SKILL.md").is_file()
+    assert (dest / ".thirdeye-skill-src").read_text(encoding="utf-8") == str(fake_skill.resolve())
+
+
+def test_install_state_installed_for_copy(fake_skill: Path, tmp_path: Path) -> None:
+    dest = tmp_path / "skills" / "use-thirdeye"
+    shutil.copytree(fake_skill, dest)
+    (dest / ".thirdeye-skill-src").write_text(str(fake_skill.resolve()), encoding="utf-8")
+
+    assert _install_state_for(fake_skill, dest) == "installed"
+
+
+def test_install_state_conflict_for_foreign_marker(fake_skill: Path, tmp_path: Path) -> None:
+    dest = tmp_path / "skills" / "use-thirdeye"
+    shutil.copytree(fake_skill, dest)
+    (dest / ".thirdeye-skill-src").write_text(str(tmp_path / "different-source"), encoding="utf-8")
+
+    assert _install_state_for(fake_skill, dest) == "conflict"
+
+
+def test_force_replaces_stale_copy(
+    fake_skill: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    dest = tmp_path / ".agents" / "skills" / "use-thirdeye"
+    dest.parent.mkdir(parents=True)
+    shutil.copytree(fake_skill, dest)
+    (dest / ".thirdeye-skill-src").write_text("/stale/source", encoding="utf-8")
+    (dest / "stale-file").write_text("stale", encoding="utf-8")
+
+    def unsupported_symlink(
+        self: Path, target: str | Path, target_is_directory: bool = False
+    ) -> None:
+        raise OSError("directory symlinks unsupported")
+
+    monkeypatch.setattr(Path, "symlink_to", unsupported_symlink)
+    result = _run(fake_skill, ["--force"])
+
+    assert result.exit_code == 0
+    assert dest.is_dir()
+    assert not (dest / "stale-file").exists()
+    assert (dest / "SKILL.md").is_file()
+    assert (dest / ".thirdeye-skill-src").read_text(encoding="utf-8") == str(fake_skill.resolve())
