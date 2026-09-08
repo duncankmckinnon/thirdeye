@@ -1,4 +1,4 @@
-from thirdeye.cli import main
+from thirdeye.cli import run
 
 if __name__ == "__main__":
-    main()
+    run()

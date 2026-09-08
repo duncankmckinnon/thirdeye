@@ -32,8 +32,8 @@ Homepage = "https://github.com/duncankmckinnon/thirdeye"
 Issues = "https://github.com/duncankmckinnon/thirdeye/issues"
 
 [project.scripts]
-thirdeye = "thirdeye.cli:main"
-thrdi = "thirdeye.cli:main"
+thirdeye = "thirdeye.cli:run"
+thrdi = "thirdeye.cli:run"
 thirdeye-claude-session-start = "thirdeye.platforms.claude.hooks:session_start"
 thirdeye-claude-user-prompt-submit = "thirdeye.platforms.claude.hooks:user_prompt_submit"
 thirdeye-claude-pre-tool-use = "thirdeye.platforms.claude.hooks:pre_tool_use"
