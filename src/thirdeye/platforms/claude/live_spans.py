@@ -1,10 +1,10 @@
 from __future__ import annotations
 
-import fcntl
 import json
 from pathlib import Path
 from typing import Any
 
+from thirdeye._compat.locking import LockMode
 from thirdeye.config import Config
 from thirdeye.otel_export import export_spans
 from thirdeye.paths import otel_state_path
@@ -161,7 +161,7 @@ def _emit_live_spans(
     if not config.logfire.enabled or not config.logfire.token:
         return
 
-    with _locked_open_turn(session_dir_, fcntl.LOCK_EX):
+    with _locked_open_turn(session_dir_, LockMode.EXCLUSIVE):
         marker = _read_open_turn_unlocked(session_dir_)
         if marker is None:
             _log_skip(config, session_id, tool_use_id, "no_open_turn_marker")

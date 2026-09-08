@@ -9,13 +9,14 @@ when the completed turn arrives a moment later.
 from __future__ import annotations
 
 import contextlib
-import fcntl
 import json
 import os
 from collections.abc import Iterator
 from pathlib import Path
 from typing import Any
 
+from thirdeye._compat import fsops
+from thirdeye._compat.locking import LockMode, locked
 from thirdeye.config import Config
 from thirdeye.otel_export import export_spans
 from thirdeye.paths import otel_state_path
@@ -90,14 +91,8 @@ def _lock_path(session_dir_: Path) -> Path:
 
 @contextlib.contextmanager
 def _locked(session_dir_: Path) -> Iterator[None]:
-    path = _lock_path(session_dir_)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    with path.open("a+") as lock:
-        fcntl.flock(lock.fileno(), fcntl.LOCK_EX)
-        try:
-            yield
-        finally:
-            fcntl.flock(lock.fileno(), fcntl.LOCK_UN)
+    with locked(_lock_path(session_dir_), LockMode.EXCLUSIVE):
+        yield
 
 
 def _read_state(session_dir_: Path) -> dict[str, list[str]]:
@@ -119,7 +114,7 @@ def _write_state(session_dir_: Path, state: dict[str, list[str]]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     tmp = path.with_suffix(f".tmp.{os.getpid()}")
     tmp.write_text(json.dumps(state, separators=(",", ":")))
-    os.replace(tmp, path)
+    fsops.replace(tmp, path)
 
 
 def committed_tool_call_ids(session_dir_: Path, generation_id: str) -> set[str]:
