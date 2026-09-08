@@ -62,8 +62,8 @@ import logging
 import os
 
 # Spawning now goes through `thirdeye._compat.proc`, but the symbol stays
-# imported: `subprocess.DEVNULL` remains this module's default stdio handle and
-# existing tests patch `otel_export.subprocess.Popen` to assert nothing spawns.
+# imported because existing baseline tests patch `otel_export.subprocess.Popen`;
+# the shared module object also patches the compatibility shim's underlying call.
 import subprocess  # noqa: F401
 import sys
 import time

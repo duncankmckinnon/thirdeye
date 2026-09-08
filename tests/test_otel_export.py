@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import json
+import subprocess
+import sys
 from pathlib import Path
 from typing import Any
 
@@ -419,7 +421,10 @@ class TestExportTurnDispatch:
         argv, kwargs = calls[0]
         assert argv[0] == otel_export.sys.executable
         assert argv[1:3] == ["-m", "thirdeye.otel_worker"]
-        assert kwargs["start_new_session"] is True
+        if sys.platform == "win32":
+            assert kwargs.get("creationflags", 0) & subprocess.DETACHED_PROCESS
+        else:
+            assert kwargs["start_new_session"] is True
         assert kwargs["stdin"] is otel_export.subprocess.DEVNULL
 
     def test_otel_spawn_delegates_to_spawn_detached(
@@ -608,7 +613,10 @@ class TestExportSpansDispatch:
         assert len(calls) == 1
         argv, kwargs = calls[0]
         assert argv[:3] == [otel_export.sys.executable, "-m", "thirdeye.otel_worker"]
-        assert kwargs["start_new_session"] is True
+        if sys.platform == "win32":
+            assert kwargs.get("creationflags", 0) & subprocess.DETACHED_PROCESS
+        else:
+            assert kwargs["start_new_session"] is True
         job_path = Path(argv[3])
         payload = json.loads(job_path.read_text())
         assert payload == {

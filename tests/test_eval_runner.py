@@ -333,12 +333,12 @@ def test_run_eval_background_writes_stub_and_returns_job_id(
     class FakeProc:
         pid = 99999
 
-    def fake_popen(cmd, **kwargs):
+    def fake_spawn_detached(cmd, **kwargs):
         recorded["cmd"] = cmd
         recorded["kwargs"] = kwargs
         return FakeProc()
 
-    monkeypatch.setattr(subprocess, "Popen", fake_popen)
+    monkeypatch.setattr("thirdeye.eval.runner.proc.spawn_detached", fake_spawn_detached)
 
     job_id = run_eval_background(
         thirdeye_home=home,
@@ -355,7 +355,7 @@ def test_run_eval_background_writes_stub_and_returns_job_id(
     assert job["agent"] == "claude"
     assert job["pid"] == 99999
     assert recorded["cmd"][1:5] == ["eval", "_run-worker", job_id, "claude"]
-    assert recorded["kwargs"].get("start_new_session") is True
+    assert recorded["kwargs"]["stdout"].closed
 
 
 def test_eval_runner_records_live_pid(home: Path, monkeypatch: pytest.MonkeyPatch):
