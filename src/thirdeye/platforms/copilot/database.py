@@ -11,7 +11,8 @@ import base64
 import hashlib
 import json
 import sqlite3
-from collections.abc import Iterable
+from collections.abc import Iterable, Iterator, Sequence
+from contextlib import contextmanager
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -26,9 +27,16 @@ _SESSION_ID_COLUMNS = {
     "turns": ("session_id",),
     "assistant_usage_events": ("session_id",),
 }
-_PRIMARY_KEY_COLUMNS = ("id", "uuid", "event_id")
 _TIMESTAMP_COLUMNS = ("created_at", "createdAt", "timestamp", "updated_at", "updatedAt")
 _CWD_COLUMNS = ("cwd", "working_directory", "workingDirectory")
+_BUSY_TOKENS = ("locked", "busy")
+_INCOMPATIBLE_TOKENS = (
+    "file is not a database",
+    "malformed",
+    "corrupt",
+    "disk image is malformed",
+    "not a database",
+)
 
 
 def _diagnostic(code: str, message: str, **details: Any) -> dict[str, Any]:
@@ -50,6 +58,10 @@ def _json_value(value: Any) -> Any:
         return _json_value(value.tobytes())
     if isinstance(value, float) and (value != value or value in (float("inf"), float("-inf"))):
         return {"encoding": "repr", "data": repr(value)}
+    if isinstance(value, dict):
+        return {str(key): _json_value(item) for key, item in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_json_value(item) for item in value]
     return value
 
 
@@ -67,43 +79,66 @@ def _quote_identifier(name: str) -> str:
     return '"' + name.replace('"', '""') + '"'
 
 
-def _database_generation(database: Path) -> str:
-    """Identify the database and its live WAL without opening it for writing."""
+def _file_generation(database: Path) -> str:
+    """Identify the database file incarnation without consulting live WAL metadata.
 
-    parts: list[dict[str, Any]] = []
-    for candidate in (database, Path(f"{database}-wal")):
-        try:
-            stat = candidate.stat()
-        except FileNotFoundError:
-            parts.append({"path": candidate.name, "missing": True})
-        else:
-            parts.append(
-                {
-                    "path": candidate.name,
-                    "device": stat.st_dev,
-                    "inode": stat.st_ino,
-                    "size": stat.st_size,
-                    "mtime_ns": stat.st_mtime_ns,
-                }
-            )
-    return "sha256:" + hashlib.sha256(_canonical_json(parts).encode("utf-8")).hexdigest()
+    WAL size and mtime change independently of this session's rows.  Device and
+    inode still change when the file is replaced, which is the signal needed to
+    detect row-ID reuse across a new database.
+    """
+
+    try:
+        stat = database.stat()
+    except FileNotFoundError:
+        payload: dict[str, Any] = {"path": database.name, "missing": True}
+    else:
+        payload = {"path": database.name, "device": stat.st_dev, "inode": stat.st_ino}
+    return "sha256:" + hashlib.sha256(_canonical_json(payload).encode("utf-8")).hexdigest()
+
+
+def _snapshot_generation(rows: Sequence[tuple[str, Any, dict[str, Any]]]) -> str:
+    """Hash this session's row identities and revisions for pagination."""
+
+    fingerprint = [
+        {
+            "table": table,
+            "primary_key": _json_value(primary_key),
+            "revision": _content_revision(row),
+        }
+        for table, primary_key, row in rows
+    ]
+    return "sha256:" + hashlib.sha256(_canonical_json(fingerprint).encode("utf-8")).hexdigest()
 
 
 def _connect(database: Path) -> sqlite3.Connection:
     # ``mode=ro`` keeps SQLite's normal WAL behaviour while preventing all
     # writes.  In particular, do not use immutable=1: it ignores live WAL data.
     connection = sqlite3.connect(database.resolve().as_uri() + "?mode=ro", uri=True, timeout=0.1)
-    connection.row_factory = sqlite3.Row
-    connection.execute("PRAGMA busy_timeout = 100")
-    connection.execute("BEGIN")
-    return connection
+    try:
+        connection.row_factory = sqlite3.Row
+        connection.execute("PRAGMA busy_timeout = 100")
+        connection.execute("BEGIN")
+        return connection
+    except Exception:
+        connection.close()
+        raise
 
 
-def _table_columns(connection: sqlite3.Connection, table: str) -> list[str]:
-    return [
-        str(row["name"])
-        for row in connection.execute(f"PRAGMA table_info({_quote_identifier(table)})")
-    ]
+@contextmanager
+def _readonly_connection(database: Path) -> Iterator[sqlite3.Connection]:
+    connection = _connect(database)
+    try:
+        yield connection
+    finally:
+        connection.close()
+
+
+def _table_info(connection: sqlite3.Connection, table: str) -> list[sqlite3.Row]:
+    return list(connection.execute(f"PRAGMA table_info({_quote_identifier(table)})"))
+
+
+def _column_names(info: Iterable[sqlite3.Row]) -> list[str]:
+    return [str(row["name"]) for row in info]
 
 
 def _available_tables(connection: sqlite3.Connection) -> set[str]:
@@ -118,9 +153,31 @@ def _session_column(table: str, columns: Iterable[str]) -> str | None:
     return next((name for name in _SESSION_ID_COLUMNS[table] if name in known), None)
 
 
-def _primary_key_column(columns: Iterable[str]) -> str | None:
-    known = set(columns)
-    return next((name for name in _PRIMARY_KEY_COLUMNS if name in known), None)
+def _primary_key_columns(info: Iterable[sqlite3.Row]) -> list[str] | None:
+    keyed = [(int(row["pk"]), str(row["name"])) for row in info if int(row["pk"]) > 0]
+    if not keyed:
+        return None
+    keyed.sort()
+    return [name for _, name in keyed]
+
+
+def _session_scope_column(
+    table: str, columns: Iterable[str], pk_columns: list[str] | None
+) -> str | None:
+    scoped = _session_column(table, columns)
+    if scoped is not None:
+        return scoped
+    # Observed Copilot sessions use ``id``; if a compatible schema names that
+    # single primary key differently, the key still *is* the native session ID.
+    if table == "sessions" and pk_columns is not None and len(pk_columns) == 1:
+        return pk_columns[0]
+    return None
+
+
+def _row_identity(row: dict[str, Any], pk_columns: Sequence[str]) -> Any:
+    if len(pk_columns) == 1:
+        return row[pk_columns[0]]
+    return {name: row[name] for name in pk_columns}
 
 
 def _valid_source_time(row: dict[str, Any]) -> str | None:
@@ -180,8 +237,42 @@ def _empty_slice(diagnostics: list[dict[str, Any]]) -> SourceSlice:
     }
 
 
+def _operational_diagnostic(error: sqlite3.OperationalError, database: Path) -> dict[str, Any]:
+    message = str(error).lower()
+    if any(token in message for token in _BUSY_TOKENS):
+        return _diagnostic(
+            "copilot_database_busy",
+            "Copilot session database could not be read within 100ms; retry sync or watch",
+            path=str(database),
+            reason=str(error),
+        )
+    if any(token in message for token in _INCOMPATIBLE_TOKENS):
+        return _diagnostic(
+            "copilot_database_incompatible",
+            "Copilot session database could not be read as SQLite evidence",
+            path=str(database),
+            reason=str(error),
+        )
+    return _diagnostic(
+        "copilot_database_unreadable",
+        "Copilot session database could not be opened for read-only evidence",
+        path=str(database),
+        reason=str(error),
+    )
+
+
+def _session_ids_from_table(
+    connection: sqlite3.Connection, table: str, session_column: str
+) -> list[str]:
+    rows = connection.execute(
+        f"SELECT {_quote_identifier(session_column)} FROM {_quote_identifier(table)} "
+        f"WHERE {_quote_identifier(session_column)} IS NOT NULL"
+    )
+    return [str(row[0]) for row in rows if isinstance(row[0], str)]
+
+
 def discover_database_sessions(paths: SourcePaths) -> list[str]:
-    """Return session IDs advertised by a readable Copilot sessions table.
+    """Return session IDs advertised by any readable allowlisted table.
 
     Discovery is intentionally conservative: a malformed or absent database is
     simply not a discoverable source.  ``read_database`` supplies the actionable
@@ -192,21 +283,23 @@ def discover_database_sessions(paths: SourcePaths) -> list[str]:
     if not database.is_file():
         return []
     try:
-        with _connect(database) as connection:
-            if "sessions" not in _available_tables(connection):
-                return []
-            columns = _table_columns(connection, "sessions")
-            session_column = _session_column("sessions", columns)
-            if session_column is None:
-                return []
-            rows = connection.execute(
-                f"SELECT {_quote_identifier(session_column)} FROM sessions "
-                f"WHERE {_quote_identifier(session_column)} IS NOT NULL"
-            )
-            values = [str(row[0]) for row in rows if isinstance(row[0], str)]
+        with _readonly_connection(database) as connection:
+            available = _available_tables(connection)
+            values: set[str] = set()
+            for table in _TABLES:
+                if table not in available:
+                    continue
+                info = _table_info(connection, table)
+                columns = _column_names(info)
+                session_column = _session_scope_column(
+                    table, columns, _primary_key_columns(info)
+                )
+                if session_column is None:
+                    continue
+                values.update(_session_ids_from_table(connection, table, session_column))
     except sqlite3.Error:
         return []
-    return sorted(set(values))
+    return sorted(values)
 
 
 def read_database(
@@ -219,8 +312,9 @@ def read_database(
     """Read a bounded, transactionally consistent raw SQLite snapshot.
 
     Every poll re-reads the selected session, because turns and sessions are
-    mutable.  A generation/offset cursor only bounds delivery of that snapshot;
-    it never assumes a row ID is an immutable record identity.
+    mutable.  Pagination is keyed to this session's logical snapshot so WAL
+    metadata from other writers cannot starve later rows.  A changed snapshot
+    replays from the start so updated earlier rows are not skipped.
     """
 
     validate_native_id(native_id)
@@ -251,12 +345,12 @@ def read_database(
 
     diagnostics: list[dict[str, Any]] = []
     observed_at = _observed_at()
-    generation = _database_generation(database)
+    file_generation = _file_generation(database)
+    rows_by_table: list[tuple[str, Any, dict[str, Any]]] = []
+    cwd: str | None = None
     try:
-        with _connect(database) as connection:
+        with _readonly_connection(database) as connection:
             available = _available_tables(connection)
-            rows_by_table: list[tuple[str, Any, dict[str, Any]]] = []
-            cwd: str | None = None
             for table in _TABLES:
                 if table not in available:
                     diagnostics.append(
@@ -267,9 +361,10 @@ def read_database(
                         )
                     )
                     continue
-                columns = _table_columns(connection, table)
-                session_column = _session_column(table, columns)
-                primary_column = _primary_key_column(columns)
+                info = _table_info(connection, table)
+                columns = _column_names(info)
+                pk_columns = _primary_key_columns(info)
+                session_column = _session_scope_column(table, columns, pk_columns)
                 if session_column is None:
                     diagnostics.append(
                         _diagnostic(
@@ -281,21 +376,21 @@ def read_database(
                         )
                     )
                     continue
-                if primary_column is None:
+                if pk_columns is None:
                     diagnostics.append(
                         _diagnostic(
                             "copilot_database_missing_primary_key",
-                            "Copilot table lacks a supported stable row identity",
+                            "Copilot table lacks a SQLite PRIMARY KEY that can identify rows",
                             table=table,
-                            expected=list(_PRIMARY_KEY_COLUMNS),
                             columns=columns,
                         )
                     )
                     continue
+                order = ", ".join(_quote_identifier(name) for name in pk_columns)
                 query = (
                     f"SELECT * FROM {_quote_identifier(table)} "
                     f"WHERE {_quote_identifier(session_column)} = ? "
-                    f"ORDER BY {_quote_identifier(primary_column)}"
+                    f"ORDER BY {order}"
                 )
                 for sql_row in connection.execute(query, (native_id,)):
                     row = {key: _json_value(sql_row[key]) for key in sql_row.keys()}
@@ -304,18 +399,9 @@ def read_database(
                             (row[name] for name in _CWD_COLUMNS if isinstance(row.get(name), str)),
                             None,
                         )
-                    rows_by_table.append((table, row[primary_column], row))
+                    rows_by_table.append((table, _row_identity(row, pk_columns), row))
     except sqlite3.OperationalError as error:
-        return _empty_slice(
-            [
-                _diagnostic(
-                    "copilot_database_busy",
-                    "Copilot session database could not be read within 100ms; retry sync or watch",
-                    path=str(database),
-                    reason=str(error),
-                )
-            ]
-        )
+        return _empty_slice([_operational_diagnostic(error, database)])
     except sqlite3.Error as error:
         return _empty_slice(
             [
@@ -333,6 +419,7 @@ def read_database(
     rows_by_table.sort(
         key=lambda item: (_TABLES.index(item[0]), _canonical_json(_json_value(item[1])))
     )
+    generation = _snapshot_generation(rows_by_table)
     incoming_generation = cursor.get("database_generation") if isinstance(cursor, dict) else None
     incoming_offset = cursor.get("database_offset", 0) if isinstance(cursor, dict) else 0
     offset = (
@@ -343,7 +430,7 @@ def read_database(
     offset = max(0, offset)
     selected = rows_by_table[offset : offset + max_records]
     records = [
-        _row_record(paths, native_id, table, primary_key, row, generation, observed_at)
+        _row_record(paths, native_id, table, primary_key, row, file_generation, observed_at)
         for table, primary_key, row in selected
     ]
     next_offset = offset + len(selected)
