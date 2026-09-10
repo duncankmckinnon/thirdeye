@@ -2,12 +2,10 @@
 
 from __future__ import annotations
 
-import json
 import subprocess
 import sys
 import threading
 from pathlib import Path
-from typing import Any
 
 import pytest
 
@@ -15,7 +13,7 @@ from thirdeye.config import Config
 from thirdeye.platforms.copilot.hook_payload import parse_hook
 from thirdeye.platforms.copilot.identity import resolve_sources
 from thirdeye.platforms.copilot.spool import ack_spool, enqueue_hook, read_spool
-from thirdeye.platforms.copilot.types import SourceRecord, SourcePaths
+from thirdeye.platforms.copilot.types import SourcePaths, SourceRecord
 
 NATIVE_SESSION_ID = "5a7e8e11-4a6b-49ff-a33e-95d411c4cdd6"
 OBSERVED_AT = "2026-09-10T17:08:25.626Z"
@@ -154,13 +152,15 @@ def test_spool_survives_subprocess_isolation(tmp_path: Path):
     copilot_home.mkdir()
     config_root = tmp_path / "thirdeye"
     script = f"""
+from pathlib import Path
+
 from thirdeye.config import Config
 from thirdeye.platforms.copilot.hook_payload import parse_hook
 from thirdeye.platforms.copilot.identity import resolve_sources
 from thirdeye.platforms.copilot.spool import enqueue_hook, read_spool
 
-config = Config(root={config_root!r})
-paths = resolve_sources({copilot_home!r})
+config = Config(root=Path({str(config_root)!r}))
+paths = resolve_sources(Path({str(copilot_home)!r}))
 record = parse_hook(
     "sessionStart",
     {{"sessionId": {NATIVE_SESSION_ID!r}, "timestamp": 1789060102204}},

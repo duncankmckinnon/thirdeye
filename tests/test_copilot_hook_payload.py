@@ -58,9 +58,9 @@ def _parse(
 
 
 def test_hook_payload_module_has_no_io_imports():
-    source = Path(__import__("thirdeye.platforms.copilot.hook_payload").__file__).read_text(
-        encoding="utf-8"
-    )
+    import thirdeye.platforms.copilot.hook_payload as hook_payload
+
+    source = Path(hook_payload.__file__).read_text(encoding="utf-8")
     forbidden = ("subprocess", "sqlite3", "open(", "Path(", "os.remove", "shutil")
     for token in forbidden:
         assert token not in source, f"hook_payload.py must not use {token!r}"

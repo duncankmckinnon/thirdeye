@@ -4,8 +4,14 @@ from __future__ import annotations
 
 from typing import Any
 
-_KNOWN_PLATFORMS = frozenset({"claude", "codex", "cursor"})
+from thirdeye.platforms.copilot.constants import CLI_HOOK_EVENT_ALIASES
+
+_KNOWN_PLATFORMS = frozenset({"claude", "codex", "cursor", "copilot"})
 _CURSOR_MARKERS = ("cursor_version", "composer_mode")
+# Copilot CLI natively emits camelCase hook names.  Those names are not Cursor
+# evidence when the expected platform is Copilot; Cursor-only camelCase events
+# remain foreign.
+_COPILOT_CAMEL_EVENTS = frozenset(CLI_HOOK_EVENT_ALIASES)
 
 
 def foreign_payload_reason(payload: dict[str, Any], expected: str) -> str | None:
@@ -28,6 +34,8 @@ def foreign_payload_reason(payload: dict[str, Any], expected: str) -> str | None
 
     first_character = event_name[0]
     if first_character.islower() and expected != "cursor":
+        if expected == "copilot" and event_name in _COPILOT_CAMEL_EVENTS:
+            return None
         return f"Cursor event {event_name} received for {expected}"
     if first_character.isupper() and expected == "cursor":
         return f"PascalCase event {event_name} received for cursor"
