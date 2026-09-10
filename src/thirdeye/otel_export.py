@@ -69,6 +69,7 @@ import sys
 import time
 import warnings
 from collections import Counter
+from contextvars import ContextVar
 from datetime import datetime
 from functools import lru_cache
 from pathlib import Path
@@ -256,6 +257,11 @@ def _id_generator() -> Any:
     return _state["id_generator"]
 
 
+_captured_attributes: ContextVar[dict[str, Any] | None] = ContextVar(
+    "captured_attributes", default=None
+)
+
+
 def _start_span_with_id(
     tracer: Any,
     name: str,
@@ -280,7 +286,7 @@ def _start_span_with_id(
     kwargs = {
         "context": parent_ctx,
         "start_time": start_time,
-        "attributes": attributes,
+        "attributes": {**(_captured_attributes.get() or {}), **(attributes or {})},
     }
     if kind is not None:
         kwargs["kind"] = kind
@@ -473,6 +479,25 @@ def _parent_context(trace_id: int, span_id: int):
     return otel_trace.set_span_in_context(otel_trace.NonRecordingSpan(span_context))
 
 
+def _capture_attributes(config: Config) -> dict[str, Any]:
+    """Snapshot opted-in context before crossing the detached-worker boundary.
+
+    Workbench names retain their existing wb.* query namespace; other names
+    are lowercased. Values stay intact, independently of local tag limits.
+    """
+    from thirdeye.env_capture import capture_env
+
+    captured = capture_env(config.capture_env_patterns)
+    attributes: dict[str, Any] = {
+        ("wb." + name[3:].lower() if name.upper().startswith("WB_") else name.lower()): value
+        for name, value in captured.items()
+    }
+    tags = sorted({value for value in captured.values() if value})
+    if tags:
+        attributes["logfire.tags"] = tags
+    return attributes
+
+
 def _write_job(thirdeye_home: Path, payload: dict[str, Any]) -> Path:
     jobs_dir = otel_jobs_dir(thirdeye_home)
     jobs_dir.mkdir(parents=True, exist_ok=True)
@@ -563,6 +588,7 @@ def export_turn(
             config.root,
             {
                 "kind": "turn",
+                "captured_attributes": _capture_attributes(config),
                 "session_dir": str(session_dir_),
                 "session_id": session_id,
                 "platform": platform,
@@ -612,6 +638,7 @@ def export_spans(
             config.root,
             {
                 "kind": "spans",
+                "captured_attributes": _capture_attributes(config),
                 "session_dir": str(session_dir_),
                 "session_id": session_id,
                 "platform": platform,
@@ -675,6 +702,7 @@ def export_subagent_turn(
             config.root,
             {
                 "kind": "subagent_turn",
+                "captured_attributes": _capture_attributes(config),
                 "session_dir": str(session_dir_),
                 "session_id": session_id,
                 "platform": platform,
@@ -1250,7 +1278,10 @@ def _export_turn_subtree(
             span_name,
             context=parent_ctx,
             start_time=_ts_to_ns(turn["start_ts"]),
-            attributes=_flatten_attrs(_merge_raw(turn_attrs, turn.get("attributes"))),
+            attributes={
+                **(_captured_attributes.get() or {}),
+                **_flatten_attrs(_merge_raw(turn_attrs, turn.get("attributes"))),
+            },
         )
     else:
         turn_span = _start_span_with_id(
@@ -1259,7 +1290,10 @@ def _export_turn_subtree(
             int(turn_id),
             parent_ctx=parent_ctx,
             start_time=_ts_to_ns(turn["start_ts"]),
-            attributes=_flatten_attrs(_merge_raw(turn_attrs, turn.get("attributes"))),
+            attributes={
+                **(_captured_attributes.get() or {}),
+                **_flatten_attrs(_merge_raw(turn_attrs, turn.get("attributes"))),
+            },
         )
     turn_span.end(end_time=_ts_to_ns(turn["end_ts"]))
     turn_ctx = turn_span.get_span_context()
@@ -1370,7 +1404,7 @@ def _export_turn_subtree(
             f"permission_request: {permission_request['tool_name']}",
             context=turn_parent_ctx,
             start_time=pr_ts,
-            attributes=pr_attrs,
+            attributes={**(_captured_attributes.get() or {}), **pr_attrs},
         )
         pr_span.end(end_time=pr_ts)
 

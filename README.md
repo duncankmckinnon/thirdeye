@@ -156,6 +156,35 @@ by the broader filters; comma-separated terms are ANDed within the same turn.
 An optional exact selector in the form `<session-id>:<platform-turn-id>` remains
 available for direct lookup.
 
+### Exporting environment context
+
+Set `THIRDEYE_CAPTURE_ENV=WB_*` and individual variables such as `WB_PLAN`,
+`WB_AGENT`, `WB_TASK`, `WB_STEP`, and `WB_WAVE` on the agent process. Thirdeye
+captures matching variables into each export job and attaches them to every
+exported span for Claude Code, Codex, and Cursor. For example:
+
+```sh
+THIRDEYE_CAPTURE_ENV='WB_*' WB_PLAN=my-plan WB_TASK=task-1 claude
+```
+
+`WB_PLAN` becomes the span attribute `wb.plan` (and likewise for other `WB_`
+fields). Other matched names are lowercased: `BUILD_LABEL` becomes
+`build_label`. Values remain strings with their original case and contents;
+nonempty values are also exported directly as Logfire tags on every span
+(including the session root), with duplicates removed. For example,
+`WB_PLAN=my-plan` adds the `my-plan` tag alongside `wb.plan="my-plan"`.
+Logfire tags preserve the original case and contents. Local session tags
+retain their existing key prefixes, sanitization, and 64-character limit.
+Existing span attributes take precedence on a name collision.
+
+Patterns match variable names, not fields inside a composite value. This path
+requires no `OTEL_RESOURCE_ATTRIBUTES`, which was observed to be absent from
+Claude Code hook environments. Workbench must supply the individual `WB_*`
+variables in each child's environment; changing thirdeye alone cannot extract
+values the launcher does not supply. Export jobs snapshot context before
+worker dispatch, keeping concurrent agents' values separate. Only opt in
+variables you intend to export to Logfire.
+
 ## Browse in a browser
 
 For a richer experience than the CLI, install the UI extra and launch:

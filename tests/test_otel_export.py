@@ -620,6 +620,7 @@ class TestExportSpansDispatch:
         job_path = Path(argv[3])
         payload = json.loads(job_path.read_text(encoding="utf-8"))
         assert payload == {
+            "captured_attributes": {},
             "kind": "spans",
             "session_dir": str(tmp_path / "traces" / "claude" / "s1"),
             "session_id": "s1",
@@ -2387,3 +2388,63 @@ class TestProviderAttribution:
 
         assert attributes["gen_ai.tool.call.arguments"] == "already-set"
         assert attributes["command"] == "ls"
+
+
+@pytest.mark.parametrize("platform", ["claude", "codex", "cursor"])
+@pytest.mark.parametrize("job_kind", ["turn", "spans", "subagent_turn"])
+def test_captured_env_survives_job_boundary(
+    platform, job_kind, enabled_config, wired_instance, exporter, monkeypatch, tmp_path
+):
+    from dataclasses import replace
+
+    from thirdeye.otel_worker import main
+
+    config = replace(enabled_config, capture_env_patterns=("WB_*", "BUILD_LABEL"))
+    monkeypatch.setenv("WB_PLAN", "Plan with spaces,=Unicode-é")
+    monkeypatch.setenv("BUILD_LABEL", "Release A")
+    monkeypatch.delenv("OTEL_RESOURCE_ATTRIBUTES", raising=False)
+    jobs = []
+    monkeypatch.setattr(otel_export, "_spawn", jobs.append)
+    monkeypatch.setattr(Config, "load", lambda: config)
+    for sid, task in [("session-a", "task-a"), ("session-b", "task-b")]:
+        monkeypatch.setenv("WB_TASK", task)
+        args = (config, tmp_path / sid, sid, platform, "/repo")
+        turn = _turn(llm_calls=[_llm_call(tool_calls=[_tool_call()])])
+        if job_kind == "turn":
+            otel_export.export_turn(*args, turn)
+        elif job_kind == "subagent_turn":
+            otel_export.export_subagent_turn(*args, turn, parent_span_id="123")
+        else:
+            otel_export.export_spans(
+                *args,
+                123,
+                [
+                    {
+                        "name": "chat",
+                        "kind": "chat",
+                        "span_id": 456,
+                        "parent_span_id": 789,
+                        "start_ts": turn["start_ts"],
+                        "end_ts": turn["end_ts"],
+                        "attributes": {"gen_ai.conversation.id": sid},
+                    }
+                ],
+            )
+    monkeypatch.setenv("WB_TASK", "wrong-worker-context")
+    for job in reversed(jobs):
+        main([str(job)])
+    spans = exporter.exported_spans
+    assert spans
+    for span in spans:
+        attrs = span.attributes
+        assert attrs["wb.plan"] == "Plan with spaces,=Unicode-é"
+        assert attrs["build_label"] == "Release A"
+        assert set(attrs["logfire.tags"]) == {
+            "Release A",
+            "Plan with spaces,=Unicode-é",
+            attrs["wb.task"],
+        }
+        assert (
+            attrs["wb.task"]
+            == {"session-a": "task-a", "session-b": "task-b"}[attrs["gen_ai.conversation.id"]]
+        )

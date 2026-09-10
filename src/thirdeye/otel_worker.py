@@ -39,6 +39,9 @@ def main(argv: list[str] | None = None) -> None:
     finally:
         fsops.unlink(job_path, missing_ok=True)
 
+    from thirdeye.otel_export import _captured_attributes
+
+    token = _captured_attributes.set(payload.get("captured_attributes") or {})
     kind = payload.get("kind")
     try:
         from thirdeye.config import Config
@@ -82,6 +85,8 @@ def main(argv: list[str] | None = None) -> None:
             )
     except Exception as exc:
         _log_worker_failure(kind=str(kind or ""), payload=payload, error=exc)
+    finally:
+        _captured_attributes.reset(token)
 
 
 def _log_worker_failure(*, kind: str, payload: dict[str, Any], error: Exception) -> None:
