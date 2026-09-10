@@ -8,11 +8,13 @@ pick up transcript or SQLite data which arrived just after the hook.
 from __future__ import annotations
 
 import argparse
+import contextlib
 import json
 import os
 import sys
 import tempfile
 import time
+from collections.abc import Iterator
 from pathlib import Path
 from typing import Any
 from uuid import uuid4
@@ -22,8 +24,7 @@ from thirdeye._compat.locking import LockMode, LockTimeout, locked
 from thirdeye.config import Config
 from thirdeye.paths import session_dir
 from thirdeye.platforms.copilot.identity import stored_session_id, validate_native_id
-from thirdeye.platforms.copilot.state import lock_path
-from thirdeye.platforms.copilot.types import SourcePaths
+from thirdeye.platforms.copilot.types import SourcePaths, SyncResult
 from thirdeye.usage.errlog import log_capture_error
 
 _PLATFORM = "copilot"
@@ -161,44 +162,67 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     return parser.parse_args(argv)
 
 
-def _archive_lock_available(config: Config, paths: SourcePaths, native_id: str) -> bool:
-    """Avoid starting a capture which is already known to block on its lock."""
+@contextlib.contextmanager
+def nonblocking_archive_lock() -> Iterator[None]:
+    """Make archive lock acquisition fail immediately when the lock is busy.
 
-    directory = _directory(config, paths, native_id)
+    ``commit_batch`` / ``load_cursor`` take the session archive lock with no
+    timeout.  Hook and follow-up callers must not wait on that lock, so this
+    temporarily forces those acquisitions to use a zero timeout.
+    """
+
+    from thirdeye.platforms.copilot import archive
+
+    @contextlib.contextmanager
+    def _locked(path: Path, mode: LockMode, *, timeout: float | None = None) -> Iterator[None]:
+        with locked(path, mode, timeout=_LOCK_PROBE_TIMEOUT):
+            yield
+
+    original = archive.locked
+    archive.locked = _locked
     try:
-        with locked(lock_path(directory), LockMode.EXCLUSIVE, timeout=_LOCK_PROBE_TIMEOUT):
-            return True
-    except (LockTimeout, OSError):
-        return False
+        yield
+    finally:
+        archive.locked = original
+
+
+def try_capture_session(config: Config, paths: SourcePaths, native_id: str) -> SyncResult | None:
+    """Attempt one capture without waiting on a busy archive lock.
+
+    Returns ``None`` when another worker already holds the lock.
+    """
+
+    from thirdeye.platforms.copilot.capture import capture_session
+
+    try:
+        with nonblocking_archive_lock():
+            return capture_session(config, paths, native_id)
+    except LockTimeout:
+        return None
 
 
 def _run(config: Config, paths: SourcePaths, native_id: str, generation: str) -> None:
     """Try follow-up capture for no longer than the lease window."""
-
-    # Import only in runtime composition: source/archive modules remain
-    # independent of this detached-worker mechanism.
-    from thirdeye.platforms.copilot.capture import capture_session
 
     directory = _directory(config, paths, native_id)
     deadline = time.monotonic() + _LEASE_SECONDS
     delay = _INITIAL_BACKOFF_SECONDS
     try:
         while time.monotonic() < deadline and _owns_lease(directory, generation):
-            if _archive_lock_available(config, paths, native_id):
-                try:
-                    result = capture_session(config, paths, native_id)
-                except Exception as exc:
-                    log_capture_error(
-                        thirdeye_home=config.root,
-                        phase="copilot_followup_capture",
-                        error=exc,
-                        platform=_PLATFORM,
-                        session_id=native_id,
-                        silent_fallback=True,
-                    )
-                else:
-                    if result["errors"] == 0 and result["pending"] == 0:
-                        return
+            try:
+                result = try_capture_session(config, paths, native_id)
+            except Exception as exc:
+                log_capture_error(
+                    thirdeye_home=config.root,
+                    phase="copilot_followup_capture",
+                    error=exc,
+                    platform=_PLATFORM,
+                    session_id=native_id,
+                    silent_fallback=True,
+                )
+            else:
+                if result is not None and result["errors"] == 0 and result["pending"] == 0:
+                    return
             remaining = deadline - time.monotonic()
             if remaining <= 0:
                 break

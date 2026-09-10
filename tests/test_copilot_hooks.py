@@ -15,6 +15,7 @@ from unittest.mock import MagicMock
 
 import pytest
 
+from thirdeye._compat.locking import LockMode, locked
 from thirdeye.config import Config
 from thirdeye.paths import session_dir, tags_path, usage_log_path
 from thirdeye.platforms.copilot import hooks
@@ -418,7 +419,7 @@ def test_hook_schedules_followup_after_successful_capture(
     assert scheduled == [NATIVE_SESSION_ID]
 
 
-def test_hook_delegates_canonical_event_to_record_hook(
+def test_hook_passes_explicit_event_name_to_record_hook(
     copilot_env: tuple[Config, SourcePaths],
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -455,10 +456,86 @@ def test_hook_delegates_canonical_event_to_record_hook(
     payload = _payload(stopReason="end_turn", trace_id="trace-1")
     _invoke(monkeypatch, "Stop", payload)
 
-    assert seen["event"] == "agentStop"
+    assert seen["event"] == "Stop"
     assert seen["payload"] == payload
     assert seen["context"]["env"] == {"WB_PLAN": "p"}
     assert seen["context"]["trace_id"] == "trace-1"
+
+
+def test_busy_archive_lock_returns_promptly_and_keeps_spool(
+    copilot_env: tuple[Config, SourcePaths],
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    config, paths = copilot_env
+    monkeypatch.setattr(hooks, "schedule_followup", lambda *_args, **_kwargs: True)
+    directory = _session_directory(config, paths)
+    archive_lock = lock_path(directory)
+    held = threading.Event()
+    release = threading.Event()
+
+    def hold_lock() -> None:
+        with locked(archive_lock, LockMode.EXCLUSIVE):
+            held.set()
+            release.wait(timeout=10)
+
+    holder = threading.Thread(target=hold_lock)
+    holder.start()
+    assert held.wait(timeout=2)
+    finished = threading.Event()
+    try:
+        start = time.monotonic()
+
+        def invoke() -> None:
+            _invoke(monkeypatch, "sessionStart", _payload(source="new"))
+            finished.set()
+
+        invoker = threading.Thread(target=invoke)
+        invoker.start()
+        invoker.join(timeout=1.0)
+        elapsed = time.monotonic() - start
+        assert not invoker.is_alive()
+        assert finished.is_set()
+        assert elapsed < 0.25
+        assert capsys.readouterr().out == ""
+        spooled = read_spool(config, paths, NATIVE_SESSION_ID)
+        assert len(spooled) == 1
+        assert spooled[0]["source_kind"] == "hook"
+    finally:
+        release.set()
+        holder.join(timeout=2)
+
+
+def test_tag_observation_selects_by_observation_id(
+    copilot_env: tuple[Config, SourcePaths],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    config, paths = copilot_env
+    monkeypatch.setenv("THIRDEYE_CAPTURE_ENV", "WB_*")
+    monkeypatch.setenv("WB_PLAN", "shared")
+    monkeypatch.setattr(hooks, "schedule_followup", lambda *_args, **_kwargs: None)
+    payload = _payload(source="new")
+    _invoke(monkeypatch, "sessionStart", payload)
+    _invoke(monkeypatch, "sessionStart", payload)
+
+    directory = _session_directory(config, paths)
+    events = list(SessionReader(directory).iter_events(types=("copilot_hook",)))
+    assert len(events) == 2
+    first_id = events[0]["data"]["source_record"]["locator"]["observation_id"]
+    second_id = events[1]["data"]["source_record"]["locator"]["observation_id"]
+    assert first_id != second_id
+    tags_path(directory).unlink()
+
+    hooks._tag_observation(
+        config,
+        paths,
+        NATIVE_SESSION_ID,
+        {"WB_OTHER": "only-first"},
+        observation_id=first_id,
+    )
+    store = TagStore(directory)
+    assert "other-only-first" in store.tags_for(int(events[0]["seq"]))
+    assert "other-only-first" not in store.tags_for(int(events[1]["seq"]))
 
 
 def test_missing_session_id_skips_tagging_and_followup(

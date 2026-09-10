@@ -3,27 +3,28 @@
 from __future__ import annotations
 
 import json
+import threading
 import time
 from pathlib import Path
 from typing import Any
-from unittest.mock import MagicMock
 
 import pytest
 
-from thirdeye._compat.locking import LockMode, LockTimeout, locked
+from thirdeye._compat.locking import LockMode, locked
 from thirdeye.config import Config
 from thirdeye.paths import session_dir, usage_log_path
 from thirdeye.platforms.copilot.constants import PLATFORM_NAME
 from thirdeye.platforms.copilot.followup import (
-    _LEASE_FILENAME,
     _claim_lease,
     _lease_path,
     _owns_lease,
     _release_lease,
     _run,
     schedule_followup,
+    try_capture_session,
 )
 from thirdeye.platforms.copilot.identity import resolve_sources, stored_session_id
+from thirdeye.platforms.copilot.state import lock_path
 from thirdeye.platforms.copilot.types import SourcePaths, SyncResult
 
 NATIVE_SESSION_ID = "5a7e8e11-4a6b-49ff-a33e-95d411c4cdd6"
@@ -208,7 +209,20 @@ def test_run_releases_lease_even_when_capture_raises(
     assert not _lease_path(directory).exists()
 
 
-def test_run_skips_capture_when_archive_lock_is_busy(
+def test_try_capture_session_returns_none_when_archive_lock_held(
+    copilot_env: tuple[Config, SourcePaths],
+) -> None:
+    config, paths = copilot_env
+    directory = _session_directory(config, paths)
+    archive_lock = lock_path(directory)
+    with locked(archive_lock, LockMode.EXCLUSIVE):
+        start = time.monotonic()
+        result = try_capture_session(config, paths, NATIVE_SESSION_ID)
+        assert time.monotonic() - start < 0.25
+        assert result is None
+
+
+def test_run_does_not_block_when_archive_lock_is_held(
     copilot_env: tuple[Config, SourcePaths],
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -216,27 +230,43 @@ def test_run_skips_capture_when_archive_lock_is_busy(
     directory = _session_directory(config, paths)
     generation = _claim_lease(config, paths, NATIVE_SESSION_ID)
     assert generation is not None
-    captured = MagicMock()
+    archive_lock = lock_path(directory)
+    held = threading.Event()
+    release = threading.Event()
 
-    monkeypatch.setattr(
-        "thirdeye.platforms.copilot.capture.capture_session",
-        captured,
-    )
-    monkeypatch.setattr(
-        "thirdeye.platforms.copilot.followup._archive_lock_available",
-        lambda *_args, **_kwargs: False,
-    )
+    def hold_lock() -> None:
+        with locked(archive_lock, LockMode.EXCLUSIVE):
+            held.set()
+            release.wait(timeout=10)
+
+    holder = threading.Thread(target=hold_lock)
+    holder.start()
+    assert held.wait(timeout=2)
     monkeypatch.setattr("thirdeye.platforms.copilot.followup.time.sleep", lambda _s: None)
     times = iter([0.0, 0.0, 6.0])
+    real_monotonic = time.monotonic
+    monkeypatch.setattr(
+        "thirdeye.platforms.copilot.followup.time.monotonic",
+        lambda: next(times, 6.0),
+    )
+    finished = threading.Event()
+    try:
 
-    def fake_monotonic() -> float:
-        return next(times, 6.0)
+        def run_worker() -> None:
+            _run(config, paths, NATIVE_SESSION_ID, generation)
+            finished.set()
 
-    monkeypatch.setattr("thirdeye.platforms.copilot.followup.time.monotonic", fake_monotonic)
-    _run(config, paths, NATIVE_SESSION_ID, generation)
-
-    captured.assert_not_called()
-    assert not _lease_path(directory).exists()
+        worker = threading.Thread(target=run_worker)
+        start = real_monotonic()
+        worker.start()
+        worker.join(timeout=1.0)
+        assert not worker.is_alive()
+        assert finished.is_set()
+        assert real_monotonic() - start < 1.0
+        assert not _lease_path(directory).exists()
+    finally:
+        release.set()
+        holder.join(timeout=2)
 
 
 def test_stale_lease_does_not_block_future_schedule(
