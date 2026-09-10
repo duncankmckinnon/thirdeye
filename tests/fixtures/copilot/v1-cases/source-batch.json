@@ -14,6 +14,5 @@
     }
   ],
   "next_cursor": {"database_revision": "fixture-revision-1"},
-  "diagnostics": [],
-  "exhausted": true
+  "diagnostics": []
 }

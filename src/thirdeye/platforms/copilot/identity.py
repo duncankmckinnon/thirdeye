@@ -9,6 +9,11 @@ from pathlib import Path
 from .constants import COPILOT_HOME_ENV
 from .types import SourcePaths
 
+# Stored session IDs keep the first 16 hex characters of the SHA-256 source key
+# for path readability.  The full 64-character digest remains the identity.
+SOURCE_KEY_PREFIX_LEN = 16
+SOURCE_KEY_DIGEST_LEN = 64
+
 
 def _canonical_path(path: Path) -> Path:
     """Return a stable, absolute path without requiring the path to exist."""
@@ -88,11 +93,30 @@ def validate_native_id(native_id: str) -> None:
 def stored_session_id(paths: SourcePaths, native_id: str) -> str:
     """Return the stable thirdeye ID for a native ID within one source home.
 
-    The full source key is validated before using its display prefix.  This
-    makes a prefix collision detectable instead of merging records from two
-    source homes.
+    The stored ID uses only :data:`SOURCE_KEY_PREFIX_LEN` hex characters of
+    the source key.  This function checks that *one* ``SourcePaths`` value is
+    internally consistent: the full digest matches the canonical home, and
+    recording paths stay inside that home.  That check does not detect two
+    legitimate homes whose SHA-256 digests share a prefix.  Both would still
+    produce the same stored ID.  On reuse the archive must compare the full
+    ``source_key`` retained in session metadata with the candidate home and
+    refuse to merge a prefix collision.
     """
 
     _validate_paths(paths)
     validate_native_id(native_id)
-    return f"copilot-{paths['source_key'][:16]}-{native_id}"
+    return f"copilot-{paths['source_key'][:SOURCE_KEY_PREFIX_LEN]}-{native_id}"
+
+
+def source_keys_share_stored_prefix(left: str, right: str) -> bool:
+    """Return True when two distinct full source keys would collide in stored IDs.
+
+    Archive reuse must apply this comparison (or an equivalent full-key check
+    against retained metadata).  :func:`stored_session_id` cannot: it never
+    sees the other home.
+    """
+
+    for key in (left, right):
+        if not isinstance(key, str) or len(key) != SOURCE_KEY_DIGEST_LEN:
+            raise ValueError("source_key must be a 64-character SHA-256 hex digest")
+    return left != right and left[:SOURCE_KEY_PREFIX_LEN] == right[:SOURCE_KEY_PREFIX_LEN]

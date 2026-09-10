@@ -24,9 +24,17 @@ from thirdeye.platforms.copilot.constants import (
     SOURCE_RECORD_SCHEMA_VERSION,
     SOURCE_SCHEMA_VERSION,
 )
-from thirdeye.platforms.copilot.identity import resolve_sources, stored_session_id, validate_native_id
+from thirdeye.platforms.copilot.identity import (
+    SOURCE_KEY_PREFIX_LEN,
+    resolve_sources,
+    source_keys_share_stored_prefix,
+    stored_session_id,
+    validate_native_id,
+)
 from thirdeye.platforms.copilot.types import (
     SCHEMA_VERSION as TYPES_SCHEMA_VERSION,
+)
+from thirdeye.platforms.copilot.types import (
     SourceBatch,
     SourcePaths,
     SourceRecord,
@@ -39,6 +47,7 @@ CLI_FIXTURE = FIXTURES / "cli-1.0.83"
 V1_CASES = FIXTURES / "v1-cases"
 
 NATIVE_SESSION_ID = "5a7e8e11-4a6b-49ff-a33e-95d411c4cdd6"
+CHILD_AGENT_ID = "bf8cb9f3-2097-4db0-a3c8-78a2653b2106"
 
 
 def _load_json(path: Path) -> Any:
@@ -140,6 +149,7 @@ def test_source_slice_fixture_round_trips():
     raw = _load_json(V1_CASES / "source-slice.json")
     restored = _round_trip(raw)
     assert restored == raw
+    assert set(restored) == set(SourceSlice.__annotations__)
 
     slice_: SourceSlice = restored
     assert slice_["exhausted"] is False
@@ -155,8 +165,10 @@ def test_source_batch_fixture_round_trips():
     raw = _load_json(V1_CASES / "source-batch.json")
     restored = _round_trip(raw)
     assert restored == raw
+    assert set(restored) == set(SourceBatch.__annotations__)
+    assert "exhausted" not in restored
 
-    batch: SourceBatch = {key: restored[key] for key in SourceBatch.__annotations__}
+    batch: SourceBatch = restored
     assert batch["source_key"] == restored["source_key"]
     assert len(batch["records"]) == 1
     record = batch["records"][0]
@@ -289,7 +301,7 @@ def test_stored_session_id_format(tmp_path: Path):
     paths = resolve_sources(tmp_path / "home")
     native = "session-a"
     stored = stored_session_id(paths, native)
-    assert stored == f"copilot-{paths['source_key'][:16]}-{native}"
+    assert stored == f"copilot-{paths['source_key'][:SOURCE_KEY_PREFIX_LEN]}-{native}"
 
 
 def test_different_homes_do_not_merge_same_native_id(tmp_path: Path):
@@ -303,18 +315,34 @@ def test_different_homes_do_not_merge_same_native_id(tmp_path: Path):
     assert id_a != id_b
 
 
-def test_stored_session_id_validates_full_source_key_not_prefix_only(tmp_path: Path):
+def test_stored_session_id_rejects_source_key_that_does_not_match_home(tmp_path: Path):
     home = tmp_path / "home"
     home.mkdir()
     paths = resolve_sources(home)
-    other = resolve_sources(tmp_path / "other-home")
-    (tmp_path / "other-home").mkdir()
-    if paths["source_key"][:16] == other["source_key"][:16]:
-        pytest.skip("need distinct 16-char prefixes for this collision test")
+    other_home = tmp_path / "other-home"
+    other_home.mkdir()
+    other = resolve_sources(other_home)
     forged: SourcePaths = dict(paths)
     forged["source_key"] = other["source_key"]
     with pytest.raises(ValueError, match="source_key does not match"):
         stored_session_id(forged, "session-a")
+
+
+def test_source_key_prefix_collision_is_an_archive_reuse_contract():
+    case = _load_json(V1_CASES / "source-key-prefix-collision.json")
+    first, second = case["homes"]
+    native = case["native_session_id"]
+
+    assert first["source_key"] != second["source_key"]
+    assert source_keys_share_stored_prefix(first["source_key"], second["source_key"])
+    stored_a = f"copilot-{first['source_key'][:SOURCE_KEY_PREFIX_LEN]}-{native}"
+    stored_b = f"copilot-{second['source_key'][:SOURCE_KEY_PREFIX_LEN]}-{native}"
+    assert stored_a == stored_b == case["colliding_stored_session_id"]
+    assert case["retained_metadata_source_key"] == first["source_key"]
+    assert second["source_key"] != case["retained_metadata_source_key"]
+    assert source_keys_share_stored_prefix(first["source_key"], first["source_key"]) is False
+    with pytest.raises(ValueError, match="64-character"):
+        source_keys_share_stored_prefix(first["source_key"], "too-short")
 
 
 # --- observed cli-1.0.83 fixtures ---
@@ -360,6 +388,55 @@ def test_cli_fixture_has_two_main_prompts_and_one_child_prompt():
     child_prompts = [event for event in user_messages if event.get("agentId") is not None]
     assert len(main_prompts) == 2
     assert len(child_prompts) == 1
+    assert child_prompts[0]["agentId"] == CHILD_AGENT_ID
+
+
+def test_cli_child_prompt_stop_hooks_use_child_agent_id_as_session_id():
+    hooks = [
+        json.loads(line)
+        for line in (CLI_FIXTURE / "hooks.jsonl").read_text(encoding="utf-8").splitlines()
+    ]
+    events = [
+        json.loads(line)
+        for line in (CLI_FIXTURE / "events.jsonl").read_text(encoding="utf-8").splitlines()
+    ]
+
+    child_prompts = [
+        hook
+        for hook in hooks
+        if hook["registered_event"] == "userPromptSubmitted"
+        and hook["payload"]["sessionId"] == CHILD_AGENT_ID
+    ]
+    child_stops = [
+        hook
+        for hook in hooks
+        if hook["registered_event"] == "agentStop" and hook["payload"]["sessionId"] == CHILD_AGENT_ID
+    ]
+    assert len(child_prompts) == 1
+    assert len(child_stops) == 1
+    assert child_stops[0]["payload"]["transcriptPath"].endswith(
+        f"{NATIVE_SESSION_ID}/events.jsonl"
+    )
+
+    parent_lifecycle = [
+        hook
+        for hook in hooks
+        if hook["registered_event"] in {"subagentStart", "subagentStop"}
+    ]
+    assert parent_lifecycle
+    assert all(hook["payload"]["sessionId"] == NATIVE_SESSION_ID for hook in parent_lifecycle)
+
+    transcript_child_prompt = next(
+        event
+        for event in events
+        if event.get("type") == "hook.start"
+        and event["data"].get("hookType") == "userPromptSubmitted"
+        and event["data"]["input"]["sessionId"] == CHILD_AGENT_ID
+    )
+    assert (
+        transcript_child_prompt["data"]["input"]["sessionId"]
+        == child_prompts[0]["payload"]["sessionId"]
+    )
 
 
 def test_cli_assistant_usage_events_fixture_has_six_rows():
