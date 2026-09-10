@@ -211,4 +211,98 @@ def test_locator_identifies_observation():
     )
     locator = record["locator"]
     assert locator["observation_id"] == "obs-locator"
-    assert locator["event"] in {"userPromptSubmitted", "UserPromptSubmit"}
+    assert locator["event"] == "userPromptSubmitted"
+
+
+def test_source_id_format_includes_session_and_observation():
+    record = _parse(
+        "sessionStart",
+        {"sessionId": NATIVE_SESSION_ID, "timestamp": 1789060102204},
+        observation_id="obs-format-check",
+    )
+    assert record["source_id"] == f"hook/{NATIVE_SESSION_ID}/obs-format-check"
+
+
+def test_parse_hook_preserves_zulu_iso_timestamp_strings():
+    iso_z = "2026-09-10T17:08:25.626Z"
+    assert _parse("sessionStart", {"sessionId": NATIVE_SESSION_ID, "timestamp": iso_z})["ts"] == iso_z
+
+
+def test_parse_hook_preserves_positive_offset_iso_timestamp_strings():
+    iso_offset = "2026-09-10T17:08:25.626+00:00"
+    assert (
+        _parse("sessionStart", {"sessionId": NATIVE_SESSION_ID, "timestamp": iso_offset})["ts"]
+        == iso_offset
+    )
+
+
+def test_parse_hook_preserves_negative_offset_iso_timestamp_strings():
+    iso_offset = "2026-09-10T10:08:25-07:00"
+    assert (
+        _parse("sessionStart", {"sessionId": NATIVE_SESSION_ID, "timestamp": iso_offset})["ts"]
+        == iso_offset
+    )
+
+
+def test_parse_hook_converts_numeric_string_timestamp():
+    record = _parse(
+        "sessionStart",
+        {"sessionId": NATIVE_SESSION_ID, "timestamp": "1789060105626"},
+    )
+    assert record["ts"] is not None
+    assert record["ts"].endswith("Z")
+
+
+@pytest.mark.parametrize(
+    "timestamp",
+    [
+        True,
+        False,
+        None,
+        "",
+        "   ",
+        "not-a-number",
+        {},
+        "nonsenseZ",
+        "2026-13-40T99:99:99Z",
+        "2026-09-10T17:08:25.626Z extra",
+        "+not-an-iso-timestamp",
+    ],
+)
+def test_parse_hook_invalid_timestamps_leave_ts_none(timestamp: object):
+    record = _parse("sessionStart", {"sessionId": NATIVE_SESSION_ID, "timestamp": timestamp})
+    assert record["ts"] is None
+
+
+def test_parse_hook_accepts_second_epoch_timestamps():
+    record = _parse("sessionStart", {"sessionId": NATIVE_SESSION_ID, "timestamp": 1_789_060_105})
+    assert record["ts"] is not None
+    assert record["ts"].endswith("Z")
+
+
+def test_parse_hook_unknown_event_name_passes_through():
+    record = _parse(
+        "customFutureHook",
+        {"sessionId": NATIVE_SESSION_ID, "timestamp": 1789060102204},
+    )
+    assert record["payload"]["event"] == "customFutureHook"
+    assert record["locator"]["event"] == "customFutureHook"
+
+
+def test_parse_hook_stores_all_allowlisted_context_keys():
+    context = {
+        "env": {"WB_PLAN": "p"},
+        "trace_id": "trace-1",
+        "span_id": "span-1",
+        "parent_span_id": "parent-span-1",
+        "trace_context": {"sampled": True},
+        "traceparent": "00-abc-def-01",
+    }
+    stored = _parse(
+        "sessionStart",
+        {"sessionId": NATIVE_SESSION_ID, "timestamp": 1},
+        context=context,
+    )["payload"]["context"]
+    assert stored == context
+    assert stored is not context
+    assert stored["env"] is not context["env"]

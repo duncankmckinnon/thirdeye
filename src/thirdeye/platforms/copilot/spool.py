@@ -44,15 +44,36 @@ def _write_diagnostic(path: Path, reason: str) -> None:
         return
 
 
-def _load_record(path: Path) -> SourceRecord | None:
+def _record_error(data: Any, *, expected_native_id: str) -> str | None:
+    """Return a diagnostic reason when *data* is not a complete hook SourceRecord."""
+
+    if not isinstance(data, dict):
+        return "spool file is not a SourceRecord object"
+    for key in ("source_id", "source_kind", "native_session_id", "observed_at"):
+        value = data.get(key)
+        if not isinstance(value, str) or not value:
+            return "spool file is not a complete SourceRecord object"
+    if "ts" not in data or (data["ts"] is not None and not isinstance(data["ts"], str)):
+        return "spool file is not a complete SourceRecord object"
+    if not isinstance(data.get("payload"), dict) or not isinstance(data.get("locator"), dict):
+        return "spool file is not a complete SourceRecord object"
+    if data["source_kind"] != "hook":
+        return "spool file source_kind is not hook"
+    if data["native_session_id"] != expected_native_id:
+        return "native_session_id does not match spool directory"
+    return None
+
+
+def _load_record(path: Path, *, expected_native_id: str) -> SourceRecord | None:
     try:
         raw = fsops.read_text(path, encoding="utf-8")
         data: Any = json.loads(raw)
     except (OSError, UnicodeDecodeError, json.JSONDecodeError, RecursionError) as exc:
         _write_diagnostic(path, f"{type(exc).__name__}: {exc}")
         return None
-    if not isinstance(data, dict) or not isinstance(data.get("source_id"), str):
-        _write_diagnostic(path, "spool file is not a SourceRecord object")
+    reason = _record_error(data, expected_native_id=expected_native_id)
+    if reason is not None:
+        _write_diagnostic(path, reason)
         return None
     return data  # type: ignore[return-value]
 
@@ -86,7 +107,7 @@ def read_spool(config: Config, paths: SourcePaths, native_id: str) -> list[Sourc
         return []
     records: list[SourceRecord] = []
     for path in sorted(directory.glob("*.json")):
-        record = _load_record(path)
+        record = _load_record(path, expected_native_id=native_id)
         if record is not None:
             records.append(record)
     return records
@@ -105,7 +126,7 @@ def ack_spool(config: Config, paths: SourcePaths, source_ids: list[str]) -> None
     if not root.is_dir():
         return
     for path in root.glob("*/*.json"):
-        record = _load_record(path)
+        record = _load_record(path, expected_native_id=path.parent.name)
         if record is None:
             continue
         if record["source_id"] in wanted:

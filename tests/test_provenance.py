@@ -251,3 +251,13 @@ def test_copilot_does_not_change_claude_codex_cursor_regressions():
     assert foreign_payload_reason({"hook_event_name": "beforeSubmitPrompt"}, "claude") is not None
     assert foreign_payload_reason({"hook_event_name": "SessionStart"}, "cursor") is not None
     assert foreign_payload_reason({"hook_event_name": "beforeSubmitPrompt"}, "cursor") is None
+
+
+def test_copilot_rejects_cursor_only_camel_case_events():
+    reason = foreign_payload_reason({"hook_event_name": "beforeSubmitPrompt"}, "copilot")
+    assert isinstance(reason, str)
+    assert "beforeSubmitPrompt" in reason
+
+
+def test_copilot_is_known_platform():
+    assert foreign_payload_reason({}, "copilot") is None

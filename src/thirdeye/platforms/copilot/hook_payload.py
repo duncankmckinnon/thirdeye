@@ -52,6 +52,17 @@ def _session_id(payload: dict[str, Any]) -> str:
     return session_id
 
 
+def _valid_iso_datetime(value: str) -> bool:
+    """Return True when *value* is a parseable ISO-8601 datetime."""
+
+    iso = value[:-1] + "+00:00" if value.endswith("Z") else value
+    try:
+        datetime.fromisoformat(iso)
+    except ValueError:
+        return False
+    return True
+
+
 def _source_ts(payload: dict[str, Any]) -> str | None:
     """Return the original source timestamp when it is valid; never invent one."""
 
@@ -64,7 +75,7 @@ def _source_ts(payload: dict[str, Any]) -> str | None:
         stripped = value.strip()
         if not stripped:
             return None
-        if stripped.endswith("Z") or "+" in stripped[1:]:
+        if _valid_iso_datetime(stripped):
             return stripped
         try:
             value = float(stripped)

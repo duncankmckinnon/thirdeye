@@ -2,10 +2,12 @@
 
 from __future__ import annotations
 
+import json
 import subprocess
 import sys
 import threading
 from pathlib import Path
+from typing import Any
 
 import pytest
 
@@ -185,6 +187,115 @@ assert len(read_spool(config, paths, {NATIVE_SESSION_ID!r})) == 1
     records = read_spool(config, paths, NATIVE_SESSION_ID)
     assert len(records) == 1
     assert records[0]["payload"]["hook_payload"]["sessionId"] == NATIVE_SESSION_ID
+
+
+def test_read_spool_returns_empty_for_missing_session(copilot_env: tuple[Config, SourcePaths]):
+    config, paths = copilot_env
+    assert read_spool(config, paths, NATIVE_SESSION_ID) == []
+
+
+def test_malformed_spool_writes_diagnostic_sidecar(copilot_env: tuple[Config, SourcePaths]):
+    config, paths = copilot_env
+    valid = _hook_record(observation_id="obs-diag-valid")
+    spool_path = Path(enqueue_hook(config, paths, valid))
+    malformed = spool_path.parent / "000000-malformed.json"
+    malformed.write_text("{not json", encoding="utf-8")
+
+    records = read_spool(config, paths, NATIVE_SESSION_ID)
+    assert len(records) == 1
+    diag_path = malformed.with_name(f"{malformed.name}.diag")
+    assert diag_path.is_file()
+    assert "JSONDecodeError" in diag_path.read_text(encoding="utf-8")
+
+
+def test_malformed_spool_missing_source_id_is_skipped(copilot_env: tuple[Config, SourcePaths]):
+    config, paths = copilot_env
+    valid = _hook_record(observation_id="obs-valid-shape")
+    spool_dir = Path(enqueue_hook(config, paths, valid)).parent
+    malformed = spool_dir / "000001-missing-source-id.json"
+    malformed.write_text('{"source_kind": "hook"}', encoding="utf-8")
+
+    records = read_spool(config, paths, NATIVE_SESSION_ID)
+    assert len(records) == 1
+    assert records[0]["source_id"] == valid["source_id"]
+    diag_path = malformed.with_name(f"{malformed.name}.diag")
+    assert diag_path.is_file()
+    assert "SourceRecord" in diag_path.read_text(encoding="utf-8")
+
+
+def test_read_spool_skips_source_id_only_object(copilot_env: tuple[Config, SourcePaths]):
+    config, paths = copilot_env
+    valid = _hook_record(observation_id="obs-complete-neighbor")
+    spool_dir = Path(enqueue_hook(config, paths, valid)).parent
+    malformed = spool_dir / "000003-source-id-only.json"
+    malformed.write_text('{"source_id": "hook/x/obs"}', encoding="utf-8")
+
+    records = read_spool(config, paths, NATIVE_SESSION_ID)
+    assert len(records) == 1
+    assert records[0]["source_id"] == valid["source_id"]
+    diag_path = malformed.with_name(f"{malformed.name}.diag")
+    assert diag_path.is_file()
+    assert "SourceRecord" in diag_path.read_text(encoding="utf-8")
+
+
+@pytest.mark.parametrize(
+    "corrupt",
+    [
+        {"payload": None},
+        {"payload": []},
+        {"locator": "not-a-dict"},
+        {"ts": 1789060105626},
+        {"observed_at": None},
+        {"source_kind": "transcript"},
+        {"native_session_id": "bf8cb9f3-2097-4db0-a3c8-78a2653b2106"},
+        {"source_id": ""},
+    ],
+)
+def test_read_spool_skips_records_with_corrupt_or_missing_required_fields(
+    copilot_env: tuple[Config, SourcePaths],
+    corrupt: dict[str, Any],
+):
+    config, paths = copilot_env
+    valid = _hook_record(observation_id="obs-required-fields")
+    spool_dir = Path(enqueue_hook(config, paths, valid)).parent
+    incomplete = dict(valid)
+    incomplete.update(corrupt)
+    malformed = spool_dir / "000004-incomplete.json"
+    malformed.write_text(json.dumps(incomplete), encoding="utf-8")
+
+    records = read_spool(config, paths, NATIVE_SESSION_ID)
+    assert len(records) == 1
+    assert records[0]["source_id"] == valid["source_id"]
+    diag_path = malformed.with_name(f"{malformed.name}.diag")
+    assert diag_path.is_file()
+    assert diag_path.read_text(encoding="utf-8").strip()
+
+
+def test_ack_spool_finds_records_across_sessions(copilot_env: tuple[Config, SourcePaths]):
+    config, paths = copilot_env
+    child_id = "bf8cb9f3-2097-4db0-a3c8-78a2653b2106"
+    parent = _hook_record(observation_id="obs-parent-ack", session_id=NATIVE_SESSION_ID)
+    child = _hook_record(observation_id="obs-child-ack", session_id=child_id)
+    enqueue_hook(config, paths, parent)
+    enqueue_hook(config, paths, child)
+
+    ack_spool(config, paths, [child["source_id"]])
+
+    assert len(read_spool(config, paths, NATIVE_SESSION_ID)) == 1
+    assert read_spool(config, paths, child_id) == []
+
+
+def test_ack_spool_leaves_malformed_files_in_place(copilot_env: tuple[Config, SourcePaths]):
+    config, paths = copilot_env
+    valid = _hook_record(observation_id="obs-ack-malformed-neighbor")
+    spool_dir = Path(enqueue_hook(config, paths, valid)).parent
+    malformed = spool_dir / "000002-bad-for-ack.json"
+    malformed.write_text("{bad", encoding="utf-8")
+
+    ack_spool(config, paths, [valid["source_id"]])
+
+    assert malformed.is_file()
+    assert read_spool(config, paths, NATIVE_SESSION_ID) == []
 
 
 def test_child_session_hooks_spool_under_native_session_id(tmp_path: Path):
