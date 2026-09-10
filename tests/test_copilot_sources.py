@@ -8,11 +8,10 @@ from pathlib import Path
 from typing import Any
 from unittest.mock import patch
 
-import pytest
-
 from thirdeye.platforms.copilot.database import discover_database_sessions
 from thirdeye.platforms.copilot.identity import resolve_sources
-from thirdeye.platforms.copilot.sources import discover_sessions, read_batch, resolve_sources as reexported_resolve
+from thirdeye.platforms.copilot.sources import discover_sessions, read_batch
+from thirdeye.platforms.copilot.sources import resolve_sources as reexported_resolve
 from thirdeye.platforms.copilot.transcript import discover_transcripts
 from thirdeye.platforms.copilot.types import SourcePaths, SourceRecord, SourceSlice
 
@@ -25,7 +24,9 @@ def _paths(home: Path) -> SourcePaths:
     return resolve_sources(home)
 
 
-def _write_transcript(home: Path, native_id: str, *, events: str = '{"id":"1"}\n', cwd: str | None = None) -> None:
+def _write_transcript(
+    home: Path, native_id: str, *, events: str = '{"id":"1"}\n', cwd: str | None = None
+) -> None:
     session_dir = home / "session-state" / native_id
     session_dir.mkdir(parents=True, exist_ok=True)
     (session_dir / "events.jsonl").write_text(events, encoding="utf-8")
@@ -176,7 +177,9 @@ def test_read_batch_merges_transcript_and_database_records(tmp_path: Path) -> No
 def test_read_batch_namespaces_reader_cursors_independently() -> None:
     transcript_cursor = {"byte_offset": 64, "file_generation": "gen-1"}
     database_cursor = {"row_id": 7, "table": "turns"}
-    transcript = _slice(records=[_record("t/1")], next_cursor=transcript_cursor, cwd="/transcript/cwd")
+    transcript = _slice(
+        records=[_record("t/1")], next_cursor=transcript_cursor, cwd="/transcript/cwd"
+    )
     database = _slice(
         records=[_record("d/1", source_kind="database")],
         next_cursor=database_cursor,
@@ -192,6 +195,8 @@ def test_read_batch_namespaces_reader_cursors_independently() -> None:
     assert batch["next_cursor"]["transcript"] == transcript_cursor
     assert batch["next_cursor"]["database"] == database_cursor
     assert batch["next_cursor"]["base_cursor"] == {"transcript": {"stale": True}}
+    assert batch["next_cursor"]["transcript_exhausted"] is False
+    assert batch["next_cursor"]["database_exhausted"] is False
 
 
 def test_read_batch_passes_namespaced_cursors_to_each_reader(tmp_path: Path) -> None:
@@ -205,7 +210,9 @@ def test_read_batch_passes_namespaced_cursors_to_each_reader(tmp_path: Path) -> 
     }
     seen: dict[str, dict[str, Any]] = {}
 
-    def capture_transcript(_paths: SourcePaths, _native: str, cursor: dict[str, Any]) -> SourceSlice:
+    def capture_transcript(
+        _paths: SourcePaths, _native: str, cursor: dict[str, Any]
+    ) -> SourceSlice:
         seen["transcript"] = cursor
         return _slice(exhausted=True)
 
@@ -304,6 +311,39 @@ def test_read_batch_fixture_slice_shape_is_compatible() -> None:
     assert len(batch["records"]) == 1
     assert batch["records"][0]["source_kind"] == "transcript"
     assert batch["diagnostics"] == []
+
+
+def test_read_batch_preserves_independent_exhaustion_flags() -> None:
+    transcript = _slice(records=[_record("t/1")], exhausted=False)
+    database = _slice(
+        records=[_record("d/1", source_kind="database")],
+        exhausted=True,
+        cwd="/database/cwd",
+    )
+
+    with (
+        patch("thirdeye.platforms.copilot.sources.read_transcript", return_value=transcript),
+        patch("thirdeye.platforms.copilot.sources.read_database", return_value=database),
+    ):
+        batch = read_batch(_paths(Path("/tmp/unused")), NATIVE_ID, {})
+
+    assert batch["next_cursor"]["transcript_exhausted"] is False
+    assert batch["next_cursor"]["database_exhausted"] is True
+
+
+def test_read_batch_marks_failed_reader_slice_as_not_exhausted(tmp_path: Path) -> None:
+    home = tmp_path / "copilot"
+    _write_transcript(home, NATIVE_ID)
+    paths = _paths(home)
+
+    def fail_database(_paths: SourcePaths, _native: str, _cursor: dict[str, Any]) -> SourceSlice:
+        raise OSError("database locked")
+
+    with patch("thirdeye.platforms.copilot.sources.read_database", side_effect=fail_database):
+        batch = read_batch(paths, NATIVE_ID, {})
+
+    assert batch["next_cursor"]["database_exhausted"] is False
+    assert batch["next_cursor"]["transcript_exhausted"] is True
 
 
 def test_discover_sessions_delegates_to_underlying_readers(tmp_path: Path) -> None:

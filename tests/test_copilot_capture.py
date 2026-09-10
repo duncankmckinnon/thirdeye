@@ -5,13 +5,17 @@ from __future__ import annotations
 import json
 import shutil
 import sqlite3
+from collections.abc import Iterator
+from contextlib import contextmanager
 from pathlib import Path
 from typing import Any
 from unittest.mock import patch
 
 import pytest
 
+import thirdeye.platforms.copilot.archive as archive_mod
 import thirdeye.platforms.copilot.capture as capture_mod
+import thirdeye.platforms.copilot.state as state_mod
 from thirdeye.config import Config
 from thirdeye.platforms.copilot.archive import commit_batch, load_cursor
 from thirdeye.platforms.copilot.capture import (
@@ -174,10 +178,61 @@ def _hook_record(*, observation_id: str, session_id: str = NATIVE_SESSION_ID) ->
     )
 
 
+@contextmanager
+def _fault_at(point: str) -> Iterator[None]:
+    def injector(name: str) -> None:
+        if name == point:
+            raise RuntimeError(f"injected fault at {point}")
+
+    archive_mod._fault_injector = injector
+    state_mod._fault_injector = injector
+    try:
+        yield
+    finally:
+        archive_mod._fault_injector = None
+        state_mod._fault_injector = None
+
+
+def _empty_result() -> SyncResult:
+    return {
+        "sessions": 0,
+        "records_written": 0,
+        "duplicate_records": 0,
+        "pending": 0,
+        "errors": 0,
+    }
+
+
+def _composed_batch(
+    paths: SourcePaths,
+    *,
+    diagnostics: list[dict[str, Any]] | None = None,
+    records: list[SourceRecord] | None = None,
+    transcript_exhausted: bool = True,
+    database_exhausted: bool = True,
+) -> SourceBatch:
+    return {
+        "source_key": paths["source_key"],
+        "native_session_id": NATIVE_SESSION_ID,
+        "cwd": "/proj",
+        "records": records or [_record("composed/1")],
+        "next_cursor": {
+            "transcript": {"byte_offset": 1},
+            "database": {"database_offset": 1},
+            "base_cursor": {},
+            "transcript_exhausted": transcript_exhausted,
+            "database_exhausted": database_exhausted,
+        },
+        "diagnostics": diagnostics or [],
+    }
+
+
 # --- module exports ---
 
 
-def test_iter_captured_records_is_reexported_from_archive(copilot_env: tuple[Config, SourcePaths]) -> None:
+def test_iter_captured_records_is_reexported_from_archive(
+    copilot_env: tuple[Config, SourcePaths],
+) -> None:
     config, paths = copilot_env
     stored = stored_session_id(paths, NATIVE_SESSION_ID)
     commit_batch(config, paths, _batch(paths, [_record("key/a/exported")]))
@@ -208,7 +263,9 @@ def test_sync_empty_discovery_is_successful_noop(copilot_env: tuple[Config, Sour
     }
 
 
-def test_sync_missing_selected_session_returns_error(copilot_env: tuple[Config, SourcePaths]) -> None:
+def test_sync_missing_selected_session_returns_error(
+    copilot_env: tuple[Config, SourcePaths],
+) -> None:
     config, paths = copilot_env
     assert sync(config, paths, session_id="missing-session-id") == {
         "sessions": 0,
@@ -410,7 +467,9 @@ def test_one_unavailable_source_does_not_block_the_other(
     assert result["records_written"] > 0
     assert result["errors"] >= 1
     stored = stored_session_id(paths, NATIVE_SESSION_ID)
-    assert any(record["source_kind"] == "transcript" for record in iter_captured_records(config, stored))
+    assert any(
+        record["source_kind"] == "transcript" for record in iter_captured_records(config, stored)
+    )
 
 
 # --- record_hook ---
@@ -460,7 +519,9 @@ def test_record_hook_uses_caller_context_not_importer_environment(
         observation_id: str,
     ) -> SourceRecord:
         captured_context.update(context)
-        return parse_hook(event, payload, context, observed_at=observed_at, observation_id=observation_id)
+        return parse_hook(
+            event, payload, context, observed_at=observed_at, observation_id=observation_id
+        )
 
     monkeypatch.setattr(capture_mod, "parse_hook", capture_parse)
     monkeypatch.setattr(capture_mod, "capture_session", lambda *_args, **_kwargs: _empty_result())
@@ -475,17 +536,9 @@ def test_record_hook_uses_caller_context_not_importer_environment(
     assert captured_context == {"env": {"CUSTOM": "from-caller"}}
 
 
-def _empty_result() -> SyncResult:
-    return {
-        "sessions": 0,
-        "records_written": 0,
-        "duplicate_records": 0,
-        "pending": 0,
-        "errors": 0,
-    }
-
-
-def test_sync_full_fixture_writes_expected_record_volume(copilot_env: tuple[Config, SourcePaths]) -> None:
+def test_sync_full_fixture_writes_expected_record_volume(
+    copilot_env: tuple[Config, SourcePaths],
+) -> None:
     config, paths = copilot_env
     home = Path(paths["home"])
     _write_transcript(home, NATIVE_SESSION_ID)
@@ -498,3 +551,263 @@ def test_sync_full_fixture_writes_expected_record_volume(copilot_env: tuple[Conf
     stored = stored_session_id(paths, NATIVE_SESSION_ID)
     captured = list(iter_captured_records(config, stored))
     assert len(captured) == result["records_written"]
+
+
+def test_capture_session_reports_pending_when_transcript_exceeds_reader_limit(
+    copilot_env: tuple[Config, SourcePaths],
+) -> None:
+    config, paths = copilot_env
+    home = Path(paths["home"])
+    session_dir = home / "session-state" / NATIVE_SESSION_ID
+    session_dir.mkdir(parents=True, exist_ok=True)
+    events = "".join(f'{{"id":"evt-{index}"}}\n' for index in range(1001))
+    (session_dir / "events.jsonl").write_text(events, encoding="utf-8")
+    (session_dir / "workspace.yaml").write_text("cwd: /sanitized/workspace\n", encoding="utf-8")
+    _write_database(home, session_id=NATIVE_SESSION_ID)
+
+    result = capture_session(config, paths, NATIVE_SESSION_ID)
+    stored = stored_session_id(paths, NATIVE_SESSION_ID)
+    captured = list(iter_captured_records(config, stored))
+    assert result["pending"] >= 1
+    assert len(captured) < 1001 + 20
+    assert result["records_written"] == len(captured)
+
+
+def test_sync_drains_paginated_invocation_snapshot(
+    copilot_env: tuple[Config, SourcePaths],
+) -> None:
+    config, paths = copilot_env
+    home = Path(paths["home"])
+    session_dir = home / "session-state" / NATIVE_SESSION_ID
+    session_dir.mkdir(parents=True, exist_ok=True)
+    events = "".join(f'{{"id":"evt-{index}"}}\n' for index in range(1001))
+    (session_dir / "events.jsonl").write_text(events, encoding="utf-8")
+    (session_dir / "workspace.yaml").write_text("cwd: /sanitized/workspace\n", encoding="utf-8")
+    _write_database(home, session_id=NATIVE_SESSION_ID)
+
+    result = sync(config, paths, session_id=NATIVE_SESSION_ID)
+    stored = stored_session_id(paths, NATIVE_SESSION_ID)
+    captured = list(iter_captured_records(config, stored))
+    transcript_events = [record for record in captured if record["source_kind"] == "transcript"]
+    assert result["pending"] == 0
+    assert result["errors"] == 0
+    assert len(transcript_events) == 1001
+    assert result["sessions"] == 1
+
+
+def test_capture_session_pending_follows_retry_batch_when_source_becomes_available(
+    copilot_env: tuple[Config, SourcePaths],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    config, paths = copilot_env
+    unavailable = _composed_batch(
+        paths,
+        diagnostics=[
+            {
+                "code": "copilot_database_missing",
+                "message": "Copilot session database is not present",
+            }
+        ],
+    )
+    available = _composed_batch(paths, diagnostics=[], records=[_record("composed/retry")])
+    reads = [unavailable, available]
+    commits = 0
+
+    def fake_read(_paths: SourcePaths, _native: str, _cursor: dict[str, Any]) -> SourceBatch:
+        return reads.pop(0)
+
+    def fake_commit(_cfg: Config, _paths: SourcePaths, _batch: SourceBatch) -> SyncResult:
+        nonlocal commits
+        commits += 1
+        if commits == 1:
+            return {
+                "sessions": 1,
+                "records_written": 2,
+                "duplicate_records": 0,
+                "pending": 1,
+                "errors": 1,
+            }
+        return {
+            "sessions": 1,
+            "records_written": 1,
+            "duplicate_records": 0,
+            "pending": 0,
+            "errors": 0,
+        }
+
+    def fake_load(_cfg: Config, _paths: SourcePaths, _native: str) -> dict[str, Any]:
+        if commits == 0:
+            return {}
+        return {"transcript": {"byte_offset": 8}}
+
+    monkeypatch.setattr(capture_mod, "read_batch", fake_read)
+    monkeypatch.setattr(capture_mod, "commit_batch", fake_commit)
+    monkeypatch.setattr(capture_mod, "load_cursor", fake_load)
+
+    result = capture_session(config, paths, NATIVE_SESSION_ID)
+    assert commits == 2
+    assert result["pending"] == 0
+    assert result["errors"] == 0
+    assert result["records_written"] == 3
+
+
+def test_capture_session_pending_follows_retry_batch_when_source_becomes_unavailable(
+    copilot_env: tuple[Config, SourcePaths],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    config, paths = copilot_env
+    available = _composed_batch(paths, diagnostics=[])
+    unavailable = _composed_batch(
+        paths,
+        diagnostics=[
+            {
+                "code": "copilot_database_missing",
+                "message": "Copilot session database is not present",
+            }
+        ],
+    )
+    reads = [available, unavailable]
+    commits = 0
+
+    def fake_read(_paths: SourcePaths, _native: str, _cursor: dict[str, Any]) -> SourceBatch:
+        return reads.pop(0)
+
+    def fake_commit(_cfg: Config, _paths: SourcePaths, _batch: SourceBatch) -> SyncResult:
+        nonlocal commits
+        commits += 1
+        if commits == 1:
+            return {
+                "sessions": 1,
+                "records_written": 0,
+                "duplicate_records": 0,
+                "pending": 1,
+                "errors": 1,
+            }
+        return {
+            "sessions": 1,
+            "records_written": 1,
+            "duplicate_records": 0,
+            "pending": 0,
+            "errors": 0,
+        }
+
+    def fake_load(_cfg: Config, _paths: SourcePaths, _native: str) -> dict[str, Any]:
+        if commits == 0:
+            return {}
+        return {"transcript": {"byte_offset": 8}}
+
+    monkeypatch.setattr(capture_mod, "read_batch", fake_read)
+    monkeypatch.setattr(capture_mod, "commit_batch", fake_commit)
+    monkeypatch.setattr(capture_mod, "load_cursor", fake_load)
+
+    result = capture_session(config, paths, NATIVE_SESSION_ID)
+    assert commits == 2
+    assert result["pending"] >= 1
+    assert result["errors"] >= 1
+    assert result["records_written"] == 1
+
+
+def test_capture_session_keeps_journal_recovery_counts_after_stale_retry(
+    copilot_env: tuple[Config, SourcePaths],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    config, paths = copilot_env
+    home = Path(paths["home"])
+    _write_transcript(home, NATIVE_SESSION_ID)
+    _write_database(home, session_id=NATIVE_SESSION_ID)
+
+    seed = commit_batch(
+        config, paths, _batch(paths, [_record("key/a/seed")], next_cursor={"generation": 1})
+    )
+    assert seed["errors"] == 0
+
+    with _fault_at("after_journal"):
+        with pytest.raises(RuntimeError, match="injected fault"):
+            commit_batch(
+                config,
+                paths,
+                _batch(
+                    paths,
+                    [_record("key/a/journal-only")],
+                    next_cursor={"generation": 2},
+                    base_cursor={"generation": 1},
+                ),
+            )
+
+    commit_calls: list[SyncResult] = []
+    original_commit = capture_mod.commit_batch
+
+    def tracking_commit(cfg: Config, p: SourcePaths, batch: SourceBatch) -> SyncResult:
+        result = original_commit(cfg, p, batch)
+        commit_calls.append(result)
+        return result
+
+    monkeypatch.setattr(capture_mod, "commit_batch", tracking_commit)
+
+    original_load = capture_mod.load_cursor
+
+    def staged_load(cfg: Config, p: SourcePaths, native_id: str) -> dict[str, Any]:
+        if not commit_calls:
+            return {"generation": 1}
+        return original_load(cfg, p, native_id)
+
+    monkeypatch.setattr(capture_mod, "load_cursor", staged_load)
+    result = capture_session(config, paths, NATIVE_SESSION_ID)
+
+    assert len(commit_calls) == 2
+    assert commit_calls[0]["records_written"] >= 1
+    assert result["records_written"] == (
+        commit_calls[0]["records_written"] + commit_calls[1]["records_written"]
+    )
+    assert result["duplicate_records"] == (
+        commit_calls[0]["duplicate_records"] + commit_calls[1]["duplicate_records"]
+    )
+    captured = list(iter_captured_records(config, stored_session_id(paths, NATIVE_SESSION_ID)))
+    assert any(record["source_id"] == "key/a/journal-only" for record in captured)
+
+
+def test_sync_reports_discovery_failure_instead_of_empty_noop(
+    copilot_env: tuple[Config, SourcePaths],
+) -> None:
+    config, paths = copilot_env
+
+    def boom(_paths: SourcePaths) -> list[str]:
+        raise OSError("database unreadable")
+
+    with patch("thirdeye.platforms.copilot.sources.discover_database_sessions", boom):
+        result = sync(config, paths)
+
+    assert result["sessions"] == 0
+    assert result["records_written"] == 0
+    assert result["errors"] >= 1
+    assert result["pending"] >= 1
+
+
+def test_sync_selected_unreadable_database_is_not_reported_as_missing(
+    copilot_env: tuple[Config, SourcePaths],
+) -> None:
+    config, paths = copilot_env
+    Path(paths["database"]).write_text("this is not a sqlite database", encoding="utf-8")
+
+    result = sync(config, paths, session_id=NATIVE_SESSION_ID)
+    assert result != {
+        "sessions": 0,
+        "records_written": 0,
+        "duplicate_records": 0,
+        "pending": 0,
+        "errors": 1,
+    }
+    assert result["errors"] >= 1
+    assert result["pending"] >= 1
+
+
+def test_sync_incompatible_database_only_is_not_silent_noop(
+    copilot_env: tuple[Config, SourcePaths],
+) -> None:
+    config, paths = copilot_env
+    Path(paths["database"]).write_text("this is not a sqlite database", encoding="utf-8")
+
+    result = sync(config, paths)
+    assert result["errors"] >= 1
+    assert result["pending"] >= 1
+    assert result["sessions"] == 0
