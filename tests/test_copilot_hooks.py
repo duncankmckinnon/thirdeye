@@ -538,6 +538,61 @@ def test_tag_observation_selects_by_observation_id(
     assert "other-only-first" not in store.tags_for(int(events[1]["seq"]))
 
 
+def test_tag_observation_does_not_scan_the_entire_session_index(
+    copilot_env: tuple[Config, SourcePaths],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    config, paths = copilot_env
+    monkeypatch.setattr(hooks, "schedule_followup", lambda *_args, **_kwargs: None)
+    _invoke(monkeypatch, "sessionStart", _payload(source="new"))
+
+    fake_count = 10_000
+    seen: list[int] = []
+    monkeypatch.setattr(hooks.IndexReader, "count", lambda self: fake_count)
+
+    def tracking_get(self: SessionReader, seq: int) -> dict[str, Any]:
+        seen.append(seq)
+        return {"t": "copilot_transcript", "seq": seq, "data": {}}
+
+    monkeypatch.setattr(SessionReader, "get_event", tracking_get)
+    hooks._tag_observation(
+        config,
+        paths,
+        NATIVE_SESSION_ID,
+        {"WB_PLAN": "bounded"},
+        observation_id="missing-observation",
+    )
+
+    assert seen
+    assert 0 not in seen
+    assert len(seen) <= hooks._MAX_TAG_SCAN
+    assert min(seen) >= fake_count - hooks._MAX_TAG_SCAN
+
+
+def test_env_tags_apply_when_later_source_records_follow_the_hook(
+    copilot_env: tuple[Config, SourcePaths],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    config, paths = copilot_env
+    home = Path(paths["home"])
+    _write_transcript(home, NATIVE_SESSION_ID)
+    _write_database(home, session_id=NATIVE_SESSION_ID)
+    monkeypatch.setenv("THIRDEYE_CAPTURE_ENV", "WB_*")
+    monkeypatch.setenv("WB_PLAN", "front-of-batch")
+    monkeypatch.setattr(hooks, "schedule_followup", lambda *_args, **_kwargs: None)
+
+    _invoke(monkeypatch, "sessionStart", _payload(source="new"))
+
+    directory = _session_directory(config, paths)
+    events = list(SessionReader(directory).iter_events())
+    hook_events = [event for event in events if event.get("t") == "copilot_hook"]
+    assert len(hook_events) == 1
+    assert len(events) > hooks._MAX_TAG_SCAN
+    assert events[-1]["t"] != "copilot_hook"
+    tags = TagStore(directory).tags_for(int(hook_events[0]["seq"]))
+    assert "plan-front-of-batch" in tags
+
+
 def test_missing_session_id_skips_tagging_and_followup(
     copilot_env: tuple[Config, SourcePaths],
     monkeypatch: pytest.MonkeyPatch,

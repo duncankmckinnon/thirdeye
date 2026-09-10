@@ -42,6 +42,9 @@ _PASCAL_CASE_ALIASES = frozenset(
     }
 )
 _TRACE_CONTEXT_KEYS = ("trace_id", "span_id", "parent_span_id", "trace_context", "traceparent")
+# Capture writes spool hooks first, then at most one transcript/database page.
+# Tagging must not walk older session history during the hook process.
+_MAX_TAG_SCAN = 64
 
 
 def _read_stdin() -> dict[str, Any]:
@@ -86,6 +89,14 @@ def _bound_observation_id(observation_id: str) -> Iterator[None]:
         capture_mod.uuid4 = original
 
 
+def _session_event_count(config: Config, paths: SourcePaths, native_id: str) -> int:
+    directory = session_dir(config.root, PLATFORM_NAME, stored_session_id(paths, native_id))
+    try:
+        return IndexReader(index_path(directory)).count()
+    except OSError:
+        return 0
+
+
 def _tag_observation(
     config: Config,
     paths: SourcePaths,
@@ -93,8 +104,15 @@ def _tag_observation(
     env: dict[str, str],
     *,
     observation_id: str,
+    since_seq: int | None = None,
 ) -> None:
-    """Attach opt-in environment tags to the observation just written."""
+    """Attach opt-in environment tags to the observation just written.
+
+    Capture commits spool hooks at the front of the batch, then transcript and
+    database pages.  Hook-time tagging therefore starts at ``since_seq`` (the
+    pre-capture index count) and stops after a bounded window so session
+    history cannot grow hook latency.
+    """
 
     tags = [tag for name, value in env.items() if (tag := env_to_tag(name, value)) is not None]
     if not tags:
@@ -103,7 +121,10 @@ def _tag_observation(
     try:
         reader = SessionReader(directory)
         count = IndexReader(index_path(directory)).count()
-        for seq in range(count - 1, -1, -1):
+        start = since_seq if since_seq is not None else max(0, count - _MAX_TAG_SCAN)
+        start = max(0, min(start, count))
+        end = min(count, start + _MAX_TAG_SCAN)
+        for seq in range(start, end):
             event = reader.get_event(seq)
             if event.get("t") != "copilot_hook":
                 continue
@@ -165,6 +186,12 @@ def main() -> None:
         context = _context(config, payload)
         native_id = payload.get("sessionId")
         observation_id = uuid4().hex
+        since_seq = 0
+        if isinstance(native_id, str):
+            try:
+                since_seq = _session_event_count(config, paths, native_id)
+            except Exception:
+                since_seq = 0
         try:
             with _bound_observation_id(observation_id), nonblocking_archive_lock():
                 record_hook(config, paths, event, payload, context)
@@ -192,6 +219,7 @@ def main() -> None:
             native_id,
             context["env"],
             observation_id=observation_id,
+            since_seq=since_seq,
         )
         _schedule(config, paths, native_id)
     except Exception:
