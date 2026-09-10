@@ -15,6 +15,8 @@ pytest.importorskip("starlette")
 
 NATIVE_ID = "5a7e8e11-4a6b-49ff-a33e-95d411c4cdd6"
 SOURCE_TS = "2026-09-10T17:08:44.557Z"
+USAGE_MODEL = "gpt-4.1-copilot-sentinel"
+USAGE_INPUT_TOKENS = 424242
 
 
 def _capture_synthetic_batch(web_config, tmp_path: Path) -> str:
@@ -28,7 +30,6 @@ def _capture_synthetic_batch(web_config, tmp_path: Path) -> str:
             "ts": SOURCE_TS,
             "observed_at": "2026-09-10T17:08:45.000Z",
             "payload": {
-                "schema_version": 1,
                 "type": "user.message",
                 "id": "child-message",
                 "timestamp": SOURCE_TS,
@@ -44,7 +45,6 @@ def _capture_synthetic_batch(web_config, tmp_path: Path) -> str:
             "ts": SOURCE_TS,
             "observed_at": "2026-09-10T17:08:45.001Z",
             "payload": {
-                "schema_version": 1,
                 "event": "agentStop",
                 "hook_payload": {"sessionId": NATIVE_ID, "agentId": "child-agent-id", "response": "42"},
             },
@@ -81,6 +81,8 @@ def test_generic_event_views_show_raw_child_and_hook_evidence(client, web_config
     assert NATIVE_ID.encode() in detail.content
     assert SOURCE_TS.encode() in detail.content
     assert b"child-message" in detail.content or b"child-stop" in detail.content
+    assert b'"schema_version": 1' in detail.content
+    assert b'"source_kind": "hook"' in detail.content
     assert stored_id.encode() in search.content
     assert b"alpha.txt" in search.content
 
@@ -95,7 +97,6 @@ def test_copilot_database_events_render_in_generic_tree(client, web_config, tmp_
             "ts": SOURCE_TS,
             "observed_at": "2026-09-10T17:08:45.000Z",
             "payload": {
-                "schema_version": 1,
                 "table": "assistant_usage_events",
                 "model": "gpt-4.1",
                 "input_tokens": 100,
@@ -109,7 +110,6 @@ def test_copilot_database_events_render_in_generic_tree(client, web_config, tmp_
             "ts": None,
             "observed_at": "2026-09-10T17:08:45.001Z",
             "payload": {
-                "schema_version": 1,
                 "file": "workspace.yaml",
                 "cwd": "/fixture/workspace",
             },
@@ -135,7 +135,10 @@ def test_copilot_database_events_render_in_generic_tree(client, web_config, tmp_
     assert b"copilot_database" in tree.content
     assert b"copilot_metadata" in tree.content
     assert b"assistant_usage_events" in detail_db.content
+    assert b'"schema_version": 1' in detail_db.content
+    assert b'"source_kind": "database"' in detail_db.content
     assert b"workspace.yaml" in detail_meta.content
+    assert b'"source_kind": "metadata"' in detail_meta.content
     assert b"user_message" not in tree.content
 
 
@@ -155,11 +158,37 @@ def test_copilot_sessions_are_excluded_from_index_turn_query(client, web_config,
 
 
 def test_copilot_session_usage_page_has_no_token_rows(client, web_config, tmp_path: Path) -> None:
-    stored_id = _capture_synthetic_batch(web_config, tmp_path)
+    paths = resolve_sources(tmp_path / "copilot-home")
+    records: list[SourceRecord] = [
+        {
+            "source_id": f"{paths['source_key']}/{NATIVE_ID}/usage-row",
+            "source_kind": "database",
+            "native_session_id": NATIVE_ID,
+            "ts": SOURCE_TS,
+            "observed_at": "2026-09-10T17:08:45.000Z",
+            "payload": {
+                "table": "assistant_usage_events",
+                "model": USAGE_MODEL,
+                "input_tokens": USAGE_INPUT_TOKENS,
+            },
+            "locator": {"table": "assistant_usage_events", "rowid": 7},
+        },
+    ]
+    batch: SourceBatch = {
+        "source_key": paths["source_key"],
+        "native_session_id": NATIVE_ID,
+        "cwd": "/fixture/workspace",
+        "records": records,
+        "next_cursor": {"fixture": 1},
+        "diagnostics": [],
+    }
+    commit_batch(web_config, paths, batch)
+    stored_id = stored_session_id(paths, NATIVE_ID)
 
     usage = client.get(f"/sessions/{stored_id}/usage")
 
     assert usage.status_code == 200
     assert b"usage" in usage.content
-    assert b"gpt-4.1" not in usage.content
+    assert USAGE_MODEL.encode() not in usage.content
     assert b"input_tokens" not in usage.content
+    assert str(USAGE_INPUT_TOKENS).encode() not in usage.content
