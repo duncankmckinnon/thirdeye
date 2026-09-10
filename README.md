@@ -79,7 +79,7 @@ rerun `thirdeye skills add --force` to refresh them. See
 ## Enable tracing
 
 ```bash
-thirdeye add --claude        # also: --cursor, --codex
+thirdeye add --claude        # also: --cursor, --codex, --copilot
 ```
 
 To detach: `thirdeye remove --claude`.

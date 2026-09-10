@@ -7,7 +7,6 @@ import shutil
 import sqlite3
 from pathlib import Path
 from typing import Any
-from unittest.mock import MagicMock
 
 import pytest
 from click.testing import CliRunner
@@ -22,13 +21,35 @@ FIXTURES = Path(__file__).parent / "fixtures" / "copilot"
 CLI_FIXTURE = FIXTURES / "cli-1.0.83"
 NATIVE_SESSION_ID = "5a7e8e11-4a6b-49ff-a33e-95d411c4cdd6"
 HOOK_BIN = "thirdeye-copilot-hook"
+SECRET_PROMPT = "SECRET PROMPT BODY"
 
 
 @pytest.fixture
 def isolated_home(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     home = tmp_path / "thirdeye"
+    copilot_home = tmp_path / "copilot-default"
+    copilot_home.mkdir()
     monkeypatch.setenv("THIRDEYE_HOME", str(home))
+    monkeypatch.setenv("COPILOT_HOME", str(copilot_home))
     return home
+
+
+def _counts_line(**overrides: int) -> str:
+    values = {
+        "sessions": 0,
+        "records_written": 0,
+        "duplicate_records": 0,
+        "pending": 0,
+        "errors": 0,
+        **overrides,
+    }
+    return (
+        f"sessions={values['sessions']} "
+        f"records_written={values['records_written']} "
+        f"duplicate_records={values['duplicate_records']} "
+        f"pending={values['pending']} "
+        f"errors={values['errors']}"
+    )
 
 
 def _empty_result(**overrides: int) -> SyncResult:
@@ -121,7 +142,29 @@ def _write_database(home: Path, *, session_id: str = NATIVE_SESSION_ID) -> None:
         connection.close()
 
 
-def _minimal_status(*, configured: bool = False, errors: list[dict[str, Any]] | None = None) -> dict:
+def _prompt_hook_record() -> dict[str, Any]:
+    return {
+        "source_id": f"hook/{NATIVE_SESSION_ID}/obs-1",
+        "source_kind": "hook",
+        "native_session_id": NATIVE_SESSION_ID,
+        "ts": "2026-09-10T17:08:01.000Z",
+        "observed_at": "2026-09-10T17:08:02.000Z",
+        "payload": {
+            "schema_version": 1,
+            "event": "userPromptSubmitted",
+            "hook_payload": {
+                "sessionId": NATIVE_SESSION_ID,
+                "prompt": SECRET_PROMPT,
+            },
+            "context": {},
+        },
+        "locator": {"observation_id": "obs-1", "event": "userPromptSubmitted"},
+    }
+
+
+def _minimal_status(
+    *, configured: bool = False, errors: list[dict[str, Any]] | None = None
+) -> dict:
     return {
         "paths": {
             "home": "/tmp/copilot",
@@ -129,11 +172,26 @@ def _minimal_status(*, configured: bool = False, errors: list[dict[str, Any]] | 
             "session_root": "/tmp/copilot/session-state",
             "database": "/tmp/copilot/session-store.db",
         },
-        "installation": {"configured": configured, "hooks_file": "/tmp/copilot/hooks/thirdeye.json"},
+        "installation": {
+            "configured": configured,
+            "hooks_file": "/tmp/copilot/hooks/thirdeye.json",
+        },
         "capabilities": {
-            "transcripts": {"exists": True, "readable": True},
-            "database": {"exists": True, "readable": True},
-            "database_wal": {"exists": False, "readable": False},
+            "transcripts": {
+                "exists": True,
+                "readable": True,
+                "path": "/tmp/copilot/session-state",
+            },
+            "database": {
+                "exists": True,
+                "readable": True,
+                "path": "/tmp/copilot/session-store.db",
+            },
+            "database_wal": {
+                "exists": False,
+                "readable": False,
+                "path": "/tmp/copilot/session-store.db-wal",
+            },
         },
         "last_observed_hook": None,
         "last_successful_import": None,
@@ -147,6 +205,15 @@ def _minimal_status(*, configured: bool = False, errors: list[dict[str, Any]] | 
         },
         "errors": errors or [],
     }
+
+
+def _escaping_source_home(tmp_path: Path) -> Path:
+    home = tmp_path / "escaped-copilot"
+    home.mkdir()
+    outside = tmp_path / "outside-session-state"
+    outside.mkdir()
+    (home / "session-state").symlink_to(outside)
+    return home
 
 
 # -- command registration ------------------------------------------------------
@@ -222,7 +289,9 @@ def test_copilot_hook_entrypoint_is_importable() -> None:
 def test_sync_invokes_capture_sync(isolated_home: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     calls: list[tuple[Any, ...]] = []
 
-    def fake_sync(config: Config, paths: SourcePaths, *, session_id: str | None = None) -> SyncResult:
+    def fake_sync(
+        config: Config, paths: SourcePaths, *, session_id: str | None = None
+    ) -> SyncResult:
         calls.append((config.root, paths["home"], session_id))
         return _empty_result(sessions=2, records_written=5)
 
@@ -231,15 +300,17 @@ def test_sync_invokes_capture_sync(isolated_home: Path, monkeypatch: pytest.Monk
     assert result.exit_code == 0, result.output
     assert len(calls) == 1
     assert calls[0][2] is None
-    assert "5" in result.output or "records" in result.output.lower()
+    assert _counts_line(sessions=2, records_written=5) in result.output
 
 
 def test_sync_passes_session_id(isolated_home: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     captured: dict[str, str | None] = {"session_id": "unset"}
 
-    def fake_sync(_config: Config, _paths: SourcePaths, *, session_id: str | None = None) -> SyncResult:
+    def fake_sync(
+        _config: Config, _paths: SourcePaths, *, session_id: str | None = None
+    ) -> SyncResult:
         captured["session_id"] = session_id
-        return _empty_result()
+        return _empty_result(sessions=1)
 
     monkeypatch.setattr("thirdeye.commands.copilot.capture_sync", fake_sync)
     result = CliRunner().invoke(main, ["copilot", "sync", "--session-id", NATIVE_SESSION_ID])
@@ -261,7 +332,9 @@ def test_sync_resolves_explicit_source_home(
         resolved["home"] = paths["home"]
         return paths
 
-    def fake_sync(_config: Config, paths: SourcePaths, *, session_id: str | None = None) -> SyncResult:
+    def fake_sync(
+        _config: Config, paths: SourcePaths, *, session_id: str | None = None
+    ) -> SyncResult:
         resolved["sync_home"] = paths["home"]
         return _empty_result()
 
@@ -273,11 +346,58 @@ def test_sync_resolves_explicit_source_home(
     assert Path(resolved["sync_home"]) == source_home.resolve()
 
 
+def test_sync_uses_copilot_home_when_source_home_omitted(
+    isolated_home: Path,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    env_home = tmp_path / "from-env-home"
+    env_home.mkdir()
+    monkeypatch.setenv("COPILOT_HOME", str(env_home))
+    seen: dict[str, str] = {}
+
+    def fake_sync(
+        _config: Config, paths: SourcePaths, *, session_id: str | None = None
+    ) -> SyncResult:
+        seen["home"] = paths["home"]
+        return _empty_result()
+
+    monkeypatch.setattr("thirdeye.commands.copilot.capture_sync", fake_sync)
+    result = CliRunner().invoke(main, ["copilot", "sync"])
+    assert result.exit_code == 0, result.output
+    assert Path(seen["home"]) == env_home.resolve()
+
+
+def test_sync_source_home_overrides_copilot_home(
+    isolated_home: Path,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    env_home = tmp_path / "from-env-home"
+    explicit = tmp_path / "explicit-home"
+    env_home.mkdir()
+    explicit.mkdir()
+    monkeypatch.setenv("COPILOT_HOME", str(env_home))
+    seen: dict[str, str] = {}
+
+    def fake_sync(
+        _config: Config, paths: SourcePaths, *, session_id: str | None = None
+    ) -> SyncResult:
+        seen["home"] = paths["home"]
+        return _empty_result()
+
+    monkeypatch.setattr("thirdeye.commands.copilot.capture_sync", fake_sync)
+    result = CliRunner().invoke(main, ["copilot", "sync", "--source-home", str(explicit)])
+    assert result.exit_code == 0, result.output
+    assert Path(seen["home"]) == explicit.resolve()
+
+
 def test_sync_empty_discovery_exits_zero(isolated_home: Path, tmp_path: Path) -> None:
     empty_home = tmp_path / "empty-copilot"
     empty_home.mkdir()
     result = CliRunner().invoke(main, ["copilot", "sync", "--source-home", str(empty_home)])
     assert result.exit_code == 0, result.output
+    assert _counts_line() in result.output
 
 
 def test_sync_missing_session_id_exits_nonzero(
@@ -294,6 +414,7 @@ def test_sync_missing_session_id_exits_nonzero(
     assert "No such command" not in result.output
     assert "missing-session-id" in result.output
     assert "errors=1" in result.output
+    assert "was not found" in result.output
 
 
 def test_sync_session_with_capture_errors_exits_nonzero(
@@ -316,6 +437,65 @@ def test_sync_session_with_capture_errors_exits_nonzero(
     assert result.exit_code != 0, result.output
     assert NATIVE_SESSION_ID in result.output
     assert "errors=1" in result.output
+    assert "was not found" in result.output
+
+
+def test_sync_imported_session_with_diagnostics_exits_zero(
+    isolated_home: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def fake_sync(
+        _config: Config,
+        _paths: SourcePaths,
+        *,
+        session_id: str | None = None,
+    ) -> SyncResult:
+        return _empty_result(sessions=1, records_written=12, errors=1)
+
+    monkeypatch.setattr("thirdeye.commands.copilot.capture_sync", fake_sync)
+    result = CliRunner().invoke(
+        main,
+        ["copilot", "sync", "--session-id", NATIVE_SESSION_ID],
+    )
+    assert result.exit_code == 0, result.output
+    assert _counts_line(sessions=1, records_written=12, errors=1) in result.output
+    assert "imported with 1 source diagnostics" in result.output
+    assert "was not found" not in result.output
+
+
+def test_sync_prints_source_diagnostics_without_content(
+    isolated_home: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def fake_sync(
+        _config: Config, _paths: SourcePaths, *, session_id: str | None = None
+    ) -> SyncResult:
+        return _empty_result(sessions=1, errors=1, pending=1)
+
+    def fake_status(_config: Config, _paths: SourcePaths) -> dict:
+        status = _minimal_status(
+            errors=[
+                {
+                    "code": "transcript_invalid_json",
+                    "message": "complete transcript line is not JSON",
+                    "session": NATIVE_SESSION_ID,
+                    "locator": {"file": "events.jsonl", "offset": 12},
+                    "payload": {"prompt": SECRET_PROMPT},
+                }
+            ]
+        )
+        return status
+
+    monkeypatch.setattr("thirdeye.commands.copilot.capture_sync", fake_sync)
+    monkeypatch.setattr("thirdeye.commands.copilot.capture_status", fake_status)
+    result = CliRunner().invoke(main, ["copilot", "sync", "--session-id", NATIVE_SESSION_ID])
+    assert result.exit_code == 0, result.output
+    assert "transcript_invalid_json" in result.output
+    assert NATIVE_SESSION_ID in result.output
+    assert "events.jsonl" in result.output
+    assert SECRET_PROMPT not in result.output
+    assert "thirdeye copilot status" in result.output
+    assert "thirdeye copilot watch" in result.output
 
 
 def test_sync_capture_value_error_becomes_click_exception(
@@ -334,17 +514,25 @@ def test_sync_capture_value_error_becomes_click_exception(
     result = CliRunner().invoke(main, ["copilot", "sync"])
     assert result.exit_code != 0, result.output
     assert "invalid native session routing" in result.output
+    assert "Traceback" not in result.output
 
 
 def test_sync_prints_counts(isolated_home: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    def fake_sync(_config: Config, _paths: SourcePaths, *, session_id: str | None = None) -> SyncResult:
-        return _empty_result(sessions=1, records_written=12, duplicate_records=3, pending=2, errors=0)
+    def fake_sync(
+        _config: Config, _paths: SourcePaths, *, session_id: str | None = None
+    ) -> SyncResult:
+        return _empty_result(
+            sessions=1, records_written=12, duplicate_records=3, pending=2, errors=0
+        )
 
     monkeypatch.setattr("thirdeye.commands.copilot.capture_sync", fake_sync)
     result = CliRunner().invoke(main, ["copilot", "sync"])
     assert result.exit_code == 0, result.output
-    for token in ("1", "12", "3", "2"):
-        assert token in result.output
+    assert (
+        _counts_line(sessions=1, records_written=12, duplicate_records=3, pending=2)
+        in result.output
+    )
+    assert "thirdeye copilot watch" in result.output
 
 
 def test_sync_fixture_session_end_to_end(isolated_home: Path, tmp_path: Path) -> None:
@@ -365,10 +553,69 @@ def test_sync_fixture_session_end_to_end(isolated_home: Path, tmp_path: Path) ->
     assert sum(1 for record in captured if record["source_kind"] == "transcript") == 76
 
 
+def test_sync_selected_id_transcript_only_exits_zero(isolated_home: Path, tmp_path: Path) -> None:
+    source_home = tmp_path / "transcript-only"
+    source_home.mkdir()
+    _write_transcript(source_home, NATIVE_SESSION_ID)
+
+    result = CliRunner().invoke(
+        main,
+        [
+            "copilot",
+            "sync",
+            "--source-home",
+            str(source_home),
+            "--session-id",
+            NATIVE_SESSION_ID,
+        ],
+    )
+    assert result.exit_code == 0, result.output
+    assert "was not found" not in result.output
+    assert "imported with" in result.output
+    assert "copilot_database_missing" in result.output
+    assert SECRET_PROMPT not in result.output
+
+
+def test_sync_selected_id_malformed_line_exits_zero(isolated_home: Path, tmp_path: Path) -> None:
+    source_home = tmp_path / "malformed-transcript"
+    source_home.mkdir()
+    _write_transcript(source_home, NATIVE_SESSION_ID)
+    _write_database(source_home, session_id=NATIVE_SESSION_ID)
+    events = source_home / "session-state" / NATIVE_SESSION_ID / "events.jsonl"
+    with events.open("a", encoding="utf-8") as handle:
+        handle.write("{not-json\n")
+
+    result = CliRunner().invoke(
+        main,
+        [
+            "copilot",
+            "sync",
+            "--source-home",
+            str(source_home),
+            "--session-id",
+            NATIVE_SESSION_ID,
+        ],
+    )
+    assert result.exit_code == 0, result.output
+    assert "was not found" not in result.output
+    assert "imported with" in result.output
+    assert "transcript_invalid_json" in result.output
+
+
 def test_sync_rejects_native_id_with_path_separators(isolated_home: Path) -> None:
     result = CliRunner().invoke(main, ["copilot", "sync", "--session-id", "../escape"])
     assert result.exit_code != 0, result.output
     assert "No such command" not in result.output
+
+
+def test_sync_path_escape_is_click_error(isolated_home: Path, tmp_path: Path) -> None:
+    home = _escaping_source_home(tmp_path)
+    result = CliRunner().invoke(main, ["copilot", "sync", "--source-home", str(home)])
+    assert result.exit_code != 0, result.output
+    assert "Traceback" not in result.output
+    assert "session_root" in result.output
+    assert "escapes" in result.output
+    assert str(home) in result.output
 
 
 # -- watch ---------------------------------------------------------------------
@@ -399,6 +646,29 @@ def test_watch_invokes_watch_module(isolated_home: Path, monkeypatch: pytest.Mon
     assert calls == [2.5]
 
 
+def test_watch_prints_start_and_stop(isolated_home: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr("thirdeye.commands.copilot.watch_loop", lambda *_args, **_kwargs: None)
+    result = CliRunner().invoke(main, ["copilot", "watch", "--interval", "1.5"])
+    assert result.exit_code == 0, result.output
+    assert "1.5" in result.output
+    assert "local-only" in result.output
+    assert "Ctrl-C" in result.output
+    assert "Stopped" in result.output
+
+
+def test_watch_keyboard_interrupt_prints_stop(
+    isolated_home: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    def fake_watch(_config: Config, _paths: SourcePaths, *, interval: float = 1.0) -> None:
+        raise KeyboardInterrupt
+
+    monkeypatch.setattr("thirdeye.commands.copilot.watch_loop", fake_watch)
+    result = CliRunner().invoke(main, ["copilot", "watch"])
+    assert result.exit_code == 0, result.output
+    assert "Stopped" in result.output
+    assert "Traceback" not in result.output
+
+
 def test_watch_passes_source_home(
     isolated_home: Path,
     tmp_path: Path,
@@ -418,12 +688,24 @@ def test_watch_passes_source_home(
     )
     assert result.exit_code == 0, result.output
     assert Path(seen["home"]) == source_home.resolve()
+    assert str(source_home.resolve()) in result.output
+
+
+def test_watch_path_escape_is_click_error(isolated_home: Path, tmp_path: Path) -> None:
+    home = _escaping_source_home(tmp_path)
+    result = CliRunner().invoke(main, ["copilot", "watch", "--source-home", str(home)])
+    assert result.exit_code != 0, result.output
+    assert "Traceback" not in result.output
+    assert "session_root" in result.output
+    assert "escapes" in result.output
 
 
 # -- status --------------------------------------------------------------------
 
 
-def test_status_invokes_capture_status(isolated_home: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_status_invokes_capture_status(
+    isolated_home: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     called = {"count": 0}
 
     def fake_status(_config: Config, _paths: SourcePaths) -> dict:
@@ -446,7 +728,7 @@ def test_status_exits_zero_when_hooks_missing_but_sources_ok(
     )
     result = CliRunner().invoke(main, ["copilot", "status"])
     assert result.exit_code == 0, result.output
-    assert "not configured" in result.output.lower() or "configured" in result.output.lower()
+    assert "Hooks: not configured" in result.output
 
 
 def test_status_exits_nonzero_on_source_errors(
@@ -457,13 +739,119 @@ def test_status_exits_nonzero_on_source_errors(
         "thirdeye.commands.copilot.capture_status",
         lambda _config, _paths: _minimal_status(
             configured=True,
-            errors=[{"kind": "source_unreadable", "message": "database unreadable"}],
+            errors=[
+                {
+                    "kind": "source_unreadable",
+                    "message": "database unreadable",
+                    "session": NATIVE_SESSION_ID,
+                    "path": "/tmp/copilot/session-store.db",
+                }
+            ],
         ),
     )
     result = CliRunner().invoke(main, ["copilot", "status"])
     assert result.exit_code != 0, result.output
     assert "source_unreadable" in result.output
     assert "database unreadable" in result.output
+    assert NATIVE_SESSION_ID in result.output
+    assert "/tmp/copilot/session-store.db" in result.output
+
+
+def test_status_absence_codes_exit_zero(
+    isolated_home: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        "thirdeye.commands.copilot.capture_status",
+        lambda _config, _paths: _minimal_status(
+            errors=[
+                {
+                    "code": "copilot_database_missing",
+                    "message": "database file is absent",
+                    "session": NATIVE_SESSION_ID,
+                }
+            ]
+        ),
+    )
+    result = CliRunner().invoke(main, ["copilot", "status"])
+    assert result.exit_code == 0, result.output
+    assert "copilot_database_missing" in result.output
+    assert NATIVE_SESSION_ID in result.output
+
+
+def test_status_retryable_codes_exit_zero(
+    isolated_home: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        "thirdeye.commands.copilot.capture_status",
+        lambda _config, _paths: _minimal_status(
+            errors=[
+                {
+                    "code": "copilot_database_busy",
+                    "message": "database is busy",
+                    "session": NATIVE_SESSION_ID,
+                }
+            ]
+        ),
+    )
+    result = CliRunner().invoke(main, ["copilot", "status"])
+    assert result.exit_code == 0, result.output
+    assert "copilot_database_busy" in result.output
+
+
+def test_status_transcript_only_home_exits_zero(isolated_home: Path, tmp_path: Path) -> None:
+    source_home = tmp_path / "transcript-only-status"
+    source_home.mkdir()
+    _write_transcript(source_home, NATIVE_SESSION_ID)
+    sync = CliRunner().invoke(main, ["copilot", "sync", "--source-home", str(source_home)])
+    assert sync.exit_code == 0, sync.output
+    result = CliRunner().invoke(main, ["copilot", "status", "--source-home", str(source_home)])
+    assert result.exit_code == 0, result.output
+    assert "copilot_database_missing" in result.output
+
+
+def test_status_does_not_print_hook_prompt(
+    isolated_home: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    status = _minimal_status(configured=False)
+    status["last_observed_hook"] = _prompt_hook_record()
+    monkeypatch.setattr("thirdeye.commands.copilot.capture_status", lambda _config, _paths: status)
+    result = CliRunner().invoke(main, ["copilot", "status"])
+    assert result.exit_code == 0, result.output
+    assert SECRET_PROMPT not in result.output
+    assert "hook_payload" not in result.output
+    assert "userPromptSubmitted" in result.output
+    assert NATIVE_SESSION_ID in result.output
+    assert "2026-09-10T17:08:02.000Z" in result.output
+
+
+def test_status_error_lines_omit_payload(
+    isolated_home: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        "thirdeye.commands.copilot.capture_status",
+        lambda _config, _paths: _minimal_status(
+            configured=True,
+            errors=[
+                {
+                    "kind": "source_unreadable",
+                    "message": "PermissionError",
+                    "session": "sess-1",
+                    "path": "/secret/db",
+                    "payload": {"prompt": SECRET_PROMPT},
+                }
+            ],
+        ),
+    )
+    result = CliRunner().invoke(main, ["copilot", "status"])
+    assert result.exit_code != 0, result.output
+    assert "sess-1" in result.output
+    assert "/secret/db" in result.output
+    assert SECRET_PROMPT not in result.output
+    assert "hook_payload" not in result.output
 
 
 def test_status_prints_string_errors(
@@ -479,7 +867,7 @@ def test_status_prints_string_errors(
     assert "legacy string error" in result.output
 
 
-def test_status_prints_paths_and_guidance(
+def test_status_prints_paths_capabilities_and_guidance(
     isolated_home: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -489,8 +877,15 @@ def test_status_prints_paths_and_guidance(
     )
     result = CliRunner().invoke(main, ["copilot", "status"])
     assert result.exit_code == 0, result.output
-    assert "/tmp/copilot" in result.output
-    assert "hooks" in result.output.lower() or "configured" in result.output.lower()
+    assert "Copilot home: /tmp/copilot" in result.output
+    assert "Hooks: configured" in result.output
+    assert "Restart Copilot CLI" not in result.output
+    assert "Transcripts:" in result.output
+    assert "Database:" in result.output
+    assert "Database WAL:" in result.output
+    assert "exists=True" in result.output
+    assert "readable=True" in result.output
+    assert "trusted folder" in result.output
 
 
 def test_status_resolves_source_home_with_spaces(
@@ -512,44 +907,10 @@ def test_status_resolves_source_home_with_spaces(
     assert Path(seen["home"]) == source_home.resolve()
 
 
-# -- add/remove wiring ---------------------------------------------------------
-
-
-def test_add_help_mentions_copilot() -> None:
-    result = CliRunner().invoke(main, ["add", "--help"])
-    assert result.exit_code == 0, result.output
-    assert "--copilot" in result.output
-
-
-def test_remove_help_mentions_copilot() -> None:
-    result = CliRunner().invoke(main, ["remove", "--help"])
-    assert result.exit_code == 0, result.output
-    assert "--copilot" in result.output
-
-
-def test_add_copilot_dispatches_platform(monkeypatch: pytest.MonkeyPatch) -> None:
-    from thirdeye.commands.add import PLATFORMS
-
-    mock_platform = MagicMock()
-    mock_platform.display_name = "GitHub Copilot CLI"
-    mock_cls = MagicMock(return_value=mock_platform)
-    monkeypatch.setitem(PLATFORMS, "copilot", mock_cls)
-
-    result = CliRunner().invoke(main, ["add", "--copilot"])
-    assert result.exit_code == 0, result.output
-    mock_cls.assert_called_once()
-    mock_platform.install.assert_called_once()
-
-
-def test_remove_copilot_dispatches_platform(monkeypatch: pytest.MonkeyPatch) -> None:
-    from thirdeye.commands.add import PLATFORMS
-
-    mock_platform = MagicMock()
-    mock_platform.display_name = "GitHub Copilot CLI"
-    mock_cls = MagicMock(return_value=mock_platform)
-    monkeypatch.setitem(PLATFORMS, "copilot", mock_cls)
-
-    result = CliRunner().invoke(main, ["remove", "--copilot"])
-    assert result.exit_code == 0, result.output
-    mock_cls.assert_called_once()
-    mock_platform.uninstall.assert_called_once()
+def test_status_path_escape_is_click_error(isolated_home: Path, tmp_path: Path) -> None:
+    home = _escaping_source_home(tmp_path)
+    result = CliRunner().invoke(main, ["copilot", "status", "--source-home", str(home)])
+    assert result.exit_code != 0, result.output
+    assert "Traceback" not in result.output
+    assert "session_root" in result.output
+    assert "escapes" in result.output

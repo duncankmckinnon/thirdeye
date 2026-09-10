@@ -291,6 +291,7 @@ def test_skill_targets_follow_configured_agents(platforms: list[str], targets: l
 
 def test_setup_can_install_copilot_tracing(monkeypatch: pytest.MonkeyPatch) -> None:
     platforms = {name: _fake_platform(name) for name in ("claude", "codex", "cursor", "copilot")}
+    platforms["copilot"].display_name = "GitHub Copilot CLI"
     _fake_resolver(monkeypatch, platforms)
     monkeypatch.setattr("thirdeye.commands.setup.logfire_cmd.is_available", lambda: False)
 
@@ -299,4 +300,4 @@ def test_setup_can_install_copilot_tracing(monkeypatch: pytest.MonkeyPatch) -> N
     assert result.exit_code == 0, result.output
     platforms["copilot"].install.assert_called_once()
     platforms["claude"].install.assert_not_called()
-    assert "GitHub Copilot CLI" in result.output or "Copilot" in result.output
+    assert "Installed tracing for GitHub Copilot CLI" in result.output

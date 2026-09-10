@@ -434,7 +434,7 @@ def test_add_copilot_writes_hooks(tmp_path: Path, monkeypatch):
     r = CliRunner().invoke(main, ["add", "--copilot"])
     assert r.exit_code == 0, r.output
     assert hooks_file.exists()
-    assert "Copilot" in r.output
+    assert "Installed tracing for GitHub Copilot CLI" in r.output
 
 
 def test_remove_copilot_calls_uninstall(monkeypatch):

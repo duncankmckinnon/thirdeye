@@ -19,15 +19,17 @@ The PyPI package is `thrdi`; the installed commands are `thirdeye` and `thrdi`
 thirdeye add --claude       # Claude Code
 thirdeye add --codex        # OpenAI Codex CLI
 thirdeye add --cursor       # Cursor
+thirdeye add --copilot      # GitHub Copilot CLI
 ```
 
 `thirdeye add` is idempotent — running it twice for the same platform leaves
 the existing hook entries in place rather than duplicating them.
 
 Hook entries are written into each platform's own config file: Claude Code
-uses `~/.claude/settings.json`, Codex uses `~/.codex/config.toml`, and
+uses `~/.claude/settings.json`, Codex uses `~/.codex/config.toml`,
 Cursor uses `~/.cursor/hooks.json`
-(covering both the IDE chat and the `cursor-agent` CLI).
+(covering both the IDE chat and the `cursor-agent` CLI), and GitHub Copilot CLI
+uses `$COPILOT_HOME/hooks/thirdeye.json` (default `~/.copilot/hooks/thirdeye.json`).
 
 ### Cursor subagent hooks
 
