@@ -1,0 +1,19 @@
+{
+  "source_key": "3c27ee5a0430219b982434b040245491be12dc57e270dcd2461e65d3a1f49839",
+  "native_session_id": "session-a",
+  "cwd": "/fixture/workspace",
+  "records": [
+    {
+      "source_id": "3c27ee5a0430219b982434b040245491be12dc57e270dcd2461e65d3a1f49839/session-a/row-7/revision-a",
+      "source_kind": "database",
+      "native_session_id": "session-a",
+      "ts": null,
+      "observed_at": "2026-09-10T17:08:25.000Z",
+      "payload": {"schema_version": 1, "table": "assistant_usage_events", "row": {"id": 7}},
+      "locator": {"table": "assistant_usage_events", "primary_key": 7, "content_revision": "revision-a"}
+    }
+  ],
+  "next_cursor": {"database_revision": "fixture-revision-1"},
+  "diagnostics": [],
+  "exhausted": true
+}

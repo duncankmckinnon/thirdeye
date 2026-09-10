@@ -1,0 +1,1 @@
+{"id":"unknown-1","type":"future.event","timestamp":"2026-09-10T17:08:24.000Z","data":{"future_field":{"nested":[1,true,{"opaque":"retain"}]},"known":"also retain"},"top_level_future":"retain"}
