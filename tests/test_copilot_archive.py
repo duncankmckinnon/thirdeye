@@ -15,7 +15,7 @@ from thirdeye.paths import meta_path, session_dir
 from thirdeye.platforms.copilot.archive import commit_batch, iter_captured_records, load_cursor
 from thirdeye.platforms.copilot.constants import PLATFORM_NAME, SOURCE_SCHEMA_VERSION
 from thirdeye.platforms.copilot.identity import resolve_sources, stored_session_id
-from thirdeye.platforms.copilot.state import journal_path, read_json, state_path
+from thirdeye.platforms.copilot.state import read_json, state_path
 from thirdeye.platforms.copilot.types import SourceBatch, SourcePaths, SourceRecord
 from thirdeye.reader import SessionReader
 
@@ -87,7 +87,9 @@ def _session_directory(config: Config, paths: SourcePaths) -> Path:
     return session_dir(config.root, PLATFORM_NAME, stored)
 
 
-def test_commit_batch_writes_records_and_advances_cursor(config: Config, paths: SourcePaths) -> None:
+def test_commit_batch_writes_records_and_advances_cursor(
+    config: Config, paths: SourcePaths
+) -> None:
     records = [_record("key/a/event-1"), _record("key/a/event-2")]
     result = commit_batch(config, paths, _batch(paths, records, next_cursor={"offset": 2}))
 
@@ -108,7 +110,9 @@ def test_load_cursor_returns_empty_for_unknown_session(config: Config, paths: So
 
 
 def test_load_cursor_returns_defensive_copy(config: Config, paths: SourcePaths) -> None:
-    commit_batch(config, paths, _batch(paths, [_record("key/a/event-1")], next_cursor={"offset": 1}))
+    commit_batch(
+        config, paths, _batch(paths, [_record("key/a/event-1")], next_cursor={"offset": 1})
+    )
     cursor = load_cursor(config, paths, NATIVE_ID)
     cursor["offset"] = 999
     assert load_cursor(config, paths, NATIVE_ID) == {"offset": 1}
@@ -149,15 +153,41 @@ def test_original_source_timestamp_is_retained(config: Config, paths: SourcePath
     commit_batch(
         config,
         paths,
-        _batch(paths, [_record("key/a/ts", ts=source_ts, observed_at="2026-09-10T17:08:99.000Z")]),
+        _batch(paths, [_record("key/a/ts", ts=source_ts, observed_at="2026-09-10T17:08:25.000Z")]),
     )
     event = SessionReader(_session_directory(config, paths)).get_event(0)
     assert event["ts"] == source_ts
 
 
+def test_invalid_observed_at_is_rejected_even_when_source_ts_is_valid(
+    config: Config, paths: SourcePaths
+) -> None:
+    result = commit_batch(
+        config,
+        paths,
+        _batch(
+            paths,
+            [
+                _record(
+                    "key/a/bad-observed",
+                    ts="2026-09-10T17:08:24.000Z",
+                    observed_at="2026-09-10T17:08:99.000Z",
+                )
+            ],
+            next_cursor={"offset": 1},
+        ),
+    )
+    assert result["records_written"] == 0
+    assert result["pending"] == 1
+    assert result["errors"] == 1
+    assert list(iter_captured_records(config, stored_session_id(paths, NATIVE_ID))) == []
+
+
 def test_missing_source_time_falls_back_to_observed_at(config: Config, paths: SourcePaths) -> None:
     observed = "2026-09-10T17:08:25.000Z"
-    commit_batch(config, paths, _batch(paths, [_record("key/a/no-ts", ts=None, observed_at=observed)]))
+    commit_batch(
+        config, paths, _batch(paths, [_record("key/a/no-ts", ts=None, observed_at=observed)])
+    )
     event = SessionReader(_session_directory(config, paths)).get_event(0)
     assert event["ts"] == observed
 
@@ -256,6 +286,75 @@ def test_provisional_session_metadata_is_created(config: Config, paths: SourcePa
     assert identity["native_session_id"] == NATIVE_ID
 
 
+def test_committed_cursor_strips_optimistic_base_marker(config: Config, paths: SourcePaths) -> None:
+    commit_batch(config, paths, _batch(paths, [_record("key/a/one")], next_cursor={"offset": 1}))
+    assert load_cursor(config, paths, NATIVE_ID) == {"offset": 1}
+
+    commit_batch(
+        config,
+        paths,
+        _batch(paths, [_record("key/a/two")], next_cursor={"offset": 2}, base_cursor={"offset": 1}),
+    )
+    cursor = load_cursor(config, paths, NATIVE_ID)
+    assert cursor == {"offset": 2}
+    state = read_json(state_path(_session_directory(config, paths)))
+    assert state is not None
+    assert "base_cursor" not in state["cursor"]
+    assert "_base_cursor" not in state["cursor"]
+
+
+def test_append_does_not_reopen_closed_session(config: Config, paths: SourcePaths) -> None:
+    close_record = _record(
+        "key/a/close",
+        source_kind="hook",
+        payload={"event": "sessionEnd", "context": {}},
+    )
+    commit_batch(config, paths, _batch(paths, [close_record], next_cursor={"generation": 1}))
+    closed = read_meta(meta_path(_session_directory(config, paths)))
+    assert closed is not None
+    assert closed.status == "closed"
+    ended_at = closed.ended_at
+    assert ended_at is not None
+
+    commit_batch(
+        config,
+        paths,
+        _batch(
+            paths,
+            [_record("key/a/after-close")],
+            next_cursor={"generation": 2},
+            base_cursor={"generation": 1},
+        ),
+    )
+    meta = read_meta(meta_path(_session_directory(config, paths)))
+    assert meta is not None
+    assert meta.status == "closed"
+    assert meta.ended_at == ended_at
+
+
+def test_invalid_timestamps_are_rejected_without_inventing_time(
+    config: Config, paths: SourcePaths
+) -> None:
+    result = commit_batch(
+        config,
+        paths,
+        _batch(
+            paths,
+            [_record("key/a/bad-ts", ts="not-a-timestamp", observed_at="also-invalid")],
+            next_cursor={"offset": 1},
+        ),
+    )
+    assert result["records_written"] == 0
+    assert result["pending"] == 1
+    assert result["errors"] == 1
+    assert load_cursor(config, paths, NATIVE_ID) == {}
+    assert list(iter_captured_records(config, stored_session_id(paths, NATIVE_ID))) == []
+
+    state = read_json(state_path(_session_directory(config, paths)))
+    assert state is not None
+    assert any(item.get("kind") == "invalid_observed_at" for item in state["health"]["diagnostics"])
+
+
 def test_session_end_closes_and_resume_reopens(config: Config, paths: SourcePaths) -> None:
     close_record = _record(
         "key/a/close",
@@ -276,7 +375,9 @@ def test_session_end_closes_and_resume_reopens(config: Config, paths: SourcePath
     commit_batch(
         config,
         paths,
-        _batch(paths, [reopen_record], next_cursor={"generation": 2}, base_cursor={"generation": 1}),
+        _batch(
+            paths, [reopen_record], next_cursor={"generation": 2}, base_cursor={"generation": 1}
+        ),
     )
     meta = read_meta(meta_path(_session_directory(config, paths)))
     assert meta is not None

@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import os
 import tempfile
+from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
@@ -14,6 +15,15 @@ STATE_SCHEMA_VERSION = 1
 STATE_FILENAME = "copilot.state.json"
 JOURNAL_FILENAME = "copilot.journal.json"
 LOCK_FILENAME = "copilot.archive.lock"
+
+# Tests may replace this with a deterministic callback that raises at a
+# publication boundary.  Runtime behaviour never depends on fault injection.
+_fault_injector: Callable[[str], None] | None = None
+
+
+def _fault(point: str) -> None:
+    if _fault_injector is not None:
+        _fault_injector(point)
 
 
 def state_path(session_dir: Path) -> Path:
@@ -38,6 +48,12 @@ def _atomic_json(path: Path, value: dict[str, Any]) -> None:
             stream.flush()
             os.fsync(stream.fileno())
         fsops.replace(temp_name, path)
+        if path.name == STATE_FILENAME:
+            _fault("after_state_replace")
+        elif path.name == JOURNAL_FILENAME:
+            _fault("after_journal_replace")
+        fsops.sync_directory(path.parent)
+        _fault("after_dirsync")
     except BaseException:
         fsops.unlink(Path(temp_name), missing_ok=True)
         raise
@@ -68,3 +84,4 @@ def write_journal(session_dir: Path, value: dict[str, Any]) -> None:
 
 def clear_journal(session_dir: Path) -> None:
     fsops.unlink(journal_path(session_dir), missing_ok=True)
+    fsops.sync_directory(session_dir)
