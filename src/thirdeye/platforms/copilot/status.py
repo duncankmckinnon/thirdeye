@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 from typing import Any
 
@@ -11,27 +12,96 @@ from thirdeye.reader import SessionReader
 
 from .archive import _record_from_event
 from .constants import PLATFORM_NAME
+from .database import read_database
 from .install import CopilotPlatform
 from .spool import read_spool
 from .state import journal_path, read_json, state_path
 from .types import SourcePaths, SourceRecord
 
+_STATUS_PROBE_ID = "copilot-status-probe"
+_FILE_LEVEL_DATABASE_CODES = frozenset(
+    {
+        "copilot_database_unreadable",
+        "copilot_database_busy",
+        "copilot_database_incompatible",
+        "copilot_database_read_failed",
+    }
+)
 
-def _path_capability(path: Path, *, directory: bool) -> dict[str, Any]:
-    """Describe a local source without treating an absent Copilot install as an error."""
+
+def _error_capability(path: Path, *, exists: bool, reason: str) -> dict[str, Any]:
+    return {
+        "path": str(path),
+        "exists": exists,
+        "readable": False,
+        "error": {"kind": "source_unreadable", "path": str(path), "reason": reason},
+    }
+
+
+def _missing_capability(path: Path) -> dict[str, Any]:
+    return {"path": str(path), "exists": False, "readable": False}
+
+
+def _directory_capability(path: Path) -> dict[str, Any]:
+    """Describe a directory by enumerating it, not just by a successful stat()."""
 
     try:
         exists = path.exists()
-        kind_matches = path.is_dir() if directory else path.is_file()
-        readable = kind_matches and path.stat() is not None
     except OSError as error:
-        return {
-            "path": str(path),
-            "exists": False,
-            "readable": False,
-            "error": {"kind": "source_unreadable", "path": str(path), "reason": type(error).__name__},
-        }
-    return {"path": str(path), "exists": exists, "readable": readable}
+        return _error_capability(path, exists=False, reason=type(error).__name__)
+    if not exists:
+        return _missing_capability(path)
+    if not path.is_dir():
+        return _error_capability(path, exists=True, reason="not a directory")
+    try:
+        next(iter(path.iterdir()), None)
+    except OSError as error:
+        return _error_capability(path, exists=True, reason=type(error).__name__)
+    return {"path": str(path), "exists": True, "readable": True}
+
+
+def _file_capability(path: Path) -> dict[str, Any]:
+    """Describe a regular file by opening it for a bounded read."""
+
+    try:
+        exists = path.exists()
+    except OSError as error:
+        return _error_capability(path, exists=False, reason=type(error).__name__)
+    if not exists:
+        return _missing_capability(path)
+    if not path.is_file():
+        return _error_capability(path, exists=True, reason="not a file")
+    try:
+        with path.open("rb") as handle:
+            handle.read(1)
+    except OSError as error:
+        return _error_capability(path, exists=True, reason=type(error).__name__)
+    return {"path": str(path), "exists": True, "readable": True}
+
+
+def _database_capability(paths: SourcePaths) -> dict[str, Any]:
+    """Open the session database read-only; absence is not a source error."""
+
+    path = Path(paths["database"])
+    try:
+        exists = path.exists()
+    except OSError as error:
+        return _error_capability(path, exists=False, reason=type(error).__name__)
+    if not exists:
+        return _missing_capability(path)
+    try:
+        probe = read_database(paths, _STATUS_PROBE_ID, {})
+    except (OSError, ValueError) as error:
+        return _error_capability(path, exists=True, reason=type(error).__name__)
+    for diagnostic in probe["diagnostics"]:
+        code = diagnostic.get("code")
+        if code == "copilot_database_missing":
+            return _missing_capability(path)
+        if isinstance(code, str) and code in _FILE_LEVEL_DATABASE_CODES:
+            return _error_capability(path, exists=True, reason=code)
+    if not path.is_file():
+        return _error_capability(path, exists=True, reason="not a file")
+    return {"path": str(path), "exists": True, "readable": True}
 
 
 def _archive_directories(config: Config, paths: SourcePaths) -> list[Path]:
@@ -54,28 +124,93 @@ def _record_hook(record: SourceRecord, latest: SourceRecord | None) -> SourceRec
     return latest
 
 
-def _spool_sessions(config: Config, paths: SourcePaths) -> tuple[int, list[str], SourceRecord | None]:
+def _spool_file_errors(directory: Path) -> list[dict[str, Any]]:
+    """Surface spool .diag files (locations/reasons only, never payloads)."""
+
+    errors: list[dict[str, Any]] = []
+    try:
+        diagnostics = sorted(directory.glob("*.diag"))
+    except OSError as error:
+        return [
+            {
+                "kind": "spool_unreadable",
+                "session": directory.name,
+                "path": str(directory),
+                "reason": type(error).__name__,
+            }
+        ]
+    for diag_path in diagnostics:
+        try:
+            payload = json.loads(diag_path.read_text(encoding="utf-8"))
+        except (OSError, UnicodeDecodeError, json.JSONDecodeError):
+            errors.append(
+                {
+                    "kind": "spool_unreadable",
+                    "session": directory.name,
+                    "path": diag_path.name,
+                }
+            )
+            continue
+        reason = payload.get("reason") if isinstance(payload, dict) else None
+        loc = payload.get("path") if isinstance(payload, dict) else None
+        errors.append(
+            {
+                "kind": "spool_unreadable",
+                "session": directory.name,
+                "path": loc if isinstance(loc, str) else diag_path.name,
+                "reason": reason if isinstance(reason, str) else "invalid spool diagnostic",
+            }
+        )
+    return errors
+
+
+def _spool_sessions(
+    config: Config, paths: SourcePaths
+) -> tuple[int, list[str], SourceRecord | None, list[dict[str, Any]]]:
     root = Path(config.root) / "spool" / "copilot" / paths["source_key"]
     count = 0
     sessions: list[str] = []
     latest: SourceRecord | None = None
+    errors: list[dict[str, Any]] = []
     try:
         entries = sorted(root.iterdir())
-    except OSError:
-        return count, sessions, latest
+    except FileNotFoundError:
+        return count, sessions, latest, errors
+    except OSError as error:
+        return (
+            count,
+            sessions,
+            latest,
+            [
+                {
+                    "kind": "spool_unreadable",
+                    "path": str(root),
+                    "reason": type(error).__name__,
+                }
+            ],
+        )
     for entry in entries:
         if not entry.is_dir():
             continue
         try:
             records = read_spool(config, paths, entry.name)
-        except ValueError:
+            json_files = list(entry.glob("*.json"))
+        except (OSError, ValueError) as error:
+            errors.append(
+                {
+                    "kind": "spool_unreadable",
+                    "session": entry.name,
+                    "reason": str(error) if isinstance(error, ValueError) else type(error).__name__,
+                }
+            )
             continue
-        if records:
+        if json_files:
             sessions.append(entry.name)
-        count += len(records)
+        count += len(json_files)
         for record in records:
             latest = _record_hook(record, latest)
-    return count, sessions, latest
+        errors.extend(_spool_file_errors(entry))
+    return count, sessions, latest, errors
 
 
 def _archive_status(
@@ -96,6 +231,16 @@ def _archive_status(
             continue
         if state is None:
             state = {}
+        stored_key = state.get("source_key")
+        if isinstance(stored_key, str) and stored_key != paths["source_key"]:
+            errors.append(
+                {
+                    "kind": "source_key_collision",
+                    "session": directory.name,
+                    "reason": "Copilot source-key prefix collision for stored session ID",
+                }
+            )
+            continue
         health = state.get("health") if isinstance(state.get("health"), dict) else {}
         diagnostics = health.get("diagnostics") if isinstance(health.get("diagnostics"), list) else []
         followup = state.get("followup", state.get("pending_followup", False))
@@ -134,13 +279,13 @@ def capture_status(config: Config, paths: SourcePaths) -> dict:
     """
 
     home = Path(paths["home"])
-    session_root = _path_capability(Path(paths["session_root"]), directory=True)
-    database = _path_capability(Path(paths["database"]), directory=False)
-    wal = _path_capability(Path(paths["database"]).with_name(f"{Path(paths['database']).name}-wal"), directory=False)
+    session_root = _directory_capability(Path(paths["session_root"]))
+    database = _database_capability(paths)
+    wal = _file_capability(Path(paths["database"]).with_name(f"{Path(paths['database']).name}-wal"))
     sessions, archived_hook, archive_errors, pending_followup, active_leases = _archive_status(
         config, paths
     )
-    spool_count, spool_sessions, spooled_hook = _spool_sessions(config, paths)
+    spool_count, spool_sessions, spooled_hook, spool_errors = _spool_sessions(config, paths)
     last_hook = archived_hook
     if spooled_hook is not None:
         last_hook = _record_hook(spooled_hook, last_hook)
@@ -180,7 +325,7 @@ def capture_status(config: Config, paths: SourcePaths) -> dict:
             "leases": active_leases,
             "journals": sum(1 for session in sessions if session["journal_pending"]),
         },
-        "errors": [*source_errors, *archive_errors],
+        "errors": [*source_errors, *archive_errors, *spool_errors],
     }
 
 

@@ -125,8 +125,19 @@ def _changed_sessions(before: dict[str, Any], after: dict[str, Any]) -> set[str]
     return changed
 
 
-def _result_needs_retry(result: dict[str, int]) -> bool:
-    return result.get("pending", 0) > 0 or result.get("errors", 0) > 0
+def _result_needs_retry(result: dict[str, int], *, present: bool) -> bool:
+    """Retry incomplete or failed work only while the source is still discoverable.
+
+    A missing selected ID is a one-shot error for that poll: source removal is
+    never session completion, but it also must not become a permanent retry
+    loop.  Recreated files change stamps and are selected again.  Pending work
+    (busy/unreadable/incomplete pages) retries even if discovery briefly drops
+    the ID, because those codes are not absence.
+    """
+
+    if result.get("pending", 0) > 0:
+        return True
+    return bool(present and result.get("errors", 0) > 0)
 
 
 def watch(config: Config, paths: SourcePaths, *, interval: float = 1.0) -> None:
@@ -150,7 +161,7 @@ def watch(config: Config, paths: SourcePaths, *, interval: float = 1.0) -> None:
         # on the first poll ensures that append receives a later capture.
         previous = _source_snapshot(config, paths)
         initial = sync(config, paths)
-        retry = set() if not _result_needs_retry(initial) else set(previous["sessions"])
+        retry = set(previous["sessions"]) if _result_needs_retry(initial, present=True) else set()
         while True:
             _SLEEP(float(interval))
             current = _source_snapshot(config, paths)
@@ -160,7 +171,7 @@ def watch(config: Config, paths: SourcePaths, *, interval: float = 1.0) -> None:
                 # KeyboardInterrupt is intentionally checked between sessions;
                 # a current archive commit remains crash-recoverable.
                 result = sync(config, paths, session_id=native_id)
-                if _result_needs_retry(result):
+                if _result_needs_retry(result, present=native_id in current["sessions"]):
                     retry.add(native_id)
             previous = current
     except KeyboardInterrupt:

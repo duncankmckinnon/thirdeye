@@ -11,7 +11,6 @@ import pytest
 
 import thirdeye.platforms.copilot.watch as watch_mod
 from thirdeye.config import Config
-from thirdeye.platforms.copilot.capture import sync
 from thirdeye.platforms.copilot.hook_payload import parse_hook
 from thirdeye.platforms.copilot.identity import resolve_sources
 from thirdeye.platforms.copilot.spool import enqueue_hook
@@ -406,3 +405,159 @@ def test_watch_integration_captures_transcript_append(
     after = len(list(iter_captured_records(config, stored)))
 
     assert after > before
+
+
+def _unlink_database(database: Path) -> None:
+    database.unlink()
+    for suffix in ("-wal", "-shm"):
+        database.with_name(database.name + suffix).unlink(missing_ok=True)
+
+
+def test_changed_sessions_database_deletion_includes_prior_ids() -> None:
+    before = _snapshot(
+        sessions={NATIVE_SESSION_ID},
+        database_sessions={NATIVE_SESSION_ID},
+        database=((1, 2, 3, 4), None, None),
+    )
+    after = _snapshot(sessions=set(), database_sessions=set(), database=(None, None, None))
+    assert _changed_sessions(before, after) == {NATIVE_SESSION_ID}
+
+
+def test_watch_does_not_retry_deleted_database_session(
+    monkeypatch: pytest.MonkeyPatch,
+    copilot_env: tuple[Config, SourcePaths],
+) -> None:
+    config, paths = copilot_env
+    home = Path(paths["home"])
+    database = _write_database(home, session_id=NATIVE_SESSION_ID)
+    calls: list[str | None] = []
+    cycle = {"count": 0}
+
+    def tracking_sync(cfg: Config, p: SourcePaths, *, session_id: str | None = None) -> SyncResult:
+        calls.append(session_id)
+        if session_id is None:
+            return _empty_result()
+        if not Path(paths["database"]).is_file():
+            return _empty_result(errors=1)
+        return _empty_result()
+
+    def delete_then_poll(_interval: float) -> None:
+        cycle["count"] += 1
+        if cycle["count"] == 1:
+            _unlink_database(database)
+        elif cycle["count"] >= 4:
+            raise KeyboardInterrupt
+
+    monkeypatch.setattr(watch_mod, "sync", tracking_sync)
+    monkeypatch.setattr(watch_mod, "_SLEEP", delete_then_poll)
+
+    watch(config, paths, interval=0.1)
+
+    assert calls[0] is None
+    assert calls.count(NATIVE_SESSION_ID) == 1
+
+
+def test_watch_syncs_recreated_database_after_deletion(
+    monkeypatch: pytest.MonkeyPatch,
+    copilot_env: tuple[Config, SourcePaths],
+) -> None:
+    config, paths = copilot_env
+    home = Path(paths["home"])
+    database = _write_database(home, session_id=NATIVE_SESSION_ID)
+    calls: list[str | None] = []
+    cycle = {"count": 0}
+
+    def tracking_sync(cfg: Config, p: SourcePaths, *, session_id: str | None = None) -> SyncResult:
+        calls.append(session_id)
+        return _empty_result()
+
+    def delete_then_recreate(_interval: float) -> None:
+        cycle["count"] += 1
+        if cycle["count"] == 1:
+            _unlink_database(database)
+        elif cycle["count"] == 2:
+            _write_database(home, session_id=NATIVE_SESSION_ID)
+        else:
+            raise KeyboardInterrupt
+
+    monkeypatch.setattr(watch_mod, "sync", tracking_sync)
+    monkeypatch.setattr(watch_mod, "_SLEEP", delete_then_recreate)
+
+    watch(config, paths, interval=0.1)
+
+    assert calls[0] is None
+    assert calls.count(NATIVE_SESSION_ID) >= 2
+
+
+def test_watch_restart_then_captures_later_append(
+    monkeypatch: pytest.MonkeyPatch,
+    copilot_env: tuple[Config, SourcePaths],
+) -> None:
+    from thirdeye.platforms.copilot.capture import iter_captured_records
+    from thirdeye.platforms.copilot.identity import stored_session_id
+
+    config, paths = copilot_env
+    home = Path(paths["home"])
+    events_path = _write_transcript(home, NATIVE_SESSION_ID)
+    stored = stored_session_id(paths, NATIVE_SESSION_ID)
+
+    monkeypatch.setattr(watch_mod, "_SLEEP", lambda _interval: (_ for _ in ()).throw(KeyboardInterrupt))
+    watch(config, paths, interval=0.1)
+    first = len(list(iter_captured_records(config, stored)))
+    assert first > 0
+
+    cycle = {"count": 0}
+
+    def append_then_stop(_interval: float) -> None:
+        cycle["count"] += 1
+        if cycle["count"] == 1:
+            with events_path.open("a", encoding="utf-8") as stream:
+                stream.write('{"type":"synthetic.restart-append"}\n')
+        else:
+            raise KeyboardInterrupt
+
+    monkeypatch.setattr(watch_mod, "_SLEEP", append_then_stop)
+    watch(config, paths, interval=0.1)
+    second = len(list(iter_captured_records(config, stored)))
+    assert second > first
+
+
+def test_watch_integration_captures_late_database_rows_then_survives_deletion(
+    monkeypatch: pytest.MonkeyPatch,
+    copilot_env: tuple[Config, SourcePaths],
+) -> None:
+    from thirdeye.platforms.copilot.capture import iter_captured_records
+    from thirdeye.platforms.copilot.identity import stored_session_id
+
+    config, paths = copilot_env
+    home = Path(paths["home"])
+    database = _write_database(home, session_id=NATIVE_SESSION_ID)
+    stored = stored_session_id(paths, NATIVE_SESSION_ID)
+    cycle = {"count": 0}
+
+    def late_row_then_delete(_interval: float) -> None:
+        cycle["count"] += 1
+        if cycle["count"] == 1:
+            connection = sqlite3.connect(database)
+            try:
+                connection.execute(
+                    "INSERT INTO turns (id, session_id, turn_index, content, updated_at) "
+                    "VALUES (?, ?, ?, ?, ?)",
+                    (2, NATIVE_SESSION_ID, 1, "late-row", "2026-09-10T17:08:12.000Z"),
+                )
+                connection.commit()
+            finally:
+                connection.close()
+        elif cycle["count"] == 2:
+            _unlink_database(database)
+        elif cycle["count"] >= 4:
+            raise KeyboardInterrupt
+
+    monkeypatch.setattr(watch_mod, "_SLEEP", late_row_then_delete)
+    watch(config, paths, interval=0.1)
+
+    payloads = [record["payload"] for record in iter_captured_records(config, stored)]
+    assert any(
+        isinstance(payload, dict) and payload.get("row", {}).get("content") == "late-row"
+        for payload in payloads
+    )

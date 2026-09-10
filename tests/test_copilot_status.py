@@ -6,7 +6,6 @@ import json
 import shutil
 import sqlite3
 from pathlib import Path
-from typing import Any
 
 import pytest
 
@@ -16,10 +15,20 @@ from thirdeye.paths import session_dir
 from thirdeye.platforms.copilot.archive import commit_batch
 from thirdeye.platforms.copilot.constants import OWNED_HOOK_FILENAME, PLATFORM_NAME
 from thirdeye.platforms.copilot.hook_payload import parse_hook
-from thirdeye.platforms.copilot.identity import resolve_sources, stored_session_id
+from thirdeye.platforms.copilot.identity import (
+    SOURCE_KEY_PREFIX_LEN,
+    resolve_sources,
+    stored_session_id,
+)
 from thirdeye.platforms.copilot.install import CopilotPlatform
 from thirdeye.platforms.copilot.spool import enqueue_hook
-from thirdeye.platforms.copilot.state import journal_path, state_path, write_journal, write_state
+from thirdeye.platforms.copilot.state import (
+    journal_path,
+    read_json,
+    state_path,
+    write_journal,
+    write_state,
+)
 from thirdeye.platforms.copilot.status import capture_status
 from thirdeye.platforms.copilot.types import SourceBatch, SourcePaths, SourceRecord
 
@@ -287,3 +296,90 @@ def test_capture_status_tolerates_missing_optional_followup_state(
     assert status["pending"]["followup"] == 0
     assert status["pending"]["leases"] == 0
     assert status["errors"] == []
+
+
+def test_capture_status_reports_source_key_prefix_collision(
+    copilot_env: tuple[Config, SourcePaths],
+) -> None:
+    config, paths = copilot_env
+    commit_batch(config, paths, _batch(paths, [_record("status/collision")]))
+    directory = session_dir(config.root, PLATFORM_NAME, stored_session_id(paths, NATIVE_SESSION_ID))
+    state = read_json(state_path(directory))
+    assert state is not None
+    original = state["source_key"]
+    replacement = "b" if original[SOURCE_KEY_PREFIX_LEN] != "b" else "a"
+    colliding = original[:SOURCE_KEY_PREFIX_LEN] + replacement + original[SOURCE_KEY_PREFIX_LEN + 1 :]
+    assert colliding != original
+    state["source_key"] = colliding
+    write_state(directory, state)
+
+    status = capture_status(config, paths)
+
+    assert status["sessions"] == []
+    assert any(error.get("kind") == "source_key_collision" for error in status["errors"])
+
+
+def test_capture_status_reports_unusable_database(
+    copilot_env: tuple[Config, SourcePaths],
+) -> None:
+    config, paths = copilot_env
+    Path(paths["database"]).write_text("not a sqlite database\n", encoding="utf-8")
+
+    status = capture_status(config, paths)
+
+    assert status["capabilities"]["database"]["exists"] is True
+    assert status["capabilities"]["database"]["readable"] is False
+    assert any(error.get("kind") == "source_unreadable" for error in status["errors"])
+
+
+def test_capture_status_reports_unusable_transcript_root(
+    copilot_env: tuple[Config, SourcePaths],
+) -> None:
+    config, paths = copilot_env
+    Path(paths["session_root"]).write_text("not a directory\n", encoding="utf-8")
+
+    status = capture_status(config, paths)
+
+    assert status["capabilities"]["transcripts"]["exists"] is True
+    assert status["capabilities"]["transcripts"]["readable"] is False
+    assert any(error.get("kind") == "source_unreadable" for error in status["errors"])
+
+
+def test_capture_status_reports_unreadable_transcript_directory(
+    monkeypatch: pytest.MonkeyPatch,
+    copilot_env: tuple[Config, SourcePaths],
+) -> None:
+    config, paths = copilot_env
+    session_root = Path(paths["session_root"])
+    session_root.mkdir(parents=True)
+    original_iterdir = Path.iterdir
+
+    def fake_iterdir(self: Path):
+        if self == session_root:
+            raise PermissionError("denied")
+        return original_iterdir(self)
+
+    monkeypatch.setattr(Path, "iterdir", fake_iterdir)
+
+    status = capture_status(config, paths)
+
+    assert status["capabilities"]["transcripts"]["exists"] is True
+    assert status["capabilities"]["transcripts"]["readable"] is False
+    assert any(error.get("kind") == "source_unreadable" for error in status["errors"])
+
+
+def test_capture_status_reports_malformed_spool_without_payloads(
+    copilot_env: tuple[Config, SourcePaths],
+) -> None:
+    config, paths = copilot_env
+    spool_dir = Path(config.root) / "spool" / "copilot" / paths["source_key"] / NATIVE_SESSION_ID
+    spool_dir.mkdir(parents=True)
+    (spool_dir / "broken.json").write_text("{not valid json\n", encoding="utf-8")
+
+    status = capture_status(config, paths)
+
+    assert status["pending"]["spool_records"] >= 1
+    assert NATIVE_SESSION_ID in status["pending"]["spool_sessions"]
+    assert any(error.get("kind") == "spool_unreadable" for error in status["errors"])
+    serialized = json.dumps(status["errors"])
+    assert "prompt" not in serialized.lower()
