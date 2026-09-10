@@ -12,6 +12,7 @@ from thirdeye.platforms.copilot.archive import commit_batch
 from thirdeye.platforms.copilot.identity import resolve_sources, stored_session_id
 from thirdeye.platforms.copilot.types import SourceBatch, SourcePaths, SourceRecord
 from thirdeye.store import Store
+from thirdeye.turns import session_turns
 
 NATIVE_ID = "5a7e8e11-4a6b-49ff-a33e-95d411c4cdd6"
 SOURCE_TS = "2026-09-10T17:08:24.506Z"
@@ -130,3 +131,69 @@ def test_generic_cli_reads_search_raw_copilot_content(tmp_path: Path) -> None:
     assert "separate view calls" in prompt_search.output
     assert "alpha.txt" in tool_search.output
     assert '"t":"copilot_hook"' in tailed.output
+
+
+def test_all_source_kinds_map_to_raw_event_types_without_projection(tmp_path: Path) -> None:
+    config = Config(root=tmp_path / "thirdeye")
+    paths = resolve_sources(tmp_path / "copilot-home")
+    records = [
+        _record("transcript", f"{paths['source_key']}/{NATIVE_ID}/tx", {"type": "user.message"}),
+        _record(
+            "database",
+            f"{paths['source_key']}/{NATIVE_ID}/db",
+            {"table": "assistant_usage_events", "tokens": 42},
+        ),
+        _record("hook", f"hook/{NATIVE_ID}/hk", {"event": "sessionStart", "hook_payload": {}}),
+        _record(
+            "metadata",
+            f"{paths['source_key']}/{NATIVE_ID}/meta",
+            {"file": "workspace.yaml", "cwd": "/fixture/workspace"},
+        ),
+    ]
+    batch: SourceBatch = {
+        "source_key": paths["source_key"],
+        "native_session_id": NATIVE_ID,
+        "cwd": "/fixture/workspace",
+        "records": records,
+        "next_cursor": {"fixture": 1},
+        "diagnostics": [],
+    }
+    commit_batch(config, paths, batch)
+    stored_id = stored_session_id(paths, NATIVE_ID)
+
+    events = list(Store(config).reader(stored_id).iter_events())
+    assert [event["t"] for event in events] == [
+        "copilot_transcript",
+        "copilot_database",
+        "copilot_hook",
+        "copilot_metadata",
+    ]
+    assert all(event["data"]["schema_version"] == 1 for event in events)
+    assert all(event["t"] not in {"user_message", "tool_call", "assistant_message"} for event in events)
+
+
+def test_copilot_sessions_are_not_sliced_into_eval_turns(tmp_path: Path) -> None:
+    config = Config(root=tmp_path / "thirdeye")
+    paths = resolve_sources(tmp_path / "copilot-home")
+    stored_id = _capture_synthetic_batch(config, paths)
+    store = Store(config)
+    meta = store.get_meta(stored_id)
+
+    assert session_turns(meta, store) == []
+
+
+def test_hook_prompt_content_is_searchable(tmp_path: Path) -> None:
+    config = Config(root=tmp_path / "thirdeye")
+    paths = resolve_sources(tmp_path / "copilot-home")
+    _capture_synthetic_batch(config, paths)
+    runner = CliRunner()
+    env = {"THIRDEYE_HOME": str(config.root)}
+
+    hook_search = runner.invoke(
+        main,
+        ["search", "explore child", "--platform", "copilot"],
+        env=env,
+    )
+
+    assert hook_search.exit_code == 0
+    assert "explore child" in hook_search.output

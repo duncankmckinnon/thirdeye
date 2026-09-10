@@ -9,6 +9,7 @@ import pytest
 from thirdeye.platforms.copilot.archive import commit_batch
 from thirdeye.platforms.copilot.identity import resolve_sources, stored_session_id
 from thirdeye.platforms.copilot.types import SourceBatch, SourceRecord
+from thirdeye.turns import session_turns
 
 pytest.importorskip("starlette")
 
@@ -82,3 +83,83 @@ def test_generic_event_views_show_raw_child_and_hook_evidence(client, web_config
     assert b"child-message" in detail.content or b"child-stop" in detail.content
     assert stored_id.encode() in search.content
     assert b"alpha.txt" in search.content
+
+
+def test_copilot_database_events_render_in_generic_tree(client, web_config, tmp_path: Path) -> None:
+    paths = resolve_sources(tmp_path / "copilot-home")
+    records: list[SourceRecord] = [
+        {
+            "source_id": f"{paths['source_key']}/{NATIVE_ID}/usage-row",
+            "source_kind": "database",
+            "native_session_id": NATIVE_ID,
+            "ts": SOURCE_TS,
+            "observed_at": "2026-09-10T17:08:45.000Z",
+            "payload": {
+                "schema_version": 1,
+                "table": "assistant_usage_events",
+                "model": "gpt-4.1",
+                "input_tokens": 100,
+            },
+            "locator": {"table": "assistant_usage_events", "rowid": 7},
+        },
+        {
+            "source_id": f"{paths['source_key']}/{NATIVE_ID}/workspace-meta",
+            "source_kind": "metadata",
+            "native_session_id": NATIVE_ID,
+            "ts": None,
+            "observed_at": "2026-09-10T17:08:45.001Z",
+            "payload": {
+                "schema_version": 1,
+                "file": "workspace.yaml",
+                "cwd": "/fixture/workspace",
+            },
+            "locator": {"file": "workspace.yaml"},
+        },
+    ]
+    batch: SourceBatch = {
+        "source_key": paths["source_key"],
+        "native_session_id": NATIVE_ID,
+        "cwd": "/fixture/workspace",
+        "records": records,
+        "next_cursor": {"fixture": 1},
+        "diagnostics": [],
+    }
+    commit_batch(web_config, paths, batch)
+    stored_id = stored_session_id(paths, NATIVE_ID)
+
+    tree = client.get(f"/sessions/{stored_id}/tree")
+    detail_db = client.get(f"/sessions/{stored_id}/events/0")
+    detail_meta = client.get(f"/sessions/{stored_id}/events/1")
+
+    assert tree.status_code == detail_db.status_code == detail_meta.status_code == 200
+    assert b"copilot_database" in tree.content
+    assert b"copilot_metadata" in tree.content
+    assert b"assistant_usage_events" in detail_db.content
+    assert b"workspace.yaml" in detail_meta.content
+    assert b"user_message" not in tree.content
+
+
+def test_copilot_sessions_are_excluded_from_index_turn_query(client, web_config, tmp_path: Path) -> None:
+    stored_id = _capture_synthetic_batch(web_config, tmp_path)
+    store = client.app.state.store
+    meta = store.get_meta(stored_id)
+
+    assert session_turns(meta, store) == []
+
+    without_turn_filter = client.get("/?platform=copilot&since=2020-01-01")
+    with_turn_query = client.get("/?platform=copilot&since=2020-01-01&turn_query=alpha.txt")
+
+    assert without_turn_filter.status_code == with_turn_query.status_code == 200
+    assert stored_id.encode() in without_turn_filter.content
+    assert stored_id.encode() not in with_turn_query.content
+
+
+def test_copilot_session_usage_page_has_no_token_rows(client, web_config, tmp_path: Path) -> None:
+    stored_id = _capture_synthetic_batch(web_config, tmp_path)
+
+    usage = client.get(f"/sessions/{stored_id}/usage")
+
+    assert usage.status_code == 200
+    assert b"usage" in usage.content
+    assert b"gpt-4.1" not in usage.content
+    assert b"input_tokens" not in usage.content
