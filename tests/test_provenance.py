@@ -209,3 +209,55 @@ def test_classification_does_not_mutate_payload(payload: dict[str, Any], expecte
     foreign_payload_reason(payload, expected)
 
     assert payload == original
+
+
+# --- copilot-specific provenance (positive evidence, fail-open elsewhere) ---
+
+
+@pytest.mark.parametrize(
+    "event_name",
+    [
+        "sessionStart",
+        "userPromptSubmitted",
+        "preToolUse",
+        "postToolUse",
+        "agentStop",
+        "subagentStart",
+        "subagentStop",
+        "sessionEnd",
+    ],
+)
+def test_copilot_accepts_native_camel_case_events(event_name: str):
+    assert foreign_payload_reason({"hook_event_name": event_name}, "copilot") is None
+
+
+@pytest.mark.parametrize("event_name", _PASCAL_CASE_EVENTS)
+def test_copilot_accepts_pascal_case_aliases(event_name: str):
+    assert foreign_payload_reason({"hook_event_name": event_name}, "copilot") is None
+
+
+@pytest.mark.parametrize("marker", ["cursor_version", "composer_mode"])
+@pytest.mark.parametrize("value", [None, False, ""])
+def test_cursor_markers_are_foreign_for_copilot(marker: str, value: object):
+    reason = foreign_payload_reason({marker: value}, "copilot")
+
+    assert isinstance(reason, str)
+    assert reason
+    assert marker in reason
+
+
+def test_copilot_does_not_change_claude_codex_cursor_regressions():
+    assert foreign_payload_reason({"hook_event_name": "SessionStart"}, "claude") is None
+    assert foreign_payload_reason({"hook_event_name": "beforeSubmitPrompt"}, "claude") is not None
+    assert foreign_payload_reason({"hook_event_name": "SessionStart"}, "cursor") is not None
+    assert foreign_payload_reason({"hook_event_name": "beforeSubmitPrompt"}, "cursor") is None
+
+
+def test_copilot_rejects_cursor_only_camel_case_events():
+    reason = foreign_payload_reason({"hook_event_name": "beforeSubmitPrompt"}, "copilot")
+    assert isinstance(reason, str)
+    assert "beforeSubmitPrompt" in reason
+
+
+def test_copilot_is_known_platform():
+    assert foreign_payload_reason({}, "copilot") is None
