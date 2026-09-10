@@ -2,9 +2,7 @@
 
 from __future__ import annotations
 
-import hashlib
 import json
-import os
 import shutil
 from pathlib import Path
 from typing import Any
@@ -393,6 +391,29 @@ def test_read_transcript_opens_new_snapshot_for_appended_partial_line(tmp_path: 
     assert second["exhausted"] is False
 
 
+def test_read_transcript_appended_newline_completes_deferred_partial_line(tmp_path: Path):
+    home = tmp_path / "copilot"
+    native = "session-a"
+    path = _write_session(home, native, events='{"id":"first"}\n')
+    paths = _session_paths(home)
+    first = read_transcript(paths, native, {})
+    assert first["exhausted"] is True
+
+    with (path / "events.jsonl").open("ab") as stream:
+        stream.write(b'{"id":"second","type":"appended"')
+
+    second = read_transcript(paths, native, first["next_cursor"])
+    assert _transcript_records(second) == []
+    assert second["exhausted"] is False
+
+    with (path / "events.jsonl").open("ab") as stream:
+        stream.write(b'}\n')
+
+    third = read_transcript(paths, native, second["next_cursor"])
+    assert [record["payload"]["id"] for record in _transcript_records(third)] == ["second"]
+    assert third["exhausted"] is True
+
+
 def test_read_transcript_reads_appended_complete_line_in_fresh_snapshot(tmp_path: Path):
     home = tmp_path / "copilot"
     native = "session-a"
@@ -475,6 +496,29 @@ def test_read_transcript_repeatable_source_ids_after_replacement(tmp_path: Path)
     assert first_id == second_id
 
 
+def test_read_transcript_inplace_rewrite_before_continuity_window_replays(tmp_path: Path):
+    home = tmp_path / "copilot"
+    native = "session-a"
+    original = b'{"id":"orig"}\n'
+    rewritten = b'{"id":"edit"}\n'
+    assert len(original) == len(rewritten)
+    padding = b"".join(json.dumps({"id": f"pad-{index:03d}", "body": "x" * 64}).encode() + b"\n" for index in range(80))
+    path = _write_session(home, native, events=original + padding)
+    paths = _session_paths(home)
+
+    first = read_transcript(paths, native, {})
+    assert first["next_cursor"]["byte_offset"] > 4096
+    assert [record["payload"]["id"] for record in _transcript_records(first)[:1]] == ["orig"]
+
+    with (path / "events.jsonl").open("r+b") as stream:
+        stream.seek(0)
+        stream.write(rewritten)
+
+    second = read_transcript(paths, native, first["next_cursor"])
+    assert "transcript_replaced" in _diagnostic_codes(second)
+    assert [record["payload"]["id"] for record in _transcript_records(second)[:1]] == ["edit"]
+
+
 # --- unavailable source and workspace errors ---
 
 
@@ -487,6 +531,46 @@ def test_read_transcript_missing_events_is_not_exhausted(tmp_path: Path):
     assert slice_["records"] == []
     assert slice_["exhausted"] is False
     assert "transcript_unavailable" in _diagnostic_codes(slice_)
+
+
+def _symlink_or_skip(link: Path, target: Path) -> None:
+    try:
+        link.symlink_to(target)
+    except OSError as exc:
+        pytest.skip(f"symlinks unavailable: {exc}")
+
+
+def test_read_transcript_rejects_events_symlink_outside_session(tmp_path: Path):
+    home = tmp_path / "copilot"
+    native = "session-a"
+    session_dir = _write_session(home, native)
+    outside = tmp_path / "outside-events.jsonl"
+    outside.write_text('{"id":"stolen"}\n', encoding="utf-8")
+    _symlink_or_skip(session_dir / "events.jsonl", outside)
+
+    paths = _session_paths(home)
+    slice_ = read_transcript(paths, native, {})
+    assert _transcript_records(slice_) == []
+    assert "stolen" not in json.dumps(slice_["records"])
+    assert slice_["exhausted"] is False
+    assert "transcript_path_escaped" in _diagnostic_codes(slice_)
+    assert discover_transcripts(paths) == []
+
+
+def test_read_transcript_rejects_workspace_symlink_outside_session(tmp_path: Path):
+    home = tmp_path / "copilot"
+    native = "session-a"
+    session_dir = _write_session(home, native, events='{"id":"1"}\n')
+    outside = tmp_path / "outside-workspace.yaml"
+    outside.write_text("cwd: /stolen/workspace\n", encoding="utf-8")
+    _symlink_or_skip(session_dir / "workspace.yaml", outside)
+
+    slice_ = read_transcript(_session_paths(home), native, {})
+    assert [record["payload"]["id"] for record in _transcript_records(slice_)] == ["1"]
+    assert _metadata_records(slice_) == []
+    assert slice_["cwd"] is None
+    assert "/stolen/workspace" not in json.dumps(slice_["records"])
+    assert "workspace_path_escaped" in _diagnostic_codes(slice_)
 
 
 def test_read_transcript_invalid_workspace_emits_diagnostic_without_blocking_events(tmp_path: Path):

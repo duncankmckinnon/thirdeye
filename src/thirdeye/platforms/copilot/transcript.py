@@ -22,7 +22,7 @@ from .types import SourcePaths, SourceRecord, SourceSlice
 
 _EVENTS_FILENAME = "events.jsonl"
 _WORKSPACE_FILENAME = "workspace.yaml"
-_CONTINUITY_WINDOW = 4096
+_IO_CHUNK = 65536
 
 
 def _observed_at() -> str:
@@ -52,6 +52,30 @@ def _session_directory(paths: SourcePaths, native_id: str) -> Path:
     return session
 
 
+def _source_file_status(path: Path, directory: Path) -> tuple[Path | None, bool]:
+    """Return ``(resolved_file, escaped)`` for a candidate source file.
+
+    Symlinks are resolved before use.  A target outside *directory* is
+    rejected so injected source roots cannot archive arbitrary files.
+    """
+
+    try:
+        present = path.is_symlink() or path.exists()
+    except OSError:
+        return None, False
+    if not present:
+        return None, False
+    try:
+        resolved = path.resolve(strict=False)
+        if not _within(resolved, directory):
+            return None, True
+        if resolved.is_file():
+            return resolved, False
+    except OSError:
+        return None, False
+    return None, False
+
+
 def _generation(path: Path) -> str:
     """Identify the current file object, while remaining stable for appends."""
 
@@ -73,14 +97,39 @@ def _valid_timestamp(value: Any) -> str | None:
     return value
 
 
-def _continuity_anchor(path: Path, offset: int) -> tuple[int, str]:
-    """Fingerprint source bytes already consumed without penalizing appends."""
+def _prefix_digest(path: Path, offset: int) -> str:
+    """SHA-256 of the consumed prefix ``[0, offset)``."""
 
-    start = max(0, offset - _CONTINUITY_WINDOW)
+    hasher = hashlib.sha256()
+    if offset <= 0:
+        return hasher.hexdigest()
+    with path.open("rb") as stream:
+        remaining = offset
+        while remaining:
+            chunk = stream.read(min(remaining, _IO_CHUNK))
+            if not chunk:
+                break
+            hasher.update(chunk)
+            remaining -= len(chunk)
+    return hasher.hexdigest()
+
+
+def _contains_complete_line(path: Path, start: int, end: int) -> bool:
+    """Return True when ``[start, end)`` contains a newline-terminated line."""
+
+    if end <= start:
+        return False
     with path.open("rb") as stream:
         stream.seek(start)
-        digest = hashlib.sha256(stream.read(offset - start)).hexdigest()
-    return start, digest
+        remaining = end - start
+        while remaining:
+            chunk = stream.read(min(remaining, _IO_CHUNK))
+            if not chunk:
+                return False
+            if b"\n" in chunk:
+                return True
+            remaining -= len(chunk)
+    return False
 
 
 def _json_value(value: Any) -> Any:
@@ -205,10 +254,13 @@ def _workspace_record(
     """Read only safe workspace metadata and return it as independent evidence."""
 
     path = directory / _WORKSPACE_FILENAME
-    if not path.is_file():
+    resolved, escaped = _source_file_status(path, directory)
+    if escaped:
+        return None, None, [_diagnostic("workspace_path_escaped", "workspace.yaml resolves outside the session directory", file=str(path))]
+    if resolved is None:
         return None, None, []
     try:
-        raw = path.read_bytes()
+        raw = resolved.read_bytes()
         data = yaml.safe_load(raw.decode("utf-8"))
         data = _json_value(data)
     except (OSError, TypeError, UnicodeDecodeError, yaml.YAMLError) as exc:
@@ -218,7 +270,7 @@ def _workspace_record(
 
     digest = hashlib.sha256(raw).hexdigest()
     try:
-        generation = _generation(path)
+        generation = _generation(resolved)
     except OSError:
         generation = f"content-{digest}"
     cwd = data.get("cwd")
@@ -248,7 +300,10 @@ def discover_transcripts(paths: SourcePaths) -> list[str]:
     for candidate in candidates:
         try:
             resolved = candidate.resolve(strict=False)
-            if not _within(resolved, root) or not resolved.is_dir() or not (resolved / _EVENTS_FILENAME).is_file():
+            if not _within(resolved, root) or not resolved.is_dir():
+                continue
+            events_file = _source_file_status(resolved / _EVENTS_FILENAME, resolved)[0]
+            if events_file is None:
                 continue
             validate_native_id(candidate.name)
         except (OSError, ValueError):
@@ -270,6 +325,8 @@ def read_transcript(
     A newline is the commit boundary: a trailing partial JSON or UTF-8 line is
     left untouched for the next read.  Cursors retain a snapshot endpoint so a
     caller can drain the state observed at the start even while Copilot appends.
+    After that snapshot has only an incomplete tail left, the next call reopens
+    the endpoint to the current size so an appended newline can finish the line.
     """
 
     if max_records < 0 or max_bytes < 0:
@@ -282,11 +339,17 @@ def read_transcript(
     diagnostics.extend(workspace_diagnostics)
     records: list[SourceRecord] = []
 
+    resolved_events, events_escaped = _source_file_status(event_path, directory)
+    if events_escaped:
+        diagnostics.append(_diagnostic("transcript_path_escaped", "events.jsonl resolves outside the session directory", file=str(event_path)))
+        return {"records": records, "next_cursor": dict(cursor), "diagnostics": diagnostics, "cwd": cwd, "exhausted": False}
+    if resolved_events is None:
+        diagnostics.append(_diagnostic("transcript_unavailable", "events.jsonl is unavailable; it is not considered complete", file=str(event_path)))
+        return {"records": records, "next_cursor": dict(cursor), "diagnostics": diagnostics, "cwd": cwd, "exhausted": False}
+
     try:
-        stat = event_path.stat()
-        if not event_path.is_file():
-            raise FileNotFoundError(event_path)
-        generation = _generation(event_path)
+        stat = resolved_events.stat()
+        generation = _generation(resolved_events)
     except OSError:
         diagnostics.append(_diagnostic("transcript_unavailable", "events.jsonl is unavailable; it is not considered complete", file=str(event_path)))
         return {"records": records, "next_cursor": dict(cursor), "diagnostics": diagnostics, "cwd": cwd, "exhausted": False}
@@ -300,14 +363,13 @@ def read_transcript(
     reset = prior_generation is not None and prior_generation != generation
     if prior_offset > size:
         reset = True
-    anchor_start = cursor.get("continuity_start")
-    anchor_digest = cursor.get("continuity_digest")
-    if not reset and prior_offset and isinstance(anchor_start, int) and isinstance(anchor_digest, str):
+    prior_digest = cursor.get("continuity_digest")
+    if not reset and prior_offset and isinstance(prior_digest, str):
         try:
-            current_start, current_digest = _continuity_anchor(event_path, prior_offset)
+            current_digest = _prefix_digest(resolved_events, prior_offset)
         except OSError:
-            current_start, current_digest = -1, ""
-        if (current_start, current_digest) != (anchor_start, anchor_digest):
+            current_digest = ""
+        if current_digest != prior_digest:
             reset = True
     if reset:
         diagnostics.append(_diagnostic("transcript_replaced", "transcript was replaced or truncated; replaying from byte zero", file=str(event_path), previous_generation=prior_generation, file_generation=generation))
@@ -317,7 +379,12 @@ def read_transcript(
     if reset or not isinstance(prior_end, int) or prior_end < prior_offset:
         snapshot_end = size
     elif prior_offset < prior_end:
-        snapshot_end = min(prior_end, size)
+        frozen_end = min(prior_end, size)
+        try:
+            reopen = not _contains_complete_line(resolved_events, prior_offset, frozen_end)
+        except OSError:
+            reopen = True
+        snapshot_end = size if reopen else frozen_end
     else:
         snapshot_end = size
 
@@ -333,7 +400,7 @@ def read_transcript(
     consumed = 0
     limit_hit = False
     try:
-        with event_path.open("rb") as stream:
+        with resolved_events.open("rb") as stream:
             stream.seek(offset)
             while offset < snapshot_end:
                 remaining = snapshot_end - offset
@@ -365,11 +432,10 @@ def read_transcript(
         "byte_offset": offset,
         "file_generation": generation,
         "snapshot_end": snapshot_end,
+        "continuity_start": 0,
     }
     try:
-        anchor_start, anchor_digest = _continuity_anchor(event_path, offset)
-        next_cursor["continuity_start"] = anchor_start
-        next_cursor["continuity_digest"] = anchor_digest
+        next_cursor["continuity_digest"] = _prefix_digest(resolved_events, offset)
     except OSError:
         # The read above remains useful.  A later invocation will report the
         # unavailable source instead of pretending that it reached completion.
