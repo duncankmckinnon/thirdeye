@@ -9,6 +9,7 @@ from thirdeye.cli import main
 from thirdeye.commands.add import PLATFORMS, find_orphaned_hooks
 from thirdeye.platforms.claude.install import ClaudePlatform
 from thirdeye.platforms.codex.install import CodexPlatform
+from thirdeye.platforms.copilot.install import CopilotPlatform
 from thirdeye.platforms.cursor.install import CursorPlatform
 
 # -- command registration ------------------------------------------------------
@@ -48,6 +49,18 @@ def test_remove_help_mentions_codex():
     r = CliRunner().invoke(main, ["remove", "--help"])
     assert r.exit_code == 0
     assert "--codex" in r.output
+
+
+def test_add_help_mentions_copilot():
+    r = CliRunner().invoke(main, ["add", "--help"])
+    assert r.exit_code == 0
+    assert "--copilot" in r.output
+
+
+def test_remove_help_mentions_copilot():
+    r = CliRunner().invoke(main, ["remove", "--help"])
+    assert r.exit_code == 0
+    assert "--copilot" in r.output
 
 
 # -- platform flag required ----------------------------------------------------
@@ -214,7 +227,7 @@ def test_ingest_still_works(tmp_path: Path):
 
 
 def test_platforms_dict_is_exactly_supported_platforms():
-    assert set(PLATFORMS) == {"claude", "codex", "cursor"}
+    assert set(PLATFORMS) == {"claude", "codex", "cursor", "copilot"}
 
 
 def test_platforms_dict_has_claude():
@@ -230,6 +243,11 @@ def test_platforms_dict_has_codex():
 def test_platforms_dict_has_cursor():
     assert "cursor" in PLATFORMS
     assert PLATFORMS["cursor"] is CursorPlatform
+
+
+def test_platforms_dict_has_copilot():
+    assert "copilot" in PLATFORMS
+    assert PLATFORMS["copilot"] is CopilotPlatform
 
 
 def test_platform_flag_value_maps_to_platforms_key():
@@ -375,6 +393,48 @@ def test_list_shows_supported_platforms(monkeypatch):
     assert "codex" in r.output
     assert "gemini" not in r.output
     assert "cursor" in r.output
+    assert "copilot" in r.output
+
+
+# -- install (add --copilot) ---------------------------------------------------
+
+
+def test_add_copilot_calls_install(monkeypatch):
+    from unittest.mock import MagicMock
+
+    mock_platform = MagicMock()
+    mock_platform.display_name = "GitHub Copilot CLI"
+    mock_cls = MagicMock(return_value=mock_platform)
+
+    monkeypatch.setitem(PLATFORMS, "copilot", mock_cls)
+    r = CliRunner().invoke(main, ["add", "--copilot"])
+    assert r.exit_code == 0, r.output
+    mock_cls.assert_called_once()
+    mock_platform.install.assert_called_once()
+
+
+def test_add_copilot_writes_hooks(tmp_path: Path, monkeypatch):
+    hooks_file = tmp_path / "hooks" / "thirdeye.json"
+    platform = CopilotPlatform(hooks_file=hooks_file, entrypoint="/opt/bin/thirdeye-copilot-hook")
+    monkeypatch.setitem(PLATFORMS, "copilot", lambda: platform)
+    r = CliRunner().invoke(main, ["add", "--copilot"])
+    assert r.exit_code == 0, r.output
+    assert hooks_file.exists()
+    assert "Copilot" in r.output
+
+
+def test_remove_copilot_calls_uninstall(monkeypatch):
+    from unittest.mock import MagicMock
+
+    mock_platform = MagicMock()
+    mock_platform.display_name = "GitHub Copilot CLI"
+    mock_cls = MagicMock(return_value=mock_platform)
+
+    monkeypatch.setitem(PLATFORMS, "copilot", mock_cls)
+    r = CliRunner().invoke(main, ["remove", "--copilot"])
+    assert r.exit_code == 0, r.output
+    mock_cls.assert_called_once()
+    mock_platform.uninstall.assert_called_once()
 
 
 # -- find_orphaned_hooks -------------------------------------------------------
