@@ -187,7 +187,12 @@ def test_status_help_documents_source_home() -> None:
 
 def test_copilot_commands_have_no_export_flag() -> None:
     runner = CliRunner()
-    for args in (["copilot", "--help"], ["copilot", "sync", "--help"], ["copilot", "watch", "--help"]):
+    for args in (
+        ["copilot", "--help"],
+        ["copilot", "sync", "--help"],
+        ["copilot", "watch", "--help"],
+        ["copilot", "status", "--help"],
+    ):
         result = runner.invoke(main, args)
         assert result.exit_code == 0, result.output
         assert "--export" not in result.output
@@ -198,6 +203,17 @@ def test_pyproject_registers_copilot_hook_entrypoint() -> None:
     text = pyproject.read_text(encoding="utf-8")
     assert f"{HOOK_BIN} =" in text
     assert "thirdeye.platforms.copilot.hooks:main" in text
+
+
+def test_copilot_hook_entrypoint_is_importable() -> None:
+    from importlib.metadata import entry_points
+
+    scripts = entry_points(group="console_scripts")
+    hook = next((ep for ep in scripts if ep.name == HOOK_BIN), None)
+    assert hook is not None
+    module_path, _, attr = hook.value.partition(":")
+    module = __import__(module_path, fromlist=[attr])
+    assert callable(getattr(module, attr))
 
 
 # -- sync ----------------------------------------------------------------------
@@ -276,7 +292,48 @@ def test_sync_missing_session_id_exits_nonzero(
     )
     assert result.exit_code != 0, result.output
     assert "No such command" not in result.output
-    assert "missing-session-id" in result.output or "error" in result.output.lower()
+    assert "missing-session-id" in result.output
+    assert "errors=1" in result.output
+
+
+def test_sync_session_with_capture_errors_exits_nonzero(
+    isolated_home: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def fake_sync(
+        _config: Config,
+        _paths: SourcePaths,
+        *,
+        session_id: str | None = None,
+    ) -> SyncResult:
+        return _empty_result(errors=1)
+
+    monkeypatch.setattr("thirdeye.commands.copilot.capture_sync", fake_sync)
+    result = CliRunner().invoke(
+        main,
+        ["copilot", "sync", "--session-id", NATIVE_SESSION_ID],
+    )
+    assert result.exit_code != 0, result.output
+    assert NATIVE_SESSION_ID in result.output
+    assert "errors=1" in result.output
+
+
+def test_sync_capture_value_error_becomes_click_exception(
+    isolated_home: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def fake_sync(
+        _config: Config,
+        _paths: SourcePaths,
+        *,
+        session_id: str | None = None,
+    ) -> SyncResult:
+        raise ValueError("invalid native session routing")
+
+    monkeypatch.setattr("thirdeye.commands.copilot.capture_sync", fake_sync)
+    result = CliRunner().invoke(main, ["copilot", "sync"])
+    assert result.exit_code != 0, result.output
+    assert "invalid native session routing" in result.output
 
 
 def test_sync_prints_counts(isolated_home: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -405,6 +462,21 @@ def test_status_exits_nonzero_on_source_errors(
     )
     result = CliRunner().invoke(main, ["copilot", "status"])
     assert result.exit_code != 0, result.output
+    assert "source_unreadable" in result.output
+    assert "database unreadable" in result.output
+
+
+def test_status_prints_string_errors(
+    isolated_home: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        "thirdeye.commands.copilot.capture_status",
+        lambda _config, _paths: _minimal_status(errors=["legacy string error"]),  # type: ignore[list-item]
+    )
+    result = CliRunner().invoke(main, ["copilot", "status"])
+    assert result.exit_code != 0, result.output
+    assert "legacy string error" in result.output
 
 
 def test_status_prints_paths_and_guidance(

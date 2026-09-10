@@ -72,10 +72,24 @@ def test_add_requires_platform():
     assert "platform" in r.output.lower()
 
 
+def test_add_requires_platform_lists_all_supported_flags():
+    r = CliRunner().invoke(main, ["add"])
+    assert r.exit_code != 0
+    for flag in ("--claude", "--codex", "--cursor", "--copilot"):
+        assert flag in r.output
+
+
 def test_remove_requires_platform():
     r = CliRunner().invoke(main, ["remove"])
     assert r.exit_code != 0
     assert "platform" in r.output.lower()
+
+
+def test_remove_requires_platform_lists_all_supported_flags():
+    r = CliRunner().invoke(main, ["remove"])
+    assert r.exit_code != 0
+    for flag in ("--claude", "--codex", "--cursor", "--copilot"):
+        assert flag in r.output
 
 
 # -- install (add --claude) ----------------------------------------------------
