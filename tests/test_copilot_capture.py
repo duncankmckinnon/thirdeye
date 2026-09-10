@@ -573,6 +573,99 @@ def test_capture_session_reports_pending_when_transcript_exceeds_reader_limit(
     assert result["records_written"] == len(captured)
 
 
+def test_sync_does_not_chase_growing_database_source(
+    copilot_env: tuple[Config, SourcePaths],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    config, paths = copilot_env
+    reads = {"n": 0}
+
+    def growing_database(
+        _paths: SourcePaths, _native: str, cursor: dict[str, Any], **_kwargs: Any
+    ) -> Any:
+        reads["n"] += 1
+        if reads["n"] > 80:
+            raise AssertionError("sync chased a growing database source")
+        offset = 0
+        if isinstance(cursor, dict) and isinstance(cursor.get("database_offset"), int):
+            offset = cursor["database_offset"]
+        return {
+            "records": [
+                _record(f"db/{offset + index}", source_kind="database") for index in range(1000)
+            ],
+            "next_cursor": {"database_generation": "gen-1", "database_offset": offset + 1000},
+            "diagnostics": [],
+            "cwd": None,
+            "exhausted": False,
+        }
+
+    def empty_transcript(
+        _paths: SourcePaths, _native: str, _cursor: dict[str, Any], **_kwargs: Any
+    ) -> Any:
+        return {
+            "records": [],
+            "next_cursor": {"byte_offset": 0, "snapshot_end": 0, "file_generation": "g"},
+            "diagnostics": [],
+            "cwd": None,
+            "exhausted": True,
+        }
+
+    monkeypatch.setattr("thirdeye.platforms.copilot.sources.read_database", growing_database)
+    monkeypatch.setattr("thirdeye.platforms.copilot.sources.read_transcript", empty_transcript)
+    monkeypatch.setattr(
+        "thirdeye.platforms.copilot.sources.discover_database_sessions",
+        lambda _paths: [NATIVE_SESSION_ID],
+    )
+    monkeypatch.setattr("thirdeye.platforms.copilot.sources.discover_transcripts", lambda _paths: [])
+
+    result = sync(config, paths, session_id=NATIVE_SESSION_ID)
+    stored = stored_session_id(paths, NATIVE_SESSION_ID)
+    captured = [record for record in iter_captured_records(config, stored) if record["source_kind"] == "database"]
+
+    assert reads["n"] <= 80
+    assert result["sessions"] == 1
+    assert 1000 <= len(captured) <= 40_000
+    assert len(captured) == len({record["source_id"] for record in captured})
+
+
+def test_sync_drains_paginated_database_snapshot(
+    copilot_env: tuple[Config, SourcePaths],
+) -> None:
+    config, paths = copilot_env
+    home = Path(paths["home"])
+    _write_transcript(home, NATIVE_SESSION_ID)
+    _write_database(home, session_id=NATIVE_SESSION_ID)
+    database = home / "session-store.db"
+    connection = sqlite3.connect(database)
+    try:
+        connection.executemany(
+            "INSERT INTO turns (session_id, turn_index, content, updated_at) VALUES (?, ?, ?, ?)",
+            [
+                (NATIVE_SESSION_ID, index, f"turn-{index}", "2026-09-10T17:08:10.000Z")
+                for index in range(2, 1002)
+            ],
+        )
+        connection.commit()
+        baseline = connection.execute(
+            "SELECT COUNT(*) FROM sessions WHERE id = ? UNION ALL "
+            "SELECT COUNT(*) FROM turns WHERE session_id = ? UNION ALL "
+            "SELECT COUNT(*) FROM assistant_usage_events WHERE session_id = ?",
+            (NATIVE_SESSION_ID, NATIVE_SESSION_ID, NATIVE_SESSION_ID),
+        ).fetchall()
+        expected = sum(row[0] for row in baseline)
+    finally:
+        connection.close()
+
+    result = sync(config, paths, session_id=NATIVE_SESSION_ID)
+    stored = stored_session_id(paths, NATIVE_SESSION_ID)
+    captured = list(iter_captured_records(config, stored))
+    database_records = [record for record in captured if record["source_kind"] == "database"]
+
+    assert result["errors"] == 0
+    assert result["pending"] == 0
+    assert len(database_records) == expected
+
+
 def test_sync_drains_paginated_invocation_snapshot(
     copilot_env: tuple[Config, SourcePaths],
 ) -> None:

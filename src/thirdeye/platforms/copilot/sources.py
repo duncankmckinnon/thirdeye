@@ -20,6 +20,7 @@ from .types import SourceBatch, SourcePaths, SourceSlice
 __all__ = ["discover_sessions", "read_batch", "resolve_sources"]
 
 _DISCOVERY_PROBE_ID = "copilot-discovery-probe"
+_MAX_DATABASE_SNAPSHOT_PROBES = 16
 _FILE_LEVEL_DATABASE_CODES = frozenset(
     {
         "copilot_database_unreadable",
@@ -112,6 +113,103 @@ def _read_slice(
         return _failed_slice(cursor, name, error)
 
 
+def _is_database_cursor(cursor: dict[str, Any]) -> bool:
+    return isinstance(cursor.get("database_offset"), int) or isinstance(
+        cursor.get("database_generation"), str
+    )
+
+
+def _page_start(slice_: SourceSlice, incoming_offset: object) -> int:
+    live_offset = slice_["next_cursor"].get("database_offset")
+    page_len = len(slice_["records"])
+    if isinstance(live_offset, int) and live_offset >= page_len:
+        return live_offset - page_len
+    return incoming_offset if isinstance(incoming_offset, int) else 0
+
+
+def _observe_database_snapshot_end(
+    paths: SourcePaths, native_id: str, slice_: SourceSlice
+) -> int:
+    """Freeze the live row count observed for this invocation.
+
+    Additional probes learn how far the current SQLite snapshot extends, but
+    they stop after a bounded number of pages so a source that keeps growing
+    cannot postpone snapshot creation.
+    """
+
+    cursor = slice_["next_cursor"]
+    offset = cursor.get("database_offset", len(slice_["records"]))
+    if not isinstance(offset, int) or offset < 0:
+        offset = len(slice_["records"])
+    if slice_["exhausted"]:
+        return offset
+    generation = cursor.get("database_generation")
+    observed = offset
+    for _ in range(_MAX_DATABASE_SNAPSHOT_PROBES):
+        try:
+            probe = read_database(
+                paths,
+                native_id,
+                {"database_generation": generation, "database_offset": observed},
+            )
+        except (OSError, ValueError):
+            return observed
+        nxt = probe["next_cursor"].get("database_offset", observed)
+        if not isinstance(nxt, int) or nxt <= observed:
+            return observed
+        observed = nxt
+        if probe["exhausted"]:
+            return observed
+    return observed
+
+
+def _with_database_snapshot(
+    paths: SourcePaths,
+    native_id: str,
+    slice_: SourceSlice,
+    incoming: dict[str, Any],
+) -> SourceSlice:
+    """Keep database pagination inside the invocation-time row bound.
+
+    The SQLite reader re-queries live rows on every page, so composition must
+    freeze ``snapshot_end`` the way the transcript reader freezes file size.
+    """
+
+    next_cursor = deepcopy(slice_["next_cursor"])
+    if not _is_database_cursor(next_cursor) and not _is_database_cursor(incoming):
+        return slice_
+
+    records = list(slice_["records"])
+    incoming_end = incoming.get("snapshot_end")
+    incoming_offset = incoming.get("database_offset", 0)
+    incoming_gen = incoming.get("database_generation")
+    live_gen = next_cursor.get("database_generation")
+    start_offset = _page_start(slice_, incoming_offset)
+    draining = (
+        incoming_gen == live_gen
+        and isinstance(incoming_end, int)
+        and isinstance(incoming_offset, int)
+        and incoming_offset < incoming_end
+    )
+    if draining:
+        snapshot_end = incoming_end
+    else:
+        snapshot_end = _observe_database_snapshot_end(paths, native_id, slice_)
+
+    allowed = max(0, snapshot_end - start_offset)
+    if len(records) > allowed:
+        records = records[:allowed]
+    next_offset = start_offset + len(records)
+    next_cursor["database_offset"] = next_offset
+    next_cursor["snapshot_end"] = snapshot_end
+    return {
+        **slice_,
+        "records": records,
+        "next_cursor": next_cursor,
+        "exhausted": next_offset >= snapshot_end,
+    }
+
+
 def read_batch(paths: SourcePaths, native_session_id: str, cursor: dict) -> SourceBatch:
     """Read one bounded, lossless slice from each persisted source.
 
@@ -120,7 +218,8 @@ def read_batch(paths: SourcePaths, native_session_id: str, cursor: dict) -> Sour
     ``base_cursor`` is an optimistic archive marker and is stripped before the
     archive persists the next source cursor.  Exhaustion flags stay on the
     composition cursor so capture can page or report pending without confusing
-    the per-source readers.
+    the per-source readers.  Database cursors also carry ``snapshot_end`` so a
+    later SQLite insert cannot extend this invocation's drain.
     """
 
     validate_native_id(native_session_id)
@@ -130,7 +229,12 @@ def read_batch(paths: SourcePaths, native_session_id: str, cursor: dict) -> Sour
     transcript = _read_slice(
         "transcript", read_transcript, paths, native_session_id, transcript_cursor
     )
-    database = _read_slice("database", read_database, paths, native_session_id, database_cursor)
+    database = _with_database_snapshot(
+        paths,
+        native_session_id,
+        _read_slice("database", read_database, paths, native_session_id, database_cursor),
+        database_cursor,
+    )
     next_cursor: dict[str, Any] = {
         "transcript": deepcopy(transcript["next_cursor"]),
         "database": deepcopy(database["next_cursor"]),

@@ -26,6 +26,7 @@ _RETRYABLE_SUFFIXES = (
     "_incompatible",
 )
 _ABSENCE_CODES = frozenset({"transcript_unavailable", "copilot_database_missing"})
+_MAX_DRAIN_PAGES = 256
 
 
 def _result() -> SyncResult:
@@ -240,7 +241,7 @@ def _drain_session(config: Config, paths: SourcePaths, native_session_id: str) -
     collected: list[dict[str, Any]] = []
     last_batch: SourceBatch | None = None
     prev_cursor: object = object()
-    while True:
+    for _ in range(_MAX_DRAIN_PAGES):
         archive, batch, more_pages = _capture_once(config, paths, native_session_id)
         last_batch = batch
         collected.extend(batch["diagnostics"])

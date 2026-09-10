@@ -353,3 +353,49 @@ def test_discover_sessions_delegates_to_underlying_readers(tmp_path: Path) -> No
     assert discover_transcripts(paths) == ["only-transcript"]
     assert discover_database_sessions(paths) == []
     assert discover_sessions(paths) == ["only-transcript"]
+
+
+def test_read_batch_freezes_database_snapshot_end_against_later_inserts(tmp_path: Path) -> None:
+    home = tmp_path / "copilot"
+    home.mkdir()
+    paths = _paths(home)
+    reads = {"n": 0}
+
+    def growing_database(
+        _paths: SourcePaths, _native: str, cursor: dict[str, Any]
+    ) -> SourceSlice:
+        reads["n"] += 1
+        if reads["n"] > 80:
+            raise AssertionError("read_batch chased a growing database source")
+        offset = 0
+        if isinstance(cursor, dict) and isinstance(cursor.get("database_offset"), int):
+            offset = cursor["database_offset"]
+        return _slice(
+            records=[_record(f"d/{offset + index}", source_kind="database") for index in range(1000)],
+            next_cursor={"database_generation": "gen-1", "database_offset": offset + 1000},
+            cwd=None,
+            exhausted=False,
+        )
+
+    transcript = _slice(exhausted=True, cwd=None, next_cursor={"byte_offset": 0, "snapshot_end": 0})
+    with (
+        patch("thirdeye.platforms.copilot.sources.read_transcript", return_value=transcript),
+        patch("thirdeye.platforms.copilot.sources.read_database", side_effect=growing_database),
+    ):
+        first = read_batch(paths, NATIVE_ID, {})
+        snapshot_end = first["next_cursor"]["database"]["snapshot_end"]
+        cursor = first["next_cursor"]
+        pages = 1
+        records = list(first["records"])
+        while not cursor.get("database_exhausted") and pages < 100:
+            batch = read_batch(paths, NATIVE_ID, cursor)
+            records.extend(batch["records"])
+            cursor = batch["next_cursor"]
+            pages += 1
+            assert cursor["database"]["snapshot_end"] == snapshot_end
+
+    assert isinstance(snapshot_end, int)
+    assert cursor.get("database_exhausted") is True
+    assert cursor["database"]["database_offset"] == snapshot_end
+    assert len([item for item in records if item["source_kind"] == "database"]) == snapshot_end
+    assert reads["n"] <= 80
