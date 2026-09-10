@@ -2481,26 +2481,43 @@ class TestPersistedCapturedEnvFallback:
     the session-start hook persisted into meta.
     """
 
-    def test_export_turn_uses_persisted_snapshot_when_env_empty(
+    def test_export_turn_uses_persisted_snapshot_when_notify_env_is_bare(
         self, enabled_config, monkeypatch, tmp_path
     ):
-        from dataclasses import replace
-
-        config = replace(enabled_config, capture_env_patterns=("WB_*",))
+        # The notify process is detached from the agent env: it has neither
+        # the WB_* vars nor THIRDEYE_CAPTURE_ENV, so `capture_env_patterns`
+        # is empty here too. The persisted snapshot must still be consulted.
         monkeypatch.delenv("WB_PLAN", raising=False)
         monkeypatch.delenv("WB_STEP", raising=False)
+        assert enabled_config.capture_env_patterns == ()
         sd = tmp_path / "traces" / "codex" / "s1"
         _write_session_meta(sd, captured_env={"WB_PLAN": "auth", "WB_STEP": "test#1"})
 
         jobs: list[Path] = []
         monkeypatch.setattr(otel_export, "_spawn", jobs.append)
-        otel_export.export_turn(config, sd, "s1", "codex", "/repo", _turn())
+        otel_export.export_turn(enabled_config, sd, "s1", "codex", "/repo", _turn())
 
         assert len(jobs) == 1
         attrs = json.loads(jobs[0].read_text())["captured_attributes"]
         assert attrs["wb.plan"] == "auth"
         assert attrs["wb.step"] == "test#1"
         assert set(attrs["logfire.tags"]) == {"auth", "test#1"}
+
+    def test_non_codex_platform_ignores_persisted_snapshot(
+        self, enabled_config, monkeypatch, tmp_path
+    ):
+        # Cursor/Claude export from a hook that is a real child of the agent
+        # process, so their env is authoritative and a stale meta snapshot
+        # must never leak in.
+        monkeypatch.delenv("WB_PLAN", raising=False)
+        sd = tmp_path / "traces" / "cursor" / "s1"
+        _write_session_meta(sd, captured_env={"WB_PLAN": "stale"})
+
+        jobs: list[Path] = []
+        monkeypatch.setattr(otel_export, "_spawn", jobs.append)
+        otel_export.export_turn(enabled_config, sd, "s1", "cursor", "/repo", _turn())
+
+        assert json.loads(jobs[0].read_text())["captured_attributes"] == {}
 
     def test_live_env_takes_precedence_over_persisted_snapshot(
         self, enabled_config, monkeypatch, tmp_path

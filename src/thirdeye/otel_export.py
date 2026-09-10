@@ -512,21 +512,24 @@ def _persisted_captured_env(session_dir_: Path) -> dict[str, str]:
     return {str(key): str(value) for key, value in raw.items() if value is not None}
 
 
-def _capture_attributes(config: Config, session_dir_: Path | None = None) -> dict[str, Any]:
+def _capture_attributes(
+    config: Config, session_dir_: Path | None = None, platform: str = ""
+) -> dict[str, Any]:
     """Snapshot opted-in context before crossing the detached-worker boundary.
 
     Workbench names retain their existing wb.* query namespace; other names
     are lowercased. Values stay intact, independently of local tag limits.
 
-    ``os.environ`` is authoritative when it yields anything; only when a
-    capture pattern is configured but the live environment carries nothing
-    matching it does this fall back to the session-start snapshot in meta
-    (see :func:`_persisted_captured_env`).
+    ``os.environ`` is authoritative when it yields anything. Only for Codex —
+    whose turn export runs in an argv-invoked ``notify`` callback detached
+    from the agent env, so both the ``WB_*`` vars *and* ``THIRDEYE_CAPTURE_ENV``
+    may be missing — does an empty live capture fall back to the snapshot the
+    session-start hook persisted into meta (see :func:`_persisted_captured_env`).
     """
     from thirdeye.env_capture import capture_env
 
     captured = capture_env(config.capture_env_patterns)
-    if not captured and config.capture_env_patterns and session_dir_ is not None:
+    if not captured and platform == "codex" and session_dir_ is not None:
         captured = _persisted_captured_env(session_dir_)
     attributes: dict[str, Any] = {
         ("wb." + name[3:].lower() if name.upper().startswith("WB_") else name.lower()): value
@@ -628,7 +631,7 @@ def export_turn(
             config.root,
             {
                 "kind": "turn",
-                "captured_attributes": _capture_attributes(config, session_dir_),
+                "captured_attributes": _capture_attributes(config, session_dir_, platform),
                 "session_dir": str(session_dir_),
                 "session_id": session_id,
                 "platform": platform,
@@ -678,7 +681,7 @@ def export_spans(
             config.root,
             {
                 "kind": "spans",
-                "captured_attributes": _capture_attributes(config, session_dir_),
+                "captured_attributes": _capture_attributes(config, session_dir_, platform),
                 "session_dir": str(session_dir_),
                 "session_id": session_id,
                 "platform": platform,
@@ -742,7 +745,7 @@ def export_subagent_turn(
             config.root,
             {
                 "kind": "subagent_turn",
-                "captured_attributes": _capture_attributes(config, session_dir_),
+                "captured_attributes": _capture_attributes(config, session_dir_, platform),
                 "session_dir": str(session_dir_),
                 "session_id": session_id,
                 "platform": platform,
