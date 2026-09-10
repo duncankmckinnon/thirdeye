@@ -925,6 +925,135 @@ def test_unrelated_wal_write_does_not_reset_pagination(tmp_path: Path):
         writer.close()
 
 
+def test_same_session_writes_do_not_starve_later_rows(tmp_path: Path):
+    home = tmp_path / "copilot"
+    database = _write_database(
+        home,
+        session_id="session-a",
+        turns=[(index, f"turn-{index}") for index in range(1, 6)],
+    )
+    paths = _paths(home)
+    page_one = read_database(paths, "session-a", {}, max_records=2)
+    assert page_one["exhausted"] is False
+    first_ids = [record["source_id"] for record in page_one["records"]]
+
+    writer = sqlite3.connect(database)
+    try:
+        writer.execute("PRAGMA journal_mode=WAL")
+        writer.execute("PRAGMA wal_autocheckpoint=0")
+        writer.execute(
+            "UPDATE turns SET content = ?, updated_at = ? WHERE id = ?",
+            ("updated-turn-1", "2026-09-10T17:13:00.000Z", 1),
+        )
+        writer.execute(
+            "INSERT INTO turns (id, session_id, turn_index, content, updated_at) "
+            "VALUES (?, ?, ?, ?, ?)",
+            (99, "session-a", 99, "late-same-session", "2026-09-10T17:13:01.000Z"),
+        )
+        writer.execute(
+            "INSERT INTO assistant_usage_events (id, session_id, turn_index, model, created_at) "
+            "VALUES (?, ?, ?, ?, ?)",
+            (50, "session-a", 99, "gpt-live", "2026-09-10T17:13:02.000Z"),
+        )
+        writer.commit()
+        wal_path = Path(f"{database}-wal")
+        assert wal_path.is_file()
+        assert wal_path.stat().st_size > 0
+
+        page_two = read_database(
+            paths, "session-a", page_one["next_cursor"], max_records=2
+        )
+        second_ids = [record["source_id"] for record in page_two["records"]]
+        assert page_two["records"]
+        assert second_ids != first_ids
+        assert page_two["next_cursor"]["database_generation"] == page_one["next_cursor"][
+            "database_generation"
+        ]
+        assert page_two["next_cursor"]["database_offset"] == 4
+
+        collected = list(page_one["records"]) + list(page_two["records"])
+        cursor = page_two["next_cursor"]
+        for _ in range(20):
+            slice_ = read_database(paths, "session-a", cursor, max_records=2)
+            collected.extend(slice_["records"])
+            cursor = slice_["next_cursor"]
+            if slice_["exhausted"]:
+                break
+        else:
+            raise AssertionError("pagination did not exhaust after same-session writes")
+
+        turn_contents = {
+            record["payload"]["row"]["content"]
+            for record in collected
+            if record["payload"]["table"] == "turns"
+        }
+        assert "turn-5" in turn_contents
+        assert "late-same-session" in turn_contents
+        assert any(
+            record["payload"]["table"] == "assistant_usage_events"
+            and record["payload"]["row"]["model"] == "gpt-live"
+            for record in collected
+        )
+    finally:
+        writer.close()
+
+
+def test_repeated_same_session_inserts_still_reach_later_rows(tmp_path: Path):
+    home = tmp_path / "copilot"
+    database = _write_database(
+        home,
+        session_id="session-a",
+        turns=[(index, f"turn-{index}") for index in range(1, 9)],
+    )
+    paths = _paths(home)
+    cursor: dict[str, Any] = {}
+    collected: list[dict[str, Any]] = []
+    first_page_ids: list[str] | None = None
+    writer = sqlite3.connect(database)
+    try:
+        writer.execute("PRAGMA journal_mode=WAL")
+        writer.execute("PRAGMA wal_autocheckpoint=0")
+        for index in range(20):
+            slice_ = read_database(paths, "session-a", cursor, max_records=2)
+            page_ids = [record["source_id"] for record in slice_["records"]]
+            if first_page_ids is None:
+                first_page_ids = page_ids
+            else:
+                assert page_ids != first_page_ids
+            collected.extend(slice_["records"])
+            writer.execute(
+                "INSERT INTO assistant_usage_events "
+                "(id, session_id, turn_index, model, created_at) VALUES (?, ?, ?, ?, ?)",
+                (
+                    100 + index,
+                    "session-a",
+                    index,
+                    f"gpt-live-{index}",
+                    "2026-09-10T17:14:00.000Z",
+                ),
+            )
+            writer.commit()
+            if slice_["exhausted"]:
+                break
+            cursor = slice_["next_cursor"]
+        else:
+            raise AssertionError("continuous same-session inserts starved later rows")
+    finally:
+        writer.close()
+
+    assert first_page_ids is not None
+    turn_contents = {
+        record["payload"]["row"]["content"]
+        for record in collected
+        if record["payload"]["table"] == "turns"
+    }
+    assert "turn-8" in turn_contents
+    assert any(
+        record["payload"]["table"] == "assistant_usage_events"
+        for record in collected
+    )
+
+
 def test_same_row_id_different_content_is_new_revision(tmp_path: Path):
     home = tmp_path / "copilot"
     database = _write_database(home, session_id="session-a", turns=[(7, "first")])

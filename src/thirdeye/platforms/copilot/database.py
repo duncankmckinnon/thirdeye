@@ -96,20 +96,6 @@ def _file_generation(database: Path) -> str:
     return "sha256:" + hashlib.sha256(_canonical_json(payload).encode("utf-8")).hexdigest()
 
 
-def _snapshot_generation(rows: Sequence[tuple[str, Any, dict[str, Any]]]) -> str:
-    """Hash this session's row identities and revisions for pagination."""
-
-    fingerprint = [
-        {
-            "table": table,
-            "primary_key": _json_value(primary_key),
-            "revision": _content_revision(row),
-        }
-        for table, primary_key, row in rows
-    ]
-    return "sha256:" + hashlib.sha256(_canonical_json(fingerprint).encode("utf-8")).hexdigest()
-
-
 def _connect(database: Path) -> sqlite3.Connection:
     # ``mode=ro`` keeps SQLite's normal WAL behaviour while preventing all
     # writes.  In particular, do not use immutable=1: it ignores live WAL data.
@@ -312,9 +298,11 @@ def read_database(
     """Read a bounded, transactionally consistent raw SQLite snapshot.
 
     Every poll re-reads the selected session, because turns and sessions are
-    mutable.  Pagination is keyed to this session's logical snapshot so WAL
-    metadata from other writers cannot starve later rows.  A changed snapshot
-    replays from the start so updated earlier rows are not skipped.
+    mutable.  Pagination is keyed to the database file incarnation so live WAL
+    writes—including inserts and updates in this session—cannot starve later
+    rows.  A replaced database file replays from the start so row-ID reuse
+    cannot silently continue a stale offset.  Content revisions travel on each
+    record; unchanged snapshots still deduplicate after a later full read.
     """
 
     validate_native_id(native_id)
@@ -419,7 +407,7 @@ def read_database(
     rows_by_table.sort(
         key=lambda item: (_TABLES.index(item[0]), _canonical_json(_json_value(item[1])))
     )
-    generation = _snapshot_generation(rows_by_table)
+    generation = file_generation
     incoming_generation = cursor.get("database_generation") if isinstance(cursor, dict) else None
     incoming_offset = cursor.get("database_offset", 0) if isinstance(cursor, dict) else 0
     offset = (
