@@ -448,6 +448,30 @@ class TestSessionStart:
         tags = {line["tag"] for line in _tags_lines(env, "s1")}
         assert "plan-p" in tags
 
+    def test_env_capture_is_persisted_to_meta(self, monkeypatch, env: Path):
+        from thirdeye.meta import read_meta
+        from thirdeye.paths import meta_path
+
+        monkeypatch.setenv("THIRDEYE_CAPTURE_ENV", "WB_*")
+        monkeypatch.setenv("WB_PLAN", "p")
+        monkeypatch.setenv("WB_STEP", "test#1")
+        _stdin(monkeypatch, {"session_id": "s1", "cwd": "/p"})
+        hooks_json.session_start()
+        m = read_meta(meta_path(session_dir(env, "codex", "s1")))
+        assert m is not None
+        assert m.extra["captured_env"] == {"WB_PLAN": "p", "WB_STEP": "test#1"}
+
+    def test_no_env_capture_leaves_meta_without_captured_env(self, monkeypatch, env: Path):
+        from thirdeye.meta import read_meta
+        from thirdeye.paths import meta_path
+
+        monkeypatch.delenv("THIRDEYE_CAPTURE_ENV", raising=False)
+        _stdin(monkeypatch, {"session_id": "s1", "cwd": "/p"})
+        hooks_json.session_start()
+        m = read_meta(meta_path(session_dir(env, "codex", "s1")))
+        assert m is not None
+        assert "captured_env" not in m.extra
+
 
 # -- user_prompt_submit ------------------------------------------------------
 
