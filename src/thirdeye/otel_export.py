@@ -488,15 +488,46 @@ def _parent_context(trace_id: int, span_id: int):
     return otel_trace.set_span_in_context(otel_trace.NonRecordingSpan(span_context))
 
 
-def _capture_attributes(config: Config) -> dict[str, Any]:
+def _persisted_captured_env(session_dir_: Path) -> dict[str, str]:
+    """The env snapshot a platform's session-start hook wrote into meta.
+
+    Codex's turn export runs in ``thirdeye-codex-notify``, an argv-invoked
+    callback Codex spawns detached from the agent process that actually held
+    the ``WB_*`` vars, so ``os.environ`` there is unreliable. Codex's
+    session-start hook — a normal child of that agent process — captures the
+    same env and persists it here for the notify path to read back.
+    """
+    try:
+        from thirdeye.meta import read_meta
+        from thirdeye.paths import meta_path
+
+        meta = read_meta(meta_path(session_dir_))
+    except Exception:
+        return {}
+    if meta is None:
+        return {}
+    raw = meta.extra.get("captured_env")
+    if not isinstance(raw, dict):
+        return {}
+    return {str(key): str(value) for key, value in raw.items() if value is not None}
+
+
+def _capture_attributes(config: Config, session_dir_: Path | None = None) -> dict[str, Any]:
     """Snapshot opted-in context before crossing the detached-worker boundary.
 
     Workbench names retain their existing wb.* query namespace; other names
     are lowercased. Values stay intact, independently of local tag limits.
+
+    ``os.environ`` is authoritative when it yields anything; only when a
+    capture pattern is configured but the live environment carries nothing
+    matching it does this fall back to the session-start snapshot in meta
+    (see :func:`_persisted_captured_env`).
     """
     from thirdeye.env_capture import capture_env
 
     captured = capture_env(config.capture_env_patterns)
+    if not captured and config.capture_env_patterns and session_dir_ is not None:
+        captured = _persisted_captured_env(session_dir_)
     attributes: dict[str, Any] = {
         ("wb." + name[3:].lower() if name.upper().startswith("WB_") else name.lower()): value
         for name, value in captured.items()
@@ -597,7 +628,7 @@ def export_turn(
             config.root,
             {
                 "kind": "turn",
-                "captured_attributes": _capture_attributes(config),
+                "captured_attributes": _capture_attributes(config, session_dir_),
                 "session_dir": str(session_dir_),
                 "session_id": session_id,
                 "platform": platform,
@@ -647,7 +678,7 @@ def export_spans(
             config.root,
             {
                 "kind": "spans",
-                "captured_attributes": _capture_attributes(config),
+                "captured_attributes": _capture_attributes(config, session_dir_),
                 "session_dir": str(session_dir_),
                 "session_id": session_id,
                 "platform": platform,
@@ -711,7 +742,7 @@ def export_subagent_turn(
             config.root,
             {
                 "kind": "subagent_turn",
-                "captured_attributes": _capture_attributes(config),
+                "captured_attributes": _capture_attributes(config, session_dir_),
                 "session_dir": str(session_dir_),
                 "session_id": session_id,
                 "platform": platform,
