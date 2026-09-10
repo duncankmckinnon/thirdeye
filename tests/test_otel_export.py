@@ -2439,11 +2439,14 @@ def test_captured_env_survives_job_boundary(
         attrs = span.attributes
         assert attrs["wb.plan"] == "Plan with spaces,=Unicode-é"
         assert attrs["build_label"] == "Release A"
-        assert set(attrs["logfire.tags"]) == {
-            "Release A",
-            "Plan with spaces,=Unicode-é",
-            attrs["wb.task"],
-        }
+        if span.name == "session":
+            assert set(attrs["logfire.tags"]) == {
+                "Release A",
+                "Plan with spaces,=Unicode-é",
+                attrs["wb.task"],
+            }
+        else:
+            assert "logfire.tags" not in attrs
         assert (
             attrs["wb.task"]
             == {"session-a": "task-a", "session-b": "task-b"}[attrs["gen_ai.conversation.id"]]

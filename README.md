@@ -170,8 +170,9 @@ THIRDEYE_CAPTURE_ENV='WB_*' WB_PLAN=my-plan WB_TASK=task-1 claude
 `WB_PLAN` becomes the span attribute `wb.plan` (and likewise for other `WB_`
 fields). Other matched names are lowercased: `BUILD_LABEL` becomes
 `build_label`. Values remain strings with their original case and contents;
-nonempty values are also exported directly as Logfire tags on every span
-(including the session root), with duplicates removed. For example,
+nonempty values are also exported directly as Logfire tags on the top-level
+session span only, with duplicates removed. Child spans retain the named
+attributes without repeating these session tags. For example,
 `WB_PLAN=my-plan` adds the `my-plan` tag alongside `wb.plan="my-plan"`.
 Logfire tags preserve the original case and contents. Local session tags
 retain their existing key prefixes, sanitization, and 64-character limit.

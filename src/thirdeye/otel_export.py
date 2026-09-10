@@ -262,6 +262,15 @@ _captured_attributes: ContextVar[dict[str, Any] | None] = ContextVar(
 )
 
 
+def _captured_span_attributes() -> dict[str, Any]:
+    """Keep session-level environment tags off descendant spans."""
+    return {
+        key: value
+        for key, value in (_captured_attributes.get() or {}).items()
+        if key != "logfire.tags"
+    }
+
+
 def _start_span_with_id(
     tracer: Any,
     name: str,
@@ -286,7 +295,7 @@ def _start_span_with_id(
     kwargs = {
         "context": parent_ctx,
         "start_time": start_time,
-        "attributes": {**(_captured_attributes.get() or {}), **(attributes or {})},
+        "attributes": {**_captured_span_attributes(), **(attributes or {})},
     }
     if kind is not None:
         kwargs["kind"] = kind
@@ -762,7 +771,10 @@ def _export_turn_inner(
                 # here too, and a hand-written copy silently falls behind
                 # (`thirdeye.repo` did exactly that).
                 root_attrs = _flatten_attrs(
-                    _identity_attributes(session_id=session_id, platform=platform, cwd=cwd)
+                    {
+                        **(_captured_attributes.get() or {}),
+                        **_identity_attributes(session_id=session_id, platform=platform, cwd=cwd),
+                    }
                 )
                 derived = (
                     trace_id_for_session(platform, session_id),
@@ -1279,7 +1291,7 @@ def _export_turn_subtree(
             context=parent_ctx,
             start_time=_ts_to_ns(turn["start_ts"]),
             attributes={
-                **(_captured_attributes.get() or {}),
+                **_captured_span_attributes(),
                 **_flatten_attrs(_merge_raw(turn_attrs, turn.get("attributes"))),
             },
         )
@@ -1291,7 +1303,7 @@ def _export_turn_subtree(
             parent_ctx=parent_ctx,
             start_time=_ts_to_ns(turn["start_ts"]),
             attributes={
-                **(_captured_attributes.get() or {}),
+                **_captured_span_attributes(),
                 **_flatten_attrs(_merge_raw(turn_attrs, turn.get("attributes"))),
             },
         )
@@ -1404,7 +1416,7 @@ def _export_turn_subtree(
             f"permission_request: {permission_request['tool_name']}",
             context=turn_parent_ctx,
             start_time=pr_ts,
-            attributes={**(_captured_attributes.get() or {}), **pr_attrs},
+            attributes={**_captured_span_attributes(), **pr_attrs},
         )
         pr_span.end(end_time=pr_ts)
 
