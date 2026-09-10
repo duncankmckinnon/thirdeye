@@ -11,6 +11,7 @@ from __future__ import annotations
 import json
 import re
 import shlex
+import shutil
 from pathlib import Path, PureWindowsPath
 from typing import Any
 
@@ -126,8 +127,8 @@ def _load_document(path: Path) -> dict[str, Any]:
             f"Cannot update Copilot hooks at {path}: 'hooks' must be an object. "
             "It was left unchanged."
         )
-    for event in CLI_HOOK_EVENTS:
-        if event in hooks and not isinstance(hooks[event], list):
+    for event, value in hooks.items():
+        if not isinstance(value, list):
             raise click.ClickException(
                 f"Cannot update Copilot hooks at {path}: hooks.{event} must be a list. "
                 "It was left unchanged."
@@ -170,12 +171,47 @@ class CopilotPlatform(Platform):
     def entrypoint(self) -> str:
         return self._entrypoint or resolve_command(HOOK_BIN_NAME)
 
-    def _command(self, event: str) -> tuple[str, str]:
+    def _install_entrypoint(self) -> str:
+        """Return the dispatcher path that may be written into hook commands.
+
+        An explicitly injected path is trusted so tests can supply a fixture
+        without installing the later runtime binary.  Live installation
+        requires the dispatcher to be resolvable on PATH; Copilot itself is
+        not required.
+        """
+
+        if self._entrypoint:
+            return self._entrypoint
+        if shutil.which(HOOK_BIN_NAME) is None:
+            raise click.ClickException(
+                f"Cannot install Copilot hooks: {HOOK_BIN_NAME} is not on PATH. "
+                "Install thirdeye so the dispatcher entrypoint is available, then retry. "
+                "Copilot itself does not need to be on PATH."
+            )
+        return resolve_command(HOOK_BIN_NAME)
+
+    def _command(self, event: str, entrypoint: str | None = None) -> tuple[str, str]:
+        resolved = entrypoint if entrypoint is not None else self.entrypoint
         if self._windows:
-            return "powershell", _powershell_command(self.entrypoint, event)
-        return "bash", _bash_command(self.entrypoint, event)
+            return "powershell", _powershell_command(resolved, event)
+        return "bash", _bash_command(resolved, event)
+
+    def _report_install(self) -> None:
+        click.echo(f"Configured Copilot CLI hooks at {self.hooks_file}")
+        if self._hooks_file is None or self._source_home is not None:
+            home = resolve_sources(self._source_home)["home"]
+            click.echo(f"Scope: Copilot home {home}")
+        click.echo(
+            "Restart Copilot CLI or start a new interactive session so the hooks take effect."
+        )
+        click.echo("Verify receipt with: thirdeye copilot status")
+        click.echo(
+            "If hooks are missing or not firing, ingest persisted recordings with: "
+            "thirdeye copilot watch"
+        )
 
     def install(self) -> None:
+        entrypoint = self._install_entrypoint()
         path = self.hooks_file
         data = _load_document(path)
         hooks = data["hooks"]
@@ -186,7 +222,7 @@ class CopilotPlatform(Platform):
             if not isinstance(entries, list):  # Defensive for typed JSON input.
                 raise AssertionError(f"validated hook list changed shape for {event}")
             retained = [entry for entry in entries if not _entry_is_ours(entry)]
-            shell, command = self._command(event)
+            shell, command = self._command(event, entrypoint)
             desired = {
                 "type": "command",
                 shell: command,
@@ -197,6 +233,7 @@ class CopilotPlatform(Platform):
                 changed = True
         if changed or not path.exists():
             _save_document(path, data)
+        self._report_install()
 
     def is_installed(self) -> bool:
         path = self.hooks_file
@@ -230,8 +267,8 @@ class CopilotPlatform(Platform):
         for event in list(hooks):
             entries = hooks[event]
             if not isinstance(entries, list):
-                # Events outside our supported set are unrelated; leave their
-                # invalid shape intact rather than risking destructive repair.
+                # _load_document already rejected this shape; keep the guard so
+                # a concurrent rewrite cannot become a destructive repair.
                 continue
             retained = [entry for entry in entries if not _entry_is_ours(entry)]
             if retained == entries:

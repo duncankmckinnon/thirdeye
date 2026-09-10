@@ -245,6 +245,10 @@ class TestMalformedConfig:
                 json.dumps({"version": 1, "hooks": {"sessionStart": "nope"}}),
                 "hooks.sessionStart must be a list",
             ),
+            (
+                json.dumps({"version": 1, "hooks": {"customFutureEvent": "not-a-list"}}),
+                "hooks.customFutureEvent must be a list",
+            ),
         ],
     )
     def test_install_refuses_malformed_document_and_preserves_bytes(
@@ -266,6 +270,16 @@ class TestMalformedConfig:
         path.write_text("{broken")
         platform = _platform(tmp_path, hooks_file=path)
         assert platform.is_installed() is False
+
+    def test_uninstall_refuses_malformed_unknown_event_and_preserves_bytes(self, tmp_path: Path):
+        path = tmp_path / OWNED_HOOK_FILENAME
+        payload = json.dumps({"version": 1, "hooks": {"customFutureEvent": "not-a-list"}})
+        path.write_text(payload)
+        before = path.read_bytes()
+        with pytest.raises(click.ClickException) as exc_info:
+            _platform(tmp_path, hooks_file=path).uninstall()
+        assert "hooks.customFutureEvent must be a list" in str(exc_info.value)
+        assert path.read_bytes() == before
 
 
 class TestSourceHomeScope:
@@ -354,15 +368,75 @@ class TestWindowsOwnershipRecognition:
         assert platform.is_installed() is True
 
 
-class TestUninstallEdgeCases:
-    def test_leaves_invalid_unknown_event_shape_untouched(self, tmp_path: Path):
+class TestUnknownEvents:
+    def test_preserves_well_formed_unknown_events_across_install_and_uninstall(
+        self, tmp_path: Path
+    ):
         path = tmp_path / OWNED_HOOK_FILENAME
+        foreign = {
+            "type": "command",
+            "bash": "/opt/foreign-hook customFutureEvent",
+            "timeoutSec": 9,
+        }
+        path.write_text(
+            json.dumps(
+                {
+                    "version": HOOK_CONFIG_VERSION,
+                    "hooks": {"customFutureEvent": [foreign]},
+                }
+            )
+        )
         platform = _platform(tmp_path, hooks_file=path, windows=False)
         platform.install()
-        data = json.loads(path.read_text())
-        data["hooks"]["customFutureEvent"] = "not-a-list"
-        path.write_text(json.dumps(data))
+        installed = json.loads(path.read_text())
+        assert installed["hooks"]["customFutureEvent"] == [foreign]
         platform.uninstall()
         remaining = json.loads(path.read_text())
-        assert remaining["hooks"]["customFutureEvent"] == "not-a-list"
+        assert remaining["hooks"] == {"customFutureEvent": [foreign]}
         assert "sessionStart" not in remaining["hooks"]
+
+
+class TestEntrypointRequired:
+    def test_install_errors_when_dispatcher_is_missing(self, tmp_path: Path, monkeypatch):
+        monkeypatch.setattr(
+            "thirdeye.platforms.copilot.install.shutil.which",
+            lambda _name: None,
+        )
+        path = tmp_path / OWNED_HOOK_FILENAME
+        platform = CopilotPlatform(hooks_file=path, windows=False)
+        with pytest.raises(click.ClickException) as exc_info:
+            platform.install()
+        message = str(exc_info.value)
+        assert HOOK_BIN_NAME in message
+        assert "PATH" in message
+        assert not path.exists()
+
+    def test_injected_entrypoint_does_not_require_path_lookup(
+        self, tmp_path: Path, monkeypatch
+    ):
+        monkeypatch.setattr(
+            "thirdeye.platforms.copilot.install.shutil.which",
+            lambda _name: None,
+        )
+        path = tmp_path / OWNED_HOOK_FILENAME
+        _platform(tmp_path, hooks_file=path).install()
+        assert path.exists()
+
+
+class TestInstallGuidance:
+    def test_reports_scope_restart_status_and_watch_fallback(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    ):
+        source_home = tmp_path / "custom-copilot-home"
+        platform = CopilotPlatform(
+            source_home=source_home,
+            entrypoint="/opt/bin/thirdeye-copilot-hook",
+            windows=False,
+        )
+        platform.install()
+        output = capsys.readouterr().out
+        assert str(platform.hooks_file) in output
+        assert f"Scope: Copilot home {source_home.resolve()}" in output
+        assert "Restart Copilot CLI" in output
+        assert "thirdeye copilot status" in output
+        assert "thirdeye copilot watch" in output
