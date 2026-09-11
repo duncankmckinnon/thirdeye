@@ -2494,7 +2494,7 @@ class TestLegacySubagentCompatibility:
 
     def test_summary_only_leaf_construction(self, tmp_path: Path):
         fixture = json.loads(
-            (Path(__file__).parent / "fixtures" / "cursor-subagent-stop.json").read_text()
+            (Path(__file__).parent / "fixtures" / "subagent-stop.json").read_text()
         )["data"]
         sid, generation = fixture["conversation_id"], fixture["generation_id"]
         store = Store(Config(root=tmp_path))

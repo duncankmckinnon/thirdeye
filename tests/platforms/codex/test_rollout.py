@@ -6,8 +6,8 @@ from pathlib import Path
 
 from thirdeye.platforms.codex.rollout import end_offset, iter_frames, resolve_rollout
 
-FIXTURE = Path(__file__).parent / "fixtures" / "usage" / "codex_rollout.jsonl"
-EXPECTED = Path(__file__).parent / "fixtures" / "usage" / "codex_rollout.expected.json"
+FIXTURE = Path(__file__).parent / "fixtures" / "rollout.jsonl"
+EXPECTED = Path(__file__).parent / "fixtures" / "rollout.expected.json"
 
 # The session id carried in the fixture's session_meta frame and its filename.
 FIXTURE_SID = "019fb579-cdda-7a03-86df-65c87b6c4ae2"

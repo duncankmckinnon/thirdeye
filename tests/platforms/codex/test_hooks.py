@@ -10,7 +10,7 @@ from thirdeye.paths import session_dir
 from thirdeye.store import Store
 from thirdeye.usage.store import UsageStore
 
-FIXTURE = Path(__file__).parent / "fixtures" / "usage" / "codex_rollout.jsonl"
+FIXTURE = Path(__file__).parent / "fixtures" / "rollout.jsonl"
 FIXTURE_SID = "019fb579-cdda-7a03-86df-65c87b6c4ae2"
 
 

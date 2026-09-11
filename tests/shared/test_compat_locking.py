@@ -15,7 +15,7 @@ from thirdeye._compat.locking import LockMode, LockTimeout, locked, locked_fd
 
 
 def _lock_holder(path: Path, mode: LockMode = LockMode.EXCLUSIVE) -> subprocess.Popen[str]:
-    source_root = Path(__file__).parents[1] / "src"
+    source_root = Path(__file__).parents[2] / "src"
     environment = os.environ | {"PYTHONPATH": str(source_root)}
     script = """
 from pathlib import Path

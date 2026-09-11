@@ -10,7 +10,7 @@ from thirdeye.platforms.claude.constants import (
     SETTINGS_FILE,
 )
 
-_PYPROJECT = Path(__file__).resolve().parent.parent / "pyproject.toml"
+_PYPROJECT = Path(__file__).resolve().parents[3] / "pyproject.toml"
 
 
 def test_platform_name():

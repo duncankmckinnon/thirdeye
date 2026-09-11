@@ -474,7 +474,7 @@ class TestOpenTurnCursor:
 
 def _hold_lock_in_subprocess(lock_path: Path) -> subprocess.Popen[str]:
     """Hold an exclusive compatibility lock from a separate hook process."""
-    source_root = Path(__file__).parents[1] / "src"
+    source_root = Path(__file__).parents[3] / "src"
     environment = os.environ | {"PYTHONPATH": str(source_root)}
     process = subprocess.Popen(
         [
@@ -812,7 +812,7 @@ class TestStop:
         never does — see otel_export.py's module docstring) or losing
         per-call granularity, which the reasoning/content capture depends on.
         """
-        transcript = Path(__file__).parent / "fixtures" / "usage" / "claude_transcript.jsonl"
+        transcript = Path(__file__).parent / "fixtures" / "transcript.jsonl"
         _stdin(monkeypatch, {"session_id": "s1", "cwd": "/p"})
         hooks.session_start()
         _stdin(

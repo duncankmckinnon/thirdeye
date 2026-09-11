@@ -529,7 +529,7 @@ def test_post_tool_skips_dedicated_after_aliases(tmp_path: Path, monkeypatch, to
 
 def test_pre_tool_task_records_noninstant_call(tmp_path: Path, monkeypatch):
     monkeypatch.setenv("THIRDEYE_HOME", str(tmp_path))
-    payload = json.loads((FIXTURES / "cursor-pre-tool-use.json").read_text())
+    payload = json.loads((FIXTURES / "pre-tool-use.json").read_text())
 
     _invoke(monkeypatch, payload)
 
@@ -737,7 +737,7 @@ def test_subagent_stop_dispatches_to_subagent_message(tmp_path: Path, monkeypatc
 
 def test_subagent_start_dispatches_fixture(tmp_path: Path, monkeypatch, capfd):
     monkeypatch.setenv("THIRDEYE_HOME", str(tmp_path))
-    payload = json.loads((FIXTURES / "cursor-subagent-start.json").read_text())
+    payload = json.loads((FIXTURES / "subagent-start.json").read_text())
 
     _invoke(monkeypatch, payload)
 

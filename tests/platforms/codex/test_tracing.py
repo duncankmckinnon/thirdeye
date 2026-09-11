@@ -6,7 +6,7 @@ for turns that never get a `notify` call at all.
 
 `extract_turn_codex`'s own reshaped-output coverage (usage key renaming,
 `status` on a `turn_aborted` frame, per-call message/tool reconstruction)
-lives in test_codex_turn.py, which this file does not duplicate.
+lives in test_turn.py, which this file does not duplicate.
 """
 
 from __future__ import annotations
@@ -27,13 +27,13 @@ from thirdeye.paths import session_dir
 from thirdeye.platforms.codex.tracing import build_turn
 from thirdeye.store import Store
 
-FIXTURE = Path(__file__).parent / "fixtures" / "usage" / "codex_rollout.jsonl"
+FIXTURE = Path(__file__).parent / "fixtures" / "rollout.jsonl"
 FIXTURE_SID = "019fb579-cdda-7a03-86df-65c87b6c4ae2"
 FIXTURE_TURN_ID = "019fb57a-12ee-7870-a8d8-76808c75b368"
 
 
 def _marker_lock_holder(path: Path) -> subprocess.Popen[str]:
-    source_root = Path(__file__).parents[1] / "src"
+    source_root = Path(__file__).parents[3] / "src"
     environment = os.environ | {"PYTHONPATH": str(source_root)}
     script = """
 from pathlib import Path
