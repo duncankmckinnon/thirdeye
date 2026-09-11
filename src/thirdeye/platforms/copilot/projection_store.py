@@ -22,11 +22,13 @@ from thirdeye.config import Config
 from thirdeye.meta import read_meta
 from thirdeye.paths import meta_path, session_dir, usage_jsonl_path
 from thirdeye.reader import SessionReader
+from thirdeye.usage.index import UsageIndex
 from thirdeye.usage.types import UsageRow
 
 from .constants import PLATFORM_NAME, SOURCE_SCHEMA_VERSION
 from .projection_state import (
     empty_projection_state,
+    projection_journal_path,
     projection_lock_path,
     publish_projection_document,
     read_projection_document,
@@ -37,6 +39,7 @@ from .types import PROJECTION_SCHEMA_VERSION, Projection
 _RAW_EVENT_TYPES = frozenset(
     {"copilot_transcript", "copilot_database", "copilot_hook", "copilot_metadata"}
 )
+_INDEX_NAMES = ("events", "turns", "usage", "attributions", "pending", "diagnostics")
 
 
 def _directory(config: Config, stored_session_id: str) -> Path:
@@ -55,9 +58,18 @@ def _mapping(value: object) -> dict[str, Any]:
     return value if isinstance(value, dict) else {}
 
 
+def _items(value: object) -> list[Any]:
+    return value if isinstance(value, list) else []
+
+
 def _index_key(item: dict[str, Any], field: str, *, prefix: str) -> str:
     value = item.get(field)
     return value if isinstance(value, str) and value else f"{prefix}:{_digest(item)}"
+
+
+def _require_session(directory: Path, stored_session_id: str) -> None:
+    if read_meta(meta_path(directory)) is None:
+        raise ValueError(f"unknown Copilot session: {stored_session_id}")
 
 
 def _source_id(event: dict[str, Any]) -> str | None:
@@ -85,10 +97,9 @@ def _read_archived_events(directory: Path) -> dict[str, dict[str, Any]]:
 def _add_source_ids(value: object, result: set[str]) -> None:
     if not isinstance(value, dict):
         return
-    for key in ("source_ids",):
-        ids = value.get(key)
-        if isinstance(ids, list):
-            result.update(source_id for source_id in ids if isinstance(source_id, str))
+    ids = value.get("source_ids")
+    if isinstance(ids, list):
+        result.update(source_id for source_id in ids if isinstance(source_id, str))
     references = value.get("source_references")
     if isinstance(references, list):
         for reference in references:
@@ -110,9 +121,11 @@ def _turn_source_ids(turn: dict[str, Any], events: Iterable[dict[str, Any]]) -> 
     """
     source_ids: set[str] = set()
     _add_source_ids(turn, source_ids)
-    for call in turn.get("llm_calls", []):
-        _add_source_ids(call, source_ids)
-    for child in turn.get("subagents", []):
+    for call in _items(turn.get("llm_calls")):
+        _add_source_ids(_mapping(call), source_ids)
+    for call in _items(turn.get("accounting_calls")):
+        _add_source_ids(_mapping(call), source_ids)
+    for child in _items(turn.get("subagents")):
         source_ids.update(_turn_source_ids(_mapping(child), ()))
 
     attributes = _mapping(turn.get("attributes"))
@@ -120,97 +133,138 @@ def _turn_source_ids(turn: dict[str, Any], events: Iterable[dict[str, Any]]) -> 
     turn_id = turn.get("turn_id")
     for semantic_event in events:
         event_attrs = _mapping(semantic_event.get("attributes"))
-        if (
-            isinstance(interaction_id, str)
-            and event_attrs.get("interaction_id") == interaction_id
-        ) or (isinstance(turn_id, str) and event_attrs.get("stored_turn_id") == turn_id):
-            ids = semantic_event.get("source_ids")
-            if isinstance(ids, list):
-                source_ids.update(source_id for source_id in ids if isinstance(source_id, str))
+        matched = (
+            isinstance(interaction_id, str) and event_attrs.get("interaction_id") == interaction_id
+        ) or (isinstance(turn_id, str) and event_attrs.get("stored_turn_id") == turn_id)
+        if matched:
+            _add_source_ids(semantic_event, source_ids)
     return source_ids
 
 
-def _projected_turn_record(
-    stored_session_id: str,
-    directory: Path,
-    turn: dict[str, Any],
-    semantic_events: Iterable[dict[str, Any]],
-    archived_events: dict[str, dict[str, Any]],
-) -> dict[str, Any]:
-    turn_id = _index_key(turn, "turn_id", prefix="turn")
-    source_ids = _turn_source_ids(turn, semantic_events)
-    events = [archived_events[source_id] for source_id in source_ids if source_id in archived_events]
-    events.sort(key=lambda event: int(event.get("seq", -1)))
-    meta = read_meta(meta_path(directory)) if directory.exists() else None
-    start_ts = turn.get("start_ts") if isinstance(turn.get("start_ts"), str) else None
-    end_ts = turn.get("end_ts") if isinstance(turn.get("end_ts"), str) else None
-    return {
-        "id": f"{stored_session_id}:{turn_id}",
-        "turn_id": turn_id,
-        "session_id": stored_session_id,
-        "platform": PLATFORM_NAME,
-        "cwd": meta.cwd if meta is not None else "",
-        "start_seq": events[0].get("seq") if events else None,
-        "end_seq": events[-1].get("seq") if events else None,
-        "start_ts": events[0].get("ts") if events else start_ts,
-        "end_ts": events[-1].get("ts") if events else end_ts,
-        "events": events,
+def _is_main_turn(turn: dict[str, Any]) -> bool:
+    return _mapping(turn.get("attributes")).get("agent_id") is None
+
+
+def _replace_state(next_state: dict[str, Any]) -> dict[str, Any]:
+    """Treat ``next_state`` as an authoritative ProjectionState snapshot."""
+    state = empty_projection_state()
+    archive_ids = next_state.get("archive_source_ids")
+    if isinstance(archive_ids, list):
+        state["archive_source_ids"] = [
+            source_id for source_id in archive_ids if isinstance(source_id, str)
+        ]
+    semantic = _mapping(next_state.get("semantic_state"))
+    state["semantic_state"] = {
+        "open_interactions": dict(_mapping(semantic.get("open_interactions")))
     }
+    accounting = _mapping(next_state.get("accounting_state"))
+    state["accounting_state"] = {"logical_calls": dict(_mapping(accounting.get("logical_calls")))}
+    revision = next_state.get("projection_revision")
+    if isinstance(revision, str) and revision:
+        state["projection_revision"] = revision
+    state["projection_schema_version"] = PROJECTION_SCHEMA_VERSION
+    return state
 
 
-def _merge_state(current: dict[str, Any], next_state: dict[str, Any]) -> dict[str, Any]:
-    """Merge independent incremental builders without losing another commit."""
-    merged = empty_projection_state()
-    merged.update({key: value for key, value in current.items() if key in merged})
-    merged.update({key: value for key, value in next_state.items() if key in merged})
-    current_ids = current.get("archive_source_ids")
-    next_ids = next_state.get("archive_source_ids")
-    current_source_ids = (
-        {source_id for source_id in current_ids if isinstance(source_id, str)}
-        if isinstance(current_ids, list)
-        else set()
-    )
-    next_source_ids = (
-        {source_id for source_id in next_ids if isinstance(source_id, str)}
-        if isinstance(next_ids, list)
-        else set()
-    )
-    merged["archive_source_ids"] = sorted(current_source_ids | next_source_ids)
-    for section, key in (("semantic_state", "open_interactions"), ("accounting_state", "logical_calls")):
-        old = _mapping(_mapping(current.get(section)).get(key))
-        new = _mapping(_mapping(next_state.get(section)).get(key))
-        merged[section] = {key: {**old, **new}}
-    merged["projection_schema_version"] = PROJECTION_SCHEMA_VERSION
-    return merged
+def _collect_identities(
+    current: dict[str, Any],
+    attributions: dict[str, dict[str, Any]],
+    accounting_calls: dict[str, Any],
+) -> dict[str, str]:
+    identities = {
+        key: value
+        for key, value in _mapping(current).items()
+        if isinstance(key, str) and isinstance(value, str)
+    }
+    for attribution in attributions.values():
+        source_id = attribution.get("usage_source_id")
+        logical_id = attribution.get("logical_call_id")
+        if isinstance(source_id, str) and isinstance(logical_id, str) and logical_id:
+            identities[source_id] = logical_id
+            identities[logical_id] = logical_id
+    for call in accounting_calls.values():
+        mapped = _mapping(call)
+        source_id = mapped.get("usage_source_id")
+        logical_id = mapped.get("logical_call_id")
+        if isinstance(logical_id, str) and logical_id:
+            identities[logical_id] = logical_id
+            if isinstance(source_id, str):
+                identities[source_id] = logical_id
+    return identities
 
 
-def _usage_identity(row: UsageRow, attributions: dict[str, dict[str, Any]]) -> str:
-    for logical_id, attribution in attributions.items():
-        if attribution.get("usage_source_id") == row.call_id:
-            return logical_id
-    # Usage normalization makes call_id the durable logical ID.  The fallback
-    # keeps hand-built DTOs valid without ever keying on an import sequence.
-    return row.call_id
+def _usage_identity(row: UsageRow, identities: dict[str, str]) -> str:
+    return identities.get(row.call_id, row.call_id)
+
+
+def _drop_aliased_usage_keys(usage_index: dict[str, Any], identities: dict[str, str]) -> None:
+    for source_id, logical_id in identities.items():
+        if source_id != logical_id:
+            usage_index.pop(source_id, None)
+
+
+def _usage_seq(
+    logical_id: str,
+    row: UsageRow,
+    identities: dict[str, str],
+    archived_events: dict[str, dict[str, Any]],
+) -> int:
+    candidates = [
+        source_id
+        for source_id, mapped in identities.items()
+        if mapped == logical_id and source_id in archived_events
+    ]
+    if row.call_id in archived_events:
+        candidates.append(row.call_id)
+    if not candidates:
+        return 0
+    return max(int(archived_events[source_id].get("seq", 0)) for source_id in candidates)
+
+
+def _usage_line(row: dict[str, Any]) -> str:
+    return json.dumps(row, ensure_ascii=False, separators=(",", ":"))
+
+
+def _sidecar_rows(usage_index: dict[str, Any]) -> list[dict[str, Any]]:
+    return [
+        usage_index[logical_id]
+        for logical_id in sorted(usage_index)
+        if isinstance(usage_index[logical_id], dict)
+    ]
+
+
+def _sidecar_payload(usage_index: dict[str, Any]) -> str:
+    return "".join(_usage_line(row) + "\n" for row in _sidecar_rows(usage_index))
+
+
+def _sidecar_matches(path: Path, usage_index: dict[str, Any]) -> bool:
+    if not path.exists():
+        return not usage_index
+    try:
+        lines = [
+            json.loads(line)
+            for line in path.read_text(encoding="utf-8").splitlines()
+            if line.strip()
+        ]
+    except (OSError, json.JSONDecodeError):
+        return False
+    return lines == _sidecar_rows(usage_index)
 
 
 def _write_usage_index(directory: Path, usage_index: dict[str, Any]) -> None:
     """Materialize one latest serialized row per logical call atomically.
 
     UsageStore is append-only and its generic reader is last-wins, which is
-    insufficient for correction/rebuild guarantees.  This derived-only
-    materialization preserves its exact UsageRow JSON serialization while the
-    projection index supplies replacement semantics.
+    insufficient when a correction must replace a row under a re-keyed
+    identity.  This derived-only rewrite preserves UsageRow.to_dict JSON
+    while the projection index supplies replacement semantics.
     """
     path = usage_jsonl_path(directory)
     path.parent.mkdir(parents=True, exist_ok=True)
     fd, temporary = tempfile.mkstemp(dir=path.parent, prefix=f"{path.name}.", suffix=".tmp")
     try:
         with os.fdopen(fd, "w", encoding="utf-8", newline="\n") as stream:
-            for logical_id in sorted(usage_index):
-                row = usage_index[logical_id]
-                if isinstance(row, dict):
-                    stream.write(_canonical(row))
-                    stream.write("\n")
+            stream.write(_sidecar_payload(usage_index))
             stream.flush()
             os.fsync(stream.fileno())
         fsops.replace(temporary, path)
@@ -220,14 +274,89 @@ def _write_usage_index(directory: Path, usage_index: dict[str, Any]) -> None:
         raise
 
 
+def _invalidate_usage_index(config: Config, stored_session_id: str, directory: Path) -> None:
+    """Force UsageIndex to re-read a rewritten sidecar of unchanged size."""
+    index = UsageIndex(config.root)
+    connection = index.connect()
+    try:
+        connection.execute("DELETE FROM usage WHERE session_id = ?", (stored_session_id,))
+        connection.execute("DELETE FROM usage_sync WHERE session_id = ?", (stored_session_id,))
+        index.refresh_session(connection, stored_session_id, directory)
+    finally:
+        connection.close()
+
+
+def _publish_usage(
+    config: Config,
+    stored_session_id: str,
+    directory: Path,
+    usage_index: dict[str, Any],
+    *,
+    force: bool = False,
+) -> None:
+    path = usage_jsonl_path(directory)
+    if not usage_index:
+        if path.exists():
+            fsops.unlink(path, missing_ok=True)
+            fsops.sync_directory(directory)
+            _invalidate_usage_index(config, stored_session_id, directory)
+        return
+    if not force and _sidecar_matches(path, usage_index):
+        return
+    _write_usage_index(directory, usage_index)
+    _invalidate_usage_index(config, stored_session_id, directory)
+
+
 def _commit_counts(indexes: dict[str, Any]) -> dict[str, int]:
+    return {name: len(_mapping(indexes.get(name))) for name in _INDEX_NAMES}
+
+
+def _stored_turn(
+    turn: dict[str, Any],
+    source_ids: set[str],
+    prior: dict[str, Any] | None,
+) -> dict[str, Any]:
+    turn_id = _index_key(turn, "turn_id", prefix="turn")
+    merged_ids = set(source_ids)
+    if prior is not None:
+        merged_ids.update(
+            source_id for source_id in _items(prior.get("source_ids")) if isinstance(source_id, str)
+        )
+    status = turn.get("status")
     return {
-        "events": len(_mapping(indexes.get("events"))),
-        "turns": len(_mapping(indexes.get("turns"))),
-        "usage": len(_mapping(indexes.get("usage"))),
-        "attributions": len(_mapping(indexes.get("attributions"))),
-        "pending": len(_mapping(indexes.get("pending"))),
-        "diagnostics": len(_mapping(indexes.get("diagnostics"))),
+        "turn_id": turn_id,
+        "status": status if isinstance(status, str) else "",
+        "source_ids": sorted(merged_ids),
+        "span": turn,
+    }
+
+
+def _hydrate_turn(
+    stored_session_id: str,
+    record: dict[str, Any],
+    archived_events: dict[str, dict[str, Any]],
+    cwd: str,
+) -> dict[str, Any]:
+    turn_id = record.get("turn_id") if isinstance(record.get("turn_id"), str) else ""
+    source_ids = [item for item in _items(record.get("source_ids")) if isinstance(item, str)]
+    events = [
+        archived_events[source_id] for source_id in source_ids if source_id in archived_events
+    ]
+    events.sort(key=lambda event: int(event.get("seq", -1)))
+    span = _mapping(record.get("span"))
+    start_ts = span.get("start_ts") if isinstance(span.get("start_ts"), str) else None
+    end_ts = span.get("end_ts") if isinstance(span.get("end_ts"), str) else None
+    return {
+        "id": f"{stored_session_id}:{turn_id}",
+        "turn_id": turn_id,
+        "session_id": stored_session_id,
+        "platform": PLATFORM_NAME,
+        "cwd": cwd,
+        "start_seq": events[0].get("seq") if events else None,
+        "end_seq": events[-1].get("seq") if events else None,
+        "start_ts": events[0].get("ts") if events else start_ts,
+        "end_ts": events[-1].get("ts") if events else end_ts,
+        "events": events,
     }
 
 
@@ -244,60 +373,84 @@ def commit_projection(
     projectable after Copilot removes its original files.
     """
     directory = _directory(config, stored_session_id)
+    _require_session(directory, stored_session_id)
     with locked(projection_lock_path(directory), LockMode.EXCLUSIVE):
         document = read_projection_document(directory)
         indexes = _mapping(document.get("indexes"))
         merged_indexes = {name: dict(_mapping(indexes.get(name))) for name in indexes}
-        for name in ("events", "turns", "usage", "attributions", "pending", "diagnostics"):
+        for name in (*_INDEX_NAMES, "usage_identities"):
             merged_indexes.setdefault(name, {})
 
-        event_items = [item for item in projection.get("normalized_events", []) if isinstance(item, dict)]
+        event_items = [
+            item for item in projection.get("normalized_events", []) if isinstance(item, dict)
+        ]
         for item in event_items:
             merged_indexes["events"][_index_key(item, "id", prefix="event")] = item
 
-        attribution_items = [item for item in projection.get("attributions", []) if isinstance(item, dict)]
+        attribution_items = [
+            item for item in projection.get("attributions", []) if isinstance(item, dict)
+        ]
         for item in attribution_items:
-            merged_indexes["attributions"][_index_key(item, "logical_call_id", prefix="attribution")] = item
+            merged_indexes["attributions"][
+                _index_key(item, "logical_call_id", prefix="attribution")
+            ] = item
 
+        state = _replace_state(next_state)
+        identities = _collect_identities(
+            merged_indexes["usage_identities"],
+            merged_indexes["attributions"],
+            _mapping(_mapping(state.get("accounting_state")).get("logical_calls")),
+        )
+
+        archived_events = _read_archived_events(directory)
         for item in projection.get("usage_rows", []):
             if not isinstance(item, UsageRow):
                 raise TypeError("projection usage_rows must contain UsageRow instances")
+            if item.session_id != stored_session_id:
+                raise ValueError("usage row session_id does not match stored session")
+            logical_id = _usage_identity(item, identities)
+            identities[item.call_id] = logical_id
+            identities[logical_id] = logical_id
             row = item.to_dict()
-            logical_id = _usage_identity(item, merged_indexes["attributions"])
+            row["call_id"] = logical_id
+            row["seq"] = _usage_seq(logical_id, item, identities, archived_events)
             merged_indexes["usage"][logical_id] = row
+        _drop_aliased_usage_keys(merged_indexes["usage"], identities)
+        merged_indexes["usage_identities"] = identities
 
-        archived_events = _read_archived_events(directory)
         for item in projection.get("turns", []):
-            if not isinstance(item, dict):
-                continue
-            # Child-agent spans are represented recursively by their owning
-            # main interaction and never become separate generic user turns.
-            if _mapping(item.get("attributes")).get("agent_id") is not None:
+            if not isinstance(item, dict) or not _is_main_turn(item):
                 continue
             turn_id = _index_key(item, "turn_id", prefix="turn")
-            merged_indexes["turns"][turn_id] = _projected_turn_record(
-                stored_session_id, directory, item, event_items, archived_events
+            source_ids = _turn_source_ids(item, merged_indexes["events"].values())
+            merged_indexes["turns"][turn_id] = _stored_turn(
+                item, source_ids, _mapping(merged_indexes["turns"].get(turn_id)) or None
             )
 
-        for item in projection.get("pending", []):
-            if isinstance(item, dict):
-                merged_indexes["pending"][_index_key(item, "id", prefix="pending")] = item
-        for item in projection.get("diagnostics", []):
-            if isinstance(item, dict):
-                merged_indexes["diagnostics"][_index_key(item, "id", prefix="diagnostic")] = item
+        merged_indexes["pending"] = {
+            _index_key(item, "id", prefix="pending"): item
+            for item in projection.get("pending", [])
+            if isinstance(item, dict)
+        }
+        merged_indexes["diagnostics"] = {
+            _index_key(item, "id", prefix="diagnostic"): item
+            for item in projection.get("diagnostics", [])
+            if isinstance(item, dict)
+        }
 
-        state = _merge_state(_mapping(document.get("state")), next_state)
         counts = _commit_counts(merged_indexes)
-        state["commit_result"] = counts
+        if not state["projection_revision"]:
+            state["projection_revision"] = _digest(
+                {key: merged_indexes.get(key) for key in (*_INDEX_NAMES, "usage_identities")}
+            )
+        state["index_totals"] = counts
         next_document = {
             "schema_version": PROJECTION_SCHEMA_VERSION,
             "state": state,
             "indexes": merged_indexes,
         }
         publish_projection_document(directory, next_document)
-        # A crash after publication is repaired on the next load/commit from
-        # the durable usage index; this file contains no raw V1 evidence.
-        _write_usage_index(directory, merged_indexes["usage"])
+        _publish_usage(config, stored_session_id, directory, merged_indexes["usage"])
         return counts
 
 
@@ -306,22 +459,31 @@ def load_projection_state(config: Config, stored_session_id: str) -> dict[str, A
     directory = _directory(config, stored_session_id)
     with locked(projection_lock_path(directory), LockMode.EXCLUSIVE):
         document = read_projection_document(directory)
-        # Recover a sidecar lost after durable state publication without
-        # changing V1 evidence or export bookkeeping.
         usage_index = _mapping(_mapping(document.get("indexes")).get("usage"))
-        if usage_index:
-            _write_usage_index(directory, usage_index)
+        _publish_usage(config, stored_session_id, directory, usage_index)
         return json.loads(_canonical(_mapping(document.get("state"))))
 
 
 def read_projected_turns(config: Config, stored_session_id: str) -> list[dict[str, Any]]:
     """Read completed main interaction records without semantic duplicates."""
     directory = _directory(config, stored_session_id)
-    with locked(projection_lock_path(directory), LockMode.EXCLUSIVE):
+    writer = projection_journal_path(directory).exists()
+    with locked(projection_lock_path(directory), LockMode.EXCLUSIVE if writer else LockMode.SHARED):
         document = read_projection_document(directory)
+        meta = read_meta(meta_path(directory))
+        cwd = meta.cwd if meta is not None else ""
+        archived_events = _read_archived_events(directory)
         turns = _mapping(_mapping(document.get("indexes")).get("turns"))
-        values = [value for value in turns.values() if isinstance(value, dict)]
-        values.sort(key=lambda turn: (str(turn.get("start_ts") or ""), str(turn.get("turn_id") or "")))
+        values = []
+        for record in turns.values():
+            if not isinstance(record, dict):
+                continue
+            if record.get("status") != "completed":
+                continue
+            values.append(_hydrate_turn(stored_session_id, record, archived_events, cwd))
+        values.sort(
+            key=lambda turn: (str(turn.get("start_ts") or ""), str(turn.get("turn_id") or ""))
+        )
         return json.loads(_canonical(values))
 
 
@@ -335,4 +497,6 @@ def reset_projection_state(config: Config, stored_session_id: str) -> None:
     with locked(projection_lock_path(directory), LockMode.EXCLUSIVE):
         remove_projection_state(directory)
         fsops.unlink(usage_jsonl_path(directory), missing_ok=True)
-        fsops.sync_directory(directory)
+        if directory.exists():
+            _invalidate_usage_index(config, stored_session_id, directory)
+            fsops.sync_directory(directory)

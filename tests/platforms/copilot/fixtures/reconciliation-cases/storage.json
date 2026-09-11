@@ -36,7 +36,7 @@
       "pending_tool_call_ids": []
     }
   },
-  "commit_result": {
+  "index_totals": {
     "events": 2,
     "turns": 1,
     "usage": 1,

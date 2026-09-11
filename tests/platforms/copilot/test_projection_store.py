@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import shutil
 from pathlib import Path
 from typing import Any
 
@@ -26,6 +27,7 @@ from thirdeye.platforms.copilot.projection_store import (
 )
 from thirdeye.platforms.copilot.types import Projection, SourceBatch, SourcePaths, SourceRecord
 from thirdeye.reader import SessionReader
+from thirdeye.usage.index import UsageIndex
 from thirdeye.usage.read import iter_calls
 from thirdeye.usage.types import UsageRow
 
@@ -133,6 +135,10 @@ def _normalized_event(
         "classification": "main",
         "initiator": "user",
         "source_ids": source_ids,
+        "source_references": [
+            {"source_id": source_id, "source_kind": "transcript", "role": "user_prompt"}
+            for source_id in source_ids
+        ],
         "attributes": attributes,
     }
 
@@ -180,7 +186,7 @@ def paths(tmp_path: Path) -> SourcePaths:
     return resolve_sources(home)
 
 
-def _stored(config: Config, paths: SourcePaths) -> str:
+def _stored(_config: Config, paths: SourcePaths) -> str:
     return stored_session_id(paths, NATIVE_ID)
 
 
@@ -240,11 +246,12 @@ def test_commit_projection_persists_indexes_and_usage_sidecar(
 
     usage_rows = list(iter_calls(directory))
     assert len(usage_rows) == 1
-    assert usage_rows[0].call_id == "src-usage-1"
+    assert usage_rows[0].call_id == "logical-1"
 
     state = load_projection_state(config, stored)
     assert state["archive_source_ids"] == ["key/a/event-1", "key/a/event-2"]
-    assert state["commit_result"]["events"] == 2
+    assert state["index_totals"]["events"] == 2
+    assert state["projection_revision"].startswith("sha256:")
 
 
 def test_read_projected_turns_join_archived_store_events(
@@ -330,13 +337,15 @@ def test_usage_revision_replaces_under_stable_logical_identity(
     rows = list(iter_calls(directory))
     assert len(rows) == 1
     assert rows[0].input_tokens == 150
-    assert rows[0].call_id == "src-rev-2"
+    assert rows[0].call_id == "logical-1"
 
     sidecar_lines = usage_jsonl_path(directory).read_text(encoding="utf-8").splitlines()
     assert len(sidecar_lines) == 1
 
 
-def test_incremental_commits_merge_builder_state(config: Config, paths: SourcePaths) -> None:
+def test_next_state_is_authoritative_and_closes_interactions(
+    config: Config, paths: SourcePaths
+) -> None:
     stored = _seed_archive(config, paths, [_record("key/a/one"), _record("key/a/two")])
 
     first_state = empty_projection_state()
@@ -364,7 +373,8 @@ def test_incremental_commits_merge_builder_state(config: Config, paths: SourcePa
     )
 
     second_state = empty_projection_state()
-    second_state["archive_source_ids"] = ["key/a/two"]
+    second_state["archive_source_ids"] = ["key/a/one", "key/a/two"]
+    second_state["semantic_state"] = {"open_interactions": {}}
     second_state["accounting_state"] = {
         "logical_calls": {
             "logical-1": {
@@ -385,10 +395,10 @@ def test_incremental_commits_merge_builder_state(config: Config, paths: SourcePa
         second_state,
     )
 
-    merged = load_projection_state(config, stored)
-    assert merged["archive_source_ids"] == ["key/a/one", "key/a/two"]
-    assert INTERACTION_ID in merged["semantic_state"]["open_interactions"]
-    assert "logical-1" in merged["accounting_state"]["logical_calls"]
+    replaced = load_projection_state(config, stored)
+    assert replaced["archive_source_ids"] == ["key/a/one", "key/a/two"]
+    assert replaced["semantic_state"]["open_interactions"] == {}
+    assert "logical-1" in replaced["accounting_state"]["logical_calls"]
 
     document_events = json.loads(projection_state_path(_directory(config, stored)).read_text())[
         "indexes"
@@ -437,14 +447,15 @@ def test_projection_reads_do_not_require_live_copilot_sources(
     )
 
     copilot_home = tmp_path / "copilot-home"
-    assert copilot_home.exists()
-    for child in copilot_home.iterdir():
-        if child.is_file():
-            child.unlink()
-        else:
-            import shutil
-
-            shutil.rmtree(child)
+    session_root = copilot_home / "session-state" / NATIVE_ID
+    session_root.mkdir(parents=True)
+    (session_root / "events.jsonl").write_text("{}\n", encoding="utf-8")
+    (copilot_home / "session-store.db").write_bytes(b"sqlite")
+    assert any(copilot_home.iterdir())
+    shutil.rmtree(session_root)
+    (copilot_home / "session-store.db").unlink()
+    assert not session_root.exists()
+    assert not (copilot_home / "session-store.db").exists()
 
     turns = read_projected_turns(config, stored)
     assert len(turns) == 1
@@ -475,7 +486,9 @@ def test_unfinished_projection_pending_does_not_block_later_capture(
         empty_projection_state(),
     )
 
-    commit_batch(config, paths, _batch(paths, [_record("key/a/second")], next_cursor={"generation": 2}))
+    commit_batch(
+        config, paths, _batch(paths, [_record("key/a/second")], next_cursor={"generation": 2})
+    )
 
     commit_projection(
         config,
@@ -487,8 +500,9 @@ def test_unfinished_projection_pending_does_not_block_later_capture(
     )
 
     state = load_projection_state(config, stored)
-    assert state["commit_result"]["events"] == 1
-    assert state["commit_result"]["pending"] == 1
+    assert state["index_totals"]["events"] == 1
+    assert state["index_totals"]["pending"] == 0
+    assert state["index_totals"]["diagnostics"] == 0
     captured = {
         event["data"]["source_record"]["source_id"]
         for event in SessionReader(_directory(config, stored)).iter_events(
@@ -498,7 +512,9 @@ def test_unfinished_projection_pending_does_not_block_later_capture(
     assert captured == {"key/a/first", "key/a/second"}
 
 
-def test_reset_projection_state_removes_only_derived_files(config: Config, paths: SourcePaths) -> None:
+def test_reset_projection_state_removes_only_derived_files(
+    config: Config, paths: SourcePaths
+) -> None:
     stored = _seed_archive(config, paths, [_record("key/a/persist")])
     commit_projection(
         config,
@@ -519,3 +535,257 @@ def test_reset_projection_state_removes_only_derived_files(config: Config, paths
     archived = list(SessionReader(directory).iter_events())
     assert len(archived) == 1
     assert archived[0]["data"]["schema_version"] == SOURCE_SCHEMA_VERSION
+
+
+def _indexed_usage(config: Config, stored: str) -> list[tuple[str, int, int]]:
+    index = UsageIndex(config.root)
+    connection = index.connect()
+    try:
+        index.refresh(connection)
+        rows = connection.execute(
+            "SELECT call_id, gen_ai_usage_input_tokens, seq FROM usage WHERE session_id = ? "
+            "ORDER BY call_id",
+            (stored,),
+        ).fetchall()
+    finally:
+        connection.close()
+    return [(str(call_id), int(tokens), int(seq)) for call_id, tokens, seq in rows]
+
+
+def test_incremental_turn_commit_retains_prior_partition_evidence(
+    config: Config, paths: SourcePaths
+) -> None:
+    stored = _seed_archive(
+        config,
+        paths,
+        [_record("key/a/e1"), _record("key/a/e2", ts="2026-09-10T17:08:26.000Z")],
+    )
+    turn = _main_turn(source_ids=["key/a/e1"])
+    commit_projection(
+        config,
+        stored,
+        _projection(
+            normalized_events=[_normalized_event("evt-1", source_ids=["key/a/e1"])],
+            turns=[turn],
+        ),
+        empty_projection_state(),
+    )
+    first = read_projected_turns(config, stored)
+    assert [event["data"]["source_record"]["source_id"] for event in first[0]["events"]] == [
+        "key/a/e1"
+    ]
+
+    later = _main_turn(source_ids=["key/a/e2"])
+    commit_projection(
+        config,
+        stored,
+        _projection(
+            normalized_events=[_normalized_event("evt-2", source_ids=["key/a/e2"])],
+            turns=[later],
+        ),
+        empty_projection_state(),
+    )
+    turns = read_projected_turns(config, stored)
+    assert len(turns) == 1
+    assert [event["data"]["source_record"]["source_id"] for event in turns[0]["events"]] == [
+        "key/a/e1",
+        "key/a/e2",
+    ]
+    assert turns[0]["start_seq"] == 0
+    assert turns[0]["end_seq"] == 1
+
+
+def test_derived_state_does_not_duplicate_raw_archive_payloads(
+    config: Config, paths: SourcePaths
+) -> None:
+    stored = _seed_archive(
+        config,
+        paths,
+        [_record("key/a/user"), _record("key/a/assistant", ts="2026-09-10T17:08:26.000Z")],
+    )
+    commit_projection(
+        config,
+        stored,
+        _projection(
+            normalized_events=[
+                _normalized_event("evt-user", source_ids=["key/a/user"]),
+                _normalized_event("evt-assistant", source_ids=["key/a/assistant"]),
+            ],
+            turns=[_main_turn(source_ids=["key/a/user", "key/a/assistant"])],
+        ),
+        empty_projection_state(),
+    )
+    document = json.loads(projection_state_path(_directory(config, stored)).read_text())
+    dumped = json.dumps(document)
+    assert "user.message" not in dumped
+    assert document["indexes"]["turns"]
+    turn_record = next(iter(document["indexes"]["turns"].values()))
+    assert "events" not in turn_record
+    assert turn_record["span"]["input_message"] == "hello"
+    assert set(turn_record["source_ids"]) == {"key/a/user", "key/a/assistant"}
+
+
+def test_unresolved_turn_evidence_does_not_invent_store_events(
+    config: Config, paths: SourcePaths
+) -> None:
+    stored = _seed_archive(config, paths, [_record("key/a/other")])
+    commit_projection(
+        config,
+        stored,
+        _projection(turns=[_main_turn()]),
+        empty_projection_state(),
+    )
+    turns = read_projected_turns(config, stored)
+    assert len(turns) == 1
+    assert turns[0]["events"] == []
+    assert turns[0]["start_seq"] is None
+    assert turns[0]["end_seq"] is None
+
+
+def test_in_progress_turns_are_omitted_from_projected_reads(
+    config: Config, paths: SourcePaths
+) -> None:
+    stored = _seed_archive(config, paths, [_record("key/a/open")])
+    open_turn = _main_turn(source_ids=["key/a/open"])
+    open_turn["status"] = "in_progress"
+    commit_projection(
+        config,
+        stored,
+        _projection(
+            normalized_events=[_normalized_event("evt-open", source_ids=["key/a/open"])],
+            turns=[open_turn],
+        ),
+        empty_projection_state(),
+    )
+    assert read_projected_turns(config, stored) == []
+
+
+def test_commit_projection_rejects_unknown_session(config: Config) -> None:
+    with pytest.raises(ValueError, match="unknown Copilot session"):
+        commit_projection(config, "ghost-session", _projection(), empty_projection_state())
+    assert not (config.root / "traces" / PLATFORM_NAME / "ghost-session").exists()
+
+
+def test_commit_projection_rejects_usage_row_for_another_session(
+    config: Config, paths: SourcePaths
+) -> None:
+    stored = _seed_archive(config, paths, [_record("key/a/event")])
+    with pytest.raises(ValueError, match="session_id"):
+        commit_projection(
+            config,
+            stored,
+            _projection(usage_rows=[_usage_row(call_id="logical-1", session_id="other")]),
+            empty_projection_state(),
+        )
+
+
+def test_usage_seq_is_stamped_from_archived_revision(config: Config, paths: SourcePaths) -> None:
+    stored = _seed_archive(
+        config,
+        paths,
+        [
+            _record("key/a/prompt"),
+            _record("db-src-1", source_kind="database", ts="2026-09-10T17:08:30.000Z"),
+        ],
+    )
+    next_state = empty_projection_state()
+    next_state["accounting_state"] = {
+        "logical_calls": {
+            "logical-1": {
+                "logical_call_id": "logical-1",
+                "generation": "gen-a",
+                "content_revision": "rev-a",
+                "metrics_digest": "sha256:abc",
+                "usage_source_id": "db-src-1",
+            }
+        }
+    }
+    commit_projection(
+        config,
+        stored,
+        _projection(
+            usage_rows=[_usage_row(call_id="db-src-1", session_id=stored)],
+            attributions=[_attribution(logical_call_id="logical-1", usage_source_id="db-src-1")],
+        ),
+        next_state,
+    )
+    rows = list(iter_calls(_directory(config, stored)))
+    assert len(rows) == 1
+    assert rows[0].seq == 1
+    assert rows[0].call_id == "logical-1"
+    assert _indexed_usage(config, stored) == [("logical-1", 100, 1)]
+
+
+def test_usage_correction_is_visible_through_usage_index(
+    config: Config, paths: SourcePaths
+) -> None:
+    stored = _seed_archive(config, paths, [_record("key/a/usage")])
+    first = _projection(
+        usage_rows=[_usage_row(call_id="logical-1", input_tokens=100, session_id=stored)],
+    )
+    commit_projection(config, stored, first, empty_projection_state())
+    assert _indexed_usage(config, stored) == [("logical-1", 100, 0)]
+
+    second = _projection(
+        usage_rows=[_usage_row(call_id="logical-1", input_tokens=150, session_id=stored, seq=1)],
+    )
+    commit_projection(config, stored, second, empty_projection_state())
+    assert _indexed_usage(config, stored) == [("logical-1", 150, 0)]
+
+
+def test_delayed_attribution_rekeys_source_id_without_double_counting(
+    config: Config, paths: SourcePaths
+) -> None:
+    stored = _seed_archive(config, paths, [_record("key/a/usage")])
+    first_state = empty_projection_state()
+    first_state["accounting_state"] = {
+        "logical_calls": {
+            "copilot:usage:logical-1": {
+                "logical_call_id": "copilot:usage:logical-1",
+                "generation": "gen-a",
+                "content_revision": "rev-1",
+                "metrics_digest": "sha256:abc",
+                "usage_source_id": "db-src-rev1",
+            }
+        }
+    }
+    commit_projection(
+        config,
+        stored,
+        _projection(
+            usage_rows=[_usage_row(call_id="db-src-rev1", input_tokens=100, session_id=stored)]
+        ),
+        first_state,
+    )
+
+    second_state = empty_projection_state()
+    second_state["accounting_state"] = {
+        "logical_calls": {
+            "copilot:usage:logical-1": {
+                "logical_call_id": "copilot:usage:logical-1",
+                "generation": "gen-a",
+                "content_revision": "rev-2",
+                "metrics_digest": "sha256:def",
+                "usage_source_id": "db-src-rev2",
+            }
+        }
+    }
+    commit_projection(
+        config,
+        stored,
+        _projection(
+            usage_rows=[_usage_row(call_id="db-src-rev2", input_tokens=150, session_id=stored)],
+            attributions=[
+                _attribution(
+                    logical_call_id="copilot:usage:logical-1", usage_source_id="db-src-rev2"
+                )
+            ],
+        ),
+        second_state,
+    )
+
+    rows = list(iter_calls(_directory(config, stored)))
+    assert [(row.call_id, row.input_tokens) for row in rows] == [("copilot:usage:logical-1", 150)]
+    assert _indexed_usage(config, stored) == [("copilot:usage:logical-1", 150, 0)]
+    document = json.loads(projection_state_path(_directory(config, stored)).read_text())
+    assert set(document["indexes"]["usage"]) == {"copilot:usage:logical-1"}

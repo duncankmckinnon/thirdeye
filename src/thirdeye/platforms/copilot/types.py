@@ -117,6 +117,38 @@ class SourceSlice(TypedDict):
 #
 # ``Attribution.usage_source_id`` is the newest revision's source ID.
 # Durable attribution is keyed by ``logical_call_id``.
+#
+# ``UsageRow.call_id`` is that same durable logical call identity
+# (``copilot:usage:...``), never a revision source ID, import sequence, or
+# Store seq.  Persistence keys the usage index and ``usage.jsonl`` by this
+# value and stamps ``UsageRow.seq`` with the Store seq of the newest archived
+# revision.  A content correction replaces the existing row under that
+# identity.  Storage also keeps a ``usage_source_id -> logical_call_id`` map
+# so a row committed before its attribution/accounting identity is known is
+# re-keyed rather than counted twice.
+#
+# Copilot ``TurnSpanDict.attributes`` carries ``interaction_id`` (native user
+# request) and ``agent_id`` (null/absent on a main interaction; non-null on a
+# nested child that must not become a generic user turn).  Copilot
+# ``NormalizedEvent.attributes`` carries ``interaction_id``, optional
+# ``stored_turn_id``, and ``agent_id``.  Producers may also set auxiliary
+# ``source_ids`` / ``source_references`` on a turn, llm call, subagent, or
+# accounting call; storage joins those plus matching normalized events onto
+# the archived Store records for ``read_projected_turns``.  Missing evidence
+# yields ``events: []`` and null seq/ts rather than guessing.
+#
+# ``commit_projection``'s ``next_state`` is an authoritative
+# :class:`ProjectionState` snapshot: omitted keys stay at their empty
+# defaults, and a now-closed interaction is absent from
+# ``semantic_state.open_interactions``.  Storage does not resurrect keys the
+# builder removed.  ``pending`` and ``diagnostics`` on a Projection replace
+# those indexes in full (status is current, not cumulative).  Semantic
+# events, turns, usage, and attributions merge by stable id.
+#
+# Storage entry points: ``commit_projection``, ``load_projection_state``,
+# ``read_projected_turns``, and ``reset_projection_state`` (deletes only
+# rebuildable local projection files and the derived usage sidecar; never
+# V1 evidence or the export ledger).
 
 AttributionStatus = Literal["matched", "pending", "ambiguous", "conflicting"]
 AttributionJoinKind = Literal["direct", "inferred"]
@@ -260,6 +292,26 @@ class DatabaseRevision(TypedDict):
     content_revision: str
 
 
+class CopilotEventAttributes(TypedDict, total=False):
+    """``NormalizedEvent.attributes`` keys Copilot storage uses for joins."""
+
+    interaction_id: str
+    stored_turn_id: str
+    agent_id: str | None
+
+
+class CopilotTurnAttributes(TypedDict, total=False):
+    """``TurnSpanDict.attributes`` keys Copilot storage uses.
+
+    ``agent_id`` is null or omitted on a main user interaction.  A non-null
+    value marks a nested child span; storage never emits those as standalone
+    ``session_turns`` records.
+    """
+
+    interaction_id: str
+    agent_id: str | None
+
+
 class NormalizedEvent(TypedDict):
     """One semantic event with stable identity and source provenance.
 
@@ -267,6 +319,8 @@ class NormalizedEvent(TypedDict):
     ``kind="auxiliary_model_call"`` and ``classification="title_generation"``.
     They must not appear as main ``call_candidates`` and must not inflate
     conversation token totals.
+
+    Copilot ``attributes`` follow :class:`CopilotEventAttributes`.
     """
 
     id: str
@@ -425,7 +479,12 @@ class AccountingProjection(TypedDict):
 
 
 class Projection(TypedDict):
-    """Combined local-only V2 projection, serializable via UsageRow.to_dict."""
+    """Combined local-only V2 projection, serializable via UsageRow.to_dict.
+
+    ``pending`` and ``diagnostics`` are the complete current sets; a later
+    commit that omits an item retracts it.  ``usage_rows`` use
+    ``UsageRow.call_id`` as the logical call identity.
+    """
 
     normalized_events: list[NormalizedEvent]
     turns: list[TurnSpanDict]
@@ -506,6 +565,13 @@ class ProjectionState(TypedDict):
 
     ``projection_schema_version`` is :data:`PROJECTION_SCHEMA_VERSION`.  It is
     not the V1 ``schema_version`` field on source envelopes.
+
+    Passed as ``next_state`` to ``commit_projection``, this snapshot replaces
+    the previously loaded builder state.  ``projection_revision`` is a digest
+    of the committed indexes when the builder leaves it empty.
+    ``index_totals`` is the size of each derived index after the commit, not
+    a per-commit delta.  A stale schema version is discarded so a rebuild
+    can reconstruct derived indexes from the V1 archive.
     """
 
     projection_schema_version: int
@@ -513,4 +579,4 @@ class ProjectionState(TypedDict):
     semantic_state: SemanticProjectionState
     accounting_state: AccountingProjectionState
     projection_revision: str
-    commit_result: NotRequired[dict[str, int]]
+    index_totals: NotRequired[dict[str, int]]

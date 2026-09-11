@@ -8,15 +8,13 @@ touch the export ledger (which has its own lock and lifecycle).
 
 from __future__ import annotations
 
-import json
-import os
-import tempfile
 from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
 from thirdeye._compat import fsops
 
+from .jsonio import atomic_write_json, read_json_object
 from .types import PROJECTION_SCHEMA_VERSION
 
 PROJECTION_STATE_FILENAME = "copilot.projection.state.json"
@@ -66,6 +64,7 @@ def empty_projection_document() -> dict[str, Any]:
             "events": {},
             "turns": {},
             "usage": {},
+            "usage_identities": {},
             "attributions": {},
             "pending": {},
             "diagnostics": {},
@@ -74,46 +73,32 @@ def empty_projection_document() -> dict[str, Any]:
 
 
 def _atomic_json(path: Path, value: dict[str, Any], *, fault_point: str) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    fd, temp_name = tempfile.mkstemp(dir=path.parent, prefix=f"{path.name}.", suffix=".tmp")
-    try:
-        with os.fdopen(fd, "w", encoding="utf-8", newline="\n") as stream:
-            json.dump(value, stream, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
-            stream.write("\n")
-            stream.flush()
-            os.fsync(stream.fileno())
-        fsops.replace(temp_name, path)
-        fsops.sync_directory(path.parent)
-        _fault(fault_point)
-    except BaseException:
-        fsops.unlink(Path(temp_name), missing_ok=True)
-        raise
+    atomic_write_json(path, value, on_synced=lambda: _fault(fault_point))
 
 
 def _read_json(path: Path) -> dict[str, Any] | None:
-    try:
-        value = json.loads(fsops.read_text(path, encoding="utf-8"))
-    except FileNotFoundError:
-        return None
-    except (OSError, json.JSONDecodeError):
-        raise ValueError(f"invalid Copilot projection state: {path}") from None
-    if not isinstance(value, dict):
-        raise ValueError(f"invalid Copilot projection state: {path}")
-    return value
+    return read_json_object(path, invalid_message=f"invalid Copilot projection state: {path}")
 
 
-def _validate_document(document: dict[str, Any]) -> dict[str, Any]:
+def _schema_current(document: dict[str, Any]) -> bool:
     if document.get("schema_version") != PROJECTION_SCHEMA_VERSION:
-        raise ValueError("unsupported Copilot projection state schema")
+        return False
     state = document.get("state")
+    return isinstance(state, dict) and state.get("projection_schema_version") == (
+        PROJECTION_SCHEMA_VERSION
+    )
+
+
+def _validate_current_document(document: dict[str, Any]) -> dict[str, Any]:
     indexes = document.get("indexes")
-    if not isinstance(state, dict) or not isinstance(indexes, dict):
+    if not isinstance(document.get("state"), dict) or not isinstance(indexes, dict):
         raise ValueError("invalid Copilot projection state")
-    if state.get("projection_schema_version") != PROJECTION_SCHEMA_VERSION:
-        raise ValueError("unsupported Copilot projection schema")
     for name in ("events", "turns", "usage", "attributions", "pending", "diagnostics"):
         if not isinstance(indexes.get(name), dict):
             raise ValueError("invalid Copilot projection indexes")
+    if not isinstance(indexes.get("usage_identities", {}), dict):
+        raise ValueError("invalid Copilot projection indexes")
+    indexes.setdefault("usage_identities", {})
     return document
 
 
@@ -123,25 +108,36 @@ def read_projection_document(session_dir: Path) -> dict[str, Any]:
     Callers holding :func:`projection_lock_path` may rely on this to finish a
     previously published journal before reading.  Keeping recovery here makes
     it impossible for a later commit to merge against an incomplete snapshot.
+
+    A stale schema version is disposable derived state: the files are removed
+    and the caller rebuilds from the immutable V1 archive.
     """
     journal = _read_json(projection_journal_path(session_dir))
     if journal is not None:
-        if journal.get("schema_version") != PROJECTION_JOURNAL_SCHEMA_VERSION:
-            raise ValueError("unsupported Copilot projection journal schema")
         document = journal.get("document")
-        if not isinstance(document, dict):
-            raise ValueError("invalid Copilot projection journal")
-        _validate_document(document)
-        _atomic_json(
-            projection_state_path(session_dir), document, fault_point="after_projection_recovery"
-        )
+        journal_ok = journal.get("schema_version") == PROJECTION_JOURNAL_SCHEMA_VERSION
+        if journal_ok and isinstance(document, dict) and _schema_current(document):
+            _validate_current_document(document)
+            _atomic_json(
+                projection_state_path(session_dir),
+                document,
+                fault_point="after_projection_recovery",
+            )
+            fsops.unlink(projection_journal_path(session_dir), missing_ok=True)
+            fsops.sync_directory(session_dir)
+            _fault("after_projection_recovery_clear")
+            return document
+        # Stale or unreadable journal: drop it and fall through to the snapshot.
         fsops.unlink(projection_journal_path(session_dir), missing_ok=True)
         fsops.sync_directory(session_dir)
-        _fault("after_projection_recovery_clear")
-        return document
 
     document = _read_json(projection_state_path(session_dir))
-    return empty_projection_document() if document is None else _validate_document(document)
+    if document is None:
+        return empty_projection_document()
+    if not _schema_current(document):
+        remove_projection_state(session_dir)
+        return empty_projection_document()
+    return _validate_current_document(document)
 
 
 def publish_projection_document(session_dir: Path, document: dict[str, Any]) -> None:
@@ -150,14 +146,14 @@ def publish_projection_document(session_dir: Path, document: dict[str, Any]) -> 
     The caller owns the projection lock.  If interrupted after either replace,
     the next reader replays the complete immutable document from the journal.
     """
-    _validate_document(document)
+    if not _schema_current(document):
+        raise ValueError("unsupported Copilot projection state schema")
+    _validate_current_document(document)
     journal = {"schema_version": PROJECTION_JOURNAL_SCHEMA_VERSION, "document": document}
     _atomic_json(
         projection_journal_path(session_dir), journal, fault_point="after_projection_journal"
     )
-    _atomic_json(
-        projection_state_path(session_dir), document, fault_point="after_projection_state"
-    )
+    _atomic_json(projection_state_path(session_dir), document, fault_point="after_projection_state")
     fsops.unlink(projection_journal_path(session_dir), missing_ok=True)
     fsops.sync_directory(session_dir)
     _fault("after_projection_journal_clear")

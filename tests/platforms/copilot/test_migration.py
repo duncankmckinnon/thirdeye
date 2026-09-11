@@ -3,6 +3,9 @@
 from __future__ import annotations
 
 import json
+import subprocess
+import sys
+import time
 from collections.abc import Iterator
 from contextlib import contextmanager
 from pathlib import Path
@@ -30,7 +33,13 @@ from thirdeye.platforms.copilot.projection_store import (
     read_projected_turns,
     reset_projection_state,
 )
-from thirdeye.platforms.copilot.types import Projection, SourceBatch, SourcePaths, SourceRecord
+from thirdeye.platforms.copilot.types import (
+    PROJECTION_SCHEMA_VERSION,
+    Projection,
+    SourceBatch,
+    SourcePaths,
+    SourceRecord,
+)
 from thirdeye.usage.read import iter_calls
 from thirdeye.usage.types import UsageRow
 
@@ -143,7 +152,7 @@ def paths(tmp_path: Path) -> SourcePaths:
     return resolve_sources(home)
 
 
-def _stored(config: Config, paths: SourcePaths) -> str:
+def _stored(_config: Config, paths: SourcePaths) -> str:
     return stored_session_id(paths, NATIVE_ID)
 
 
@@ -155,7 +164,9 @@ def _seed_v1_archive(config: Config, paths: SourcePaths) -> str:
     commit_batch(
         config,
         paths,
-        _batch(paths, [_record("key/a/v1-one"), _record("key/a/v1-two", ts="2026-09-10T17:08:26.000Z")]),
+        _batch(
+            paths, [_record("key/a/v1-one"), _record("key/a/v1-two", ts="2026-09-10T17:08:26.000Z")]
+        ),
     )
     return _stored(config, paths)
 
@@ -222,7 +233,7 @@ def test_projection_journal_crash_recovers_on_next_read(
         assert projection_journal_path(directory).is_file()
 
     state = load_projection_state(config, stored)
-    assert state["commit_result"]["events"] == 2
+    assert state["index_totals"]["events"] == 2
     assert not projection_journal_path(directory).exists()
     turns = read_projected_turns(config, stored)
     assert len(turns) == 1
@@ -281,19 +292,65 @@ def test_rebuild_after_reset_matches_original_projection(
     after_state = load_projection_state(config, stored)
 
     assert after_turns == before_turns
-    assert after_state["commit_result"] == before_state["commit_result"]
+    assert after_state["index_totals"] == before_state["index_totals"]
 
 
 def test_competing_projection_commits_merge_indexes(config: Config, paths: SourcePaths) -> None:
     stored = _seed_v1_archive(config, paths)
+    start_signal = config.root.parent / "start-projection-writers"
+    script = r"""
+from pathlib import Path
+import sys
+import time
 
-    first = _projection(
-        normalized_events=[_normalized_event("evt-a", source_ids=["key/a/v1-one"])],
-        usage_rows=[_usage_row(call_id="usage-a", input_tokens=50, session_id=stored)],
-        attributions=[
+from thirdeye.config import Config
+from thirdeye.platforms.copilot.projection_state import empty_projection_state
+from thirdeye.platforms.copilot.projection_store import commit_projection
+from thirdeye.usage.types import UsageRow
+
+root = Path(sys.argv[1])
+stored = sys.argv[2]
+writer_id = sys.argv[3]
+start_signal = Path(sys.argv[4])
+while not start_signal.exists():
+    time.sleep(0.001)
+
+source_id = f"key/a/v1-{'one' if writer_id == 'a' else 'two'}"
+event_id = f"evt-{writer_id}"
+logical_id = f"logical-{writer_id}"
+usage_source = f"usage-{writer_id}"
+config = Config(root=root)
+row = UsageRow(
+    session_id=stored,
+    seq=0,
+    call_id=usage_source,
+    ts="2026-09-10T17:08:30.000Z",
+    platform="copilot",
+    provider_name="openai",
+    response_model="gpt-5.6-luna",
+    input_tokens=50 if writer_id == "a" else 75,
+    output_tokens=10,
+)
+commit_projection(
+    config,
+    stored,
+    {
+        "normalized_events": [
             {
-                "usage_source_id": "usage-a",
-                "logical_call_id": "logical-a",
+                "id": event_id,
+                "kind": "user_prompt",
+                "classification": "main",
+                "initiator": "user",
+                "source_ids": [source_id],
+                "attributes": {"interaction_id": "interaction-migrate-1"},
+            }
+        ],
+        "turns": [],
+        "usage_rows": [row],
+        "attributions": [
+            {
+                "usage_source_id": usage_source,
+                "logical_call_id": logical_id,
                 "stored_turn_id": None,
                 "agent_id": None,
                 "call_id": None,
@@ -302,30 +359,34 @@ def test_competing_projection_commits_merge_indexes(config: Config, paths: Sourc
                 "evidence": [],
             }
         ],
-    )
-    second = _projection(
-        normalized_events=[_normalized_event("evt-b", source_ids=["key/a/v1-two"])],
-        usage_rows=[_usage_row(call_id="usage-b", input_tokens=75, session_id=stored)],
-        attributions=[
-            {
-                "usage_source_id": "usage-b",
-                "logical_call_id": "logical-b",
-                "stored_turn_id": None,
-                "agent_id": None,
-                "call_id": None,
-                "status": "pending",
-                "join_kind": None,
-                "evidence": [],
-            }
-        ],
-    )
-
-    commit_projection(config, stored, first, empty_projection_state())
-    commit_projection(config, stored, second, empty_projection_state())
+        "pending": [],
+        "diagnostics": [],
+    },
+    empty_projection_state(),
+)
+"""
+    processes = [
+        subprocess.Popen(
+            [sys.executable, "-c", script, str(config.root), stored, writer_id, str(start_signal)],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            encoding="utf-8",
+        )
+        for writer_id in ("a", "b")
+    ]
+    start_signal.touch()
+    deadline = time.monotonic() + 30
+    failures: list[str] = []
+    for process in processes:
+        stdout, stderr = process.communicate(timeout=max(0.1, deadline - time.monotonic()))
+        if process.returncode != 0:
+            failures.append(f"exit={process.returncode} stdout={stdout!r} stderr={stderr!r}")
+    assert not failures, failures
 
     state = load_projection_state(config, stored)
-    assert state["commit_result"]["events"] == 2
-    assert state["commit_result"]["usage"] == 2
+    assert state["index_totals"]["events"] == 2
+    assert state["index_totals"]["usage"] == 2
 
     document = json.loads(projection_state_path(_directory(config, stored)).read_text())
     assert set(document["indexes"]["events"]) == {"evt-a", "evt-b"}
@@ -409,3 +470,48 @@ def test_usage_sidecar_rewrite_after_state_publication_crash(
     rows = list(iter_calls(directory))
     assert len(rows) == 1
     assert rows[0].input_tokens == 222
+
+
+def test_stale_projection_schema_is_discarded_for_rebuild(
+    config: Config, paths: SourcePaths
+) -> None:
+    stored = _seed_v1_archive(config, paths)
+    directory = _directory(config, stored)
+    stale = {
+        "schema_version": PROJECTION_SCHEMA_VERSION - 1,
+        "state": {
+            "projection_schema_version": PROJECTION_SCHEMA_VERSION - 1,
+            "archive_source_ids": ["stale"],
+            "semantic_state": {"open_interactions": {"old": {}}},
+            "accounting_state": {"logical_calls": {}},
+            "projection_revision": "stale",
+        },
+        "indexes": {"events": {"old": {"id": "old"}}},
+    }
+    projection_state_path(directory).write_text(json.dumps(stale), encoding="utf-8")
+
+    state = load_projection_state(config, stored)
+    assert state["archive_source_ids"] == []
+    assert state["semantic_state"]["open_interactions"] == {}
+    assert not projection_state_path(directory).exists()
+    assert read_projected_turns(config, stored) == []
+
+
+def test_stale_journal_schema_is_discarded_without_raising(
+    config: Config, paths: SourcePaths
+) -> None:
+    stored = _seed_v1_archive(config, paths)
+    directory = _directory(config, stored)
+    journal = {
+        "schema_version": 0,
+        "document": {
+            "schema_version": 1,
+            "state": {"projection_schema_version": 1},
+            "indexes": {},
+        },
+    }
+    projection_journal_path(directory).write_text(json.dumps(journal) + "\n", encoding="utf-8")
+
+    state = load_projection_state(config, stored)
+    assert state["projection_schema_version"] == PROJECTION_SCHEMA_VERSION
+    assert not projection_journal_path(directory).exists()
