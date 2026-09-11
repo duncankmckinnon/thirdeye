@@ -1,4 +1,4 @@
-"""Generic web views render raw Copilot archive events without projections."""
+"""Copilot web views: raw archive evidence and projected turn/usage surfaces."""
 
 from __future__ import annotations
 
@@ -6,10 +6,21 @@ from pathlib import Path
 
 import pytest
 
+from thirdeye.config import LogfireSettings
 from thirdeye.platforms.copilot.archive import commit_batch
 from thirdeye.platforms.copilot.identity import resolve_sources, stored_session_id
 from thirdeye.platforms.copilot.types import SourceBatch, SourceRecord
-from thirdeye.turns import session_turns
+from thirdeye.turns import filter_turns, session_turns
+
+from tests.shared.copilot_projection_fixtures import (
+    TURN_ONE_ID,
+    TURN_TWO_ID,
+    USAGE_MODEL_ONE,
+    USAGE_MODEL_TWO,
+    USAGE_TOKENS_ONE,
+    USAGE_TOKENS_TWO,
+    seed_two_main_interaction_projection,
+)
 
 pytest.importorskip("starlette")
 
@@ -171,7 +182,84 @@ def test_copilot_sessions_are_excluded_from_index_turn_query(
     assert stored_id.encode() not in with_turn_query.content
 
 
-def test_copilot_session_usage_page_has_no_token_rows(client, web_config, tmp_path: Path) -> None:
+def test_copilot_projected_turns_participate_in_index_turn_query(
+    client, web_config, tmp_path: Path
+) -> None:
+    stored_id = seed_two_main_interaction_projection(web_config, tmp_path)
+    store = client.app.state.store
+    meta = store.get_meta(stored_id)
+    turns = session_turns(meta, store)
+
+    assert [turn["turn_id"] for turn in turns] == [TURN_ONE_ID, TURN_TWO_ID]
+
+    first_turn_query = client.get(
+        "/?platform=copilot&since=2020-01-01&turn_query=alpha.txt"
+    )
+    second_turn_query = client.get(
+        "/?platform=copilot&since=2020-01-01&turn_query=final%20sum"
+    )
+    cross_turn_query = client.get(
+        "/?platform=copilot&since=2020-01-01&turn_query=alpha.txt,final%20sum"
+    )
+
+    assert first_turn_query.status_code == second_turn_query.status_code == 200
+    assert stored_id.encode() in first_turn_query.content
+    assert stored_id.encode() in second_turn_query.content
+    assert stored_id.encode() not in cross_turn_query.content
+
+
+def test_copilot_session_usage_page_shows_projected_usage_rows(
+    client, web_config, tmp_path: Path
+) -> None:
+    stored_id = seed_two_main_interaction_projection(web_config, tmp_path)
+
+    usage = client.get(f"/sessions/{stored_id}/usage")
+
+    assert usage.status_code == 200
+    body = usage.text
+    assert USAGE_MODEL_ONE in body
+    assert USAGE_MODEL_TWO in body
+    assert str(USAGE_TOKENS_ONE) in body
+    assert str(USAGE_TOKENS_TWO) in body
+    assert body.count("<tr>") >= 3
+
+
+def test_copilot_logfire_turn_export_uses_projected_turns(
+    client, app, web_config, tmp_path: Path, monkeypatch
+) -> None:
+    stored_id = seed_two_main_interaction_projection(web_config, tmp_path)
+    app.state.config = app.state.config.write_logfire_settings(
+        LogfireSettings(api_key="dataset-key")
+    )
+    captured: dict = {}
+
+    def fake_export_sessions(**kwargs):
+        captured.update(kwargs)
+        return len(kwargs.get("sessions", []))
+
+    monkeypatch.setattr(
+        "thirdeye.web.routes.sessions.export_sessions", fake_export_sessions
+    )
+    response = client.post(
+        "/sessions/logfire-dataset",
+        data={
+            "dataset_name": "copilot-turns",
+            "dataset_scope": "turn",
+            "platform": "copilot",
+            "since": "2020-01-01",
+        },
+    )
+
+    assert response.status_code == 200
+    assert captured["scope"] == "turn"
+    turn_ids = [turn["id"] for turn in filter_turns(captured["sessions"], captured["store"])]
+    assert f"{stored_id}:{TURN_ONE_ID}" in turn_ids
+    assert f"{stored_id}:{TURN_TWO_ID}" in turn_ids
+
+
+def test_copilot_session_usage_page_has_no_token_rows_without_projection(
+    client, web_config, tmp_path: Path
+) -> None:
     paths = resolve_sources(tmp_path / "copilot-home")
     records: list[SourceRecord] = [
         {

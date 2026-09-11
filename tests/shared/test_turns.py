@@ -4,6 +4,12 @@ from thirdeye.config import Config
 from thirdeye.store import Store
 from thirdeye.turns import filter_turns, session_turns
 
+from tests.shared.copilot_projection_fixtures import (
+    TURN_ONE_ID,
+    TURN_TWO_ID,
+    seed_two_main_interaction_projection,
+)
+
 
 def test_claude_turns_are_bounded_by_user_and_assistant_messages(tmp_path):
     store = Store(Config(root=tmp_path))
@@ -58,6 +64,24 @@ def test_turn_query_searches_every_session_and_ands_terms_within_turn(tmp_path):
     matches = filter_turns(metas, store, query="apply_patch, logfire")
 
     assert [turn["session_id"] for turn in matches] == ["first-session"]
+
+
+def test_copilot_session_turns_use_projected_main_interactions_not_child_slices(tmp_path):
+    config = Config(root=tmp_path / "thirdeye")
+    store = Store(config)
+    stored_id = seed_two_main_interaction_projection(config, tmp_path)
+    meta = store.get_meta(stored_id)
+
+    turns = session_turns(meta, store)
+
+    assert [turn["turn_id"] for turn in turns] == [TURN_ONE_ID, TURN_TWO_ID]
+    assert len(turns[0]["events"]) == 3
+    assert len(turns[1]["events"]) == 2
+    assert "alpha.txt" in turns[0]["events"][0]["data"]["source_record"]["payload"]["data"]["content"]
+    assert "final sum" in turns[1]["events"][0]["data"]["source_record"]["payload"]["data"]["content"]
+    assert filter_turns([meta], store, query="alpha.txt") == [turns[0]]
+    assert filter_turns([meta], store, query="final sum") == [turns[1]]
+    assert filter_turns([meta], store, query="alpha.txt,final sum") == []
 
 
 def test_turn_query_terms_cannot_match_across_different_turns(tmp_path):
