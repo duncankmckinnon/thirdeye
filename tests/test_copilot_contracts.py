@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import re
 from pathlib import Path
 from typing import Any
 
@@ -112,8 +113,7 @@ def test_cli_hook_aliases_cover_observed_events():
 def test_hook_aliases_map_to_snake_case():
     for camel, snake in CLI_HOOK_EVENT_ALIASES.items():
         assert camel[0].islower()
-        assert "_" in snake
-        assert snake == snake.lower()
+        assert snake == re.sub(r"(?<!^)(?=[A-Z])", "_", camel).lower()
 
 
 # --- package exports ---

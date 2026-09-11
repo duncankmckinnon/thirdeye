@@ -21,6 +21,19 @@ def _parse_patterns(raw: str) -> tuple[str, ...]:
     return tuple(p.strip() for p in raw.split(",") if p.strip())
 
 
+def _coerce_patterns(value: Any) -> tuple[str, ...]:
+    """Normalize a config.yaml ``capture_env`` value to a pattern tuple.
+
+    Accepts either a comma-separated string (``"WB_*, BUILD_LABEL"``) or a
+    YAML list (``["WB_*", "BUILD_LABEL"]``); anything else yields ``()``.
+    """
+    if isinstance(value, str):
+        return _parse_patterns(value)
+    if isinstance(value, (list, tuple)):
+        return tuple(str(item).strip() for item in value if str(item).strip())
+    return ()
+
+
 @dataclass(frozen=True)
 class LogfireSettings:
     """Persisted Logfire export settings, read from config.yaml's ``logfire`` key.
@@ -81,9 +94,16 @@ class Config:
     def load(cls) -> Config:
         root = default_root()
         raw = _read_config_yaml(root / "config.yaml")
+        # THIRDEYE_CAPTURE_ENV wins when set, so a one-off run can still
+        # override; otherwise fall back to config.yaml's ``capture_env`` so
+        # capture does not depend on the launching shell exporting anything
+        # (workbench dispatches agents from contexts that may not source rc).
+        patterns = _parse_patterns(os.environ.get("THIRDEYE_CAPTURE_ENV", ""))
+        if not patterns:
+            patterns = _coerce_patterns(raw.get("capture_env"))
         return cls(
             root=root,
-            capture_env_patterns=_parse_patterns(os.environ.get("THIRDEYE_CAPTURE_ENV", "")),
+            capture_env_patterns=patterns,
             logfire=LogfireSettings.from_dict(raw.get("logfire")),
         )
 
@@ -105,6 +125,22 @@ class Config:
         data["logfire"] = settings.to_dict()
         _write_config_yaml(self.config_file, data)
         return replace(self, logfire=settings)
+
+    def write_capture_env_patterns(self, patterns: tuple[str, ...] | list[str]) -> Config:
+        """Persist ``capture_env`` to config.yaml, preserving other top-level keys.
+
+        An empty sequence removes the key. Returns a copy of this Config with
+        the new patterns applied. ``THIRDEYE_CAPTURE_ENV`` still overrides this
+        at load time when set.
+        """
+        cleaned = tuple(str(p).strip() for p in patterns if str(p).strip())
+        data = _read_config_yaml(self.config_file)
+        if cleaned:
+            data["capture_env"] = list(cleaned)
+        else:
+            data.pop("capture_env", None)
+        _write_config_yaml(self.config_file, data)
+        return replace(self, capture_env_patterns=cleaned)
 
 
 def load() -> Config:

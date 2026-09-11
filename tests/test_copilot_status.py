@@ -183,12 +183,8 @@ def test_capture_status_reports_installed_hooks(
     copilot_env: tuple[Config, SourcePaths],
 ) -> None:
     config, paths = copilot_env
-    # Match capture_status's default entrypoint resolution (bare hook name when
-    # the dispatcher is not on PATH in CI).
-    platform = CopilotPlatform(
-        source_home=Path(paths["home"]),
-        entrypoint="thirdeye-copilot-hook",
-    )
+    # Install and inspect with the same runtime entrypoint resolution.
+    platform = CopilotPlatform(source_home=Path(paths["home"]))
     platform.install()
 
     status = capture_status(config, paths)
