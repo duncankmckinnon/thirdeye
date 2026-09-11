@@ -1,0 +1,26 @@
+{
+  "source_key": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+  "source_key_is_placeholder": true,
+  "source_key_note": "Full 64-character SHA-256 of the canonical source home. Not the 16-character stored-session prefix. Live captures replace this.",
+  "source_key_prefix": "aaaaaaaaaaaaaaaa",
+  "native_session_id": "5a7e8e11-4a6b-49ff-a33e-95d411c4cdd6",
+  "child_agent_id": "bf8cb9f3-2097-4db0-a3c8-78a2653b2106",
+  "stored_session_id": "copilot-aaaaaaaaaaaaaaaa-5a7e8e11-4a6b-49ff-a33e-95d411c4cdd6",
+  "database_generation": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+  "database_generation_is_placeholder": true,
+  "database_generation_note": "Live V1 generation is sha256 of canonical JSON {path, device, inode, birthtime_ns} from the database file stat.",
+  "quoted_database_generation": "sha256%3Abbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+  "transcript_file_generation": "1-abc",
+  "transcript_file_generation_note": "Live V1 file_generation is hex(st_dev)-hex(st_ino)[-hex(birthtime_ns)].",
+  "database_path": "/example/.copilot/session-store.db",
+  "cwd": "/fixture/workspace",
+  "id_templates": {
+    "semantic_event": "copilot:event:<source-id>",
+    "semantic_event_tool_request": "copilot:event:<source-id>:tool:<toolCallId>",
+    "semantic_call": "copilot:call:<assistant-message-source-id>",
+    "main_turn": "copilot:turn:<full-source-key>:<native-session>:<interaction-id>",
+    "logical_call": "copilot:usage:<full-source-key>:<table>:<quoted-generation>:<quoted-canonical-pk>",
+    "turn_accounting_span": "accounting:{session_id}:{turn_id}:{accounting_id}",
+    "session_accounting_span": "accounting:{session_id}:{accounting_id}"
+  }
+}

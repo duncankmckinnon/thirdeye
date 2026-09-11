@@ -1,27 +1,158 @@
 {
   "projection_state": {
-    "schema_version": 2,
-    "archive_source_ids": ["copilot:transcript:source-a:session-a:event-user-1", "copilot:database:source-a:session-a:assistant_usage_events:db-a:13:sha256:usage-13"],
-    "semantic_state": {"open_interactions": {}},
-    "accounting_state": {"logical_calls": {"copilot:usage:source-a:assistant_usage_events:db-a:13": "sha256:usage-13"}},
+    "projection_schema_version": 2,
+    "archive_source_ids": [
+      "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/5a7e8e11-4a6b-49ff-a33e-95d411c4cdd6/f07404d0-af52-4260-89fb-358a10e86034",
+      "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/5a7e8e11-4a6b-49ff-a33e-95d411c4cdd6/a4a17e63-7ba5-422f-8ee9-b495be417328",
+      "copilot-db:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa:5a7e8e11-4a6b-49ff-a33e-95d411c4cdd6:assistant_usage_events:13:sha256:68bf2ca8903d9bdfe15a9d61144ba8b9b0e352678680e4490f2259bd2f468f47"
+    ],
+    "semantic_state": {
+      "open_interactions": {}
+    },
+    "accounting_state": {
+      "logical_calls": {
+        "copilot:usage:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa:assistant_usage_events:sha256%3Abbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb:13": {
+          "logical_call_id": "copilot:usage:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa:assistant_usage_events:sha256%3Abbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb:13",
+          "generation": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+          "content_revision": "sha256:68bf2ca8903d9bdfe15a9d61144ba8b9b0e352678680e4490f2259bd2f468f47",
+          "metrics_digest": "sha256:feee488caa281c39aa67f248f5e9d45220c1db1ee47b1f733b2eed66de686a53",
+          "usage_source_id": "copilot-db:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa:5a7e8e11-4a6b-49ff-a33e-95d411c4cdd6:assistant_usage_events:13:sha256:68bf2ca8903d9bdfe15a9d61144ba8b9b0e352678680e4490f2259bd2f468f47"
+        }
+      }
+    },
     "projection_revision": "sha256:derived-state-example"
   },
-  "commit_result": {"events": 2, "turns": 1, "usage": 1, "attributions": 1, "pending": 0, "diagnostics": 0},
+  "open_interactions_key": "<interaction_id>|<agent_id or main>",
+  "open_interactions_example": {
+    "6d2b89fd-a653-430c-b532-b0936d72eb42|main": {
+      "interaction_id": "6d2b89fd-a653-430c-b532-b0936d72eb42",
+      "agent_id": null,
+      "stored_turn_id": "copilot:turn:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa:5a7e8e11-4a6b-49ff-a33e-95d411c4cdd6:6d2b89fd-a653-430c-b532-b0936d72eb42",
+      "source_ids": [
+        "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/5a7e8e11-4a6b-49ff-a33e-95d411c4cdd6/f07404d0-af52-4260-89fb-358a10e86034"
+      ],
+      "last_event_source_id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/5a7e8e11-4a6b-49ff-a33e-95d411c4cdd6/f07404d0-af52-4260-89fb-358a10e86034",
+      "start_ts": "2026-09-10T17:08:22.203Z",
+      "pending_tool_call_ids": []
+    }
+  },
+  "commit_result": {
+    "events": 2,
+    "turns": 1,
+    "usage": 1,
+    "attributions": 1,
+    "pending": 0,
+    "diagnostics": 0
+  },
   "read_projected_turns": [
     {
-      "id": "copilot-source-a-session-a:copilot:turn:source-a:session-a:interaction-1",
-      "turn_id": "copilot:turn:source-a:session-a:interaction-1",
-      "session_id": "copilot-source-a-session-a",
+      "id": "copilot-aaaaaaaaaaaaaaaa-5a7e8e11-4a6b-49ff-a33e-95d411c4cdd6:copilot:turn:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa:5a7e8e11-4a6b-49ff-a33e-95d411c4cdd6:6d2b89fd-a653-430c-b532-b0936d72eb42",
+      "turn_id": "copilot:turn:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa:5a7e8e11-4a6b-49ff-a33e-95d411c4cdd6:6d2b89fd-a653-430c-b532-b0936d72eb42",
+      "session_id": "copilot-aaaaaaaaaaaaaaaa-5a7e8e11-4a6b-49ff-a33e-95d411c4cdd6",
       "platform": "copilot",
-      "cwd": "/workspace/example",
-      "start_seq": 12,
-      "end_seq": 24,
-      "start_ts": "2026-09-10T17:08:20.000Z",
-      "end_ts": "2026-09-10T17:08:26.000Z",
+      "cwd": "/fixture/workspace",
+      "start_seq": 0,
+      "end_seq": 1,
+      "start_ts": "2026-09-10T17:08:22.203Z",
+      "end_ts": "2026-09-10T17:08:24.503Z",
       "events": [
-        {"id": "copilot:event:copilot:transcript:source-a:session-a:event-user-1", "kind": "user_prompt", "source_ids": ["copilot:transcript:source-a:session-a:event-user-1"]},
-        {"id": "copilot:event:copilot:transcript:source-a:session-a:event-assistant-1", "kind": "assistant_message", "source_ids": ["copilot:transcript:source-a:session-a:event-assistant-1"]}
+        {
+          "t": "copilot_transcript",
+          "ts": "2026-09-10T17:08:22.203Z",
+          "seq": 0,
+          "data": {
+            "schema_version": 1,
+            "source_record": {
+              "source_id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/5a7e8e11-4a6b-49ff-a33e-95d411c4cdd6/f07404d0-af52-4260-89fb-358a10e86034",
+              "source_kind": "transcript",
+              "native_session_id": "5a7e8e11-4a6b-49ff-a33e-95d411c4cdd6",
+              "ts": "2026-09-10T17:08:22.203Z",
+              "observed_at": "2026-09-10T17:09:00.000Z",
+              "payload": {
+                "type": "user.message",
+                "data": {
+                  "content": "Read alpha.txt and beta.txt with separate view calls in parallel and report their sum. Only read those two files.",
+                  "messageId": "a856cb38-7609-45ab-8a55-645553155db3",
+                  "supportedNativeDocumentMimeTypes": [],
+                  "delivery": "idle",
+                  "interactionId": "6d2b89fd-a653-430c-b532-b0936d72eb42",
+                  "turnId": "0",
+                  "parentAgentTaskId": "fd800f7a-8163-4304-9681-efde4731e879"
+                },
+                "id": "f07404d0-af52-4260-89fb-358a10e86034",
+                "timestamp": "2026-09-10T17:08:22.203Z",
+                "parentId": "3942810f-1caf-4251-82fb-3bf72698147a",
+                "schema_version": 1
+              },
+              "locator": {
+                "file": "events.jsonl",
+                "file_generation": "1-abc",
+                "byte_offset": 2122,
+                "byte_length": 548,
+                "native_event_id": "f07404d0-af52-4260-89fb-358a10e86034"
+              }
+            }
+          }
+        },
+        {
+          "t": "copilot_transcript",
+          "ts": "2026-09-10T17:08:24.503Z",
+          "seq": 1,
+          "data": {
+            "schema_version": 1,
+            "source_record": {
+              "source_id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/5a7e8e11-4a6b-49ff-a33e-95d411c4cdd6/a4a17e63-7ba5-422f-8ee9-b495be417328",
+              "source_kind": "transcript",
+              "native_session_id": "5a7e8e11-4a6b-49ff-a33e-95d411c4cdd6",
+              "ts": "2026-09-10T17:08:24.503Z",
+              "observed_at": "2026-09-10T17:09:00.000Z",
+              "payload": {
+                "type": "assistant.message",
+                "data": {
+                  "messageId": "5a29b09d-5e7d-4603-975e-7801ce54232b",
+                  "model": "gpt-5.6-luna",
+                  "content": "",
+                  "toolRequests": [
+                    {
+                      "toolCallId": "call_YSSva4HCniiETlxdGGjcrHbh",
+                      "name": "view",
+                      "arguments": {
+                        "path": "/fixture/workspace/alpha.txt"
+                      },
+                      "type": "function",
+                      "intentionSummary": "view the file at /fixture/workspace/alpha.txt."
+                    },
+                    {
+                      "toolCallId": "call_ayHplfzxjRFMTCpmTKEFhCSJ",
+                      "name": "view",
+                      "arguments": {
+                        "path": "/fixture/workspace/beta.txt"
+                      },
+                      "type": "function",
+                      "intentionSummary": "view the file at /fixture/workspace/beta.txt."
+                    }
+                  ],
+                  "interactionId": "6d2b89fd-a653-430c-b532-b0936d72eb42",
+                  "turnId": "0",
+                  "rte": true
+                },
+                "id": "a4a17e63-7ba5-422f-8ee9-b495be417328",
+                "timestamp": "2026-09-10T17:08:24.503Z",
+                "parentId": "64f9e436-651f-4a9d-919c-a4d7abad2652",
+                "schema_version": 1
+              },
+              "locator": {
+                "file": "events.jsonl",
+                "file_generation": "1-abc",
+                "byte_offset": 3731,
+                "byte_length": 793,
+                "native_event_id": "a4a17e63-7ba5-422f-8ee9-b495be417328"
+              }
+            }
+          }
+        }
       ]
     }
-  ]
+  ],
+  "events_note": "events are Store records with seq/t/ts/data. data is the V1 envelope {schema_version, source_record}."
 }

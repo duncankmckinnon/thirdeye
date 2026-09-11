@@ -1,0 +1,67 @@
+{
+  "matched_inferred": {
+    "usage_source_id": "copilot-db:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa:5a7e8e11-4a6b-49ff-a33e-95d411c4cdd6:assistant_usage_events:13:sha256:68bf2ca8903d9bdfe15a9d61144ba8b9b0e352678680e4490f2259bd2f468f47",
+    "logical_call_id": "copilot:usage:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa:assistant_usage_events:sha256%3Abbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb:13",
+    "stored_turn_id": "copilot:turn:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa:5a7e8e11-4a6b-49ff-a33e-95d411c4cdd6:6d2b89fd-a653-430c-b532-b0936d72eb42",
+    "agent_id": null,
+    "call_id": "copilot:call:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/5a7e8e11-4a6b-49ff-a33e-95d411c4cdd6/a4a17e63-7ba5-422f-8ee9-b495be417328",
+    "status": "matched",
+    "join_kind": "inferred",
+    "evidence": [
+      "join_kind:inferred",
+      "interaction_id:6d2b89fd-a653-430c-b532-b0936d72eb42",
+      "turn_index:0",
+      "agent_id:None",
+      "parent_tool_call_id:None",
+      "model:gpt-5.6-luna",
+      "finish:tool_calls",
+      "initiator:user",
+      "order:0",
+      "call_id:copilot:call:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/5a7e8e11-4a6b-49ff-a33e-95d411c4cdd6/a4a17e63-7ba5-422f-8ee9-b495be417328"
+    ]
+  },
+  "pending": {
+    "usage_source_id": "copilot-db:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa:5a7e8e11-4a6b-49ff-a33e-95d411c4cdd6:assistant_usage_events:14:sha256:20cb0f98d6130c8d0e139391cfc8e245d1d0ac96d41469c4da60f26e6d9e0a26",
+    "logical_call_id": "copilot:usage:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa:assistant_usage_events:sha256%3Abbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb:14",
+    "stored_turn_id": "copilot:turn:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa:5a7e8e11-4a6b-49ff-a33e-95d411c4cdd6:6d2b89fd-a653-430c-b532-b0936d72eb42",
+    "agent_id": null,
+    "call_id": null,
+    "status": "pending",
+    "join_kind": null,
+    "evidence": [
+      "logical_call_id:copilot:usage:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa:assistant_usage_events:sha256%3Abbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb:14",
+      "turn_index:0",
+      "delayed_row:true"
+    ]
+  },
+  "ambiguous": {
+    "usage_source_id": "copilot-db:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa:5a7e8e11-4a6b-49ff-a33e-95d411c4cdd6:assistant_usage_events:13:sha256:68bf2ca8903d9bdfe15a9d61144ba8b9b0e352678680e4490f2259bd2f468f47",
+    "logical_call_id": "copilot:usage:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa:assistant_usage_events:sha256%3Abbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb:13",
+    "stored_turn_id": "copilot:turn:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa:5a7e8e11-4a6b-49ff-a33e-95d411c4cdd6:6d2b89fd-a653-430c-b532-b0936d72eb42",
+    "agent_id": null,
+    "call_id": null,
+    "status": "ambiguous",
+    "join_kind": null,
+    "evidence": [
+      "call_id:copilot:call:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/5a7e8e11-4a6b-49ff-a33e-95d411c4cdd6/a4a17e63-7ba5-422f-8ee9-b495be417328",
+      "call_id:copilot:call:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/5a7e8e11-4a6b-49ff-a33e-95d411c4cdd6/33cc6465-29e1-4a04-8bdb-00241474b4d2",
+      "interaction_id:6d2b89fd-a653-430c-b532-b0936d72eb42",
+      "model:gpt-5.6-luna",
+      "turn_index:0"
+    ]
+  },
+  "conflicting_join": {
+    "usage_source_id": "copilot-db:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa:5a7e8e11-4a6b-49ff-a33e-95d411c4cdd6:assistant_usage_events:13:sha256:68bf2ca8903d9bdfe15a9d61144ba8b9b0e352678680e4490f2259bd2f468f47",
+    "logical_call_id": "copilot:usage:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa:assistant_usage_events:sha256%3Abbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb:13",
+    "stored_turn_id": "copilot:turn:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa:5a7e8e11-4a6b-49ff-a33e-95d411c4cdd6:6d2b89fd-a653-430c-b532-b0936d72eb42",
+    "agent_id": null,
+    "call_id": null,
+    "status": "conflicting",
+    "join_kind": null,
+    "evidence": [
+      "call_id:copilot:call:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/5a7e8e11-4a6b-49ff-a33e-95d411c4cdd6/a4a17e63-7ba5-422f-8ee9-b495be417328",
+      "call_id:copilot:call:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/5a7e8e11-4a6b-49ff-a33e-95d411c4cdd6/33cc6465-29e1-4a04-8bdb-00241474b4d2",
+      "join_conflict:rebinding_after_emission"
+    ]
+  }
+}
