@@ -488,54 +488,40 @@ def _parent_context(trace_id: int, span_id: int):
     return otel_trace.set_span_in_context(otel_trace.NonRecordingSpan(span_context))
 
 
-def _persisted_captured_env(session_dir_: Path) -> dict[str, str]:
-    """The env snapshot a platform's session-start hook wrote into meta.
+def shape_captured_env(captured: dict[str, str]) -> dict[str, Any]:
+    """Turn a raw ``{ENV_VAR: value}`` capture into span attributes plus tags.
 
-    Codex's turn export runs in ``thirdeye-codex-notify``, an argv-invoked
-    callback Codex spawns detached from the agent process that actually held
-    the ``WB_*`` vars, so ``os.environ`` there is unreliable. Codex's
-    session-start hook — a normal child of that agent process — captures the
-    same env and persists it here for the notify path to read back.
+    Every name becomes an OTel-style dotted key — lowercased, ``_`` mapped to
+    ``.`` — so ``WB_PLAN`` reads as ``wb.plan`` and ``BUILD_LABEL`` as
+    ``build.label``. No pattern is privileged; the transform is uniform. Values
+    pass through unchanged. Non-empty values are also returned, de-duplicated,
+    as ``logfire.tags`` for the caller to place on the session span only.
     """
-    try:
-        from thirdeye.meta import read_meta
-        from thirdeye.paths import meta_path
-
-        meta = read_meta(meta_path(session_dir_))
-    except Exception:
-        return {}
-    if meta is None:
-        return {}
-    raw = meta.extra.get("captured_env")
-    if not isinstance(raw, dict):
-        return {}
-    return {str(key): str(value) for key, value in raw.items() if value is not None}
-
-
-def _capture_attributes(config: Config, session_dir_: Path | None = None) -> dict[str, Any]:
-    """Snapshot opted-in context before crossing the detached-worker boundary.
-
-    Workbench names retain their existing wb.* query namespace; other names
-    are lowercased. Values stay intact, independently of local tag limits.
-
-    ``os.environ`` is authoritative when it yields anything; only when a
-    capture pattern is configured but the live environment carries nothing
-    matching it does this fall back to the session-start snapshot in meta
-    (see :func:`_persisted_captured_env`).
-    """
-    from thirdeye.env_capture import capture_env
-
-    captured = capture_env(config.capture_env_patterns)
-    if not captured and config.capture_env_patterns and session_dir_ is not None:
-        captured = _persisted_captured_env(session_dir_)
     attributes: dict[str, Any] = {
-        ("wb." + name[3:].lower() if name.upper().startswith("WB_") else name.lower()): value
-        for name, value in captured.items()
+        name.lower().replace("_", "."): value for name, value in captured.items()
     }
     tags = sorted({value for value in captured.values() if value})
     if tags:
         attributes["logfire.tags"] = tags
     return attributes
+
+
+def _resolve_captured_attributes(
+    config: Config, captured_env: dict[str, str] | None
+) -> dict[str, Any]:
+    """Shape the env context for an export job.
+
+    When ``captured_env`` is None this reads ``os.environ`` through the
+    configured capture patterns — correct for platforms whose export runs in
+    a normal child of the agent process. A caller whose own environment is
+    unreliable (Codex's argv-invoked ``notify``) resolves the raw dict itself
+    and passes it here instead.
+    """
+    if captured_env is None:
+        from thirdeye.env_capture import capture_env
+
+        captured_env = capture_env(config.capture_env_patterns)
+    return shape_captured_env(captured_env)
 
 
 def _write_job(thirdeye_home: Path, payload: dict[str, Any]) -> Path:
@@ -616,10 +602,15 @@ def export_turn(
     platform: str,
     cwd: str,
     turn: TurnSpanDict,
+    *,
+    captured_env: dict[str, str] | None = None,
 ) -> None:
     """Hand a completed turn off for background export. Never raises, never
     blocks on network I/O — the actual Logfire call happens in a detached
     child process this spawns and does not wait for. See module docstring.
+
+    ``captured_env`` lets a caller whose own ``os.environ`` is unreliable
+    supply the raw opted-in env dict; when omitted it is read here.
     """
     if not config.logfire.enabled or not config.logfire.token:
         return
@@ -628,7 +619,7 @@ def export_turn(
             config.root,
             {
                 "kind": "turn",
-                "captured_attributes": _capture_attributes(config, session_dir_),
+                "captured_attributes": _resolve_captured_attributes(config, captured_env),
                 "session_dir": str(session_dir_),
                 "session_id": session_id,
                 "platform": platform,
@@ -655,6 +646,8 @@ def export_spans(
     cwd: str,
     trace_id: int,
     spans: list[dict[str, Any]],
+    *,
+    captured_env: dict[str, str] | None = None,
 ) -> bool:
     """Hand already-built spans off for background export.
 
@@ -678,7 +671,7 @@ def export_spans(
             config.root,
             {
                 "kind": "spans",
-                "captured_attributes": _capture_attributes(config, session_dir_),
+                "captured_attributes": _resolve_captured_attributes(config, captured_env),
                 "session_dir": str(session_dir_),
                 "session_id": session_id,
                 "platform": platform,
@@ -710,6 +703,7 @@ def export_subagent_turn(
     tool_use_id: str = "",
     *,
     parent_span_id: str | None = None,
+    captured_env: dict[str, str] | None = None,
 ) -> None:
     """Hand a completed subagent turn off for background export, nested
     under the tool span (already exported, live, when the dispatching tool
@@ -742,7 +736,7 @@ def export_subagent_turn(
             config.root,
             {
                 "kind": "subagent_turn",
-                "captured_attributes": _capture_attributes(config, session_dir_),
+                "captured_attributes": _resolve_captured_attributes(config, captured_env),
                 "session_dir": str(session_dir_),
                 "session_id": session_id,
                 "platform": platform,

@@ -142,6 +142,7 @@ def notify() -> None:
         turn = extract_turn_codex(rollout_path, turn_id)
         if turn is not None:
             from thirdeye.otel_export import export_turn
+            from thirdeye.platforms.codex.captured_env import resolve_captured_env
 
             # A real completion is happening now, whatever the fallback
             # open-turn marker (interrupt_marker.py) thinks: this is the
@@ -158,6 +159,7 @@ def notify() -> None:
                 _PLATFORM,
                 cwd,
                 build_turn(session_dir_=sd, session_id=sid, seq=seq, turn=turn),
+                captured_env=resolve_captured_env(config, sd),
             )
 
         # One pass over the new rollout range: events first, then usage, then
