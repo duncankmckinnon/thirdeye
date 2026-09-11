@@ -16,8 +16,8 @@ import pytest
 from thirdeye.platforms.copilot.database import discover_database_sessions, read_database
 from thirdeye.platforms.copilot.identity import resolve_sources
 
-FIXTURES = Path(__file__).parent / "fixtures" / "copilot"
-CLI_FIXTURE = FIXTURES / "cli-1.0.83"
+FIXTURES = Path(__file__).parent / "fixtures"
+CLI_FIXTURE = FIXTURES
 NATIVE_SESSION_ID = "5a7e8e11-4a6b-49ff-a33e-95d411c4cdd6"
 
 

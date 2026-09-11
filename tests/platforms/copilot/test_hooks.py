@@ -29,8 +29,8 @@ from thirdeye.platforms.copilot.types import SourcePaths, SyncResult
 from thirdeye.reader import SessionReader
 from thirdeye.tags import TagStore
 
-FIXTURES = Path(__file__).parent / "fixtures" / "copilot"
-CLI_FIXTURE = FIXTURES / "cli-1.0.83"
+FIXTURES = Path(__file__).parent / "fixtures"
+CLI_FIXTURE = FIXTURES
 NATIVE_SESSION_ID = "5a7e8e11-4a6b-49ff-a33e-95d411c4cdd6"
 CHILD_SESSION_ID = "bf8cb9f3-2097-4db0-a3c8-78a2653b2106"
 

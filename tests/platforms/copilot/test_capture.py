@@ -32,8 +32,8 @@ from thirdeye.platforms.copilot.identity import resolve_sources, stored_session_
 from thirdeye.platforms.copilot.spool import enqueue_hook, read_spool
 from thirdeye.platforms.copilot.types import SourceBatch, SourcePaths, SourceRecord, SyncResult
 
-FIXTURES = Path(__file__).parent / "fixtures" / "copilot"
-CLI_FIXTURE = FIXTURES / "cli-1.0.83"
+FIXTURES = Path(__file__).parent / "fixtures"
+CLI_FIXTURE = FIXTURES
 NATIVE_SESSION_ID = "5a7e8e11-4a6b-49ff-a33e-95d411c4cdd6"
 OBSERVED_AT = "2026-09-10T17:08:25.626Z"
 

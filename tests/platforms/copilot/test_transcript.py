@@ -14,9 +14,9 @@ from thirdeye.platforms.copilot.identity import resolve_sources
 from thirdeye.platforms.copilot.transcript import discover_transcripts, read_transcript
 from thirdeye.platforms.copilot.types import SourcePaths, SourceRecord, SourceSlice
 
-FIXTURES = Path(__file__).parent / "fixtures" / "copilot"
-V1_CASES = FIXTURES / "v1-cases"
-CLI_FIXTURE = FIXTURES / "cli-1.0.83"
+FIXTURES = Path(__file__).parent / "fixtures"
+V1_CASES = FIXTURES / "cases"
+CLI_FIXTURE = FIXTURES
 NATIVE_SESSION_ID = "5a7e8e11-4a6b-49ff-a33e-95d411c4cdd6"
 
 

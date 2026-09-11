@@ -1,4 +1,4 @@
-# Copilot V1 synthetic contract cases
+# Copilot synthetic contract cases
 
 Every file in this directory is synthetic.  It documents capture contracts and
 reader/archive edge cases; it is not evidence of Copilot CLI behavior.
@@ -23,7 +23,7 @@ location, and content digest rather than an invented native event ID.
 `source-key-prefix-collision.json` is the archive-reuse contract for two
 homes whose SHA-256 digests share a 16-character display prefix.
 
-The observed `cli-1.0.83` sibling fixture has two main prompts and one child
+The observed sibling fixture has two main prompts and one child
 prompt.  The child prompt is retained as source evidence, not asserted to be a
 third human request.  Its six `assistant_usage_events` rows remain raw database
 evidence and must not create UsageStore rows.

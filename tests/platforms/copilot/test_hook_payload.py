@@ -17,8 +17,8 @@ from thirdeye.platforms.copilot.constants import (
 from thirdeye.platforms.copilot.hook_payload import parse_hook
 from thirdeye.platforms.copilot.types import SourceRecord
 
-FIXTURES = Path(__file__).parent / "fixtures" / "copilot"
-CLI_HOOKS = FIXTURES / "cli-1.0.83" / "hooks.jsonl"
+FIXTURES = Path(__file__).parent / "fixtures"
+CLI_HOOKS = FIXTURES / "hooks.jsonl"
 NATIVE_SESSION_ID = "5a7e8e11-4a6b-49ff-a33e-95d411c4cdd6"
 CHILD_AGENT_ID = "bf8cb9f3-2097-4db0-a3c8-78a2653b2106"
 OBSERVED_AT = "2026-09-10T17:08:25.626Z"

@@ -19,7 +19,7 @@ from thirdeye.platforms.copilot.state import read_json, state_path
 from thirdeye.platforms.copilot.types import SourceBatch, SourcePaths, SourceRecord
 from thirdeye.reader import SessionReader
 
-FIXTURES = Path(__file__).parent / "fixtures" / "copilot" / "v1-cases"
+FIXTURES = Path(__file__).parent / "fixtures" / "cases"
 NATIVE_ID = "session-a"
 
 

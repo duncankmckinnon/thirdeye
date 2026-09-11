@@ -37,8 +37,8 @@ from thirdeye.platforms.copilot.state import (
 from thirdeye.platforms.copilot.status import capture_status
 from thirdeye.platforms.copilot.types import SourceBatch, SourcePaths, SourceRecord
 
-FIXTURES = Path(__file__).parent / "fixtures" / "copilot"
-CLI_FIXTURE = FIXTURES / "cli-1.0.83"
+FIXTURES = Path(__file__).parent / "fixtures"
+CLI_FIXTURE = FIXTURES
 NATIVE_SESSION_ID = "5a7e8e11-4a6b-49ff-a33e-95d411c4cdd6"
 OBSERVED_AT_EARLY = "2026-09-10T17:08:20.000Z"
 OBSERVED_AT_LATE = "2026-09-10T17:08:30.000Z"

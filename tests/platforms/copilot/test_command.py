@@ -17,8 +17,8 @@ from thirdeye.platforms.copilot.capture import iter_captured_records
 from thirdeye.platforms.copilot.identity import resolve_sources, stored_session_id
 from thirdeye.platforms.copilot.types import SourcePaths, SyncResult
 
-FIXTURES = Path(__file__).parent / "fixtures" / "copilot"
-CLI_FIXTURE = FIXTURES / "cli-1.0.83"
+FIXTURES = Path(__file__).parent / "fixtures"
+CLI_FIXTURE = FIXTURES
 NATIVE_SESSION_ID = "5a7e8e11-4a6b-49ff-a33e-95d411c4cdd6"
 HOOK_BIN = "thirdeye-copilot-hook"
 SECRET_PROMPT = "SECRET PROMPT BODY"
@@ -266,7 +266,7 @@ def test_copilot_commands_have_no_export_flag() -> None:
 
 
 def test_pyproject_registers_copilot_hook_entrypoint() -> None:
-    pyproject = Path(__file__).resolve().parents[1] / "pyproject.toml"
+    pyproject = Path(__file__).resolve().parents[3] / "pyproject.toml"
     text = pyproject.read_text(encoding="utf-8")
     assert f"{HOOK_BIN} =" in text
     assert "thirdeye.platforms.copilot.hooks:main" in text

@@ -43,9 +43,9 @@ from thirdeye.platforms.copilot.types import (
     SyncResult,
 )
 
-FIXTURES = Path(__file__).parent / "fixtures" / "copilot"
-CLI_FIXTURE = FIXTURES / "cli-1.0.83"
-V1_CASES = FIXTURES / "v1-cases"
+FIXTURES = Path(__file__).parent / "fixtures"
+CLI_FIXTURE = FIXTURES
+V1_CASES = FIXTURES / "cases"
 
 NATIVE_SESSION_ID = "5a7e8e11-4a6b-49ff-a33e-95d411c4cdd6"
 CHILD_AGENT_ID = "bf8cb9f3-2097-4db0-a3c8-78a2653b2106"
@@ -345,7 +345,7 @@ def test_source_key_prefix_collision_is_an_archive_reuse_contract():
         source_keys_share_stored_prefix(first["source_key"], "too-short")
 
 
-# --- observed cli-1.0.83 fixtures ---
+# --- observed CLI fixtures ---
 
 
 def test_cli_fixture_files_exist():
@@ -461,7 +461,7 @@ def test_cli_usage_totals_match_assistant_usage_events():
         assert row_total == model_usage[usage_key]
 
 
-# --- synthetic v1-cases fixtures ---
+# --- synthetic contract-case fixtures ---
 
 
 def test_v1_trailing_json_fixture_has_complete_and_incomplete_tail():

@@ -15,8 +15,8 @@ from thirdeye.platforms.copilot.sources import resolve_sources as reexported_res
 from thirdeye.platforms.copilot.transcript import discover_transcripts
 from thirdeye.platforms.copilot.types import SourcePaths, SourceRecord, SourceSlice
 
-FIXTURES = Path(__file__).parent / "fixtures" / "copilot"
-V1_SLICE = FIXTURES / "v1-cases" / "source-slice.json"
+FIXTURES = Path(__file__).parent / "fixtures"
+V1_SLICE = FIXTURES / "cases" / "source-slice.json"
 NATIVE_ID = "session-a"
 
 
