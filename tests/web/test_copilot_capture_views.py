@@ -1,11 +1,24 @@
-"""Generic web views render raw Copilot archive events without projections."""
+"""Copilot web views: raw archive evidence and projected turn/usage surfaces."""
 
 from __future__ import annotations
 
+import sys
 from pathlib import Path
+from types import ModuleType
 
 import pytest
 
+from tests.shared.copilot_projection_fixtures import (
+    TURN_ONE_ID,
+    TURN_THREE_ID,
+    TURN_TWO_ID,
+    USAGE_MODEL_ONE,
+    USAGE_MODEL_TWO,
+    USAGE_TOKENS_ONE,
+    USAGE_TOKENS_TWO,
+    seed_two_main_interaction_projection,
+)
+from thirdeye.config import LogfireSettings
 from thirdeye.platforms.copilot.archive import commit_batch
 from thirdeye.platforms.copilot.identity import resolve_sources, stored_session_id
 from thirdeye.platforms.copilot.types import SourceBatch, SourceRecord
@@ -171,7 +184,140 @@ def test_copilot_sessions_are_excluded_from_index_turn_query(
     assert stored_id.encode() not in with_turn_query.content
 
 
-def test_copilot_session_usage_page_has_no_token_rows(client, web_config, tmp_path: Path) -> None:
+def test_copilot_projected_turns_participate_in_index_turn_query(
+    client, web_config, tmp_path: Path
+) -> None:
+    stored_id = seed_two_main_interaction_projection(web_config, tmp_path)
+    store = client.app.state.store
+    meta = store.get_meta(stored_id)
+    turns = session_turns(meta, store)
+
+    assert [turn["turn_id"] for turn in turns] == [TURN_ONE_ID, TURN_TWO_ID]
+
+    first_turn_query = client.get("/?platform=copilot&since=2020-01-01&turn_query=alpha.txt")
+    second_turn_query = client.get("/?platform=copilot&since=2020-01-01&turn_query=final%20sum")
+    cross_turn_query = client.get(
+        "/?platform=copilot&since=2020-01-01&turn_query=alpha.txt,final%20sum"
+    )
+
+    assert first_turn_query.status_code == second_turn_query.status_code == 200
+    assert stored_id.encode() in first_turn_query.content
+    assert stored_id.encode() in second_turn_query.content
+    assert stored_id.encode() not in cross_turn_query.content
+
+
+def test_copilot_session_usage_page_shows_projected_usage_rows(
+    client, web_config, tmp_path: Path
+) -> None:
+    stored_id = seed_two_main_interaction_projection(web_config, tmp_path)
+
+    usage = client.get(f"/sessions/{stored_id}/usage")
+
+    assert usage.status_code == 200
+    body = usage.text
+    tbody = body.split("<tbody>", 1)[1].split("</tbody>", 1)[0]
+    assert tbody.count("<tr>") == 2
+    assert USAGE_MODEL_ONE in tbody
+    assert USAGE_MODEL_TWO in tbody
+    assert str(USAGE_TOKENS_ONE) in tbody
+    assert str(USAGE_TOKENS_TWO) in tbody
+    assert str(USAGE_TOKENS_TWO * 2) not in body
+
+
+def test_copilot_projected_session_search_tag_and_eval_routes(
+    client, app, web_config, tmp_path: Path, monkeypatch
+) -> None:
+    stored_id = seed_two_main_interaction_projection(web_config, tmp_path)
+    app.state.config = app.state.config.write_logfire_settings(
+        LogfireSettings(api_key="dataset-key")
+    )
+    added: list[dict] = []
+
+    class Client:
+        def __init__(self, api_key):
+            pass
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return None
+
+        def create_dataset(self, **kwargs):
+            pass
+
+        def add_cases(self, name, *, cases):
+            added.extend(cases)
+
+    package = ModuleType("logfire")
+    experimental = ModuleType("logfire.experimental")
+    api_client = ModuleType("logfire.experimental.api_client")
+    api_client.LogfireAPIClient = Client
+    monkeypatch.setitem(sys.modules, "logfire", package)
+    monkeypatch.setitem(sys.modules, "logfire.experimental", experimental)
+    monkeypatch.setitem(sys.modules, "logfire.experimental.api_client", api_client)
+
+    session = client.get(f"/sessions/{stored_id}")
+    tree = client.get(f"/sessions/{stored_id}/tree")
+    detail = client.get(f"/sessions/{stored_id}/events/0")
+    search = client.get("/search?q=alpha.txt&platform=copilot")
+    tagged = client.post(f"/sessions/{stored_id}/events/0/tags", data={"tag": "review"})
+    tagged_index = client.get("/?tag=review&since=2020-01-01")
+    untagged_index = client.get("/?tag=missing-tag&since=2020-01-01")
+    export = client.post(
+        "/sessions/logfire-dataset",
+        data={
+            "dataset_name": "copilot-turns",
+            "dataset_scope": "turn",
+            "platform": "copilot",
+            "since": "2020-01-01",
+        },
+    )
+
+    assert session.status_code == tree.status_code == search.status_code == 200
+    assert detail.status_code == 200
+    assert b"copilot" in session.content
+    assert b"/fixture/workspace" in session.content
+    assert b"copilot_transcript" in tree.content
+    assert b"user_message" not in tree.content
+    assert b"tool_call" not in tree.content
+    assert b"alpha.txt" in detail.content
+    assert b'"schema_version": 1' in detail.content
+    assert stored_id.encode() in search.content
+    assert b"alpha.txt" in search.content
+    assert tagged.status_code == 200
+    assert b"review" in tagged.content
+    assert tagged_index.status_code == untagged_index.status_code == 200
+    assert stored_id.encode() in tagged_index.content
+    assert stored_id.encode() not in untagged_index.content
+
+    assert export.status_code == 200
+    assert "Sent 2 turns" in export.text
+    names = [case["name"] for case in added]
+    assert names == [
+        f"{stored_id}:{TURN_ONE_ID}",
+        f"{stored_id}:{TURN_TWO_ID}",
+    ]
+    assert TURN_THREE_ID not in "".join(names)
+    assert not any(case["name"].endswith(":child") for case in added)
+    first, second = added
+    assert "turn" in first["inputs"] and "turn" in second["inputs"]
+    assert len(first["inputs"]["turn"]["events"]) == 3
+    assert len(second["inputs"]["turn"]["events"]) == 2
+    event_types = {event.get("t") for case in added for event in case["inputs"]["turn"]["events"]}
+    assert event_types <= {
+        "copilot_transcript",
+        "copilot_database",
+        "copilot_hook",
+        "copilot_metadata",
+    }
+    assert "user_message" not in event_types
+    assert "tool_call" not in event_types
+
+
+def test_copilot_session_usage_page_has_no_token_rows_without_projection(
+    client, web_config, tmp_path: Path
+) -> None:
     paths = resolve_sources(tmp_path / "copilot-home")
     records: list[SourceRecord] = [
         {

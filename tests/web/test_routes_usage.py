@@ -79,15 +79,33 @@ def test_session_usage_404(client):
     assert r.status_code == 404
 
 
-def test_global_platform_filter_only_claude_and_codex(client):
-    """The platform filter offers only claude and codex — gemini is gone."""
+def test_global_platform_filter_includes_copilot(client):
+    """The platform filter lists supported agents, including copilot."""
     r = client.get("/usage")
     assert r.status_code == 200
     body = r.text
     assert 'value="claude"' in body
     assert 'value="codex"' in body
+    assert 'value="cursor"' in body
+    assert 'value="copilot"' in body
     assert 'value="gemini"' not in body
     assert ">gemini<" not in body
+
+
+def test_global_usage_platform_filter_shows_copilot_rows(client, web_config, tmp_path):
+    from tests.shared.copilot_projection_fixtures import (
+        USAGE_TOKENS_ONE,
+        USAGE_TOKENS_TWO,
+        seed_two_main_interaction_projection,
+    )
+
+    seed_two_main_interaction_projection(web_config, tmp_path)
+    r = client.get("/usage?platform=copilot&since=2026-09-01&until=2026-09-30")
+    assert r.status_code == 200
+    assert 'value="copilot"' in r.text
+    assert "selected>copilot<" in r.text.replace("\n", "")
+    assert str(USAGE_TOKENS_ONE + USAGE_TOKENS_TWO) in r.text
+    assert str(USAGE_TOKENS_TWO * 2) not in r.text
 
 
 def test_session_usage_renders_per_call_rows_with_model(client, web_config):
