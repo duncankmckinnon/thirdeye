@@ -106,6 +106,16 @@
         }
       }
     ],
-    "diagnostics": []
+    "diagnostics": [
+      {
+        "code": "unknown_provider",
+        "severity": "info",
+        "message": "database usage rows do not name a provider; UsageRow uses the unknown sentinel",
+        "source_ids": [
+          "copilot-db:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa:5a7e8e11-4a6b-49ff-a33e-95d411c4cdd6:assistant_usage_events:13:sha256:68bf2ca8903d9bdfe15a9d61144ba8b9b0e352678680e4490f2259bd2f468f47"
+        ],
+        "details": {}
+      }
+    ]
   }
 }

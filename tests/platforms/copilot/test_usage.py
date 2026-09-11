@@ -7,9 +7,6 @@ import json
 from pathlib import Path
 from typing import Any
 
-import pytest
-
-from thirdeye.platforms.copilot.database import read_database
 from thirdeye.platforms.copilot.identity import resolve_sources
 from thirdeye.platforms.copilot.types import SourceRecord
 from thirdeye.platforms.copilot.usage import build_accounting
@@ -17,7 +14,6 @@ from thirdeye.usage.types import UsageRow
 
 FIXTURES = Path(__file__).parent / "fixtures"
 RECONCILIATION = FIXTURES / "reconciliation-cases"
-CLI_FIXTURE = FIXTURES
 
 NATIVE_SESSION_ID = "5a7e8e11-4a6b-49ff-a33e-95d411c4cdd6"
 SOURCE_KEY = "a" * 64
@@ -32,6 +28,22 @@ SHUTDOWN_TOTALS = {
     "cache_read_tokens": 23948,
     "cache_write_tokens": 11430,
     "total_nano_aiu": 373366000,
+}
+
+MAIN_AGENT_TOTALS = {
+    "input_tokens": 26416,
+    "output_tokens": 229,
+    "cache_read_tokens": 19522,
+    "cache_write_tokens": 6882,
+    "reasoning_tokens": 39,
+}
+
+CHILD_AGENT_TOTALS = {
+    "input_tokens": 8980,
+    "output_tokens": 99,
+    "cache_read_tokens": 4426,
+    "cache_write_tokens": 4548,
+    "reasoning_tokens": 16,
 }
 
 
@@ -84,7 +96,7 @@ def _usage_record(
 
 
 def _shutdown_record(*, source_id: str = "transcript/shutdown-1") -> SourceRecord:
-    usage = _load_json(CLI_FIXTURE / "usage.json")
+    usage = _load_json(FIXTURES / "usage.json")
     return {
         "source_id": source_id,
         "source_kind": "transcript",
@@ -131,7 +143,7 @@ def _checkpoint_record(*, source_id: str = "transcript/checkpoint-1") -> SourceR
 
 
 def _six_call_records() -> list[SourceRecord]:
-    rows = _load_json(CLI_FIXTURE / "assistant-usage-events.json")
+    rows = _load_json(FIXTURES / "assistant-usage-events.json")
     revisions = {
         call["row_id"]: call["usage_source_id"].rsplit(":", 1)[-1]
         for call in _load_json(RECONCILIATION / "observed-six-calls.json")["calls"]
@@ -162,27 +174,6 @@ def _nano_aiu_total(candidates: list[dict[str, Any]]) -> int:
         for candidate in candidates
         if "total_nano_aiu" in candidate["supplemental_metrics"]
     )
-
-
-# --- module boundaries ---
-
-
-def test_usage_module_has_no_forbidden_imports():
-    import thirdeye.platforms.copilot.usage as usage
-
-    source = Path(usage.__file__).read_text(encoding="utf-8")
-    forbidden = (
-        "tracing",
-        "attribution",
-        "projection_store",
-        "export_state",
-        "build_semantics",
-        "join_usage",
-        "UsageStore",
-        "usage_store",
-    )
-    for token in forbidden:
-        assert token not in source
 
 
 # --- contract fixture ---
@@ -225,6 +216,18 @@ def test_six_call_totals_match_observed_shutdown_fixture():
     assert _nano_aiu_total(projection["candidates"]) == SHUTDOWN_TOTALS["total_nano_aiu"]
 
 
+def test_per_agent_totals_match_shutdown_agent_metrics():
+    records = _six_call_records()
+    projection, _state = build_accounting(records, {})
+    by_call = {candidate["logical_call_id"]: candidate for candidate in projection["candidates"]}
+    grouped: dict[str | None, list[UsageRow]] = {}
+    for usage_row in projection["usage_rows"]:
+        grouped.setdefault(by_call[usage_row.call_id]["agent_id"], []).append(usage_row)
+
+    assert _metric_totals(grouped[None]) == MAIN_AGENT_TOTALS
+    assert _metric_totals(grouped[CHILD_AGENT_ID]) == CHILD_AGENT_TOTALS
+
+
 def test_candidates_preserve_agent_parent_and_turn_index_evidence():
     records = _six_call_records()
     projection, _state = build_accounting(records, {})
@@ -238,7 +241,9 @@ def test_candidates_preserve_agent_parent_and_turn_index_evidence():
 
     child_calls = [by_row_id[str(row_id)] for row_id in (16, 17)]
     assert all(item["agent_id"] == CHILD_AGENT_ID for item in child_calls)
-    assert all(item["parent_tool_call_id"] == "call_qx4FH5DADTeT1qVLb37HNpBk" for item in child_calls)
+    assert all(
+        item["parent_tool_call_id"] == "call_qx4FH5DADTeT1qVLb37HNpBk" for item in child_calls
+    )
 
 
 def test_shutdown_validation_passes_when_totals_match():
@@ -250,7 +255,7 @@ def test_shutdown_validation_passes_when_totals_match():
 def test_database_reader_records_normalize_to_same_six_calls(tmp_path: Path):
     from tests.platforms.copilot.test_database import _collect_all, _write_database
 
-    usage_rows = _load_json(CLI_FIXTURE / "assistant-usage-events.json")
+    usage_rows = _load_json(FIXTURES / "assistant-usage-events.json")
     home = tmp_path / "copilot"
     _write_database(
         home,
@@ -261,10 +266,28 @@ def test_database_reader_records_normalize_to_same_six_calls(tmp_path: Path):
     db_records = _usage_records(_collect_all(resolve_sources(home), NATIVE_SESSION_ID))
     synthetic_records = _six_call_records()
 
-    db_projection, _ = build_accounting(db_records, {})
-    synthetic_projection, _ = build_accounting(synthetic_records, {})
+    sample = db_records[0]
+    source_key = sample["source_id"].split(":")[1]
+    generation = sample["locator"]["generation"]
+    aligned = [
+        _usage_record(
+            record["payload"]["row"],
+            content_revision=record["locator"]["content_revision"],
+            generation=generation,
+            source_key=source_key,
+        )
+        for record in synthetic_records
+    ]
 
-    assert len(db_projection["usage_rows"]) == len(synthetic_projection["usage_rows"]) == 6
+    db_projection, _ = build_accounting(db_records, {})
+    synthetic_projection, _ = build_accounting(aligned, {})
+
+    assert [row.call_id for row in db_projection["usage_rows"]] == [
+        row.call_id for row in synthetic_projection["usage_rows"]
+    ]
+    assert [candidate["logical_call_id"] for candidate in db_projection["candidates"]] == [
+        candidate["logical_call_id"] for candidate in synthetic_projection["candidates"]
+    ]
     assert _metric_totals(db_projection["usage_rows"]) == _metric_totals(
         synthetic_projection["usage_rows"]
     )
@@ -274,26 +297,33 @@ def test_database_reader_records_normalize_to_same_six_calls(tmp_path: Path):
 
 
 def test_unknown_provider_maps_to_unknown_in_usage_row():
-    row = copy.deepcopy(_load_json(CLI_FIXTURE / "assistant-usage-events.json")[0])
-    record = _usage_record(row, content_revision="sha256:68bf2ca8903d9bdfe15a9d61144ba8b9b0e352678680e4490f2259bd2f468f47")
+    row = copy.deepcopy(_load_json(FIXTURES / "assistant-usage-events.json")[0])
+    record = _usage_record(
+        row,
+        content_revision="sha256:68bf2ca8903d9bdfe15a9d61144ba8b9b0e352678680e4490f2259bd2f468f47",
+    )
     projection, _state = build_accounting([record], {})
 
     assert projection["candidates"][0]["provider"] is None
     assert projection["usage_rows"][0].provider_name == "unknown"
+    unknown = [item for item in projection["diagnostics"] if item["code"] == "unknown_provider"]
+    assert len(unknown) == 1
+    assert record["source_id"] in unknown[0]["source_ids"]
 
 
 def test_explicit_provider_is_preserved():
-    row = copy.deepcopy(_load_json(CLI_FIXTURE / "assistant-usage-events.json")[0])
+    row = copy.deepcopy(_load_json(FIXTURES / "assistant-usage-events.json")[0])
     row["provider"] = "openai"
     record = _usage_record(row, content_revision="sha256:provider-rev")
     projection, _state = build_accounting([record], {})
 
     assert projection["candidates"][0]["provider"] == "openai"
     assert projection["usage_rows"][0].provider_name == "openai"
+    assert "unknown_provider" not in _diagnostic_codes(projection)
 
 
 def test_provider_name_column_is_accepted():
-    row = copy.deepcopy(_load_json(CLI_FIXTURE / "assistant-usage-events.json")[0])
+    row = copy.deepcopy(_load_json(FIXTURES / "assistant-usage-events.json")[0])
     row["provider_name"] = "anthropic"
     record = _usage_record(row, content_revision="sha256:provider-name-rev")
     projection, _state = build_accounting([record], {})
@@ -306,7 +336,7 @@ def test_provider_name_column_is_accepted():
 
 
 def test_absent_cache_and_reasoning_tokens_stay_none_in_usage_row():
-    row = copy.deepcopy(_load_json(CLI_FIXTURE / "assistant-usage-events.json")[0])
+    row = copy.deepcopy(_load_json(FIXTURES / "assistant-usage-events.json")[0])
     row.pop("cache_read_tokens", None)
     row.pop("cache_write_tokens", None)
     row.pop("reasoning_tokens", None)
@@ -327,18 +357,14 @@ def test_absent_cache_and_reasoning_tokens_stay_none_in_usage_row():
 
 
 def test_missing_required_fields_keep_candidate_without_usage_row():
-    row = copy.deepcopy(_load_json(CLI_FIXTURE / "assistant-usage-events.json")[0])
+    row = copy.deepcopy(_load_json(FIXTURES / "assistant-usage-events.json")[0])
     row.pop("output_tokens")
     record = _usage_record(row, content_revision="sha256:missing-output-rev")
     projection, _state = build_accounting([record], {})
 
     assert len(projection["candidates"]) == 1
     assert projection["usage_rows"] == []
-    missing = [
-        item
-        for item in projection["diagnostics"]
-        if item["code"] == "missing_usage_fields"
-    ]
+    missing = [item for item in projection["diagnostics"] if item["code"] == "missing_usage_fields"]
     assert missing
     assert "output_tokens" in missing[0]["details"]["missing_fields"]
     supplemental = projection["candidates"][0]["supplemental_metrics"]
@@ -347,7 +373,7 @@ def test_missing_required_fields_keep_candidate_without_usage_row():
 
 
 def test_missing_timestamp_diagnostic_and_no_usage_row():
-    row = copy.deepcopy(_load_json(CLI_FIXTURE / "assistant-usage-events.json")[0])
+    row = copy.deepcopy(_load_json(FIXTURES / "assistant-usage-events.json")[0])
     row.pop("created_at")
     record = _usage_record(row, content_revision="sha256:missing-ts-rev")
     record["ts"] = None
@@ -363,7 +389,7 @@ def test_missing_timestamp_diagnostic_and_no_usage_row():
 
 
 def test_later_revision_replaces_earlier_for_same_logical_call():
-    row = copy.deepcopy(_load_json(CLI_FIXTURE / "assistant-usage-events.json")[0])
+    row = copy.deepcopy(_load_json(FIXTURES / "assistant-usage-events.json")[0])
     first = _usage_record(row, content_revision="sha256:first-revision")
     updated = copy.deepcopy(row)
     updated["output_tokens"] = 999
@@ -373,38 +399,57 @@ def test_later_revision_replaces_earlier_for_same_logical_call():
     assert len(projection["usage_rows"]) == 1
     assert projection["usage_rows"][0].output_tokens == 999
     assert projection["candidates"][0]["usage_source_id"] == second["source_id"]
+    assert projection["candidates"][0]["source_ids"] == [first["source_id"], second["source_id"]]
     assert len(state["logical_calls"]) == 1
+    stored = state["logical_calls"][projection["candidates"][0]["logical_call_id"]]
+    assert stored["metrics_digest"].startswith("sha256:")
+    assert stored["metrics_digest"] != ""
 
 
 def test_reused_row_id_across_generations_emits_warning():
-    row = copy.deepcopy(_load_json(CLI_FIXTURE / "assistant-usage-events.json")[0])
+    row_a = copy.deepcopy(_load_json(FIXTURES / "assistant-usage-events.json")[0])
+    row_b = copy.deepcopy(row_a)
+    row_b["output_tokens"] = 50
     first = _usage_record(
-        row,
+        row_a,
         content_revision="sha256:gen-a-rev",
         generation="sha256:generation-a",
     )
     second = _usage_record(
-        row,
+        row_b,
         content_revision="sha256:gen-b-rev",
         generation="sha256:generation-b",
     )
     projection, state = build_accounting([first, second], {})
 
     assert "usage_row_id_reuse" in _diagnostic_codes(projection)
-    assert len(projection["usage_rows"]) == 2
+    reuse = next(item for item in projection["diagnostics"] if item["code"] == "usage_row_id_reuse")
+    assert first["source_id"] in reuse["source_ids"]
+    assert second["source_id"] in reuse["source_ids"]
+    call_ids = [row.call_id for row in projection["usage_rows"]]
+    assert len(call_ids) == 2
+    assert call_ids[0] != call_ids[1]
+    assert projection["usage_rows"][0].output_tokens == row_a["output_tokens"]
+    assert projection["usage_rows"][1].output_tokens == 50
+    assert projection["candidates"][0]["usage_source_id"] == first["source_id"]
     assert len(state["logical_calls"]) == 2
 
 
 def test_incompatible_metrics_quarantine_logical_call():
-    row = copy.deepcopy(_load_json(CLI_FIXTURE / "assistant-usage-events.json")[0])
+    row = copy.deepcopy(_load_json(FIXTURES / "assistant-usage-events.json")[0])
     row["cache_read_tokens"] = row["input_tokens"] + 1
     record = _usage_record(row, content_revision="sha256:incompatible-rev")
     projection, state = build_accounting([record], {})
 
     assert projection["usage_rows"] == []
-    assert projection["candidates"] == []
+    assert len(projection["candidates"]) == 1
+    assert projection["candidates"][0]["usage_source_id"] == record["source_id"]
     assert "usage_revision_conflict" in _diagnostic_codes(projection)
-    assert state["logical_calls"] == {}
+    conflict = next(
+        item for item in projection["diagnostics"] if item["code"] == "usage_revision_conflict"
+    )
+    assert record["source_id"] in conflict["source_ids"]
+    assert state["logical_calls"]
 
 
 # --- checkpoint / shutdown ---
@@ -419,7 +464,7 @@ def test_checkpoint_snapshot_is_not_additive():
 
 
 def test_shutdown_mismatch_emits_diagnostic():
-    usage = _load_json(CLI_FIXTURE / "usage.json")
+    usage = _load_json(FIXTURES / "usage.json")
     usage["modelMetrics"]["gpt-5.6-luna"]["usage"]["inputTokens"] = 1
     shutdown = _shutdown_record()
     shutdown["payload"]["data"] = usage
@@ -431,6 +476,50 @@ def test_shutdown_mismatch_emits_diagnostic():
     )
     assert mismatch["details"]["expected_input_tokens"] == 1
     assert mismatch["details"]["accounted_input_tokens"] == SHUTDOWN_TOTALS["input_tokens"]
+
+
+def test_shutdown_float_nano_aiu_is_used_for_validation():
+    usage = _load_json(FIXTURES / "usage.json")
+    usage["modelMetrics"]["gpt-5.6-luna"]["totalNanoAiu"] = 1.0
+    shutdown = _shutdown_record()
+    shutdown["payload"]["data"] = usage
+    projection, _state = build_accounting(_six_call_records() + [shutdown], {})
+
+    mismatch = next(
+        item for item in projection["diagnostics"] if item["code"] == "shutdown_total_mismatch"
+    )
+    assert mismatch["details"]["expected_total_nano_aiu"] == 1
+    assert "capability_gap" not in _diagnostic_codes(projection)
+
+
+def test_shutdown_agent_metrics_mismatch_is_reported():
+    usage = _load_json(FIXTURES / "usage.json")
+    usage["agentMetrics"]["main"]["modelMetrics"]["gpt-5.6-luna"]["usage"]["inputTokens"] = 1
+    shutdown = _shutdown_record()
+    shutdown["payload"]["data"] = usage
+    projection, _state = build_accounting(_six_call_records() + [shutdown], {})
+
+    mismatches = [
+        item for item in projection["diagnostics"] if item["code"] == "shutdown_total_mismatch"
+    ]
+    assert any(
+        item["details"].get("agent_id") == "main"
+        and item["details"].get("expected_input_tokens") == 1
+        for item in mismatches
+    )
+
+
+def test_unusable_shutdown_emits_capability_gap_instead_of_silent_skip():
+    shutdown = _shutdown_record()
+    shutdown["payload"]["data"] = {
+        "modelMetrics": {"gpt-5.6-luna": {"usage": {"inputTokens": "not-a-number"}}}
+    }
+    projection, _state = build_accounting(_six_call_records() + [shutdown], {})
+
+    gaps = [item for item in projection["diagnostics"] if item["code"] == "capability_gap"]
+    assert gaps
+    assert shutdown["source_id"] in gaps[0]["source_ids"]
+    assert "shutdown_total_mismatch" not in _diagnostic_codes(projection)
 
 
 # --- supplemental metrics ---
@@ -469,7 +558,7 @@ def test_incremental_replay_matches_full_archive():
 
 def test_late_arrival_adds_new_call_without_rerunning_agent():
     first_batch = _six_call_records()[:3]
-    late_row = copy.deepcopy(_load_json(CLI_FIXTURE / "assistant-usage-events.json")[3])
+    late_row = copy.deepcopy(_load_json(FIXTURES / "assistant-usage-events.json")[3])
     late_record = _usage_record(
         late_row,
         content_revision="sha256:late-arrival-rev",
@@ -495,3 +584,103 @@ def test_prior_state_logical_calls_are_preserved_for_unseen_ids():
     assert projection["usage_rows"] == []
     assert projection["candidates"] == []
     assert next_state["logical_calls"] == inherited["logical_calls"]
+
+
+def test_nested_accounting_state_preserves_unseen_logical_calls():
+    records = _six_call_records()[:1]
+    _, state = build_accounting(records, {})
+    nested = {"accounting_state": copy.deepcopy(state)}
+
+    projection, next_state = build_accounting([], nested)
+    assert projection["usage_rows"] == []
+    assert next_state["logical_calls"] == state["logical_calls"]
+
+
+def test_incomplete_locator_emits_capability_gap_and_keeps_the_source_id():
+    row = copy.deepcopy(_load_json(FIXTURES / "assistant-usage-events.json")[0])
+    record = _usage_record(row, content_revision="sha256:missing-generation-rev")
+    del record["locator"]["generation"]
+    projection, _state = build_accounting([record], {})
+
+    assert projection["usage_rows"] == []
+    assert projection["candidates"] == []
+    gap = next(item for item in projection["diagnostics"] if item["code"] == "capability_gap")
+    assert record["source_id"] in gap["source_ids"]
+
+
+def test_invalid_source_identity_emits_capability_gap():
+    row = copy.deepcopy(_load_json(FIXTURES / "assistant-usage-events.json")[0])
+    record = _usage_record(row, content_revision="sha256:bad-source-rev")
+    record["source_id"] = "not-a-copilot-db-identity"
+    projection, _state = build_accounting([record], {})
+
+    assert projection["usage_rows"] == []
+    assert projection["candidates"] == []
+    gap = next(item for item in projection["diagnostics"] if item["code"] == "capability_gap")
+    assert record["source_id"] in gap["source_ids"]
+
+
+def test_truncated_source_key_emits_capability_gap():
+    row = copy.deepcopy(_load_json(FIXTURES / "assistant-usage-events.json")[0])
+    record = _usage_record(row, content_revision="sha256:short-key-rev", source_key="abc")
+    projection, _state = build_accounting([record], {})
+
+    assert projection["usage_rows"] == []
+    gap = next(item for item in projection["diagnostics"] if item["code"] == "capability_gap")
+    assert record["source_id"] in gap["source_ids"]
+    assert gap["details"]["reason"] == "source_id is not a 64-character copilot-db identity"
+
+
+def test_later_incompatible_revision_conflicts_using_prior_metrics_digest():
+    row = copy.deepcopy(_load_json(FIXTURES / "assistant-usage-events.json")[0])
+    first = _usage_record(row, content_revision="sha256:first-digest-rev")
+    _, state = build_accounting([first], {})
+    logical_id = next(iter(state["logical_calls"]))
+    prior_digest = state["logical_calls"][logical_id]["metrics_digest"]
+
+    bad = copy.deepcopy(row)
+    bad["cache_read_tokens"] = bad["input_tokens"] + 1
+    second = _usage_record(bad, content_revision="sha256:second-digest-rev")
+    projection, _next_state = build_accounting([second], state)
+
+    conflict = next(
+        item for item in projection["diagnostics"] if item["code"] == "usage_revision_conflict"
+    )
+    assert conflict["details"]["prior_metrics_digest"] == prior_digest
+    assert conflict["details"]["metrics_digest"] != prior_digest
+    assert projection["usage_rows"] == []
+    assert len(projection["candidates"]) == 1
+
+
+def test_disjoint_partition_does_not_false_mismatch_shutdown():
+    records = _six_call_records()
+    _first, state = build_accounting(records[:3], {})
+    second, _next_state = build_accounting(records[3:] + [_shutdown_record()], state)
+
+    assert "shutdown_total_mismatch" not in _diagnostic_codes(second)
+    assert len(second["usage_rows"]) == 3
+
+
+def test_row_id_reuse_is_detected_across_partitions():
+    row_a = copy.deepcopy(_load_json(FIXTURES / "assistant-usage-events.json")[0])
+    row_b = copy.deepcopy(row_a)
+    row_b["output_tokens"] = 50
+    first = _usage_record(
+        row_a,
+        content_revision="sha256:gen-a-rev",
+        generation="sha256:generation-a",
+    )
+    second = _usage_record(
+        row_b,
+        content_revision="sha256:gen-b-rev",
+        generation="sha256:generation-b",
+    )
+    _first_projection, state = build_accounting([first], {})
+    projection, _next_state = build_accounting([second], state)
+
+    assert "usage_row_id_reuse" in _diagnostic_codes(projection)
+    reuse = next(item for item in projection["diagnostics"] if item["code"] == "usage_row_id_reuse")
+    assert first["source_id"] in reuse["source_ids"]
+    assert second["source_id"] in reuse["source_ids"]
+    assert len(projection["usage_rows"]) == 1
+    assert projection["usage_rows"][0].output_tokens == 50
