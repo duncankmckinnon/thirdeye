@@ -140,7 +140,7 @@ def _metrics_digest(row: dict[str, Any]) -> str:
 def _row_metrics(row: dict[str, Any]) -> dict[str, int]:
     metrics: dict[str, int] = {}
     for field in _METRIC_FIELDS:
-        value = _integer(row.get(field))
+        value = _metric_number(row.get(field))
         if value is not None:
             metrics[field] = value
     return metrics
@@ -149,13 +149,19 @@ def _row_metrics(row: dict[str, Any]) -> dict[str, int]:
 def _row_is_incompatible(row: dict[str, Any]) -> bool:
     """Reject revisions that cannot describe a single completed request."""
 
-    input_tokens = _integer(row.get("input_tokens"))
-    cache_read = _integer(row.get("cache_read_tokens"))
-    cache_write = _integer(row.get("cache_write_tokens"))
+    input_tokens = _metric_number(row.get("input_tokens"))
+    cache_read = _metric_number(row.get("cache_read_tokens"))
+    cache_write = _metric_number(row.get("cache_write_tokens"))
     if input_tokens is None:
         return False
-    return (cache_read is not None and cache_read > input_tokens) or (
+    if (cache_read is not None and cache_read > input_tokens) or (
         cache_write is not None and cache_write > input_tokens
+    ):
+        return True
+    return (
+        cache_read is not None
+        and cache_write is not None
+        and cache_read + cache_write > input_tokens
     )
 
 
@@ -181,7 +187,10 @@ def _candidate(
     }
     # Fully specified token usage belongs in UsageRow.  Retain token values in
     # the candidate only when a partial row cannot produce a UsageRow.
-    if _integer(row.get("input_tokens")) is None or _integer(row.get("output_tokens")) is None:
+    if (
+        _metric_number(row.get("input_tokens")) is None
+        or _metric_number(row.get("output_tokens")) is None
+    ):
         supplemental.update(
             {
                 field: row[field]
@@ -221,8 +230,8 @@ def _missing_fields(candidate: AccountingCandidate, row: dict[str, Any]) -> list
     required = {
         "timestamp": candidate["timestamp"],
         "model": candidate["model"],
-        "input_tokens": _integer(row.get("input_tokens")),
-        "output_tokens": _integer(row.get("output_tokens")),
+        "input_tokens": _metric_number(row.get("input_tokens")),
+        "output_tokens": _metric_number(row.get("output_tokens")),
     }
     return [name for name, value in required.items() if value is None]
 
@@ -233,8 +242,8 @@ def _usage_row(
     missing = _missing_fields(candidate, row)
     if missing:
         return None
-    input_tokens = _integer(row["input_tokens"])
-    output_tokens = _integer(row["output_tokens"])
+    input_tokens = _metric_number(row["input_tokens"])
+    output_tokens = _metric_number(row["output_tokens"])
     assert input_tokens is not None and output_tokens is not None
     return UsageRow(
         session_id=session_id,
@@ -246,9 +255,9 @@ def _usage_row(
         response_model=candidate["model"],  # guarded by _missing_fields
         input_tokens=input_tokens,
         output_tokens=output_tokens,
-        cache_read_input_tokens=_integer(row.get("cache_read_tokens")),
-        cache_creation_input_tokens=_integer(row.get("cache_write_tokens")),
-        reasoning_output_tokens=_integer(row.get("reasoning_tokens")),
+        cache_read_input_tokens=_metric_number(row.get("cache_read_tokens")),
+        cache_creation_input_tokens=_metric_number(row.get("cache_write_tokens")),
+        reasoning_output_tokens=_metric_number(row.get("reasoning_tokens")),
     )
 
 
@@ -285,7 +294,7 @@ def _metrics_from_call(call: dict[str, Any]) -> dict[str, int]:
         return {}
     parsed: dict[str, int] = {}
     for field in _METRIC_FIELDS:
-        value = _integer(metrics.get(field))
+        value = _metric_number(metrics.get(field))
         if value is not None:
             parsed[field] = value
     return parsed
@@ -391,10 +400,10 @@ def _hydrate_accounted(
     accounted_by_agent: dict[str, dict[str, int]] = {}
     prior_accounted = source.get("accounted_metrics")
     if isinstance(prior_accounted, dict) and any(
-        _integer(prior_accounted.get(field)) is not None for field in _METRIC_FIELDS
+        _metric_number(prior_accounted.get(field)) is not None for field in _METRIC_FIELDS
     ):
         for field in _METRIC_FIELDS:
-            value = _integer(prior_accounted.get(field))
+            value = _metric_number(prior_accounted.get(field))
             if value is not None:
                 accounted[field] = value
         prior_agents = source.get("accounted_by_agent")
@@ -417,12 +426,36 @@ def _hydrate_accounted(
     return accounted, accounted_by_agent
 
 
+def _prior_source_ids(call: dict[str, Any]) -> list[str]:
+    prior_ids = call.get("source_ids")
+    if isinstance(prior_ids, list):
+        seeded = [item for item in prior_ids if isinstance(item, str)]
+        if seeded:
+            return seeded
+    usage_source_id = call.get("usage_source_id")
+    return [usage_source_id] if isinstance(usage_source_id, str) else []
+
+
+def _seed_revision_sources(
+    revision_sources: dict[str, list[str]],
+    logical_id: str,
+    inherited_calls: dict[str, Any],
+) -> None:
+    if logical_id in revision_sources:
+        return
+    previous = inherited_calls.get(logical_id)
+    revision_sources[logical_id] = (
+        _prior_source_ids(previous) if isinstance(previous, dict) else []
+    )
+
+
 def _logical_call_entry(
     logical_id: str,
     revision: DatabaseRevision,
     record: SourceRecord,
     row: dict[str, Any],
     candidate: AccountingCandidate,
+    source_ids: list[str],
     *,
     quarantined: bool,
 ) -> dict[str, Any]:
@@ -432,6 +465,7 @@ def _logical_call_entry(
         "content_revision": revision["content_revision"],
         "metrics_digest": _metrics_digest(row),
         "usage_source_id": record["source_id"],
+        "source_ids": list(source_ids),
         "table": revision["table"],
         "primary_key": revision["primary_key"],
         "agent_id": candidate["agent_id"],
@@ -516,7 +550,9 @@ def build_accounting(
         if logical_id in selected:
             previous_digest = _metrics_digest(selected[logical_id][0]["payload"]["row"])
         selected[logical_id] = (record, revision, candidate, previous_digest)
-        revision_sources.setdefault(logical_id, []).append(record["source_id"])
+        _seed_revision_sources(revision_sources, logical_id, inherited_calls)
+        if record["source_id"] not in revision_sources[logical_id]:
+            revision_sources[logical_id].append(record["source_id"])
         prior_digests[logical_id] = _metrics_digest(payload["row"])
 
     for key in sorted(row_generations):
@@ -576,7 +612,13 @@ def build_accounting(
             )
             candidates.append(candidate)
             logical_calls[logical_id] = _logical_call_entry(
-                logical_id, revision, record, row, candidate, quarantined=True
+                logical_id,
+                revision,
+                record,
+                row,
+                candidate,
+                revision_sources[logical_id],
+                quarantined=True,
             )
             continue
         candidates.append(candidate)
@@ -609,7 +651,13 @@ def build_accounting(
         accounted_by_agent.setdefault(agent_key, _zero_metrics())
         _add_metrics(accounted_by_agent[agent_key], metrics)
         logical_calls[logical_id] = _logical_call_entry(
-            logical_id, revision, record, row, candidate, quarantined=False
+            logical_id,
+            revision,
+            record,
+            row,
+            candidate,
+            revision_sources[logical_id],
+            quarantined=False,
         )
 
     if unknown_provider_ids:

@@ -406,6 +406,35 @@ def test_later_revision_replaces_earlier_for_same_logical_call():
     assert stored["metrics_digest"] != ""
 
 
+def test_later_revision_in_new_partition_keeps_prior_source_ids():
+    row = copy.deepcopy(_load_json(FIXTURES / "assistant-usage-events.json")[0])
+    first = _usage_record(row, content_revision="sha256:first-revision")
+    updated = copy.deepcopy(row)
+    updated["output_tokens"] = 999
+    second = _usage_record(updated, content_revision="sha256:second-revision")
+    _, state = build_accounting([first], {})
+    projection, next_state = build_accounting([second], state)
+
+    assert projection["candidates"][0]["source_ids"] == [first["source_id"], second["source_id"]]
+    stored = next_state["logical_calls"][projection["candidates"][0]["logical_call_id"]]
+    assert stored["source_ids"] == [first["source_id"], second["source_id"]]
+    assert projection["usage_rows"][0].output_tokens == 999
+
+
+def test_prior_usage_source_id_seeds_when_source_ids_absent():
+    row = copy.deepcopy(_load_json(FIXTURES / "assistant-usage-events.json")[0])
+    first = _usage_record(row, content_revision="sha256:first-revision")
+    _, state = build_accounting([first], {})
+    logical_id = next(iter(state["logical_calls"]))
+    del state["logical_calls"][logical_id]["source_ids"]
+    updated = copy.deepcopy(row)
+    updated["output_tokens"] = 999
+    second = _usage_record(updated, content_revision="sha256:second-revision")
+    projection, _next_state = build_accounting([second], state)
+
+    assert projection["candidates"][0]["source_ids"] == [first["source_id"], second["source_id"]]
+
+
 def test_reused_row_id_across_generations_emits_warning():
     row_a = copy.deepcopy(_load_json(FIXTURES / "assistant-usage-events.json")[0])
     row_b = copy.deepcopy(row_a)
@@ -450,6 +479,21 @@ def test_incompatible_metrics_quarantine_logical_call():
     )
     assert record["source_id"] in conflict["source_ids"]
     assert state["logical_calls"]
+
+
+def test_cache_read_plus_write_exceeding_input_quarantines():
+    row = copy.deepcopy(_load_json(FIXTURES / "assistant-usage-events.json")[0])
+    row["input_tokens"] = 100
+    row["cache_read_tokens"] = 80
+    row["cache_write_tokens"] = 80
+    record = _usage_record(row, content_revision="sha256:cache-sum-rev")
+    projection, state = build_accounting([record], {})
+
+    assert projection["usage_rows"] == []
+    assert len(projection["candidates"]) == 1
+    assert "usage_revision_conflict" in _diagnostic_codes(projection)
+    logical_id = projection["candidates"][0]["logical_call_id"]
+    assert state["logical_calls"][logical_id]["quarantined"] is True
 
 
 # --- checkpoint / shutdown ---
@@ -520,6 +564,71 @@ def test_unusable_shutdown_emits_capability_gap_instead_of_silent_skip():
     assert gaps
     assert shutdown["source_id"] in gaps[0]["source_ids"]
     assert "shutdown_total_mismatch" not in _diagnostic_codes(projection)
+
+
+def test_shutdown_data_not_a_dict_emits_capability_gap():
+    shutdown = _shutdown_record()
+    shutdown["payload"]["data"] = "not-a-dict"
+    projection, _state = build_accounting(_six_call_records() + [shutdown], {})
+
+    gaps = [item for item in projection["diagnostics"] if item["code"] == "capability_gap"]
+    assert any(item["details"].get("reason") == "missing_shutdown_data" for item in gaps)
+    assert shutdown["source_id"] in gaps[0]["source_ids"]
+    assert "shutdown_total_mismatch" not in _diagnostic_codes(projection)
+
+
+def test_unparseable_agent_metrics_emits_capability_gap():
+    usage = _load_json(FIXTURES / "usage.json")
+    usage["agentMetrics"] = {"main": "not-a-dict"}
+    shutdown = _shutdown_record()
+    shutdown["payload"]["data"] = usage
+    projection, _state = build_accounting(_six_call_records() + [shutdown], {})
+
+    gaps = [item for item in projection["diagnostics"] if item["code"] == "capability_gap"]
+    assert any(
+        item["details"].get("reason") == "unparseable_agent_metrics"
+        and shutdown["source_id"] in item["source_ids"]
+        for item in gaps
+    )
+
+
+def test_mixed_archive_does_not_charge_sessions_turns_or_title_calls():
+    title = _load_json(RECONCILIATION / "cases.json")["auxiliary_title_generation"][
+        "input_records"
+    ][0]
+    sessions_record: SourceRecord = {
+        "source_id": (
+            f"copilot-db:{SOURCE_KEY}:{NATIVE_SESSION_ID}:sessions:1:sha256:sessions-rev"
+        ),
+        "source_kind": "database",
+        "native_session_id": NATIVE_SESSION_ID,
+        "ts": None,
+        "observed_at": OBSERVED_AT,
+        "payload": {
+            "schema_version": 1,
+            "table": "sessions",
+            "row": {"id": NATIVE_SESSION_ID},
+        },
+        "locator": {
+            "database": "/example/.copilot/session-store.db",
+            "table": "sessions",
+            "primary_key": NATIVE_SESSION_ID,
+            "content_revision": "sha256:sessions-rev",
+            "generation": GENERATION,
+        },
+    }
+    records = _six_call_records() + [sessions_record, title]
+    projection, _state = build_accounting(records, {})
+    totals = _metric_totals(projection["usage_rows"])
+
+    assert len(projection["usage_rows"]) == 6
+    assert len(projection["candidates"]) == 6
+    assert totals["input_tokens"] == SHUTDOWN_TOTALS["input_tokens"]
+    assert totals["output_tokens"] == SHUTDOWN_TOTALS["output_tokens"]
+    assert totals["cache_read_tokens"] == SHUTDOWN_TOTALS["cache_read_tokens"]
+    assert totals["cache_write_tokens"] == SHUTDOWN_TOTALS["cache_write_tokens"]
+    assert totals["reasoning_tokens"] == SHUTDOWN_TOTALS["reasoning_tokens"]
+    assert _nano_aiu_total(projection["candidates"]) == SHUTDOWN_TOTALS["total_nano_aiu"]
 
 
 # --- supplemental metrics ---
@@ -650,6 +759,9 @@ def test_later_incompatible_revision_conflicts_using_prior_metrics_digest():
     assert conflict["details"]["metrics_digest"] != prior_digest
     assert projection["usage_rows"] == []
     assert len(projection["candidates"]) == 1
+    assert projection["candidates"][0]["source_ids"] == [first["source_id"], second["source_id"]]
+    assert first["source_id"] in conflict["source_ids"]
+    assert second["source_id"] in conflict["source_ids"]
 
 
 def test_disjoint_partition_does_not_false_mismatch_shutdown():
@@ -684,3 +796,31 @@ def test_row_id_reuse_is_detected_across_partitions():
     assert second["source_id"] in reuse["source_ids"]
     assert len(projection["usage_rows"]) == 1
     assert projection["usage_rows"][0].output_tokens == 50
+
+
+def test_integer_valued_float_row_metrics_do_not_false_mismatch_shutdown():
+    records = _six_call_records()
+    for record in records:
+        row = record["payload"]["row"]
+        assert isinstance(row, dict)
+        for field in (
+            "input_tokens",
+            "output_tokens",
+            "cache_read_tokens",
+            "cache_write_tokens",
+            "reasoning_tokens",
+            "total_nano_aiu",
+        ):
+            if isinstance(row.get(field), int):
+                row[field] = float(row[field])
+    projection, state = build_accounting(records + [_shutdown_record()], {})
+    totals = _metric_totals(projection["usage_rows"])
+
+    assert len(projection["usage_rows"]) == 6
+    assert totals["input_tokens"] == SHUTDOWN_TOTALS["input_tokens"]
+    assert totals["output_tokens"] == SHUTDOWN_TOTALS["output_tokens"]
+    assert totals["cache_read_tokens"] == SHUTDOWN_TOTALS["cache_read_tokens"]
+    assert totals["cache_write_tokens"] == SHUTDOWN_TOTALS["cache_write_tokens"]
+    assert totals["reasoning_tokens"] == SHUTDOWN_TOTALS["reasoning_tokens"]
+    assert state["accounted_metrics"]["total_nano_aiu"] == SHUTDOWN_TOTALS["total_nano_aiu"]
+    assert "shutdown_total_mismatch" not in _diagnostic_codes(projection)
