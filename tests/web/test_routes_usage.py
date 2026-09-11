@@ -100,13 +100,12 @@ def test_global_usage_platform_filter_shows_copilot_rows(client, web_config, tmp
     )
 
     seed_two_main_interaction_projection(web_config, tmp_path)
-    r = client.get(
-        "/usage?platform=copilot&since=2026-09-01&until=2026-09-30"
-    )
+    r = client.get("/usage?platform=copilot&since=2026-09-01&until=2026-09-30")
     assert r.status_code == 200
     assert 'value="copilot"' in r.text
     assert "selected>copilot<" in r.text.replace("\n", "")
     assert str(USAGE_TOKENS_ONE + USAGE_TOKENS_TWO) in r.text
+    assert str(USAGE_TOKENS_TWO * 2) not in r.text
 
 
 def test_session_usage_renders_per_call_rows_with_model(client, web_config):

@@ -4,6 +4,7 @@ import json
 from typing import Any
 
 from thirdeye.meta import SessionMeta
+from thirdeye.platforms.copilot.projection_store import read_projected_turns
 from thirdeye.store import Store
 
 
@@ -36,8 +37,6 @@ def session_turns(meta: SessionMeta, store: Store) -> list[dict[str, Any]]:
         # interactions from explicit identities.  Reading it here preserves
         # the normal turn-record shape without treating an intermediate or
         # child assistant message as the end of a user turn.
-        from thirdeye.platforms.copilot.projection_store import read_projected_turns
-
         return read_projected_turns(store.config, meta.session_id)
 
     events = list(store.reader(meta.session_id).iter_events())

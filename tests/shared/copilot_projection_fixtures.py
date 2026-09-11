@@ -17,18 +17,26 @@ from thirdeye.usage.types import UsageRow
 NATIVE_ID = "5a7e8e11-4a6b-49ff-a33e-95d411c4cdd6"
 INTERACTION_ONE = "6d2b89fd-a653-430c-b532-b0936d72eb42"
 INTERACTION_TWO = "7e3c90ae-b764-541d-c643-c1047e83fc53"
-TURN_ONE_ID = (
-    "copilot:turn:fixture:session:"
-    "6d2b89fd-a653-430c-b532-b0936d72eb42"
-)
-TURN_TWO_ID = (
-    "copilot:turn:fixture:session:"
-    "7e3c90ae-b764-541d-c643-c1047e83fc53"
-)
+INTERACTION_THREE = "8f4d01bf-c875-652e-d754-d2158f94ad64"
+TURN_ONE_ID = "copilot:turn:fixture:session:6d2b89fd-a653-430c-b532-b0936d72eb42"
+TURN_TWO_ID = "copilot:turn:fixture:session:7e3c90ae-b764-541d-c643-c1047e83fc53"
+TURN_THREE_ID = "copilot:turn:fixture:session:8f4d01bf-c875-652e-d754-d2158f94ad64"
 USAGE_MODEL_ONE = "gpt-5.6-luna"
 USAGE_MODEL_TWO = "gpt-4.1-copilot-sentinel"
 USAGE_TOKENS_ONE = 1111
 USAGE_TOKENS_TWO = 2222
+TURN_RECORD_KEYS = (
+    "id",
+    "turn_id",
+    "session_id",
+    "platform",
+    "cwd",
+    "start_seq",
+    "end_seq",
+    "start_ts",
+    "end_ts",
+    "events",
+)
 
 
 def _transcript_record(
@@ -71,6 +79,7 @@ def _main_turn(
     source_ids: list[str],
     start_ts: str,
     end_ts: str,
+    status: str = "completed",
     subagents: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     return {
@@ -78,8 +87,8 @@ def _main_turn(
         "start_ts": start_ts,
         "end_ts": end_ts,
         "input_message": "prompt",
-        "output_message": "done",
-        "status": "completed",
+        "output_message": "done" if status == "completed" else "",
+        "status": status,
         "llm_calls": [],
         "permission_requests": [],
         "subagents": subagents or [],
@@ -102,14 +111,16 @@ def _usage_row(
         call_id=call_id,
         ts=ts,
         platform=PLATFORM_NAME,
-        provider_name="openai",
+        provider_name="unknown",
         response_model=response_model,
         input_tokens=input_tokens,
         output_tokens=10,
     )
 
 
-def _attribution(*, logical_call_id: str, usage_source_id: str, stored_turn_id: str) -> dict[str, Any]:
+def _attribution(
+    *, logical_call_id: str, usage_source_id: str, stored_turn_id: str
+) -> dict[str, Any]:
     return {
         "usage_source_id": usage_source_id,
         "logical_call_id": logical_call_id,
@@ -131,11 +142,13 @@ def seed_two_main_interaction_projection(config: Config, tmp_path: Path) -> str:
     ts3 = "2026-09-10T17:08:25.503Z"
     ts4 = "2026-09-10T17:08:40.000Z"
     ts5 = "2026-09-10T17:08:42.000Z"
+    ts6 = "2026-09-10T17:08:50.000Z"
     user1 = "user-one"
     asst1 = "assistant-one"
     child1 = "child-one"
     user2 = "user-two"
     asst2 = "assistant-two"
+    user3 = "user-three"
     records = [
         _transcript_record(
             source_key,
@@ -176,6 +189,13 @@ def seed_two_main_interaction_projection(config: Config, tmp_path: Path) -> str:
             interaction_id=INTERACTION_TWO,
             message_type="assistant.message",
         ),
+        _transcript_record(
+            source_key,
+            user3,
+            content="Keep going on the still-open follow-up.",
+            ts=ts6,
+            interaction_id=INTERACTION_THREE,
+        ),
     ]
     batch: SourceBatch = {
         "source_key": source_key,
@@ -197,6 +217,7 @@ def seed_two_main_interaction_projection(config: Config, tmp_path: Path) -> str:
         f"{source_key}/{NATIVE_ID}/{user2}",
         f"{source_key}/{NATIVE_ID}/{asst2}",
     ]
+    turn_three_sources = [f"{source_key}/{NATIVE_ID}/{user3}"]
     turn_one = _main_turn(
         turn_id=TURN_ONE_ID,
         interaction_id=INTERACTION_ONE,
@@ -229,6 +250,14 @@ def seed_two_main_interaction_projection(config: Config, tmp_path: Path) -> str:
         start_ts=ts4,
         end_ts=ts5,
     )
+    turn_three = _main_turn(
+        turn_id=TURN_THREE_ID,
+        interaction_id=INTERACTION_THREE,
+        source_ids=turn_three_sources,
+        start_ts=ts6,
+        end_ts=ts6,
+        status="in_progress",
+    )
     usage_one = _usage_row(
         stored_id=stored_id,
         call_id="usage-source-one",
@@ -245,7 +274,7 @@ def seed_two_main_interaction_projection(config: Config, tmp_path: Path) -> str:
     )
     projection: Projection = {
         "normalized_events": [],
-        "turns": [turn_one, turn_two],
+        "turns": [turn_one, turn_two, turn_three],
         "usage_rows": [usage_one, usage_two],
         "attributions": [
             _attribution(
