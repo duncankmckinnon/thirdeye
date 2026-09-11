@@ -53,12 +53,24 @@ jobs:
         with:
           python-version: ${{ matrix.python-version }}
           allow-prereleases: true
+          cache: pip
+          cache-dependency-path: pyproject.toml
 
       - name: Install dependencies
         run: pip install -e ".[dev,ui,logfire]"
 
-      - name: Run tests with coverage
-        run: pytest tests/ -v --cov-report=xml
+      - name: Run tests
+        shell: bash
+        run: |
+          if [ "${{ runner.os }}" = "Windows" ]; then
+            # Coverage instrumentation adds meaningful overhead on top of
+            # Windows's already-slower file I/O and process spawn, and only
+            # the ubuntu/3.12 run's coverage is uploaded below. `-o addopts=`
+            # clears pyproject's default `--cov` flags for this invocation.
+            pytest tests/ -n auto -o addopts="" -v
+          else
+            pytest tests/ -n auto -v --cov-report=xml
+          fi
 
       - name: Upload coverage reports to Codecov
         if: matrix.os == 'ubuntu-latest' && matrix.python-version == '3.12'
