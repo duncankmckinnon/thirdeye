@@ -49,6 +49,15 @@ def _direct_ids(candidate: dict[str, Any], *, semantic: bool) -> set[str]:
     return result
 
 
+def _tool_index(calls: list[CallCandidate]) -> dict[str, list[CallCandidate]]:
+    by_tool: dict[str, list[CallCandidate]] = defaultdict(list)
+    for call in calls:
+        for tool_id in call.get("tool_call_ids") or []:
+            if isinstance(tool_id, str) and tool_id:
+                by_tool[tool_id].append(call)
+    return by_tool
+
+
 def _root_candidate(
     candidate: CallCandidate, by_tool: dict[str, list[CallCandidate]]
 ) -> CallCandidate | None:
@@ -69,16 +78,33 @@ def _root_candidate(
     return current
 
 
+def _cycle_order(calls: list[CallCandidate]) -> list[CallCandidate]:
+    """Order model cycles inside one identity group by source start_ts."""
+
+    return sorted(
+        calls,
+        key=lambda call: (str(call.get("start_ts") or ""), call["call_id"]),
+    )
+
+
+def _identity_group(
+    call: CallCandidate, calls: list[CallCandidate]
+) -> list[CallCandidate]:
+    group = [
+        item
+        for item in calls
+        if item.get("interaction_id") == call.get("interaction_id")
+        and item.get("agent_id") == call.get("agent_id")
+        and item.get("parent_tool_call_id") == call.get("parent_tool_call_id")
+    ]
+    return _cycle_order(group)
+
+
 def _interaction_indexes(
     calls: list[CallCandidate],
+    by_tool: dict[str, list[CallCandidate]],
 ) -> tuple[dict[str, int], dict[str, CallCandidate]]:
     """Build only the verified main interaction order used by DB turn_index."""
-
-    by_tool: dict[str, list[CallCandidate]] = defaultdict(list)
-    for call in calls:
-        for tool_id in call.get("tool_call_ids", []):
-            if isinstance(tool_id, str) and tool_id:
-                by_tool[tool_id].append(call)
 
     indexes: dict[str, int] = {}
     roots: dict[str, CallCandidate] = {}
@@ -91,19 +117,11 @@ def _interaction_indexes(
             continue
         # A main interaction appears in archive order.  Repeated model cycles
         # intentionally retain its first position; this is not a bare turnId.
+        # Failed child walks never contribute a slot.
         if interaction not in indexes:
             indexes[interaction] = len(indexes)
             roots[interaction] = root
     return indexes, roots
-
-
-def _root_for(call: CallCandidate, calls: list[CallCandidate]) -> CallCandidate | None:
-    by_tool: dict[str, list[CallCandidate]] = defaultdict(list)
-    for item in calls:
-        for tool_id in item.get("tool_call_ids", []):
-            if isinstance(tool_id, str) and tool_id:
-                by_tool[tool_id].append(item)
-    return _root_candidate(call, by_tool)
 
 
 def _finish_matches(usage: AccountingCandidate, call: CallCandidate) -> bool:
@@ -127,14 +145,8 @@ def _initiator_matches(
         return True
     if not isinstance(initiator, str):
         return False
-    same_interaction = [
-        item
-        for item in candidates
-        if item.get("interaction_id") == call.get("interaction_id")
-        and item.get("agent_id") == call.get("agent_id")
-        and item.get("parent_tool_call_id") == call.get("parent_tool_call_id")
-    ]
-    call_order = same_interaction.index(call)
+    group = _identity_group(call, candidates)
+    call_order = group.index(call)
     if initiator == "user":
         return call_order == 0
     if initiator == "sub-agent":
@@ -184,7 +196,8 @@ def join_usage(semantic: SemanticProjection, accounting: AccountingProjection) -
     """
 
     calls = list(semantic.get("call_candidates") or [])
-    indexes, roots = _interaction_indexes(calls)
+    by_tool = _tool_index(calls)
+    indexes, roots = _interaction_indexes(calls, by_tool)
     preliminary: list[tuple[Attribution, CallCandidate | None]] = []
 
     for usage in accounting.get("candidates") or []:
@@ -197,15 +210,16 @@ def join_usage(semantic: SemanticProjection, accounting: AccountingProjection) -
                 result.update(
                     status="conflicting",
                     evidence=[
+                        f"logical_call_id:{usage['logical_call_id']}",
                         *(f"call_id:{call['call_id']}" for call in direct_matches),
-                        "join_conflict:competing_direct_ids",
                     ],
                 )
                 preliminary.append((result, None))
                 continue
             call = direct_matches[0]
+            root = _root_candidate(call, by_tool) or call
             result.update(
-                stored_turn_id=_string((_root_for(call, calls) or call).get("stored_turn_id")),
+                stored_turn_id=_string(root.get("stored_turn_id")),
                 agent_id=call.get("agent_id"),
                 call_id=call["call_id"],
                 status="matched",
@@ -216,20 +230,19 @@ def join_usage(semantic: SemanticProjection, accounting: AccountingProjection) -
             continue
 
         if interaction is None:
-            result["evidence"].extend(
-                [
-                    f"turn_index:{usage.get('turn_index')}",
-                    "delayed_row:true",
-                ]
-            )
+            result["evidence"].append(f"turn_index:{usage.get('turn_index')}")
             preliminary.append((result, None))
             continue
 
-        possible = [
+        same_turn = [
             call
             for call in calls
-            if (_root_for(call, calls) or call).get("interaction_id") == interaction
-            and call.get("agent_id") == usage.get("agent_id")
+            if (_root_candidate(call, by_tool) or call).get("interaction_id") == interaction
+        ]
+        possible = [
+            call
+            for call in same_turn
+            if call.get("agent_id") == usage.get("agent_id")
             and call.get("parent_tool_call_id") == usage.get("parent_tool_call_id")
             and call.get("model") == usage.get("model")
             and _finish_matches(usage, call)
@@ -251,14 +264,13 @@ def join_usage(semantic: SemanticProjection, accounting: AccountingProjection) -
                     [
                         f"interaction_id:{interaction}",
                         f"turn_index:{usage.get('turn_index')}",
-                        "delayed_row:true",
                     ]
                 )
             preliminary.append((result, None))
             continue
 
         call = possible[0]
-        order = calls.index(call)
+        order = _identity_group(call, calls).index(call)
         initiator = (usage.get("supplemental_metrics") or {}).get("initiator")
         result.update(
             call_id=call["call_id"],
@@ -291,6 +303,9 @@ def join_usage(semantic: SemanticProjection, accounting: AccountingProjection) -
                 call_id=None,
                 status="conflicting",
                 join_kind=None,
-                evidence=[f"call_id:{call_id}", "join_conflict:multiple_usage_rows"],
+                evidence=[
+                    f"logical_call_id:{entry['logical_call_id']}",
+                    f"call_id:{call_id}",
+                ],
             )
     return [attribution for attribution, _ in preliminary]

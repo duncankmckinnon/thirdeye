@@ -11,11 +11,24 @@ from .types import Attribution, Projection, ProjectionDiagnostic, SourceRecord
 from .usage import build_accounting
 
 
-def _find_turn(turns: list[dict[str, Any]], turn_id: str) -> dict[str, Any] | None:
+def _unwrap_semantic_state(prior_state: dict[str, Any]) -> dict[str, Any]:
+    """Accept flat tracing state or a nested ProjectionState envelope."""
+
+    if isinstance(prior_state.get("open_interactions"), dict):
+        return prior_state
+    nested = prior_state.get("semantic_state")
+    if isinstance(nested, dict):
+        return nested
+    return {}
+
+
+def _find_turn(turns: list[dict[str, Any]], identity: str) -> dict[str, Any] | None:
     for turn in turns:
-        if turn.get("turn_id") == turn_id:
+        if turn.get("turn_id") == identity:
             return turn
-        found = _find_turn(turn.get("subagents") or [], turn_id)
+        if any(call.get("call_id") == identity for call in turn.get("llm_calls") or []):
+            return turn
+        found = _find_turn(turn.get("subagents") or [], identity)
         if found is not None:
             return found
     return None
@@ -44,7 +57,7 @@ def build_projection(
 ) -> tuple[Projection, dict[str, Any]]:
     """Build a local projection without mutating either source projection."""
 
-    semantic, semantic_state = build_semantics(records, prior_state)
+    semantic, semantic_state = build_semantics(records, _unwrap_semantic_state(prior_state))
     accounting, accounting_state = build_accounting(records, prior_state)
     attributions = join_usage(semantic, accounting)
     turns = deepcopy(semantic["turns"])
@@ -56,23 +69,19 @@ def build_projection(
         row = rows.get(attribution["logical_call_id"])
         accounting_call = _accounting_call(attribution, row)
         if attribution["status"] == "matched":
-            inferred = attribution["join_kind"] == "inferred"
-            diagnostics.append(
-                {
-                    "code": "inferred_join" if inferred else "capability_gap",
-                    "severity": "info",
-                    "message": (
-                        "usage joined by uniquely consistent evidence"
-                        if inferred
-                        else "usage joined to an assistant call"
-                    ),
-                    "source_ids": [attribution["usage_source_id"]],
-                    "details": {
-                        "logical_call_id": attribution["logical_call_id"],
-                        "call_id": attribution["call_id"],
-                    },
-                }
-            )
+            if attribution["join_kind"] == "inferred":
+                diagnostics.append(
+                    {
+                        "code": "inferred_join",
+                        "severity": "info",
+                        "message": "usage joined by uniquely consistent evidence",
+                        "source_ids": [attribution["usage_source_id"]],
+                        "details": {
+                            "logical_call_id": attribution["logical_call_id"],
+                            "call_id": attribution["call_id"],
+                        },
+                    }
+                )
         else:
             pending.append(
                 {
@@ -83,9 +92,13 @@ def build_projection(
                     "evidence": list(attribution["evidence"]),
                 }
             )
-        if accounting_call is None or attribution["stored_turn_id"] is None:
+        if accounting_call is None:
             continue
-        owner = _find_turn(turns, attribution["stored_turn_id"])
+        owner = None
+        if attribution["status"] == "matched" and attribution["call_id"] is not None:
+            owner = _find_turn(turns, attribution["call_id"])
+        elif attribution["stored_turn_id"] is not None:
+            owner = _find_turn(turns, attribution["stored_turn_id"])
         if owner is not None:
             owner.setdefault("accounting_calls", []).append(accounting_call)
 

@@ -42,6 +42,9 @@ CALL_A = (
 CALL_B = (
     f"copilot:call:{SOURCE_KEY}/{NATIVE_SESSION_ID}/33cc6465-29e1-4a04-8bdb-00241474b4d2"
 )
+TS_CYCLE_0 = "2026-09-10T17:08:24.503Z"
+TS_CYCLE_1 = "2026-09-10T17:08:25.624Z"
+INTERACTION_TWO = "793d3703-6f4a-4814-8877-34a7325848ce"
 
 
 def _load_json(path: Path) -> Any:
@@ -106,6 +109,31 @@ def _substitute_source_key(value: str, source_key: str) -> str:
     return value.replace(SOURCE_KEY, source_key)
 
 
+def _rewrite_source_key(value: Any, source_key: str) -> Any:
+    if isinstance(value, str):
+        return _substitute_source_key(value, source_key)
+    if isinstance(value, list):
+        return [_rewrite_source_key(item, source_key) for item in value]
+    if isinstance(value, dict):
+        return {key: _rewrite_source_key(item, source_key) for key, item in value.items()}
+    return value
+
+
+def _iter_turns(turns: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    found: list[dict[str, Any]] = []
+    for turn in turns:
+        found.append(turn)
+        found.extend(_iter_turns(turn.get("subagents") or []))
+    return found
+
+
+def _accounting_calls(turns: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    found: list[dict[str, Any]] = []
+    for turn in _iter_turns(turns):
+        found.extend(turn.get("accounting_calls") or [])
+    return found
+
+
 def _align_attribution(expected: dict[str, Any], source_key: str) -> dict[str, Any]:
     aligned = copy.deepcopy(expected)
     for field in ("call_id", "stored_turn_id", "logical_call_id", "usage_source_id"):
@@ -157,6 +185,8 @@ def _call_candidate(
     tool_call_ids: list[str] | None = None,
     finish_evidence: list[dict[str, Any]] | None = None,
     assistant_message_id: str | None = None,
+    start_ts: str = TS_CYCLE_0,
+    end_ts: str = "2026-09-10T17:08:24.593Z",
 ) -> CallCandidate:
     candidate: CallCandidate = {
         "call_id": call_id,
@@ -167,8 +197,8 @@ def _call_candidate(
         "model": model,
         "source_ids": [call_id.rsplit("/", 1)[-1]],
         "source_references": [],
-        "start_ts": "2026-09-10T17:08:24.503Z",
-        "end_ts": "2026-09-10T17:08:24.593Z",
+        "start_ts": start_ts,
+        "end_ts": end_ts,
         "tool_call_ids": tool_call_ids or [],
         "finish_evidence": finish_evidence or [],
     }
@@ -339,7 +369,9 @@ def test_attribution_fixture_pending_without_matching_call():
     assert attributions[0]["status"] == "pending"
     assert attributions[0]["call_id"] is None
     assert attributions[0]["stored_turn_id"] == examples["pending"]["stored_turn_id"]
-    assert "delayed_row:true" in attributions[0]["evidence"]
+    assert "delayed_row:true" not in attributions[0]["evidence"]
+    assert "turn_index:0" in attributions[0]["evidence"]
+    assert f"interaction_id:{INTERACTION_ONE}" in attributions[0]["evidence"]
 
 
 # --- direct / native joins ---
@@ -358,6 +390,8 @@ def test_direct_join_wins_over_inferred_evidence():
                 call_id=CALL_B,
                 tool_call_ids=[],
                 finish_evidence=[{"source_id": "finish"}],
+                start_ts=TS_CYCLE_1,
+                end_ts=TS_CYCLE_1,
             ),
         ]
     )
@@ -385,7 +419,9 @@ def test_competing_direct_ids_are_conflicting():
     attributions = join_usage(semantic, accounting)
     assert attributions[0]["status"] == "conflicting"
     assert attributions[0]["call_id"] is None
-    assert "join_conflict:competing_direct_ids" in attributions[0]["evidence"]
+    assert f"call_id:{CALL_A}" in attributions[0]["evidence"]
+    assert f"call_id:{CALL_B}" in attributions[0]["evidence"]
+    assert not any(item.startswith("join_conflict:") for item in attributions[0]["evidence"])
 
 
 # --- inferred / ambiguous / pending ---
@@ -402,6 +438,8 @@ def test_inferred_join_requires_unique_consistent_evidence():
                 call_id=CALL_B,
                 tool_call_ids=[],
                 finish_evidence=[{"source_id": "finish-b"}],
+                start_ts=TS_CYCLE_1,
+                end_ts=TS_CYCLE_1,
             ),
         ]
     )
@@ -428,7 +466,7 @@ def test_ambiguous_when_multiple_calls_fit_same_evidence():
     semantic = _semantic(
         calls=[
             _call_candidate(call_id=CALL_A, tool_call_ids=["tool-a"]),
-            _call_candidate(call_id=CALL_B, tool_call_ids=["tool-b"]),
+            _call_candidate(call_id=CALL_B, tool_call_ids=["tool-b"], start_ts=TS_CYCLE_1),
         ]
     )
     accounting = _accounting(
@@ -450,7 +488,10 @@ def test_pending_when_turn_index_has_no_main_interaction():
     )
     attributions = join_usage(semantic, accounting)
     assert attributions[0]["status"] == "pending"
-    assert "delayed_row:true" in attributions[0]["evidence"]
+    assert attributions[0]["stored_turn_id"] is None
+    assert attributions[0]["call_id"] is None
+    assert "turn_index:99" in attributions[0]["evidence"]
+    assert "delayed_row:true" not in attributions[0]["evidence"]
 
 
 def test_late_row_case_stays_pending_until_semantics_catch_up():
@@ -460,7 +501,8 @@ def test_late_row_case_stays_pending_until_semantics_catch_up():
     assert attribution["status"] == "pending"
     assert attribution["call_id"] is None
     assert attribution["logical_call_id"] == case["expected"]["attributions"][0]["logical_call_id"]
-    assert "delayed_row:true" in attribution["evidence"]
+    assert "delayed_row:true" not in attribution["evidence"]
+    assert "turn_index:0" in attribution["evidence"]
     assert len(projection["usage_rows"]) == 1
 
 
@@ -513,6 +555,8 @@ def test_two_usage_rows_claiming_one_call_become_conflicting():
                 call_id=CALL_B,
                 tool_call_ids=[],
                 finish_evidence=[{"source_id": "finish-b"}],
+                start_ts=TS_CYCLE_1,
+                end_ts=TS_CYCLE_1,
             ),
         ]
     )
@@ -525,7 +569,11 @@ def test_two_usage_rows_claiming_one_call_become_conflicting():
     attributions = join_usage(semantic, accounting)
     assert all(item["status"] == "conflicting" for item in attributions)
     assert all(item["call_id"] is None for item in attributions)
-    assert all("join_conflict:multiple_usage_rows" in item["evidence"] for item in attributions)
+    assert all(f"call_id:{CALL_A}" in item["evidence"] for item in attributions)
+    assert all(
+        not any(token.startswith("join_conflict:") for token in item["evidence"])
+        for item in attributions
+    )
 
 
 # --- build_projection composition ---
@@ -543,39 +591,294 @@ def test_build_projection_attaches_accounting_calls_without_mutating_semantics(
     assert semantic_before["turns"] == semantic_after["turns"]
     assert all(not turn.get("accounting_calls") for turn in semantic_before["turns"])
 
-    attached = sum(
-        len(turn.get("accounting_calls") or [])
-        for turn in projection["turns"]
-    )
-    assert attached == 6
+    attached = _accounting_calls(projection["turns"])
+    assert len(attached) == 6
     matched = [item for item in projection["attributions"] if item["status"] == "matched"]
+    by_turn = {turn["turn_id"]: turn for turn in _iter_turns(projection["turns"])}
     for attribution in matched:
         owner = next(
             turn
-            for turn in projection["turns"]
-            if turn["turn_id"] == attribution["stored_turn_id"]
+            for turn in _iter_turns(projection["turns"])
+            if any(
+                item.get("call_id") == attribution["call_id"]
+                for item in turn.get("accounting_calls") or []
+            )
         )
-        call_ids = [
-            item["call_id"]
-            for item in owner.get("accounting_calls") or []
-            if item["attribution_status"] == "matched"
+        if attribution["agent_id"] is None:
+            assert owner["turn_id"] == attribution["stored_turn_id"]
+        else:
+            assert owner["turn_id"] != attribution["stored_turn_id"]
+            assert owner in (by_turn[attribution["stored_turn_id"]].get("subagents") or [])
+        assert attribution["call_id"] in [
+            item["call_id"] for item in owner.get("accounting_calls") or []
         ]
-        assert attribution["call_id"] in call_ids
+
+
+def test_matched_child_usage_attaches_to_nested_turn(
+    cli_transcript_records: list[SourceRecord],
+):
+    source_key = _source_key(cli_transcript_records)
+    records = cli_transcript_records + _six_call_records(source_key=source_key)
+    projection, _ = build_projection(records, {})
+    child = next(
+        item for item in projection["attributions"] if item["agent_id"] == CHILD_AGENT_ID
+    )
+    main = next(
+        turn for turn in projection["turns"] if turn["turn_id"] == child["stored_turn_id"]
+    )
+    nested = main["subagents"][0]
+    nested_ids = [
+        item["call_id"]
+        for item in nested.get("accounting_calls") or []
+        if item["attribution_status"] == "matched"
+    ]
+    main_ids = [
+        item["call_id"]
+        for item in main.get("accounting_calls") or []
+        if item.get("call_id")
+    ]
+    assert child["call_id"] in nested_ids
+    assert child["call_id"] not in main_ids
+    assert any(
+        llm.get("call_id") == child["call_id"] for llm in nested.get("llm_calls") or []
+    )
+
+
+def test_retry_reordering_same_interaction_keeps_call_assignments():
+    first = _call_candidate(call_id=CALL_A, tool_call_ids=["tool-a"], start_ts=TS_CYCLE_0)
+    second = _call_candidate(
+        call_id=CALL_B,
+        tool_call_ids=[],
+        finish_evidence=[{"source_id": "finish-b"}],
+        start_ts=TS_CYCLE_1,
+        end_ts=TS_CYCLE_1,
+    )
+    usage_user = _accounting_candidate(row_id=13, finish_reason="tool_calls", initiator="user")
+    usage_agent = _accounting_candidate(row_id=14, finish_reason="stop", initiator="agent")
+    forward = join_usage(
+        _semantic(calls=[first, second]),
+        _accounting(candidates=[usage_user, usage_agent]),
+    )
+    reversed_calls = join_usage(
+        _semantic(calls=[second, first]),
+        _accounting(candidates=[usage_agent, usage_user]),
+    )
+    by_forward = {item["logical_call_id"].rsplit(":", 1)[-1]: item for item in forward}
+    by_reversed = {item["logical_call_id"].rsplit(":", 1)[-1]: item for item in reversed_calls}
+    assert by_forward["13"]["call_id"] == by_reversed["13"]["call_id"] == CALL_A
+    assert by_forward["14"]["call_id"] == by_reversed["14"]["call_id"] == CALL_B
+    assert "order:0" in by_forward["13"]["evidence"]
+    assert "order:1" in by_forward["14"]["evidence"]
+    assert "order:0" in by_reversed["13"]["evidence"]
+    assert "order:1" in by_reversed["14"]["evidence"]
+
+
+def test_cyclic_child_does_not_consume_turn_index():
+    child_a = _call_candidate(
+        call_id=f"copilot:call:{SOURCE_KEY}/{NATIVE_SESSION_ID}/cycle-a",
+        stored_turn_id=f"{TURN_ONE}:agent-a",
+        interaction_id="child-cycle",
+        agent_id="agent-a",
+        parent_tool_call_id="tool-b",
+        tool_call_ids=["tool-a"],
+    )
+    child_b = _call_candidate(
+        call_id=f"copilot:call:{SOURCE_KEY}/{NATIVE_SESSION_ID}/cycle-b",
+        stored_turn_id=f"{TURN_ONE}:agent-b",
+        interaction_id="child-cycle",
+        agent_id="agent-b",
+        parent_tool_call_id="tool-a",
+        tool_call_ids=["tool-b"],
+        start_ts=TS_CYCLE_1,
+    )
+    main = _call_candidate(call_id=CALL_A, tool_call_ids=["tool-main"])
+    attributions = join_usage(
+        _semantic(calls=[child_a, child_b, main]),
+        _accounting(candidates=[_accounting_candidate(row_id=13, turn_index=0)]),
+    )
+    assert attributions[0]["stored_turn_id"] == TURN_ONE
+    assert attributions[0]["call_id"] == CALL_A
+    assert attributions[0]["status"] == "matched"
+
+
+def test_non_unique_parent_tool_does_not_consume_turn_index():
+    child = _call_candidate(
+        call_id=f"copilot:call:{SOURCE_KEY}/{NATIVE_SESSION_ID}/orphan-child",
+        stored_turn_id=f"{TURN_ONE}:agent-a",
+        interaction_id="child-orphan",
+        agent_id="agent-a",
+        parent_tool_call_id="shared-tool",
+        tool_call_ids=["child-tool"],
+    )
+    main = _call_candidate(call_id=CALL_A, tool_call_ids=["shared-tool"])
+    other = _call_candidate(
+        call_id=CALL_B,
+        stored_turn_id=f"copilot:turn:{SOURCE_KEY}:{NATIVE_SESSION_ID}:{INTERACTION_TWO}",
+        interaction_id=INTERACTION_TWO,
+        tool_call_ids=["shared-tool"],
+        start_ts=TS_CYCLE_1,
+    )
+    attributions = join_usage(
+        _semantic(calls=[child, main, other]),
+        _accounting(candidates=[_accounting_candidate(row_id=13, turn_index=0)]),
+    )
+    assert attributions[0]["stored_turn_id"] == TURN_ONE
+    assert attributions[0]["call_id"] == CALL_A
+    assert attributions[0]["status"] == "matched"
+
+
+def test_partial_turn_incremental_state_matches_full_archive():
+    cases = _load_json(RECON / "cases.json")
+    partial = cases["partial_turn"]["input_records"]
+    later = cases["abort"]["input_records"]
+    full = partial + later
+    first, state = build_projection(partial, {})
+    assert "6d2b89fd-a653-430c-b532-b0936d72eb42|main" in state["semantic_state"][
+        "open_interactions"
+    ]
+    incremental, inc_state = build_projection(later, state)
+    from_flat, flat_state = build_projection(later, state["semantic_state"])
+    complete, full_state = build_projection(full, {})
+    assert incremental["turns"] == complete["turns"] == from_flat["turns"]
+    assert (
+        inc_state["semantic_state"]["open_interactions"].keys()
+        == full_state["semantic_state"]["open_interactions"].keys()
+        == flat_state["semantic_state"]["open_interactions"].keys()
+    )
+    assert "6d2b89fd-a653-430c-b532-b0936d72eb42|main" in inc_state["semantic_state"][
+        "open_interactions"
+    ]
+    assert first["turns"] == []
+
+
+def test_direct_match_does_not_emit_join_capability_gap(
+    cli_transcript_records: list[SourceRecord],
+):
+    source_key = _source_key(cli_transcript_records)
+    records = cli_transcript_records + _six_call_records(source_key=source_key)
+    projection, _ = build_projection(records, {})
+    join_gaps = [
+        item
+        for item in projection["diagnostics"]
+        if item["code"] == "capability_gap" and item.get("details", {}).get("logical_call_id")
+    ]
+    assert join_gaps == []
 
 
 def test_accounting_rows_persist_when_attribution_is_ambiguous():
-    semantic = _semantic(
-        calls=[
-            _call_candidate(call_id=CALL_A, tool_call_ids=["tool-a"]),
-            _call_candidate(call_id=CALL_B, tool_call_ids=["tool-b"]),
-        ]
+    user = {
+        "source_id": f"{SOURCE_KEY}/{NATIVE_SESSION_ID}/amb-user",
+        "source_kind": "transcript",
+        "native_session_id": NATIVE_SESSION_ID,
+        "ts": "2026-09-10T17:08:22.203Z",
+        "observed_at": OBSERVED_AT,
+        "payload": {
+            "type": "user.message",
+            "data": {
+                "content": "two similar cycles",
+                "interactionId": INTERACTION_ONE,
+                "turnId": "0",
+            },
+            "id": "amb-user",
+            "timestamp": "2026-09-10T17:08:22.203Z",
+            "schema_version": 1,
+        },
+        "locator": {"file": "events.jsonl", "native_event_id": "amb-user"},
+    }
+    first_msg = {
+        "source_id": f"{SOURCE_KEY}/{NATIVE_SESSION_ID}/a4a17e63-7ba5-422f-8ee9-b495be417328",
+        "source_kind": "transcript",
+        "native_session_id": NATIVE_SESSION_ID,
+        "ts": TS_CYCLE_0,
+        "observed_at": OBSERVED_AT,
+        "payload": {
+            "type": "assistant.message",
+            "data": {
+                "content": "",
+                "model": "gpt-5.6-luna",
+                "interactionId": INTERACTION_ONE,
+                "turnId": "0",
+                "toolRequests": [{"toolCallId": "tool-a", "name": "view", "arguments": {}}],
+            },
+            "id": "a4a17e63-7ba5-422f-8ee9-b495be417328",
+            "timestamp": TS_CYCLE_0,
+            "schema_version": 1,
+        },
+        "locator": {
+            "file": "events.jsonl",
+            "native_event_id": "a4a17e63-7ba5-422f-8ee9-b495be417328",
+        },
+    }
+    first_end = {
+        "source_id": f"{SOURCE_KEY}/{NATIVE_SESSION_ID}/amb-end-0",
+        "source_kind": "transcript",
+        "native_session_id": NATIVE_SESSION_ID,
+        "ts": "2026-09-10T17:08:24.593Z",
+        "observed_at": OBSERVED_AT,
+        "payload": {
+            "type": "assistant.turn_end",
+            "data": {"turnId": "0"},
+            "id": "amb-end-0",
+            "timestamp": "2026-09-10T17:08:24.593Z",
+            "schema_version": 1,
+        },
+        "locator": {"file": "events.jsonl", "native_event_id": "amb-end-0"},
+    }
+    second_msg = {
+        "source_id": f"{SOURCE_KEY}/{NATIVE_SESSION_ID}/33cc6465-29e1-4a04-8bdb-00241474b4d2",
+        "source_kind": "transcript",
+        "native_session_id": NATIVE_SESSION_ID,
+        "ts": TS_CYCLE_1,
+        "observed_at": OBSERVED_AT,
+        "payload": {
+            "type": "assistant.message",
+            "data": {
+                "content": "",
+                "model": "gpt-5.6-luna",
+                "interactionId": INTERACTION_ONE,
+                "turnId": "1",
+                "toolRequests": [{"toolCallId": "tool-b", "name": "view", "arguments": {}}],
+            },
+            "id": "33cc6465-29e1-4a04-8bdb-00241474b4d2",
+            "timestamp": TS_CYCLE_1,
+            "schema_version": 1,
+        },
+        "locator": {
+            "file": "events.jsonl",
+            "native_event_id": "33cc6465-29e1-4a04-8bdb-00241474b4d2",
+        },
+    }
+    second_end = {
+        "source_id": f"{SOURCE_KEY}/{NATIVE_SESSION_ID}/amb-end-1",
+        "source_kind": "transcript",
+        "native_session_id": NATIVE_SESSION_ID,
+        "ts": "2026-09-10T17:08:25.700Z",
+        "observed_at": OBSERVED_AT,
+        "payload": {
+            "type": "assistant.turn_end",
+            "data": {"turnId": "1"},
+            "id": "amb-end-1",
+            "timestamp": "2026-09-10T17:08:25.700Z",
+            "schema_version": 1,
+        },
+        "locator": {"file": "events.jsonl", "native_event_id": "amb-end-1"},
+    }
+    row = copy.deepcopy(_load_json(FIXTURES / "assistant-usage-events.json")[0])
+    row["finish_reason"] = None
+    row["initiator"] = None
+    usage = _usage_record(
+        row,
+        content_revision="sha256:68bf2ca8903d9bdfe15a9d61144ba8b9b0e352678680e4490f2259bd2f468f47",
     )
-    accounting = _accounting(
-        candidates=[_accounting_candidate(row_id=13, finish_reason=None, initiator=None)]
+    ambiguous, _ = build_projection(
+        [user, first_msg, first_end, second_msg, second_end, usage], {}
     )
-    attributions = join_usage(semantic, accounting)
-    assert attributions[0]["status"] == "ambiguous"
-    assert len(accounting["candidates"]) == 1
+    matched, _ = build_projection([user, first_msg, first_end, usage], {})
+    assert ambiguous["attributions"][0]["status"] == "ambiguous"
+    assert matched["attributions"][0]["status"] == "matched"
+    assert len(ambiguous["usage_rows"]) == len(matched["usage_rows"]) == 1
+    assert _metric_totals(ambiguous["usage_rows"]) == _metric_totals(matched["usage_rows"])
+    assert ambiguous["usage_rows"][0].input_tokens == 6452
 
 
 def test_late_row_projection_keeps_usage_rows_while_attribution_pending():
@@ -584,6 +887,38 @@ def test_late_row_projection_keeps_usage_rows_while_attribution_pending():
     assert projection["attributions"][0]["status"] == "pending"
     assert len(projection["usage_rows"]) == 1
     assert projection["usage_rows"][0].input_tokens == 6587
+
+
+def test_unmatched_usage_with_known_turn_stays_on_main_without_call_id():
+    abort = _load_json(RECON / "cases.json")["abort"]["input_records"]
+    row = copy.deepcopy(_load_json(FIXTURES / "assistant-usage-events.json")[0])
+    row["model"] = "not-the-transcript-model"
+    usage = _usage_record(
+        row,
+        content_revision="sha256:68bf2ca8903d9bdfe15a9d61144ba8b9b0e352678680e4490f2259bd2f468f47",
+    )
+    projection, _ = build_projection(abort + [usage], {})
+    assert projection["attributions"][0]["status"] == "pending"
+    assert projection["attributions"][0]["stored_turn_id"] is not None
+    assert projection["attributions"][0]["call_id"] is None
+    attached = _accounting_calls(projection["turns"])
+    assert len(attached) == 1
+    assert attached[0]["call_id"] is None
+    assert attached[0]["attribution_status"] == "pending"
+    owner = next(turn for turn in projection["turns"] if turn.get("accounting_calls"))
+    assert owner["turn_id"] == projection["attributions"][0]["stored_turn_id"]
+
+
+def test_pending_usage_without_stored_turn_skips_accounting_calls():
+    records = _six_call_records()[:1]
+    projection, _ = build_projection(records, {})
+    assert projection["attributions"][0]["stored_turn_id"] is None
+    assert projection["attributions"][0]["status"] == "pending"
+    assert len(projection["usage_rows"]) == 1
+    assert projection["turns"] == []
+    assert _accounting_calls(projection["turns"]) == []
+    pending = [item for item in projection["pending"] if item["kind"] == "unmatched_usage"]
+    assert len(pending) == 1
 
 
 def test_matched_inferred_usage_emits_diagnostic(cli_transcript_records: list[SourceRecord]):
@@ -607,11 +942,32 @@ def test_source_correction_replaces_attribution_target_after_replay(
     cli_transcript_records: list[SourceRecord],
 ):
     source_key = _source_key(cli_transcript_records)
-    records = cli_transcript_records + _six_call_records(source_key=source_key)
-    first, state = build_projection(records, {})
-    second, _ = build_projection(records, state)
-    assert first["attributions"] == second["attributions"]
-    assert len(first["usage_rows"]) == len(second["usage_rows"]) == 6
+    original = cli_transcript_records + _six_call_records(source_key=source_key)
+    first, state = build_projection(original, {})
+    original_row = next(row for row in first["usage_rows"] if row.call_id.endswith(":13"))
+    original_join = next(
+        item for item in first["attributions"] if item["logical_call_id"] == original_row.call_id
+    )
+    corrected = _rewrite_source_key(
+        copy.deepcopy(_load_json(RECON / "cases.json")["revision"]["input_records"][1]),
+        source_key,
+    )
+    second, _ = build_projection(original + [corrected], state)
+    assert len(second["usage_rows"]) == 6
+    replaced = next(row for row in second["usage_rows"] if row.call_id == original_row.call_id)
+    joined = next(
+        item for item in second["attributions"] if item["logical_call_id"] == original_row.call_id
+    )
+    assert replaced.output_tokens == 999
+    assert original_row.output_tokens != 999
+    assert joined["call_id"] == original_join["call_id"]
+    assert joined["usage_source_id"] == corrected["source_id"]
+    assert joined["logical_call_id"] == original_join["logical_call_id"]
+    assert _metric_totals(second["usage_rows"])["output_tokens"] == (
+        _metric_totals(first["usage_rows"])["output_tokens"]
+        - original_row.output_tokens
+        + 999
+    )
 
 
 @pytest.fixture
