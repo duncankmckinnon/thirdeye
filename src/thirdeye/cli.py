@@ -6,6 +6,7 @@ from thirdeye import __version__
 from thirdeye._compat.streams import force_utf8_stdio
 from thirdeye.commands.add import add, remove
 from thirdeye.commands.agent import agent_cmd
+from thirdeye.commands.capture_env import capture_env_group
 from thirdeye.commands.eval import eval_group
 from thirdeye.commands.ingest import ingest
 from thirdeye.commands.logfire_cmd import logfire_group
@@ -44,6 +45,7 @@ main.add_command(serve)
 main.add_command(views_group)
 main.add_command(agent_cmd)
 main.add_command(logfire_group)
+main.add_command(capture_env_group)
 main.add_command(setup)
 
 

@@ -167,6 +167,18 @@ exported span for Claude Code, Codex, and Cursor. For example:
 THIRDEYE_CAPTURE_ENV='WB_*' WB_PLAN=my-plan WB_TASK=task-1 claude
 ```
 
+The patterns can also be persisted so they do not depend on the launching
+shell exporting `THIRDEYE_CAPTURE_ENV` (an agent dispatched from a context
+that never sources your shell rc would otherwise capture nothing):
+
+```sh
+thirdeye capture-env set 'WB_*'    # writes capture_env to ~/.thirdeye/config.yaml
+thirdeye capture-env show          # what is active, and where it came from
+```
+
+`THIRDEYE_CAPTURE_ENV` still overrides the persisted value when set, so a
+one-off run can change it.
+
 `WB_PLAN` becomes the span attribute `wb.plan` (and likewise for other `WB_`
 fields). Other matched names are lowercased: `BUILD_LABEL` becomes
 `build_label`. Values remain strings with their original case and contents;
