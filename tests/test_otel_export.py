@@ -2438,7 +2438,7 @@ def test_captured_env_survives_job_boundary(
     for span in spans:
         attrs = span.attributes
         assert attrs["wb.plan"] == "Plan with spaces,=Unicode-é"
-        assert attrs["build_label"] == "Release A"
+        assert attrs["build.label"] == "Release A"
         if span.name == "session":
             assert set(attrs["logfire.tags"]) == {
                 "Release A",
@@ -2453,84 +2453,69 @@ def test_captured_env_survives_job_boundary(
         )
 
 
-def _write_session_meta(session_dir_: Path, **extra: Any) -> None:
-    from thirdeye.meta import SessionMeta, write_meta
-    from thirdeye.paths import meta_path
+class TestShapeCapturedEnv:
+    def test_uniform_dotted_transform_for_every_name(self):
+        out = otel_export.shape_captured_env(
+            {"WB_PLAN": "p", "WB_STEP": "test#1", "BUILD_LABEL": "Release A"}
+        )
+        assert out["wb.plan"] == "p"
+        assert out["wb.step"] == "test#1"
+        assert out["build.label"] == "Release A"
 
-    session_dir_.mkdir(parents=True, exist_ok=True)
-    write_meta(
-        meta_path(session_dir_),
-        SessionMeta(
-            session_id="s1",
-            platform="codex",
-            cwd="/repo",
-            started_at="2026-01-01T00:00:00Z",
-            ended_at=None,
-            status="open",
-            event_count=1,
-            last_seq=0,
-            last_ts=None,
-            extra=dict(extra),
-        ),
-    )
+    def test_nonempty_values_become_deduped_session_tags(self):
+        out = otel_export.shape_captured_env({"A_X": "same", "B_Y": "same", "C_Z": ""})
+        assert out["logfire.tags"] == ["same"]
+
+    def test_empty_input_yields_empty_dict(self):
+        assert otel_export.shape_captured_env({}) == {}
 
 
-class TestPersistedCapturedEnvFallback:
-    """Codex's argv-invoked ``notify`` runs detached from the agent process
-    that held the ``WB_*`` vars, so its export must fall back to the snapshot
-    the session-start hook persisted into meta.
-    """
+class TestExplicitCapturedEnv:
+    """A caller whose own environment is unreliable passes the raw dict in."""
 
-    def test_export_turn_uses_persisted_snapshot_when_env_empty(
+    def test_export_turn_shapes_and_forwards_supplied_env(
         self, enabled_config, monkeypatch, tmp_path
     ):
-        from dataclasses import replace
-
-        config = replace(enabled_config, capture_env_patterns=("WB_*",))
         monkeypatch.delenv("WB_PLAN", raising=False)
-        monkeypatch.delenv("WB_STEP", raising=False)
-        sd = tmp_path / "traces" / "codex" / "s1"
-        _write_session_meta(sd, captured_env={"WB_PLAN": "auth", "WB_STEP": "test#1"})
-
         jobs: list[Path] = []
         monkeypatch.setattr(otel_export, "_spawn", jobs.append)
-        otel_export.export_turn(config, sd, "s1", "codex", "/repo", _turn())
 
-        assert len(jobs) == 1
+        otel_export.export_turn(
+            enabled_config,
+            tmp_path,
+            "s1",
+            "codex",
+            "/repo",
+            _turn(),
+            captured_env={"WB_PLAN": "auth", "WB_STEP": "test#1"},
+        )
+
         attrs = json.loads(jobs[0].read_text())["captured_attributes"]
         assert attrs["wb.plan"] == "auth"
         assert attrs["wb.step"] == "test#1"
         assert set(attrs["logfire.tags"]) == {"auth", "test#1"}
 
-    def test_live_env_takes_precedence_over_persisted_snapshot(
-        self, enabled_config, monkeypatch, tmp_path
-    ):
+    def test_supplied_empty_env_overrides_os_environ(self, enabled_config, monkeypatch, tmp_path):
         from dataclasses import replace
 
         config = replace(enabled_config, capture_env_patterns=("WB_*",))
-        monkeypatch.setenv("WB_PLAN", "live")
-        sd = tmp_path / "traces" / "codex" / "s1"
-        _write_session_meta(sd, captured_env={"WB_PLAN": "stale"})
-
+        monkeypatch.setenv("WB_PLAN", "from-os-environ")
         jobs: list[Path] = []
         monkeypatch.setattr(otel_export, "_spawn", jobs.append)
-        otel_export.export_turn(config, sd, "s1", "codex", "/repo", _turn())
 
-        attrs = json.loads(jobs[0].read_text())["captured_attributes"]
-        assert attrs["wb.plan"] == "live"
-
-    def test_no_snapshot_and_empty_env_yields_no_attributes(
-        self, enabled_config, monkeypatch, tmp_path
-    ):
-        from dataclasses import replace
-
-        config = replace(enabled_config, capture_env_patterns=("WB_*",))
-        monkeypatch.delenv("WB_PLAN", raising=False)
-        sd = tmp_path / "traces" / "codex" / "s1"
-        _write_session_meta(sd)  # no captured_env key
-
-        jobs: list[Path] = []
-        monkeypatch.setattr(otel_export, "_spawn", jobs.append)
-        otel_export.export_turn(config, sd, "s1", "codex", "/repo", _turn())
+        otel_export.export_turn(config, tmp_path, "s1", "codex", "/repo", _turn(), captured_env={})
 
         assert json.loads(jobs[0].read_text())["captured_attributes"] == {}
+
+    def test_omitted_env_is_read_from_os_environ(self, enabled_config, monkeypatch, tmp_path):
+        from dataclasses import replace
+
+        config = replace(enabled_config, capture_env_patterns=("WB_*",))
+        monkeypatch.setenv("WB_PLAN", "from-os-environ")
+        jobs: list[Path] = []
+        monkeypatch.setattr(otel_export, "_spawn", jobs.append)
+
+        otel_export.export_turn(config, tmp_path, "s1", "claude", "/repo", _turn())
+
+        attrs = json.loads(jobs[0].read_text())["captured_attributes"]
+        assert attrs["wb.plan"] == "from-os-environ"

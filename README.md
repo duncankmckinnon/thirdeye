@@ -207,9 +207,10 @@ thirdeye capture-env show          # what is active, and where it came from
 `THIRDEYE_CAPTURE_ENV` still overrides the persisted value when set, so a
 one-off run can change it.
 
-`WB_PLAN` becomes the span attribute `wb.plan` (and likewise for other `WB_`
-fields). Other matched names are lowercased: `BUILD_LABEL` becomes
-`build_label`. Values remain strings with their original case and contents;
+Each captured name becomes a dotted span-attribute key — lowercased, with
+`_` mapped to `.` — so `WB_PLAN` is `wb.plan` and `BUILD_LABEL` is
+`build.label`. No pattern is privileged; the transform is uniform. Values
+remain strings with their original case and contents;
 nonempty values are also exported directly as Logfire tags on the top-level
 session span only, with duplicates removed. Child spans retain the named
 attributes without repeating these session tags. For example,
