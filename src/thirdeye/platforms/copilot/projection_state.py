@@ -112,7 +112,13 @@ def read_projection_document(session_dir: Path) -> dict[str, Any]:
     A stale schema version is disposable derived state: the files are removed
     and the caller rebuilds from the immutable V1 archive.
     """
-    journal = _read_json(projection_journal_path(session_dir))
+    journal_path = projection_journal_path(session_dir)
+    try:
+        journal = _read_json(journal_path)
+    except ValueError:
+        # Derived journals are disposable: corrupt JSON is treated like a stale
+        # schema so recovery can fall through to the last snapshot.
+        journal = {}
     if journal is not None:
         document = journal.get("document")
         journal_ok = journal.get("schema_version") == PROJECTION_JOURNAL_SCHEMA_VERSION
@@ -123,12 +129,12 @@ def read_projection_document(session_dir: Path) -> dict[str, Any]:
                 document,
                 fault_point="after_projection_recovery",
             )
-            fsops.unlink(projection_journal_path(session_dir), missing_ok=True)
+            fsops.unlink(journal_path, missing_ok=True)
             fsops.sync_directory(session_dir)
             _fault("after_projection_recovery_clear")
             return document
         # Stale or unreadable journal: drop it and fall through to the snapshot.
-        fsops.unlink(projection_journal_path(session_dir), missing_ok=True)
+        fsops.unlink(journal_path, missing_ok=True)
         fsops.sync_directory(session_dir)
 
     document = _read_json(projection_state_path(session_dir))

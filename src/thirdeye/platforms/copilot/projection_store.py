@@ -28,7 +28,6 @@ from thirdeye.usage.types import UsageRow
 from .constants import PLATFORM_NAME, SOURCE_SCHEMA_VERSION
 from .projection_state import (
     empty_projection_state,
-    projection_journal_path,
     projection_lock_path,
     publish_projection_document,
     read_projection_document,
@@ -70,6 +69,18 @@ def _index_key(item: dict[str, Any], field: str, *, prefix: str) -> str:
 def _require_session(directory: Path, stored_session_id: str) -> None:
     if read_meta(meta_path(directory)) is None:
         raise ValueError(f"unknown Copilot session: {stored_session_id}")
+
+
+def _existing_session_dir(config: Config, stored_session_id: str) -> Path | None:
+    """Return the session directory only when V1 meta is already on disk.
+
+    ``locked()`` creates parent directories, so unknown ids must be rejected
+    before acquiring the projection lock.
+    """
+    directory = _directory(config, stored_session_id)
+    if read_meta(meta_path(directory)) is None:
+        return None
+    return directory
 
 
 def _source_id(event: dict[str, Any]) -> str | None:
@@ -198,9 +209,21 @@ def _usage_identity(row: UsageRow, identities: dict[str, str]) -> str:
 
 
 def _drop_aliased_usage_keys(usage_index: dict[str, Any], identities: dict[str, str]) -> None:
+    """Move a source-id row onto its logical id instead of deleting the call.
+
+    An identity-only later commit may learn ``usage_source_id -> logical_call_id``
+    without sending the ``UsageRow`` again.  Popping the alias without copying
+    would drop the only persisted call.
+    """
     for source_id, logical_id in identities.items():
-        if source_id != logical_id:
-            usage_index.pop(source_id, None)
+        if source_id == logical_id:
+            continue
+        existing = usage_index.pop(source_id, None)
+        if existing is None or logical_id in usage_index or not isinstance(existing, dict):
+            continue
+        relocated = dict(existing)
+        relocated["call_id"] = logical_id
+        usage_index[logical_id] = relocated
 
 
 def _usage_seq(
@@ -295,15 +318,16 @@ def _publish_usage(
     force: bool = False,
 ) -> None:
     path = usage_jsonl_path(directory)
-    if not usage_index:
-        if path.exists():
-            fsops.unlink(path, missing_ok=True)
-            fsops.sync_directory(directory)
-            _invalidate_usage_index(config, stored_session_id, directory)
+    matches = _sidecar_matches(path, usage_index)
+    if not matches:
+        if not usage_index:
+            if path.exists():
+                fsops.unlink(path, missing_ok=True)
+                fsops.sync_directory(directory)
+        else:
+            _write_usage_index(directory, usage_index)
+    elif not force:
         return
-    if not force and _sidecar_matches(path, usage_index):
-        return
-    _write_usage_index(directory, usage_index)
     _invalidate_usage_index(config, stored_session_id, directory)
 
 
@@ -456,19 +480,22 @@ def commit_projection(
 
 def load_projection_state(config: Config, stored_session_id: str) -> dict[str, Any]:
     """Return a copy of derived builder state, completing journal recovery."""
-    directory = _directory(config, stored_session_id)
+    directory = _existing_session_dir(config, stored_session_id)
+    if directory is None:
+        return empty_projection_state()
     with locked(projection_lock_path(directory), LockMode.EXCLUSIVE):
         document = read_projection_document(directory)
         usage_index = _mapping(_mapping(document.get("indexes")).get("usage"))
-        _publish_usage(config, stored_session_id, directory, usage_index)
+        _publish_usage(config, stored_session_id, directory, usage_index, force=True)
         return json.loads(_canonical(_mapping(document.get("state"))))
 
 
 def read_projected_turns(config: Config, stored_session_id: str) -> list[dict[str, Any]]:
     """Read completed main interaction records without semantic duplicates."""
-    directory = _directory(config, stored_session_id)
-    writer = projection_journal_path(directory).exists()
-    with locked(projection_lock_path(directory), LockMode.EXCLUSIVE if writer else LockMode.SHARED):
+    directory = _existing_session_dir(config, stored_session_id)
+    if directory is None:
+        return []
+    with locked(projection_lock_path(directory), LockMode.EXCLUSIVE):
         document = read_projection_document(directory)
         meta = read_meta(meta_path(directory))
         cwd = meta.cwd if meta is not None else ""
@@ -493,10 +520,11 @@ def reset_projection_state(config: Config, stored_session_id: str) -> None:
     The caller must subsequently commit a full replay.  This intentionally
     does not import, reset, or otherwise interact with export-state files.
     """
-    directory = _directory(config, stored_session_id)
+    directory = _existing_session_dir(config, stored_session_id)
+    if directory is None:
+        return
     with locked(projection_lock_path(directory), LockMode.EXCLUSIVE):
         remove_projection_state(directory)
         fsops.unlink(usage_jsonl_path(directory), missing_ok=True)
-        if directory.exists():
-            _invalidate_usage_index(config, stored_session_id, directory)
-            fsops.sync_directory(directory)
+        _invalidate_usage_index(config, stored_session_id, directory)
+        fsops.sync_directory(directory)

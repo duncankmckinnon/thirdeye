@@ -40,6 +40,7 @@ from thirdeye.platforms.copilot.types import (
     SourcePaths,
     SourceRecord,
 )
+from thirdeye.usage.index import UsageIndex
 from thirdeye.usage.read import iter_calls
 from thirdeye.usage.types import UsageRow
 
@@ -273,6 +274,42 @@ def test_load_projection_state_recovers_missing_usage_sidecar(
     rows = list(iter_calls(directory))
     assert len(rows) == 1
     assert rows[0].input_tokens == 111
+
+
+def _indexed_usage(config: Config, stored: str) -> list[tuple[str, int]]:
+    index = UsageIndex(config.root)
+    connection = index.connect()
+    try:
+        index.refresh(connection)
+        rows = connection.execute(
+            "SELECT call_id, gen_ai_usage_input_tokens FROM usage WHERE session_id = ? "
+            "ORDER BY call_id",
+            (stored,),
+        ).fetchall()
+    finally:
+        connection.close()
+    return [(str(call_id), int(tokens)) for call_id, tokens in rows]
+
+
+def test_load_clears_stale_usage_index_after_sidecar_unlink_crash(
+    config: Config, paths: SourcePaths, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    stored = _seed_v1_archive(config, paths)
+    commit_projection(config, stored, _sample_projection(stored), empty_projection_state())
+    assert _indexed_usage(config, stored) == [("logical-usage-1", 111)]
+
+    import thirdeye.platforms.copilot.projection_store as store_mod
+
+    monkeypatch.setattr(store_mod, "_invalidate_usage_index", lambda *_args, **_kwargs: None)
+    reset_projection_state(config, stored)
+    directory = _directory(config, stored)
+    assert not usage_jsonl_path(directory).exists()
+    assert _indexed_usage(config, stored) == [("logical-usage-1", 111)]
+
+    monkeypatch.undo()
+    load_projection_state(config, stored)
+    assert _indexed_usage(config, stored) == []
+    assert list(iter_calls(directory)) == []
 
 
 def test_rebuild_after_reset_matches_original_projection(
@@ -515,3 +552,17 @@ def test_stale_journal_schema_is_discarded_without_raising(
     state = load_projection_state(config, stored)
     assert state["projection_schema_version"] == PROJECTION_SCHEMA_VERSION
     assert not projection_journal_path(directory).exists()
+
+
+def test_corrupt_journal_is_discarded_and_snapshot_used(
+    config: Config, paths: SourcePaths
+) -> None:
+    stored = _seed_v1_archive(config, paths)
+    commit_projection(config, stored, _sample_projection(stored), empty_projection_state())
+    directory = _directory(config, stored)
+    projection_journal_path(directory).write_text("{not-json", encoding="utf-8")
+
+    state = load_projection_state(config, stored)
+    assert state["index_totals"]["events"] == 2
+    assert not projection_journal_path(directory).exists()
+    assert len(read_projected_turns(config, stored)) == 1

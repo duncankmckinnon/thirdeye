@@ -10,7 +10,7 @@ from typing import Any
 import pytest
 
 from thirdeye.config import Config
-from thirdeye.paths import session_dir, usage_jsonl_path
+from thirdeye.paths import session_dir, usage_db_path, usage_jsonl_path
 from thirdeye.platforms.copilot.archive import commit_batch
 from thirdeye.platforms.copilot.constants import PLATFORM_NAME, SOURCE_SCHEMA_VERSION
 from thirdeye.platforms.copilot.identity import resolve_sources, stored_session_id
@@ -315,6 +315,54 @@ def test_child_agent_top_level_turns_are_excluded(config: Config, paths: SourceP
     assert [turn["turn_id"] for turn in turns] == [main_turn["turn_id"]]
 
 
+def test_nested_child_archive_events_stay_on_main_turn(
+    config: Config, paths: SourcePaths
+) -> None:
+    stored = _seed_archive(
+        config,
+        paths,
+        [_record("key/a/main"), _record("key/a/child", ts="2026-09-10T17:08:26.000Z")],
+    )
+    main_turn = _main_turn(source_ids=["key/a/main"])
+    main_turn["subagents"] = [
+        {
+            "turn_id": "copilot:turn:key:session:child",
+            "start_ts": "2026-09-10T17:08:26.000Z",
+            "end_ts": "2026-09-10T17:08:27.000Z",
+            "input_message": "explore",
+            "output_message": "found",
+            "status": "completed",
+            "llm_calls": [],
+            "permission_requests": [],
+            "subagents": [],
+            "attributes": {"interaction_id": INTERACTION_ID, "agent_id": "subagent-123"},
+            "source_ids": ["key/a/child"],
+        }
+    ]
+    child_event = _normalized_event("evt-child", source_ids=["key/a/child"])
+    child_event["attributes"]["agent_id"] = "subagent-123"
+
+    commit_projection(
+        config,
+        stored,
+        _projection(
+            normalized_events=[
+                _normalized_event("evt-main", source_ids=["key/a/main"]),
+                child_event,
+            ],
+            turns=[main_turn],
+        ),
+        empty_projection_state(),
+    )
+
+    turns = read_projected_turns(config, stored)
+    assert len(turns) == 1
+    assert [event["data"]["source_record"]["source_id"] for event in turns[0]["events"]] == [
+        "key/a/main",
+        "key/a/child",
+    ]
+
+
 def test_usage_revision_replaces_under_stable_logical_identity(
     config: Config, paths: SourcePaths
 ) -> None:
@@ -537,6 +585,32 @@ def test_reset_projection_state_removes_only_derived_files(
     assert archived[0]["data"]["schema_version"] == SOURCE_SCHEMA_VERSION
 
 
+def test_reset_projection_state_leaves_export_ledger_untouched(
+    config: Config, paths: SourcePaths
+) -> None:
+    stored = _seed_archive(config, paths, [_record("key/a/persist")])
+    commit_projection(
+        config,
+        stored,
+        _projection(
+            usage_rows=[_usage_row(call_id="usage-1", session_id=stored)],
+            turns=[_main_turn(source_ids=["key/a/persist"])],
+        ),
+        empty_projection_state(),
+    )
+    directory = _directory(config, stored)
+    ledger = directory / "copilot.export.ledger.json"
+    payload = '{"schema_version":1,"jobs":[]}\n'
+    ledger.write_text(payload, encoding="utf-8")
+
+    reset_projection_state(config, stored)
+
+    assert ledger.is_file()
+    assert ledger.read_text(encoding="utf-8") == payload
+    assert not projection_state_path(directory).exists()
+    assert not usage_jsonl_path(directory).exists()
+
+
 def _indexed_usage(config: Config, stored: str) -> list[tuple[str, int, int]]:
     index = UsageIndex(config.root)
     connection = index.connect()
@@ -666,6 +740,17 @@ def test_commit_projection_rejects_unknown_session(config: Config) -> None:
     assert not (config.root / "traces" / PLATFORM_NAME / "ghost-session").exists()
 
 
+def test_read_and_reset_unknown_session_do_not_create_paths(config: Config) -> None:
+    ghost = "ghost-session"
+    state = load_projection_state(config, ghost)
+    assert state["archive_source_ids"] == []
+    assert state["semantic_state"]["open_interactions"] == {}
+    assert read_projected_turns(config, ghost) == []
+    reset_projection_state(config, ghost)
+    assert not (config.root / "traces" / PLATFORM_NAME / ghost).exists()
+    assert not usage_db_path(config.root).exists()
+
+
 def test_commit_projection_rejects_usage_row_for_another_session(
     config: Config, paths: SourcePaths
 ) -> None:
@@ -789,3 +874,91 @@ def test_delayed_attribution_rekeys_source_id_without_double_counting(
     assert _indexed_usage(config, stored) == [("copilot:usage:logical-1", 150, 0)]
     document = json.loads(projection_state_path(_directory(config, stored)).read_text())
     assert set(document["indexes"]["usage"]) == {"copilot:usage:logical-1"}
+
+
+def test_identity_only_commit_rekeys_existing_usage_without_a_row(
+    config: Config, paths: SourcePaths
+) -> None:
+    stored = _seed_archive(config, paths, [_record("key/a/usage")])
+    commit_projection(
+        config,
+        stored,
+        _projection(
+            usage_rows=[_usage_row(call_id="db-src-rev1", input_tokens=100, session_id=stored)]
+        ),
+        empty_projection_state(),
+    )
+    directory = _directory(config, stored)
+    assert [(row.call_id, row.input_tokens) for row in iter_calls(directory)] == [
+        ("db-src-rev1", 100)
+    ]
+
+    later_state = empty_projection_state()
+    later_state["accounting_state"] = {
+        "logical_calls": {
+            "copilot:usage:logical-1": {
+                "logical_call_id": "copilot:usage:logical-1",
+                "generation": "gen-a",
+                "content_revision": "rev-1",
+                "metrics_digest": "sha256:abc",
+                "usage_source_id": "db-src-rev1",
+            }
+        }
+    }
+    counts = commit_projection(
+        config,
+        stored,
+        _projection(
+            attributions=[
+                _attribution(
+                    logical_call_id="copilot:usage:logical-1", usage_source_id="db-src-rev1"
+                )
+            ]
+        ),
+        later_state,
+    )
+
+    assert counts["usage"] == 1
+    rows = list(iter_calls(directory))
+    assert [(row.call_id, row.input_tokens) for row in rows] == [("copilot:usage:logical-1", 100)]
+    assert _indexed_usage(config, stored) == [("copilot:usage:logical-1", 100, 0)]
+    document = json.loads(projection_state_path(directory).read_text())
+    assert set(document["indexes"]["usage"]) == {"copilot:usage:logical-1"}
+
+
+def test_load_repairs_stale_usage_index_when_sidecar_already_matches(
+    config: Config, paths: SourcePaths, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    stored = _seed_archive(config, paths, [_record("key/a/usage")])
+    commit_projection(
+        config,
+        stored,
+        _projection(
+            usage_rows=[_usage_row(call_id="logical-1", input_tokens=100, session_id=stored)]
+        ),
+        empty_projection_state(),
+    )
+    assert _indexed_usage(config, stored) == [("logical-1", 100, 0)]
+
+    import thirdeye.platforms.copilot.projection_store as store_mod
+
+    monkeypatch.setattr(store_mod, "_invalidate_usage_index", lambda *_args, **_kwargs: None)
+    commit_projection(
+        config,
+        stored,
+        _projection(
+            usage_rows=[_usage_row(call_id="logical-1", input_tokens=150, session_id=stored)]
+        ),
+        empty_projection_state(),
+    )
+
+    directory = _directory(config, stored)
+    sidecar_rows = [
+        json.loads(line) for line in usage_jsonl_path(directory).read_text().splitlines() if line
+    ]
+    assert sidecar_rows[0]["gen_ai.usage.input_tokens"] == 150
+    assert _indexed_usage(config, stored) == [("logical-1", 100, 0)]
+
+    monkeypatch.undo()
+    load_projection_state(config, stored)
+    assert _indexed_usage(config, stored) == [("logical-1", 150, 0)]
