@@ -130,6 +130,16 @@ class SessionAccountingJobDict(TypedDict):
     usage: dict[str, Any]
     attribution_status: str
     span_id: str
+    # The durable generic job can retain an agent owner even though there is
+    # intentionally no fabricated user-turn owner.
+    agent_id: NotRequired[str | None]
+    attributes: NotRequired[dict[str, Any]]
+    # Worker envelope fields remain optional so the serializable public job
+    # shape above is usable by placement ledgers without filesystem context.
+    session_dir: NotRequired[str]
+    platform: NotRequired[str]
+    cwd: NotRequired[str]
+    captured_attributes: NotRequired[dict[str, Any]]
 
 
 class TurnAccountingJobDict(TypedDict):

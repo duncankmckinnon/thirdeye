@@ -19,11 +19,76 @@ otherwise indistinguishable from one that was never attempted.
 from __future__ import annotations
 
 import json
+import os
 import sys
+import time
 from pathlib import Path
 from typing import Any
 
 from thirdeye._compat import fsops
+
+_JOB_CLAIM_STALE_S = 30.0
+
+
+def _write_job_state(job_path: Path, payload: dict[str, Any]) -> None:
+    """Atomically publish a claim/retry state without partial JSON."""
+    temporary = job_path.with_name(f".{job_path.name}.{os.getpid()}.tmp")
+    temporary.write_text(json.dumps(payload, default=str), encoding="utf-8", newline="\n")
+    fsops.replace(temporary, job_path)
+    fsops.sync_directory(job_path.parent)
+
+
+def _job_claim_path(job_path: Path) -> Path:
+    return job_path.with_suffix(f"{job_path.suffix}.claim")
+
+
+def _create_job_claim(path: Path) -> bool:
+    try:
+        with path.open("x", encoding="utf-8") as handle:
+            handle.write(str(os.getpid()))
+    except FileExistsError:
+        return False
+    return True
+
+
+def _claim_job(job_path: Path, payload: dict[str, Any]) -> dict[str, Any] | None:
+    """Recover a claimed-but-unsent job and claim it for this worker.
+
+    Remote flush and local deletion cannot be a single transaction. A crash in
+    between can retry a deterministic span, reducing but not eliminating
+    remote duplicates.
+    """
+    if payload.get("state") == "emitted":
+        fsops.unlink(job_path, missing_ok=True)
+        _release_job_claim(job_path)
+        return None
+    claim_path = _job_claim_path(job_path)
+    if not _create_job_claim(claim_path):
+        try:
+            stale = time.time() - claim_path.stat().st_mtime > _JOB_CLAIM_STALE_S
+        except OSError:
+            stale = True
+        if not stale:
+            return None
+        fsops.unlink(claim_path, missing_ok=True)
+        if not _create_job_claim(claim_path):
+            return None
+    claimed = dict(payload)
+    claimed["state"] = "claimed"
+    claimed["attempt"] = int(payload.get("attempt", 0))
+    _write_job_state(job_path, claimed)
+    return claimed
+
+
+def _release_job_claim(job_path: Path) -> None:
+    fsops.unlink(_job_claim_path(job_path), missing_ok=True)
+
+
+def _retry_job(job_path: Path, payload: dict[str, Any]) -> None:
+    retry = dict(payload)
+    retry["state"] = "queued"
+    retry["attempt"] = int(payload.get("attempt", 0)) + 1
+    _write_job_state(job_path, retry)
 
 
 def main(argv: list[str] | None = None) -> None:
@@ -35,14 +100,21 @@ def main(argv: list[str] | None = None) -> None:
         payload = json.loads(job_path.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError) as exc:
         _log_worker_failure(kind="job_read", payload={}, error=exc)
-        return
-    finally:
         fsops.unlink(job_path, missing_ok=True)
+        return
+    try:
+        payload = _claim_job(job_path, payload)
+    except Exception as exc:
+        _log_worker_failure(kind="job_claim", payload=payload, error=exc)
+        return
+    if payload is None:
+        return
 
     from thirdeye.otel_export import _captured_attributes
 
     token = _captured_attributes.set(payload.get("captured_attributes") or {})
     kind = payload.get("kind")
+    delivered = False
     try:
         from thirdeye.config import Config
 
@@ -83,10 +155,35 @@ def main(argv: list[str] | None = None) -> None:
                 parent_span_id=payload["parent_span_id"],
                 turn=payload["turn"],
             )
+        elif kind == "session_accounting":
+            from thirdeye.otel_export import _export_session_accounting_inner
+
+            _export_session_accounting_inner(
+                config=config,
+                session_dir_=Path(payload["session_dir"]),
+                session_id=payload["session_id"],
+                platform=payload["platform"],
+                cwd=payload["cwd"],
+                accounting={
+                    "accounting_id": payload["accounting_id"],
+                    "usage": payload["usage"],
+                    "attribution_status": payload["attribution_status"],
+                    "agent_id": payload.get("agent_id"),
+                    "attributes": payload.get("attributes") or {},
+                },
+            )
+        delivered = True
     except Exception as exc:
+        try:
+            _retry_job(job_path, payload)
+        except Exception:
+            pass
         _log_worker_failure(kind=str(kind or ""), payload=payload, error=exc)
     finally:
         _captured_attributes.reset(token)
+        _release_job_claim(job_path)
+    if delivered:
+        fsops.unlink(job_path, missing_ok=True)
 
 
 def _log_worker_failure(*, kind: str, payload: dict[str, Any], error: Exception) -> None:
