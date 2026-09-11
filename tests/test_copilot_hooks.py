@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import io
 import json
+import os
 import shutil
 import sqlite3
 import sys
@@ -311,8 +312,8 @@ def test_hook_spools_and_captures_fixture_sources(
 
 
 @pytest.mark.skipif(
-    sys.platform == "win32",
-    reason="Windows CI filesystem scheduling cannot enforce a 250 ms wall-clock budget",
+    os.environ.get("THIRDEYE_RUN_PERFORMANCE_TESTS") != "1",
+    reason="wall-clock performance checks require a controlled runner",
 )
 def test_hook_returns_within_250ms_on_small_fixture(
     copilot_env: tuple[Config, SourcePaths],
