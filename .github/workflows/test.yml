@@ -73,8 +73,8 @@ jobs:
             # the -n auto pool so it isn't also competing with three other
             # xdist workers for the runner's CPU, which made its timeout
             # flakier, not less so, under parallelism.
-            pytest tests/ -n auto -o addopts="" -v --ignore=tests/test_store_concurrency.py
-            pytest tests/test_store_concurrency.py -o addopts="" -v
+            pytest tests/ -n auto -o addopts="" -v --ignore=tests/shared/test_store_concurrency.py
+            pytest tests/shared/test_store_concurrency.py -o addopts="" -v
           else
             pytest tests/ -n auto -v --cov-report=xml
           fi
