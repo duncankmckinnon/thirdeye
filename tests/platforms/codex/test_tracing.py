@@ -331,7 +331,7 @@ class TestNotifyExportsTurn:
         calls: list[tuple[Any, ...]] = []
         monkeypatch.setattr(
             "thirdeye.otel_export.export_turn",
-            lambda *a: calls.append(a),
+            lambda *a, **k: calls.append(a),
         )
         _plant_rollout(env)
         _argv(
@@ -362,7 +362,7 @@ class TestNotifyExportsTurn:
         from thirdeye.platforms.codex import hooks
 
         calls: list[Any] = []
-        monkeypatch.setattr("thirdeye.otel_export.export_turn", lambda *a: calls.append(a))
+        monkeypatch.setattr("thirdeye.otel_export.export_turn", lambda *a, **k: calls.append(a))
         _plant_rollout(env)
         _argv(
             monkeypatch,
@@ -375,7 +375,7 @@ class TestNotifyExportsTurn:
         from thirdeye.platforms.codex import hooks
 
         calls: list[Any] = []
-        monkeypatch.setattr("thirdeye.otel_export.export_turn", lambda *a: calls.append(a))
+        monkeypatch.setattr("thirdeye.otel_export.export_turn", lambda *a, **k: calls.append(a))
         # No rollout planted -> resolve_rollout returns None -> notify() returns
         # early, before extract_turn_codex/build_turn/export_turn are reached.
         _argv(
@@ -447,7 +447,7 @@ class TestInterruptMarker:
         from thirdeye.platforms.codex.interrupt_marker import close_stale_turn_if_open
 
         calls: list[Any] = []
-        monkeypatch.setattr("thirdeye.otel_export.export_turn", lambda *a: calls.append(a))
+        monkeypatch.setattr("thirdeye.otel_export.export_turn", lambda *a, **k: calls.append(a))
         sd = tmp_path / "s1"
         sd.mkdir()
         close_stale_turn_if_open(Config(root=tmp_path), sd, "s1", "/p")
@@ -463,7 +463,7 @@ class TestInterruptMarker:
         )
 
         calls: list[Any] = []
-        monkeypatch.setattr("thirdeye.otel_export.export_turn", lambda *a: calls.append(a))
+        monkeypatch.setattr("thirdeye.otel_export.export_turn", lambda *a, **k: calls.append(a))
         sd = tmp_path / "s1"
         sd.mkdir()
         mark_turn_open(sd, prompt="unfinished business")
@@ -495,7 +495,7 @@ class TestInterruptMarker:
             mark_turn_open,
         )
 
-        def _boom(*a):
+        def _boom(*a, **k):
             raise RuntimeError("export blew up")
 
         monkeypatch.setattr("thirdeye.otel_export.export_turn", _boom)
@@ -516,7 +516,7 @@ class TestInterruptMarker:
         )
 
         calls: list[Any] = []
-        monkeypatch.setattr("thirdeye.otel_export.export_turn", lambda *a: calls.append(a))
+        monkeypatch.setattr("thirdeye.otel_export.export_turn", lambda *a, **k: calls.append(a))
         sd = tmp_path / "s1"
         sd.mkdir()
         _marker_path(sd).write_text(json.dumps({"start_ts": "2026-01-01T00:00:00.000Z"}))
@@ -535,7 +535,7 @@ class TestInterruptMarker:
         )
 
         calls: list[Any] = []
-        monkeypatch.setattr("thirdeye.otel_export.export_turn", lambda *a: calls.append(a))
+        monkeypatch.setattr("thirdeye.otel_export.export_turn", lambda *a, **k: calls.append(a))
         sd = tmp_path / "s1"
         sd.mkdir()
         _marker_path(sd).write_text("not json")
@@ -609,7 +609,7 @@ class TestHooksJsonMarkerWiring:
         from thirdeye.platforms.codex import hooks_json
 
         calls: list[Any] = []
-        monkeypatch.setattr("thirdeye.otel_export.export_turn", lambda *a: calls.append(a))
+        monkeypatch.setattr("thirdeye.otel_export.export_turn", lambda *a, **k: calls.append(a))
         _stdin(
             monkeypatch,
             {"session_id": "s1", "cwd": "/p", "prompt": "go", "prompt_id": "p1"},
@@ -630,7 +630,7 @@ class TestHooksJsonMarkerWiring:
 
         config = Config.load()
         sd = session_dir(env, "codex", "s1")
-        monkeypatch.setattr("thirdeye.otel_export.export_turn", lambda *a: None)
+        monkeypatch.setattr("thirdeye.otel_export.export_turn", lambda *a, **k: None)
         replace_open_turn(config, sd, "s1", "/p", prompt="new", prompt_id="p2", turn_seq=2)
         replace_open_turn(config, sd, "s1", "/p", prompt="old", prompt_id="p1", turn_seq=1)
 
@@ -655,7 +655,7 @@ class TestHooksJsonMarkerWiring:
         from thirdeye.platforms.codex import hooks_json
 
         calls: list[Any] = []
-        monkeypatch.setattr("thirdeye.otel_export.export_turn", lambda *a: calls.append(a))
+        monkeypatch.setattr("thirdeye.otel_export.export_turn", lambda *a, **k: calls.append(a))
 
         _stdin(monkeypatch, {"session_id": "s1", "cwd": "/p", "prompt": "first"})
         hooks_json.user_prompt_submit()
@@ -673,7 +673,7 @@ class TestHooksJsonMarkerWiring:
         from thirdeye.platforms.codex import hooks_json
 
         calls: list[Any] = []
-        monkeypatch.setattr("thirdeye.otel_export.export_turn", lambda *a: calls.append(a))
+        monkeypatch.setattr("thirdeye.otel_export.export_turn", lambda *a, **k: calls.append(a))
 
         _stdin(monkeypatch, {"session_id": "s1", "cwd": "/p", "prompt": "only"})
         hooks_json.user_prompt_submit()
@@ -727,7 +727,7 @@ class TestMidTurnHooksReapAbandonedMarker:
 
             calls: list[Any] = []
             monkeypatch.setattr(
-                "thirdeye.otel_export.export_turn", lambda *a, calls=calls: calls.append(a)
+                "thirdeye.otel_export.export_turn", lambda *a, calls=calls, **k: calls.append(a)
             )
             _stdin(monkeypatch, {"session_id": sid, "cwd": "/p"})
             fn()
@@ -744,7 +744,7 @@ class TestMidTurnHooksReapAbandonedMarker:
         mark_turn_open(sd, prompt="still running")
 
         calls: list[Any] = []
-        monkeypatch.setattr("thirdeye.otel_export.export_turn", lambda *a: calls.append(a))
+        monkeypatch.setattr("thirdeye.otel_export.export_turn", lambda *a, **k: calls.append(a))
         _stdin(monkeypatch, {"session_id": "s1", "cwd": "/p"})
         hooks_json.permission_request()
 
@@ -758,7 +758,9 @@ class TestNotifyClearsMarker:
         from thirdeye.platforms.codex.interrupt_marker import has_open_marker
 
         marker_calls: list[Any] = []
-        monkeypatch.setattr("thirdeye.otel_export.export_turn", lambda *a: marker_calls.append(a))
+        monkeypatch.setattr(
+            "thirdeye.otel_export.export_turn", lambda *a, **k: marker_calls.append(a)
+        )
         # The fixture rollout's own timestamps are fixed at 2026-07-31; the
         # marker's real wall-clock start_ts must predate the turn's end_ts for
         # clear_marker_not_after to consider it the *same* turn's marker.
@@ -807,7 +809,9 @@ class TestNotifyClearsMarker:
         from thirdeye.platforms.codex.interrupt_marker import has_open_marker
 
         marker_calls: list[Any] = []
-        monkeypatch.setattr("thirdeye.otel_export.export_turn", lambda *a: marker_calls.append(a))
+        monkeypatch.setattr(
+            "thirdeye.otel_export.export_turn", lambda *a, **k: marker_calls.append(a)
+        )
 
         _stdin(monkeypatch, {"session_id": FIXTURE_SID, "cwd": "/proj/codex", "prompt": "go"})
         hooks_json.user_prompt_submit()
