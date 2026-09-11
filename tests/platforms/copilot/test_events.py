@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import ast
 import json
 from pathlib import Path
 from typing import Any
@@ -222,29 +223,32 @@ def test_tool_execution_start_preserves_arguments():
 
 
 @pytest.mark.parametrize(
-    ("case_name", "expected_kind", "expected_classification"),
+    ("case_name", "expected_kind", "expected_classification", "observed"),
     [
-        ("permission", "permission_request", "main"),
-        ("compaction", "compaction", "checkpoint"),
-        ("auxiliary_title_generation", "auxiliary_model_call", "title_generation"),
+        ("permission", "permission_request", "main", False),
+        ("compaction", "compaction", "checkpoint", False),
+        ("auxiliary_title_generation", "auxiliary_model_call", "title_generation", False),
     ],
 )
-def test_reconciliation_case_event_normalization(
+def test_synthetic_reconciliation_case_event_normalization(
     case_name: str,
     expected_kind: str,
     expected_classification: str,
+    observed: bool,
 ) -> None:
     case = _load_json(RECON_CASES / "cases.json")[case_name]
-    projection, _ = _build_semantics_from_case_records(case["input_records"])
-    matching = [event for event in projection["events"] if event["kind"] == expected_kind]
-    assert matching, f"expected {expected_kind} in {case_name}"
+    assert case["observed"] is observed
+    events = normalize_records(case["input_records"])
+    matching = [event for event in events if event["kind"] == expected_kind]
+    assert matching, f"expected {expected_kind} in synthetic case {case_name}"
     assert matching[0]["classification"] == expected_classification
-
-
-def _build_semantics_from_case_records(records: list[SourceRecord]) -> tuple[dict[str, Any], dict[str, Any]]:
-    from thirdeye.platforms.copilot.tracing import build_semantics
-
-    return build_semantics(records, {})
+    expected_events = case["expected"].get("events")
+    if expected_events:
+        by_id = {event["id"]: event for event in events}
+        for expected in expected_events:
+            actual = by_id[expected["id"]]
+            assert actual["kind"] == expected["kind"]
+            assert actual["classification"] == expected["classification"]
 
 
 def test_permission_hook_maps_without_becoming_tool_execution_role():
@@ -331,8 +335,98 @@ def test_normalize_records_replays_in_order_without_deduplication():
     assert events[1]["source_ids"] == [records[1]["source_id"]]
 
 
-def test_events_module_has_no_usage_or_export_imports() -> None:
+def test_events_module_does_not_import_usage_or_export() -> None:
     source = Path(__import__("thirdeye.platforms.copilot.events", fromlist=["__file__"]).__file__)
-    text = source.read_text(encoding="utf-8")
-    for forbidden in ("usage.py", "attribution", "projection_store", "export_state"):
-        assert forbidden not in text
+    tree = ast.parse(source.read_text(encoding="utf-8"))
+    imported: set[str] = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            imported.update(alias.name.split(".")[0] for alias in node.names)
+        elif isinstance(node, ast.ImportFrom) and node.module:
+            imported.add(node.module.split(".")[0])
+            imported.add(node.module)
+    forbidden = {"usage", "attribution", "projection_store", "export_state"}
+    assert not (imported & forbidden)
+    assert "thirdeye.platforms.copilot.usage" not in imported
+
+
+def test_database_records_are_skipped_not_unknown() -> None:
+    record: SourceRecord = {
+        "source_id": f"copilot-db:{SOURCE_KEY}:{NATIVE_SESSION_ID}:assistant_usage_events:13:sha256:abc",
+        "source_kind": "database",
+        "native_session_id": NATIVE_SESSION_ID,
+        "ts": "2026-09-10T17:08:24.498Z",
+        "observed_at": "2026-09-10T17:09:00.000Z",
+        "payload": {"table": "assistant_usage_events", "row": {"id": 13, "model": "gpt-5.6-luna"}},
+        "locator": {"table": "assistant_usage_events", "primary_key": 13},
+    }
+    assert normalize_record(record) == []
+    case = _load_json(RECON_CASES / "cases.json")["compaction"]
+    events = normalize_records(case["input_records"])
+    assert [event["kind"] for event in events] == ["compaction"]
+
+
+def test_assistant_turn_markers_are_cycle_events_not_unknown() -> None:
+    start = _transcript_record(
+        source_id=f"{SOURCE_KEY}/{NATIVE_SESSION_ID}/turn-start",
+        native_type="assistant.turn_start",
+        data={"turnId": "0", "interactionId": "ix-1"},
+    )
+    end = _transcript_record(
+        source_id=f"{SOURCE_KEY}/{NATIVE_SESSION_ID}/turn-end",
+        native_type="assistant.turn_end",
+        data={"turnId": "0"},
+    )
+    assert _event_kinds(start) == ["assistant_turn_start"]
+    assert _event_kinds(end) == ["assistant_turn_end"]
+    assert normalize_record(end)[0]["source_references"][0]["role"] == "finish"
+
+
+def test_session_lifecycle_and_subagent_configured_are_not_unknown() -> None:
+    model_change = _transcript_record(
+        source_id=f"{SOURCE_KEY}/{NATIVE_SESSION_ID}/model-change",
+        native_type="session.model_change",
+        data={"newModel": "auto"},
+    )
+    auto_mode = _transcript_record(
+        source_id=f"{SOURCE_KEY}/{NATIVE_SESSION_ID}/auto-mode",
+        native_type="session.auto_mode_resolved",
+        data={"chosenModel": "gpt-5.6-luna"},
+    )
+    configured = _transcript_record(
+        source_id=f"{SOURCE_KEY}/{NATIVE_SESSION_ID}/sub-configured",
+        native_type="subagent.configured",
+        data={"model": "gpt-5.6-luna"},
+        agent="child-agent",
+    )
+    assert _event_kinds(model_change) == ["notification"]
+    assert _event_kinds(auto_mode) == ["notification"]
+    assert _event_kinds(configured) == ["subagent_started"]
+
+
+def test_agent_stop_hook_is_not_session_end() -> None:
+    record = _hook_record(
+        source_id=f"hook/{NATIVE_SESSION_ID}/obs-stop",
+        event="agentStop",
+        hook_payload={"sessionId": NATIVE_SESSION_ID, "stopReason": "end_turn"},
+    )
+    event = normalize_record(record)[0]
+    assert event["kind"] == "agent_stop"
+    assert event["source_references"][0]["role"] == "finish"
+
+
+def test_model_error_stays_auxiliary_and_tool_error_keeps_call_id() -> None:
+    model_error = _transcript_record(
+        source_id=f"{SOURCE_KEY}/{NATIVE_SESSION_ID}/model-error",
+        native_type="model.error",
+        data={"model": "gpt-4o-mini", "purpose": "session_title"},
+    )
+    tool_error = _transcript_record(
+        source_id=f"{SOURCE_KEY}/{NATIVE_SESSION_ID}/tool-error",
+        native_type="tool.execution_error",
+        data={"toolCallId": "call_bad", "result": "denied"},
+    )
+    assert _event_kinds(model_error) == ["auxiliary_model_call"]
+    assert normalize_record(model_error)[0]["classification"] == "title_generation"
+    assert _event_kinds(tool_error) == ["tool_execution_failure"]
+    assert normalize_record(tool_error)[0]["attributes"]["tool_call_id"] == "call_bad"

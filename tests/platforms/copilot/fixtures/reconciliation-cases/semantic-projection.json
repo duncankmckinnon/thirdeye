@@ -1,5 +1,5 @@
 {
-  "note": "input_records are V1 SourceRecords. Pure-function tests may pass them directly to build_semantics. They are not a generated archive.",
+  "note": "input_records are V1 SourceRecords. Pure-function tests may pass them directly to build_semantics. They are not a generated archive. This slice is a tool cycle: assistant.turn_end attaches finish_evidence without requiring assistant.turn_start, but outstanding tools keep the user interaction open. A completed TurnSpanDict is not emitted.",
   "input_records": [
     {
       "source_id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/5a7e8e11-4a6b-49ff-a33e-95d411c4cdd6/f07404d0-af52-4260-89fb-358a10e86034",
@@ -186,53 +186,28 @@
           "tool_call_id": "call_ayHplfzxjRFMTCpmTKEFhCSJ",
           "name": "view"
         }
-      }
-    ],
-    "turns": [
+      },
       {
-        "turn_id": "copilot:turn:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa:5a7e8e11-4a6b-49ff-a33e-95d411c4cdd6:6d2b89fd-a653-430c-b532-b0936d72eb42",
-        "start_ts": "2026-09-10T17:08:22.203Z",
-        "end_ts": "2026-09-10T17:08:24.593Z",
-        "input_message": "Read alpha.txt and beta.txt with separate view calls in parallel and report their sum. Only read those two files.",
-        "output_message": "",
-        "status": "completed",
-        "llm_calls": [
+        "id": "copilot:event:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/5a7e8e11-4a6b-49ff-a33e-95d411c4cdd6/0080e44c-ad62-4288-b2b2-061ec2b73d80",
+        "kind": "assistant_turn_end",
+        "classification": "main",
+        "ts": "2026-09-10T17:08:24.593Z",
+        "source_ids": [
+          "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/5a7e8e11-4a6b-49ff-a33e-95d411c4cdd6/0080e44c-ad62-4288-b2b2-061ec2b73d80"
+        ],
+        "source_references": [
           {
-            "call_id": "copilot:call:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/5a7e8e11-4a6b-49ff-a33e-95d411c4cdd6/a4a17e63-7ba5-422f-8ee9-b495be417328",
-            "provider": "unknown",
-            "model": "gpt-5.6-luna",
-            "start_ts": "2026-09-10T17:08:24.503Z",
-            "end_ts": "2026-09-10T17:08:24.593Z",
-            "input_messages": [],
-            "output_messages": [],
-            "usage": {},
-            "tool_calls": [
-              {
-                "tool_call_id": "call_YSSva4HCniiETlxdGGjcrHbh",
-                "name": "view",
-                "start_ts": "2026-09-10T17:08:24.503Z",
-                "end_ts": "2026-09-10T17:08:24.593Z",
-                "attributes": {}
-              },
-              {
-                "tool_call_id": "call_ayHplfzxjRFMTCpmTKEFhCSJ",
-                "name": "view",
-                "start_ts": "2026-09-10T17:08:24.503Z",
-                "end_ts": "2026-09-10T17:08:24.593Z",
-                "attributes": {}
-              }
-            ]
+            "source_id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/5a7e8e11-4a6b-49ff-a33e-95d411c4cdd6/0080e44c-ad62-4288-b2b2-061ec2b73d80",
+            "source_kind": "transcript",
+            "role": "finish"
           }
         ],
-        "permission_requests": [],
-        "subagents": [],
         "attributes": {
-          "interaction_id": "6d2b89fd-a653-430c-b532-b0936d72eb42",
-          "agent_id": null
-        },
-        "accounting_calls": []
+          "turn_id": "0"
+        }
       }
     ],
+    "turns": [],
     "call_candidates": [
       {
         "call_id": "copilot:call:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/5a7e8e11-4a6b-49ff-a33e-95d411c4cdd6/a4a17e63-7ba5-422f-8ee9-b495be417328",
@@ -272,7 +247,35 @@
         ]
       }
     ],
-    "pending": [],
-    "diagnostics": []
+    "pending": [
+      {
+        "id": "pending:copilot:turn:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa:5a7e8e11-4a6b-49ff-a33e-95d411c4cdd6:6d2b89fd-a653-430c-b532-b0936d72eb42",
+        "kind": "open_interaction",
+        "reason": "user interaction has no completed final assistant turn",
+        "source_ids": [
+          "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/5a7e8e11-4a6b-49ff-a33e-95d411c4cdd6/f07404d0-af52-4260-89fb-358a10e86034",
+          "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/5a7e8e11-4a6b-49ff-a33e-95d411c4cdd6/a4a17e63-7ba5-422f-8ee9-b495be417328",
+          "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/5a7e8e11-4a6b-49ff-a33e-95d411c4cdd6/0080e44c-ad62-4288-b2b2-061ec2b73d80"
+        ],
+        "evidence": [
+          "interaction_id:6d2b89fd-a653-430c-b532-b0936d72eb42"
+        ]
+      }
+    ],
+    "diagnostics": [
+      {
+        "code": "open_interaction",
+        "severity": "info",
+        "message": "user interaction has no completed final assistant turn",
+        "source_ids": [
+          "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/5a7e8e11-4a6b-49ff-a33e-95d411c4cdd6/f07404d0-af52-4260-89fb-358a10e86034",
+          "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/5a7e8e11-4a6b-49ff-a33e-95d411c4cdd6/a4a17e63-7ba5-422f-8ee9-b495be417328",
+          "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/5a7e8e11-4a6b-49ff-a33e-95d411c4cdd6/0080e44c-ad62-4288-b2b2-061ec2b73d80"
+        ],
+        "details": {
+          "interaction_id": "6d2b89fd-a653-430c-b532-b0936d72eb42"
+        }
+      }
+    ]
   }
 }

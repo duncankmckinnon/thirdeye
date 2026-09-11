@@ -2,11 +2,12 @@
 
 from __future__ import annotations
 
+from copy import deepcopy
 from typing import Any
 
 from .events import normalize_records
 from .turns import build_turns
-from .types import SemanticProjection, SourceRecord
+from .types import ProjectionDiagnostic, SemanticProjection, SourceRecord
 
 
 def build_semantics(
@@ -14,17 +15,43 @@ def build_semantics(
 ) -> tuple[SemanticProjection, dict[str, Any]]:
     """Replay immutable source records into semantic events and main turns.
 
-    ``prior_state`` is intentionally not treated as evidence.  It is only a
-    retained description of still-open interactions for incremental callers;
-    replaying the complete archive always produces the authoritative result.
+    ``prior_state`` is not evidence.  It only retains still-open interactions
+    whose ``source_ids`` are absent from this partition.  Replaying the
+    complete archive with an empty prior state is always authoritative.
     """
     events = normalize_records(records)
-    turns, call_candidates, pending, semantic_state = build_turns(records)
-    old_open = prior_state.get("open_interactions") if isinstance(prior_state, dict) else None
-    if isinstance(old_open, dict):
-        for key, item in old_open.items():
-            if key not in semantic_state["open_interactions"] and isinstance(item, dict):
-                # State cannot prove a new association, but retaining an
-                # unfinished prior partition avoids silently claiming closure.
-                semantic_state["open_interactions"][key] = item
-    return ({"events": events, "turns": turns, "call_candidates": call_candidates, "pending": pending, "diagnostics": []}, semantic_state)
+    turns, call_candidates, pending, diagnostics, semantic_state = build_turns(
+        records, prior_state if isinstance(prior_state, dict) else {}
+    )
+    diagnostics = [*_auxiliary_diagnostics(events), *diagnostics]
+    return (
+        {
+            "events": events,
+            "turns": turns,
+            "call_candidates": call_candidates,
+            "pending": pending,
+            "diagnostics": diagnostics,
+        },
+        deepcopy(semantic_state),
+    )
+
+
+def _auxiliary_diagnostics(events: list[dict[str, Any]]) -> list[ProjectionDiagnostic]:
+    found: list[ProjectionDiagnostic] = []
+    for event in events:
+        if event.get("kind") != "auxiliary_model_call":
+            continue
+        attributes = event.get("attributes") or {}
+        found.append(
+            {
+                "code": "auxiliary_excluded_from_main",
+                "severity": "info",
+                "message": "title-generation model.* record classified auxiliary",
+                "source_ids": list(event.get("source_ids") or []),
+                "details": {
+                    "classification": event.get("classification"),
+                    "model": attributes.get("model"),
+                },
+            }
+        )
+    return found

@@ -50,6 +50,8 @@ Hook IDs are `hook/{native_id}/{observation_id}`.
   (or `:<role>` when no native suffix exists)
 - semantic call: `copilot:call:<assistant-message-source-id>`
 - main turn: `copilot:turn:<full-source-key>:<native-session>:<interaction-id>`
+- child turn: the main form plus `:<agent-id>` so agents that share an
+  `interactionId` cannot collide. Main interactions omit the suffix.
 - logical call / accounting span:
   `copilot:usage:<full-source-key>:<table>:<quoted-generation>:<quoted-canonical-pk>`
 

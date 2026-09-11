@@ -101,6 +101,9 @@ class SourceSlice(TypedDict):
 #
 # Semantic call: ``copilot:call:<assistant-message-source-id>``.
 # Main turn: ``copilot:turn:<full-source-key>:<native-session>:<interaction-id>``.
+# Child turn: append ``:<agent-id>`` so two agents that share an
+# ``interactionId`` cannot collide.  Main interactions omit the suffix
+# because ``agent_id`` is null.
 #
 # Logical database call / accounting span:
 # ``copilot:usage:<full-source-key>:<table>:<quoted-generation>:<quoted-canonical-pk>``.
@@ -127,6 +130,8 @@ Initiator = Literal["user", "agent", "sub-agent"]
 NormalizedEventKind = Literal[
     "user_prompt",
     "assistant_message",
+    "assistant_turn_start",
+    "assistant_turn_end",
     "tool_request",
     "tool_execution_start",
     "tool_execution_complete",
@@ -138,6 +143,7 @@ NormalizedEventKind = Literal[
     "compaction",
     "abort",
     "error",
+    "agent_stop",
     "session_start",
     "session_end",
     "session_shutdown",
