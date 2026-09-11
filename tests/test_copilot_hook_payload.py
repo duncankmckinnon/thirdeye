@@ -127,7 +127,9 @@ def test_parse_hook_allowlists_context_and_drops_unknown_keys():
         "trace_id": "trace-abc",
         "secret_token": "must-not-appear",
     }
-    record = _parse("sessionStart", {"sessionId": NATIVE_SESSION_ID, "timestamp": 1}, context=context)
+    record = _parse(
+        "sessionStart", {"sessionId": NATIVE_SESSION_ID, "timestamp": 1}, context=context
+    )
 
     stored = record["payload"]["context"]
     assert stored["env"] == {"WB_PLAN": "session-trace"}
@@ -225,7 +227,9 @@ def test_source_id_format_includes_session_and_observation():
 
 def test_parse_hook_preserves_zulu_iso_timestamp_strings():
     iso_z = "2026-09-10T17:08:25.626Z"
-    assert _parse("sessionStart", {"sessionId": NATIVE_SESSION_ID, "timestamp": iso_z})["ts"] == iso_z
+    assert (
+        _parse("sessionStart", {"sessionId": NATIVE_SESSION_ID, "timestamp": iso_z})["ts"] == iso_z
+    )
 
 
 def test_parse_hook_preserves_positive_offset_iso_timestamp_strings():

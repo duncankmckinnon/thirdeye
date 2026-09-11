@@ -137,7 +137,9 @@ class TestInstallMergeAndUpgrade:
         path.write_text(
             json.dumps({"version": HOOK_CONFIG_VERSION, "hooks": {"sessionStart": [stale]}})
         )
-        platform = _platform(tmp_path, hooks_file=path, entrypoint="/new/path/thirdeye-copilot-hook")
+        platform = _platform(
+            tmp_path, hooks_file=path, entrypoint="/new/path/thirdeye-copilot-hook"
+        )
         platform.install()
         data = json.loads(path.read_text())
         commands = [entry.get("bash") for entry in data["hooks"]["sessionStart"]]
@@ -411,9 +413,7 @@ class TestEntrypointRequired:
         assert "PATH" in message
         assert not path.exists()
 
-    def test_injected_entrypoint_does_not_require_path_lookup(
-        self, tmp_path: Path, monkeypatch
-    ):
+    def test_injected_entrypoint_does_not_require_path_lookup(self, tmp_path: Path, monkeypatch):
         monkeypatch.setattr(
             "thirdeye.platforms.copilot.install.shutil.which",
             lambda _name: None,

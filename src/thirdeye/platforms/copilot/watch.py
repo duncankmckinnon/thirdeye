@@ -74,10 +74,7 @@ def _spool_stamps(config: Config, paths: SourcePaths) -> dict[str, tuple[tuple[s
             if not entry.is_dir():
                 continue
             validate_native_id(entry.name)
-            files = tuple(
-                (item.name, _file_stamp(item))
-                for item in sorted(entry.glob("*.json"))
-            )
+            files = tuple((item.name, _file_stamp(item)) for item in sorted(entry.glob("*.json")))
         except (OSError, ValueError):
             continue
         result[entry.name] = files

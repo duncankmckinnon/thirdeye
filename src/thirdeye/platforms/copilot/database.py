@@ -277,9 +277,7 @@ def discover_database_sessions(paths: SourcePaths) -> list[str]:
                     continue
                 info = _table_info(connection, table)
                 columns = _column_names(info)
-                session_column = _session_scope_column(
-                    table, columns, _primary_key_columns(info)
-                )
+                session_column = _session_scope_column(table, columns, _primary_key_columns(info))
                 if session_column is None:
                     continue
                 values.update(_session_ids_from_table(connection, table, session_column))

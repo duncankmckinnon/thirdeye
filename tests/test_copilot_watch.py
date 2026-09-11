@@ -187,7 +187,9 @@ def test_changed_sessions_database_change_includes_prior_database_sessions() -> 
     assert OTHER_SESSION_ID in changed
 
 
-def test_watch_performs_initial_full_sync(monkeypatch: pytest.MonkeyPatch, copilot_env: tuple[Config, SourcePaths]) -> None:
+def test_watch_performs_initial_full_sync(
+    monkeypatch: pytest.MonkeyPatch, copilot_env: tuple[Config, SourcePaths]
+) -> None:
     config, paths = copilot_env
     calls: list[str | None] = []
 
@@ -372,7 +374,9 @@ def test_watch_exits_cleanly_on_keyboard_interrupt(
     config, paths = copilot_env
 
     monkeypatch.setattr(watch_mod, "sync", lambda *args, **kwargs: _empty_result())
-    monkeypatch.setattr(watch_mod, "_SLEEP", lambda _interval: (_ for _ in ()).throw(KeyboardInterrupt))
+    monkeypatch.setattr(
+        watch_mod, "_SLEEP", lambda _interval: (_ for _ in ()).throw(KeyboardInterrupt)
+    )
 
     watch(config, paths, interval=0.1)
 
@@ -501,7 +505,9 @@ def test_watch_restart_then_captures_later_append(
     events_path = _write_transcript(home, NATIVE_SESSION_ID)
     stored = stored_session_id(paths, NATIVE_SESSION_ID)
 
-    monkeypatch.setattr(watch_mod, "_SLEEP", lambda _interval: (_ for _ in ()).throw(KeyboardInterrupt))
+    monkeypatch.setattr(
+        watch_mod, "_SLEEP", lambda _interval: (_ for _ in ()).throw(KeyboardInterrupt)
+    )
     watch(config, paths, interval=0.1)
     first = len(list(iter_captured_records(config, stored)))
     assert first > 0

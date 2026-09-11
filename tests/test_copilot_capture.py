@@ -670,11 +670,17 @@ def test_sync_does_not_chase_growing_database_source(
         "thirdeye.platforms.copilot.sources.discover_database_sessions",
         lambda _paths: [NATIVE_SESSION_ID],
     )
-    monkeypatch.setattr("thirdeye.platforms.copilot.sources.discover_transcripts", lambda _paths: [])
+    monkeypatch.setattr(
+        "thirdeye.platforms.copilot.sources.discover_transcripts", lambda _paths: []
+    )
 
     result = sync(config, paths, session_id=NATIVE_SESSION_ID)
     stored = stored_session_id(paths, NATIVE_SESSION_ID)
-    captured = [record for record in iter_captured_records(config, stored) if record["source_kind"] == "database"]
+    captured = [
+        record
+        for record in iter_captured_records(config, stored)
+        if record["source_kind"] == "database"
+    ]
 
     assert reads["n"] <= 80
     assert result["sessions"] == 1

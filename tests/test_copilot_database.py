@@ -407,7 +407,10 @@ def test_updated_turn_produces_new_content_revision(tmp_path: Path):
 
     before = _records_for_table(_collect_all(paths, "session-a"), "turns")[0]
     connection = sqlite3.connect(database)
-    connection.execute("UPDATE turns SET content = ?, updated_at = ? WHERE id = ?", ("updated", "2026-09-10T17:10:00.000Z", 7))
+    connection.execute(
+        "UPDATE turns SET content = ?, updated_at = ? WHERE id = ?",
+        ("updated", "2026-09-10T17:10:00.000Z", 7),
+    )
     connection.commit()
     connection.close()
 
@@ -445,9 +448,10 @@ def test_database_replacement_changes_generation_and_resets_cursor(tmp_path: Pat
     after_replace = read_database(paths, "session-a", first["next_cursor"], max_records=10)
     assert after_replace["next_cursor"]["database_generation"] != old_generation
     assert after_replace["next_cursor"]["database_offset"] == len(after_replace["records"])
-    assert {record["payload"]["row"]["content"] for record in _records_for_table(after_replace["records"], "turns")} == {
-        "replacement"
-    }
+    assert {
+        record["payload"]["row"]["content"]
+        for record in _records_for_table(after_replace["records"], "turns")
+    } == {"replacement"}
 
 
 # --- pagination ---
@@ -565,9 +569,7 @@ def test_optional_columns_are_preserved_when_present(tmp_path: Path):
     """
     _write_database(home, session_id="session-a", schema_sql=schema, seed_session=False)
     connection = sqlite3.connect(home / "session-store.db")
-    connection.execute(
-        "INSERT INTO sessions (id, cwd, extra_flag) VALUES ('session-a', '/tmp', 1)"
-    )
+    connection.execute("INSERT INTO sessions (id, cwd, extra_flag) VALUES ('session-a', '/tmp', 1)")
     connection.commit()
     connection.close()
 
@@ -681,9 +683,7 @@ def test_discover_database_sessions_unions_ids_from_all_allowed_tables(tmp_path:
         )
         connection.execute("INSERT INTO sessions VALUES ('in-sessions', '/tmp')")
         connection.execute("INSERT INTO turns VALUES (1, 'in-turns-only', 'hello')")
-        connection.execute(
-            "INSERT INTO assistant_usage_events VALUES (1, 'in-usage-only', 'gpt')"
-        )
+        connection.execute("INSERT INTO assistant_usage_events VALUES (1, 'in-usage-only', 'gpt')")
         connection.commit()
     finally:
         connection.close()
@@ -718,9 +718,7 @@ def test_discover_database_sessions_without_sessions_table_uses_other_tables(
             """
         )
         connection.execute("INSERT INTO turns VALUES (1, 'from-turns', 'hello')")
-        connection.execute(
-            "INSERT INTO assistant_usage_events VALUES (1, 'from-usage', 'gpt')"
-        )
+        connection.execute("INSERT INTO assistant_usage_events VALUES (1, 'from-usage', 'gpt')")
         connection.commit()
     finally:
         connection.close()
@@ -866,12 +864,8 @@ def test_composite_primary_key_is_row_identity(tmp_path: Path):
     connection = sqlite3.connect(home / "session-store.db")
     try:
         connection.execute("INSERT INTO sessions VALUES ('session-a', '/tmp')")
-        connection.execute(
-            "INSERT INTO turns VALUES ('session-a', 0, 'first', 'reply-one')"
-        )
-        connection.execute(
-            "INSERT INTO turns VALUES ('session-a', 1, 'second', 'reply-two')"
-        )
+        connection.execute("INSERT INTO turns VALUES ('session-a', 0, 'first', 'reply-one')")
+        connection.execute("INSERT INTO turns VALUES ('session-a', 1, 'second', 'reply-two')")
         connection.commit()
     finally:
         connection.close()
@@ -911,15 +905,14 @@ def test_unrelated_wal_write_does_not_reset_pagination(tmp_path: Path):
         assert wal_path.is_file()
         assert wal_path.stat().st_size > 0
 
-        page_two = read_database(
-            paths, "session-a", page_one["next_cursor"], max_records=2
-        )
+        page_two = read_database(paths, "session-a", page_one["next_cursor"], max_records=2)
         second_ids = [record["source_id"] for record in page_two["records"]]
         assert page_two["records"]
         assert second_ids != first_ids
-        assert page_two["next_cursor"]["database_generation"] == page_one["next_cursor"][
-            "database_generation"
-        ]
+        assert (
+            page_two["next_cursor"]["database_generation"]
+            == page_one["next_cursor"]["database_generation"]
+        )
         assert page_two["next_cursor"]["database_offset"] == 4
     finally:
         writer.close()
@@ -960,15 +953,14 @@ def test_same_session_writes_do_not_starve_later_rows(tmp_path: Path):
         assert wal_path.is_file()
         assert wal_path.stat().st_size > 0
 
-        page_two = read_database(
-            paths, "session-a", page_one["next_cursor"], max_records=2
-        )
+        page_two = read_database(paths, "session-a", page_one["next_cursor"], max_records=2)
         second_ids = [record["source_id"] for record in page_two["records"]]
         assert page_two["records"]
         assert second_ids != first_ids
-        assert page_two["next_cursor"]["database_generation"] == page_one["next_cursor"][
-            "database_generation"
-        ]
+        assert (
+            page_two["next_cursor"]["database_generation"]
+            == page_one["next_cursor"]["database_generation"]
+        )
         assert page_two["next_cursor"]["database_offset"] == 4
 
         collected = list(page_one["records"]) + list(page_two["records"])
@@ -1048,10 +1040,7 @@ def test_repeated_same_session_inserts_still_reach_later_rows(tmp_path: Path):
         if record["payload"]["table"] == "turns"
     }
     assert "turn-8" in turn_contents
-    assert any(
-        record["payload"]["table"] == "assistant_usage_events"
-        for record in collected
-    )
+    assert any(record["payload"]["table"] == "assistant_usage_events" for record in collected)
 
 
 def test_same_row_id_different_content_is_new_revision(tmp_path: Path):

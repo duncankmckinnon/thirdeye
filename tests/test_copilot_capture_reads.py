@@ -54,7 +54,9 @@ def _record(kind: str, source_id: str, payload: dict[str, Any]) -> SourceRecord:
     }
 
 
-def _assert_versioned_envelope(event: dict[str, Any], *, source_kind: str, payload: dict[str, Any]) -> None:
+def _assert_versioned_envelope(
+    event: dict[str, Any], *, source_kind: str, payload: dict[str, Any]
+) -> None:
     data = event["data"]
     assert data["schema_version"] == 1
     record = data["source_record"]
@@ -108,7 +110,9 @@ def test_store_lists_and_retains_raw_source_identity(tmp_path: Path) -> None:
     assert source_record["native_session_id"] == NATIVE_ID
     assert source_record["locator"]["byte_offset"] == 42
     _assert_versioned_envelope(events[2], source_kind="hook", payload=HOOK_PAYLOAD)
-    assert events[2]["data"]["source_record"]["payload"]["hook_payload"]["agentId"] == "child-agent-id"
+    assert (
+        events[2]["data"]["source_record"]["payload"]["hook_payload"]["agentId"] == "child-agent-id"
+    )
 
 
 def test_generic_cli_reads_search_raw_copilot_content(tmp_path: Path) -> None:
@@ -175,7 +179,9 @@ def test_all_source_kinds_map_to_raw_event_types_without_projection(tmp_path: Pa
     _assert_versioned_envelope(events[1], source_kind="database", payload=database_payload)
     _assert_versioned_envelope(events[2], source_kind="hook", payload=hook_payload)
     _assert_versioned_envelope(events[3], source_kind="metadata", payload=metadata_payload)
-    assert all(event["t"] not in {"user_message", "tool_call", "assistant_message"} for event in events)
+    assert all(
+        event["t"] not in {"user_message", "tool_call", "assistant_message"} for event in events
+    )
 
 
 def test_copilot_sessions_are_not_sliced_into_eval_turns(tmp_path: Path) -> None:

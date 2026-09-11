@@ -243,7 +243,9 @@ def _archive_status(
         try:
             state = read_json(state_path(directory))
         except ValueError as error:
-            errors.append({"kind": "invalid_archive_state", "session": directory.name, "reason": str(error)})
+            errors.append(
+                {"kind": "invalid_archive_state", "session": directory.name, "reason": str(error)}
+            )
             continue
         if state is None:
             state = {}
@@ -258,7 +260,9 @@ def _archive_status(
             )
             continue
         health = state.get("health") if isinstance(state.get("health"), dict) else {}
-        diagnostics = health.get("diagnostics") if isinstance(health.get("diagnostics"), list) else []
+        diagnostics = (
+            health.get("diagnostics") if isinstance(health.get("diagnostics"), list) else []
+        )
         if _followup_lease_pending(directory):
             pending_followup += 1
             active_leases += 1

@@ -536,7 +536,13 @@ def _apply_lifecycle(directory: Path, records: list[Any]) -> None:
         event = payload.get("event")
         if event in {"sessionEnd", "shutdown", "session_end"} and not _is_child_hook(payload):
             decision = "close"
-        elif event in {"sessionStart", "resume", "activity", "session_start", "userPromptSubmitted"}:
+        elif event in {
+            "sessionStart",
+            "resume",
+            "activity",
+            "session_start",
+            "userPromptSubmitted",
+        }:
             decision = "reopen"
     if decision is None:
         return

@@ -361,9 +361,7 @@ def test_read_batch_freezes_database_snapshot_end_against_later_inserts(tmp_path
     paths = _paths(home)
     reads = {"n": 0}
 
-    def growing_database(
-        _paths: SourcePaths, _native: str, cursor: dict[str, Any]
-    ) -> SourceSlice:
+    def growing_database(_paths: SourcePaths, _native: str, cursor: dict[str, Any]) -> SourceSlice:
         reads["n"] += 1
         if reads["n"] > 80:
             raise AssertionError("read_batch chased a growing database source")
@@ -371,7 +369,9 @@ def test_read_batch_freezes_database_snapshot_end_against_later_inserts(tmp_path
         if isinstance(cursor, dict) and isinstance(cursor.get("database_offset"), int):
             offset = cursor["database_offset"]
         return _slice(
-            records=[_record(f"d/{offset + index}", source_kind="database") for index in range(1000)],
+            records=[
+                _record(f"d/{offset + index}", source_kind="database") for index in range(1000)
+            ],
             next_cursor={"database_generation": "gen-1", "database_offset": offset + 1000},
             cwd=None,
             exhausted=False,

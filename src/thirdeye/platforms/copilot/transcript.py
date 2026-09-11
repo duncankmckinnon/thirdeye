@@ -144,7 +144,14 @@ def _json_value(value: Any) -> Any:
     raise TypeError(f"workspace metadata contains unsupported value {type(value).__name__}")
 
 
-def _source_id(paths: SourcePaths, native_id: str, event: dict[str, Any], generation: str, offset: int, raw: bytes) -> tuple[str, dict[str, Any]]:
+def _source_id(
+    paths: SourcePaths,
+    native_id: str,
+    event: dict[str, Any],
+    generation: str,
+    offset: int,
+    raw: bytes,
+) -> tuple[str, dict[str, Any]]:
     event_id = event.get("id")
     if isinstance(event_id, (str, int)) and str(event_id):
         value = str(event_id)
@@ -195,7 +202,9 @@ def _record_for_line(
             },
             "locator": locator,
         }
-        return record, _diagnostic("transcript_invalid_utf8", "complete transcript line is not UTF-8", **locator)
+        return record, _diagnostic(
+            "transcript_invalid_utf8", "complete transcript line is not UTF-8", **locator
+        )
 
     try:
         value = json.loads(text)
@@ -208,10 +217,16 @@ def _record_for_line(
             "native_session_id": native_id,
             "ts": None,
             "observed_at": observed_at,
-            "payload": {"schema_version": SOURCE_SCHEMA_VERSION, "malformed": "invalid_json", "raw_line": text},
+            "payload": {
+                "schema_version": SOURCE_SCHEMA_VERSION,
+                "malformed": "invalid_json",
+                "raw_line": text,
+            },
             "locator": locator,
         }
-        return record, _diagnostic("transcript_invalid_json", "complete transcript line is not JSON", **locator)
+        return record, _diagnostic(
+            "transcript_invalid_json", "complete transcript line is not JSON", **locator
+        )
 
     if not isinstance(value, dict):
         digest = hashlib.sha256(raw).hexdigest()
@@ -222,17 +237,25 @@ def _record_for_line(
             "native_session_id": native_id,
             "ts": None,
             "observed_at": observed_at,
-            "payload": {"schema_version": SOURCE_SCHEMA_VERSION, "malformed": "non_object_json", "raw_value": value},
+            "payload": {
+                "schema_version": SOURCE_SCHEMA_VERSION,
+                "malformed": "non_object_json",
+                "raw_value": value,
+            },
             "locator": locator,
         }
-        return record, _diagnostic("transcript_non_object", "complete transcript line is not a JSON object", **locator)
+        return record, _diagnostic(
+            "transcript_non_object", "complete transcript line is not a JSON object", **locator
+        )
 
     source_id, event_locator = _source_id(paths, native_id, value, generation, offset, raw)
     locator.update(event_locator)
     timestamp = _valid_timestamp(value.get("timestamp"))
     diagnostic = None
     if value.get("timestamp") is not None and timestamp is None:
-        diagnostic = _diagnostic("transcript_invalid_timestamp", "event timestamp is not ISO-8601", **locator)
+        diagnostic = _diagnostic(
+            "transcript_invalid_timestamp", "event timestamp is not ISO-8601", **locator
+        )
     # Keep every top-level field, including unknown future fields.  The schema
     # version comes last so an untrusted event cannot alter our envelope.
     payload = {**value, "schema_version": SOURCE_SCHEMA_VERSION}
@@ -256,7 +279,17 @@ def _workspace_record(
     path = directory / _WORKSPACE_FILENAME
     resolved, escaped = _source_file_status(path, directory)
     if escaped:
-        return None, None, [_diagnostic("workspace_path_escaped", "workspace.yaml resolves outside the session directory", file=str(path))]
+        return (
+            None,
+            None,
+            [
+                _diagnostic(
+                    "workspace_path_escaped",
+                    "workspace.yaml resolves outside the session directory",
+                    file=str(path),
+                )
+            ],
+        )
     if resolved is None:
         return None, None, []
     try:
@@ -264,9 +297,30 @@ def _workspace_record(
         data = yaml.safe_load(raw.decode("utf-8"))
         data = _json_value(data)
     except (OSError, TypeError, UnicodeDecodeError, yaml.YAMLError) as exc:
-        return None, None, [_diagnostic("workspace_metadata_invalid", "workspace.yaml could not be safely parsed", file=str(path), reason=type(exc).__name__)]
+        return (
+            None,
+            None,
+            [
+                _diagnostic(
+                    "workspace_metadata_invalid",
+                    "workspace.yaml could not be safely parsed",
+                    file=str(path),
+                    reason=type(exc).__name__,
+                )
+            ],
+        )
     if not isinstance(data, dict):
-        return None, None, [_diagnostic("workspace_metadata_invalid", "workspace.yaml must contain a mapping", file=str(path))]
+        return (
+            None,
+            None,
+            [
+                _diagnostic(
+                    "workspace_metadata_invalid",
+                    "workspace.yaml must contain a mapping",
+                    file=str(path),
+                )
+            ],
+        )
 
     digest = hashlib.sha256(raw).hexdigest()
     try:
@@ -282,8 +336,16 @@ def _workspace_record(
         "native_session_id": native_id,
         "ts": None,
         "observed_at": observed_at,
-        "payload": {"schema_version": SOURCE_SCHEMA_VERSION, "file": _WORKSPACE_FILENAME, "data": data},
-        "locator": {"file": _WORKSPACE_FILENAME, "file_generation": generation, "content_digest": digest},
+        "payload": {
+            "schema_version": SOURCE_SCHEMA_VERSION,
+            "file": _WORKSPACE_FILENAME,
+            "data": data,
+        },
+        "locator": {
+            "file": _WORKSPACE_FILENAME,
+            "file_generation": generation,
+            "content_digest": digest,
+        },
     }
     return record, cwd, []
 
@@ -335,31 +397,75 @@ def read_transcript(
     event_path = directory / _EVENTS_FILENAME
     diagnostics: list[dict[str, Any]] = []
     observed_at = _observed_at()
-    workspace, cwd, workspace_diagnostics = _workspace_record(paths, native_id, directory, observed_at)
+    workspace, cwd, workspace_diagnostics = _workspace_record(
+        paths, native_id, directory, observed_at
+    )
     diagnostics.extend(workspace_diagnostics)
     records: list[SourceRecord] = []
 
     resolved_events, events_escaped = _source_file_status(event_path, directory)
     if events_escaped:
-        diagnostics.append(_diagnostic("transcript_path_escaped", "events.jsonl resolves outside the session directory", file=str(event_path)))
-        return {"records": records, "next_cursor": dict(cursor), "diagnostics": diagnostics, "cwd": cwd, "exhausted": False}
+        diagnostics.append(
+            _diagnostic(
+                "transcript_path_escaped",
+                "events.jsonl resolves outside the session directory",
+                file=str(event_path),
+            )
+        )
+        return {
+            "records": records,
+            "next_cursor": dict(cursor),
+            "diagnostics": diagnostics,
+            "cwd": cwd,
+            "exhausted": False,
+        }
     if resolved_events is None:
-        diagnostics.append(_diagnostic("transcript_unavailable", "events.jsonl is unavailable; it is not considered complete", file=str(event_path)))
-        return {"records": records, "next_cursor": dict(cursor), "diagnostics": diagnostics, "cwd": cwd, "exhausted": False}
+        diagnostics.append(
+            _diagnostic(
+                "transcript_unavailable",
+                "events.jsonl is unavailable; it is not considered complete",
+                file=str(event_path),
+            )
+        )
+        return {
+            "records": records,
+            "next_cursor": dict(cursor),
+            "diagnostics": diagnostics,
+            "cwd": cwd,
+            "exhausted": False,
+        }
 
     try:
         stat = resolved_events.stat()
         generation = _generation(resolved_events)
     except OSError:
-        diagnostics.append(_diagnostic("transcript_unavailable", "events.jsonl is unavailable; it is not considered complete", file=str(event_path)))
-        return {"records": records, "next_cursor": dict(cursor), "diagnostics": diagnostics, "cwd": cwd, "exhausted": False}
+        diagnostics.append(
+            _diagnostic(
+                "transcript_unavailable",
+                "events.jsonl is unavailable; it is not considered complete",
+                file=str(event_path),
+            )
+        )
+        return {
+            "records": records,
+            "next_cursor": dict(cursor),
+            "diagnostics": diagnostics,
+            "cwd": cwd,
+            "exhausted": False,
+        }
 
     size = stat.st_size
     prior_generation = cursor.get("file_generation")
     prior_offset = cursor.get("byte_offset", 0)
     if not isinstance(prior_offset, int) or prior_offset < 0:
         prior_offset = 0
-        diagnostics.append(_diagnostic("transcript_cursor_invalid", "invalid byte offset; replaying transcript", file=str(event_path)))
+        diagnostics.append(
+            _diagnostic(
+                "transcript_cursor_invalid",
+                "invalid byte offset; replaying transcript",
+                file=str(event_path),
+            )
+        )
     reset = prior_generation is not None and prior_generation != generation
     if prior_offset > size:
         reset = True
@@ -372,7 +478,15 @@ def read_transcript(
         if current_digest != prior_digest:
             reset = True
     if reset:
-        diagnostics.append(_diagnostic("transcript_replaced", "transcript was replaced or truncated; replaying from byte zero", file=str(event_path), previous_generation=prior_generation, file_generation=generation))
+        diagnostics.append(
+            _diagnostic(
+                "transcript_replaced",
+                "transcript was replaced or truncated; replaying from byte zero",
+                file=str(event_path),
+                previous_generation=prior_generation,
+                file_generation=generation,
+            )
+        )
         prior_offset = 0
 
     prior_end = cursor.get("snapshot_end")
@@ -392,7 +506,11 @@ def read_transcript(
     # not prevent an events-only caller from making progress at a tiny bound.
     workspace_digest = workspace["locator"]["content_digest"] if workspace else None
     workspace_emitted = False
-    if workspace is not None and cursor.get("workspace_digest") != workspace_digest and max_records > 0:
+    if (
+        workspace is not None
+        and cursor.get("workspace_digest") != workspace_digest
+        and max_records > 0
+    ):
         records.append(workspace)
         workspace_emitted = True
 
@@ -417,16 +535,39 @@ def read_transcript(
                     limit_hit = True
                     break
                 if not consumed and line_size > max_bytes:
-                    diagnostics.append(_diagnostic("transcript_record_oversize", "one complete transcript record exceeds max_bytes and was accepted for progress", file=str(event_path), byte_offset=offset, byte_length=line_size, max_bytes=max_bytes))
-                record, diagnostic = _record_for_line(paths, native_id, generation, offset, line, observed_at)
+                    diagnostics.append(
+                        _diagnostic(
+                            "transcript_record_oversize",
+                            "one complete transcript record exceeds max_bytes and was accepted for progress",
+                            file=str(event_path),
+                            byte_offset=offset,
+                            byte_length=line_size,
+                            max_bytes=max_bytes,
+                        )
+                    )
+                record, diagnostic = _record_for_line(
+                    paths, native_id, generation, offset, line, observed_at
+                )
                 records.append(record)
                 if diagnostic is not None:
                     diagnostics.append(diagnostic)
                 offset += line_size
                 consumed += line_size
     except OSError:
-        diagnostics.append(_diagnostic("transcript_read_failed", "events.jsonl could not be read; it is not considered complete", file=str(event_path)))
-        return {"records": records, "next_cursor": dict(cursor), "diagnostics": diagnostics, "cwd": cwd, "exhausted": False}
+        diagnostics.append(
+            _diagnostic(
+                "transcript_read_failed",
+                "events.jsonl could not be read; it is not considered complete",
+                file=str(event_path),
+            )
+        )
+        return {
+            "records": records,
+            "next_cursor": dict(cursor),
+            "diagnostics": diagnostics,
+            "cwd": cwd,
+            "exhausted": False,
+        }
 
     next_cursor: dict[str, Any] = {
         "byte_offset": offset,
@@ -440,7 +581,15 @@ def read_transcript(
         # The read above remains useful.  A later invocation will report the
         # unavailable source instead of pretending that it reached completion.
         pass
-    if workspace_digest is not None and (workspace_emitted or cursor.get("workspace_digest") == workspace_digest):
+    if workspace_digest is not None and (
+        workspace_emitted or cursor.get("workspace_digest") == workspace_digest
+    ):
         next_cursor["workspace_digest"] = workspace_digest
     exhausted = offset >= snapshot_end and not limit_hit
-    return {"records": records, "next_cursor": next_cursor, "diagnostics": diagnostics, "cwd": cwd, "exhausted": exhausted}
+    return {
+        "records": records,
+        "next_cursor": next_cursor,
+        "diagnostics": diagnostics,
+        "cwd": cwd,
+        "exhausted": exhausted,
+    }

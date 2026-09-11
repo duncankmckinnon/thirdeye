@@ -53,7 +53,9 @@ def _hook_record(
     )
 
 
-def test_enqueue_returns_spool_path_and_read_returns_complete_record(copilot_env: tuple[Config, SourcePaths]):
+def test_enqueue_returns_spool_path_and_read_returns_complete_record(
+    copilot_env: tuple[Config, SourcePaths],
+):
     config, paths = copilot_env
     record = _hook_record(observation_id="obs-enqueue-1")
 
@@ -66,7 +68,9 @@ def test_enqueue_returns_spool_path_and_read_returns_complete_record(copilot_env
     assert records[0]["payload"]["hook_payload"]["stopReason"] == "end_turn"
 
 
-def test_same_content_distinct_observation_ids_remain_separate(copilot_env: tuple[Config, SourcePaths]):
+def test_same_content_distinct_observation_ids_remain_separate(
+    copilot_env: tuple[Config, SourcePaths],
+):
     config, paths = copilot_env
     first = _hook_record(observation_id="hook-observation-1")
     second = _hook_record(observation_id="hook-observation-2")
@@ -138,7 +142,10 @@ def test_concurrent_enqueue_preserves_all_records(tmp_path: Path):
         except Exception as exc:  # pragma: no cover - surfaced via errors list
             errors.append(str(exc))
 
-    threads = [threading.Thread(target=worker, args=(worker_id,)) for worker_id in range(_CONCURRENT_WORKERS)]
+    threads = [
+        threading.Thread(target=worker, args=(worker_id,))
+        for worker_id in range(_CONCURRENT_WORKERS)
+    ]
     for thread in threads:
         thread.start()
     for thread in threads:

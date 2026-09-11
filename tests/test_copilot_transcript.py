@@ -137,7 +137,11 @@ def test_read_transcript_preserves_unknown_fields_and_native_event_id(tmp_path: 
     assert transcript["ts"] == "2026-09-10T17:08:24.000Z"
     assert transcript["payload"]["schema_version"] == SOURCE_SCHEMA_VERSION
     assert transcript["payload"]["top_level_future"] == "retain"
-    assert transcript["payload"]["data"]["future_field"]["nested"] == [1, True, {"opaque": "retain"}]
+    assert transcript["payload"]["data"]["future_field"]["nested"] == [
+        1,
+        True,
+        {"opaque": "retain"},
+    ]
     assert transcript["locator"]["native_event_id"] == "unknown-1"
     assert metadata["payload"]["data"]["cwd"] == "/fixture/workspace"
     assert slice_["cwd"] == "/fixture/workspace"
@@ -227,7 +231,9 @@ def test_read_transcript_invalid_timestamp_emits_diagnostic_but_keeps_record(tmp
 # --- partial trailing lines ---
 
 
-def test_read_transcript_trailing_json_fixture_treats_unterminated_line_as_malformed(tmp_path: Path):
+def test_read_transcript_trailing_json_fixture_treats_unterminated_line_as_malformed(
+    tmp_path: Path,
+):
     """The v1 trailing-json fixture ends with a newline; it is a complete physical line."""
 
     home = tmp_path / "copilot"
@@ -407,7 +413,7 @@ def test_read_transcript_appended_newline_completes_deferred_partial_line(tmp_pa
     assert second["exhausted"] is False
 
     with (path / "events.jsonl").open("ab") as stream:
-        stream.write(b'}\n')
+        stream.write(b"}\n")
 
     third = read_transcript(paths, native, second["next_cursor"])
     assert [record["payload"]["id"] for record in _transcript_records(third)] == ["second"]
@@ -502,7 +508,10 @@ def test_read_transcript_inplace_rewrite_before_continuity_window_replays(tmp_pa
     original = b'{"id":"orig"}\n'
     rewritten = b'{"id":"edit"}\n'
     assert len(original) == len(rewritten)
-    padding = b"".join(json.dumps({"id": f"pad-{index:03d}", "body": "x" * 64}).encode() + b"\n" for index in range(80))
+    padding = b"".join(
+        json.dumps({"id": f"pad-{index:03d}", "body": "x" * 64}).encode() + b"\n"
+        for index in range(80)
+    )
     path = _write_session(home, native, events=original + padding)
     paths = _session_paths(home)
 
@@ -619,11 +628,17 @@ def test_read_transcript_cli_fixture_preserves_seventy_six_events(tmp_path: Path
     assert len(transcript) == 76
     assert len(metadata) == 1
     assert last["cwd"] == "/sanitized/workspace"
-    assert diagnostics == [] or all(item["code"] != "transcript_invalid_json" for item in diagnostics)
+    assert diagnostics == [] or all(
+        item["code"] != "transcript_invalid_json" for item in diagnostics
+    )
 
-    user_messages = [record for record in transcript if record["payload"].get("type") == "user.message"]
+    user_messages = [
+        record for record in transcript if record["payload"].get("type") == "user.message"
+    ]
     assert len(user_messages) == 3
-    assert all(record["payload"]["schema_version"] == SOURCE_SCHEMA_VERSION for record in transcript)
+    assert all(
+        record["payload"]["schema_version"] == SOURCE_SCHEMA_VERSION for record in transcript
+    )
 
 
 def test_read_transcript_cursor_advances_by_byte_offsets(tmp_path: Path):
@@ -644,7 +659,9 @@ def test_read_transcript_cursor_advances_by_byte_offsets(tmp_path: Path):
 
 
 def test_read_transcript_module_has_no_forbidden_imports():
-    source = Path(__import__("thirdeye.platforms.copilot.transcript", fromlist=["__file__"]).__file__)
+    source = Path(
+        __import__("thirdeye.platforms.copilot.transcript", fromlist=["__file__"]).__file__
+    )
     imports = [
         line.strip()
         for line in source.read_text(encoding="utf-8").splitlines()

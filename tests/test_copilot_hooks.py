@@ -133,7 +133,9 @@ def copilot_env(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> tuple[Config
     return config, paths
 
 
-def _session_directory(config: Config, paths: SourcePaths, native_id: str = NATIVE_SESSION_ID) -> Path:
+def _session_directory(
+    config: Config, paths: SourcePaths, native_id: str = NATIVE_SESSION_ID
+) -> Path:
     return session_dir(config.root, PLATFORM_NAME, stored_session_id(paths, native_id))
 
 

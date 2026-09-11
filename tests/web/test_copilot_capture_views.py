@@ -36,7 +36,11 @@ def _capture_synthetic_batch(web_config, tmp_path: Path) -> str:
                 "agentId": "child-agent-id",
                 "data": {"content": "Read alpha.txt and beta.txt as the explore child."},
             },
-            "locator": {"file": "events.jsonl", "file_generation": "fixture-gen", "byte_offset": 512},
+            "locator": {
+                "file": "events.jsonl",
+                "file_generation": "fixture-gen",
+                "byte_offset": 512,
+            },
         },
         {
             "source_id": f"hook/{NATIVE_ID}/child-stop",
@@ -46,7 +50,11 @@ def _capture_synthetic_batch(web_config, tmp_path: Path) -> str:
             "observed_at": "2026-09-10T17:08:45.001Z",
             "payload": {
                 "event": "agentStop",
-                "hook_payload": {"sessionId": NATIVE_ID, "agentId": "child-agent-id", "response": "42"},
+                "hook_payload": {
+                    "sessionId": NATIVE_ID,
+                    "agentId": "child-agent-id",
+                    "response": "42",
+                },
             },
             "locator": {"observation_id": "child-stop", "event": "agentStop"},
         },
@@ -63,7 +71,9 @@ def _capture_synthetic_batch(web_config, tmp_path: Path) -> str:
     return stored_session_id(paths, NATIVE_ID)
 
 
-def test_generic_event_views_show_raw_child_and_hook_evidence(client, web_config, tmp_path: Path) -> None:
+def test_generic_event_views_show_raw_child_and_hook_evidence(
+    client, web_config, tmp_path: Path
+) -> None:
     stored_id = _capture_synthetic_batch(web_config, tmp_path)
 
     session = client.get(f"/sessions/{stored_id}")
@@ -71,7 +81,9 @@ def test_generic_event_views_show_raw_child_and_hook_evidence(client, web_config
     detail = client.get(f"/sessions/{stored_id}/events/1")
     search = client.get("/search?q=alpha.txt&platform=copilot")
 
-    assert session.status_code == tree.status_code == detail.status_code == search.status_code == 200
+    assert (
+        session.status_code == tree.status_code == detail.status_code == search.status_code == 200
+    )
     assert b"copilot" in session.content
     assert b"copilot_transcript" in tree.content
     assert b"copilot_hook" in tree.content
@@ -142,7 +154,9 @@ def test_copilot_database_events_render_in_generic_tree(client, web_config, tmp_
     assert b"user_message" not in tree.content
 
 
-def test_copilot_sessions_are_excluded_from_index_turn_query(client, web_config, tmp_path: Path) -> None:
+def test_copilot_sessions_are_excluded_from_index_turn_query(
+    client, web_config, tmp_path: Path
+) -> None:
     stored_id = _capture_synthetic_batch(web_config, tmp_path)
     store = client.app.state.store
     meta = store.get_meta(stored_id)

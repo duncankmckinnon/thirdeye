@@ -410,18 +410,15 @@ def test_cli_child_prompt_stop_hooks_use_child_agent_id_as_session_id():
     child_stops = [
         hook
         for hook in hooks
-        if hook["registered_event"] == "agentStop" and hook["payload"]["sessionId"] == CHILD_AGENT_ID
+        if hook["registered_event"] == "agentStop"
+        and hook["payload"]["sessionId"] == CHILD_AGENT_ID
     ]
     assert len(child_prompts) == 1
     assert len(child_stops) == 1
-    assert child_stops[0]["payload"]["transcriptPath"].endswith(
-        f"{NATIVE_SESSION_ID}/events.jsonl"
-    )
+    assert child_stops[0]["payload"]["transcriptPath"].endswith(f"{NATIVE_SESSION_ID}/events.jsonl")
 
     parent_lifecycle = [
-        hook
-        for hook in hooks
-        if hook["registered_event"] in {"subagentStart", "subagentStop"}
+        hook for hook in hooks if hook["registered_event"] in {"subagentStart", "subagentStop"}
     ]
     assert parent_lifecycle
     assert all(hook["payload"]["sessionId"] == NATIVE_SESSION_ID for hook in parent_lifecycle)

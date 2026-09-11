@@ -127,9 +127,7 @@ def _page_start(slice_: SourceSlice, incoming_offset: object) -> int:
     return incoming_offset if isinstance(incoming_offset, int) else 0
 
 
-def _observe_database_snapshot_end(
-    paths: SourcePaths, native_id: str, slice_: SourceSlice
-) -> int:
+def _observe_database_snapshot_end(paths: SourcePaths, native_id: str, slice_: SourceSlice) -> int:
     """Freeze the live row count observed for this invocation.
 
     Additional probes learn how far the current SQLite snapshot extends, but

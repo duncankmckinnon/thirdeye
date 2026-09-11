@@ -321,7 +321,9 @@ def test_capture_status_reports_source_key_prefix_collision(
     assert state is not None
     original = state["source_key"]
     replacement = "b" if original[SOURCE_KEY_PREFIX_LEN] != "b" else "a"
-    colliding = original[:SOURCE_KEY_PREFIX_LEN] + replacement + original[SOURCE_KEY_PREFIX_LEN + 1 :]
+    colliding = (
+        original[:SOURCE_KEY_PREFIX_LEN] + replacement + original[SOURCE_KEY_PREFIX_LEN + 1 :]
+    )
     assert colliding != original
     state["source_key"] = colliding
     write_state(directory, state)

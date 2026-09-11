@@ -104,7 +104,8 @@ def test_setup_does_not_ask_about_already_configured_agents(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     platforms = {
-        name: _fake_platform(name, installed=True) for name in ("claude", "codex", "cursor", "copilot")
+        name: _fake_platform(name, installed=True)
+        for name in ("claude", "codex", "cursor", "copilot")
     }
     _fake_resolver(monkeypatch, platforms)
     monkeypatch.setattr("thirdeye.commands.setup._install_new_skills", lambda _: "up to date")
@@ -202,7 +203,8 @@ def test_setup_keeps_existing_logfire_token_by_default(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     platforms = {
-        name: _fake_platform(name, installed=True) for name in ("claude", "codex", "cursor", "copilot")
+        name: _fake_platform(name, installed=True)
+        for name in ("claude", "codex", "cursor", "copilot")
     }
     _fake_resolver(monkeypatch, platforms)
     monkeypatch.setattr("thirdeye.commands.setup._install_new_skills", lambda _: "up to date")
@@ -219,7 +221,8 @@ def test_setup_keeps_existing_logfire_token_by_default(
 
 def test_setup_can_replace_existing_logfire_token(monkeypatch: pytest.MonkeyPatch) -> None:
     platforms = {
-        name: _fake_platform(name, installed=True) for name in ("claude", "codex", "cursor", "copilot")
+        name: _fake_platform(name, installed=True)
+        for name in ("claude", "codex", "cursor", "copilot")
     }
     _fake_resolver(monkeypatch, platforms)
     monkeypatch.setattr("thirdeye.commands.setup._install_new_skills", lambda _: "up to date")
@@ -255,7 +258,8 @@ def test_setup_can_enable_an_existing_disabled_logfire_token(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     platforms = {
-        name: _fake_platform(name, installed=True) for name in ("claude", "codex", "cursor", "copilot")
+        name: _fake_platform(name, installed=True)
+        for name in ("claude", "codex", "cursor", "copilot")
     }
     _fake_resolver(monkeypatch, platforms)
     monkeypatch.setattr("thirdeye.commands.setup._install_new_skills", lambda _: "up to date")
