@@ -1,6 +1,6 @@
 # Claude Code usage fixtures
 
-## `claude_transcript.jsonl`
+## `transcript.jsonl`
 
 A **scrubbed, curated subset** of a real Claude Code 2.1.214 session transcript,
 used to test the Claude usage extractor's per-call deduplication and inclusive
@@ -68,8 +68,8 @@ call: Anthropic reports `input_tokens` *excluding* cache, so the extractor adds
 ### Verification (real `jq` output)
 
 ```
-$ wc -l -c tests/fixtures/usage/claude_transcript.jsonl
-      15   17291 tests/fixtures/usage/claude_transcript.jsonl
+$ wc -l -c tests/platforms/claude/fixtures/transcript.jsonl
+      15   17291 tests/platforms/claude/fixtures/transcript.jsonl
 
 $ jq -rc 'select(.type=="assistant")' … | wc -l          # assistant frames
 13
@@ -98,7 +98,7 @@ Exactly one `message.id` (`msg_011CdBpZs1PvZ3gsGPM8rXdf`) appears on ≥4 frames
 six identical-usage frames, the per-call deduplication case. All six carry the
 same `message.usage`, so a naive extractor would emit six rows for one API call.
 
-## `claude_transcript.expected.json`
+## `transcript.expected.json`
 
 The machine-readable companion the extractor tests load. Every value is measured
-from the shipped `claude_transcript.jsonl`, not copied from a specification.
+from the shipped `transcript.jsonl`, not copied from a specification.

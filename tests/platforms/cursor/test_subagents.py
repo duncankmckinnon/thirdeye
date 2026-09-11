@@ -306,7 +306,7 @@ class TestEventsForSubagent:
 
 class TestCursorTranscript:
     def test_real_shape_fixture(self):
-        summary = read_cursor_transcript(str(FIXTURES / "cursor-subagent-transcript.jsonl"))
+        summary = read_cursor_transcript(str(FIXTURES / "subagent-transcript.jsonl"))
 
         assert summary == CursorTranscriptSummary(
             "Inspect the sample module", "The sample module is valid."

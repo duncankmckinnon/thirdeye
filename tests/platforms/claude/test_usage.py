@@ -22,8 +22,8 @@ from thirdeye.platforms.claude.usage import (
     persist_usage_rows_claude,
 )
 
-FIXTURE = Path(__file__).parent / "fixtures" / "usage" / "claude_transcript.jsonl"
-EXPECTED_JSON = Path(__file__).parent / "fixtures" / "usage" / "claude_transcript.expected.json"
+FIXTURE = Path(__file__).parent / "fixtures" / "transcript.jsonl"
+EXPECTED_JSON = Path(__file__).parent / "fixtures" / "transcript.expected.json"
 
 
 @pytest.fixture(scope="session")

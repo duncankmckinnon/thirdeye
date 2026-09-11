@@ -601,7 +601,7 @@ def test_tool_call_arguments_from_alternate_input_keys(key: str):
 def test_tool_call_arguments_returns_dict_when_multiple_input_keys_present():
     payload = {
         "command": "pytest -q",
-        "file_path": "/repo/tests/test_cursor_interactions.py",
+        "file_path": "/repo/tests/platforms/cursor/test_interactions.py",
         "input": {"line": 1},
     }
     events = [_event(0, "tool_call", tool_use_id="call-1", tool_name="shell", **payload)]

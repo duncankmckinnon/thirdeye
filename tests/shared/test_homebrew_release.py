@@ -11,7 +11,7 @@ from pathlib import Path
 
 import pytest
 
-ROOT = Path(__file__).parents[1]
+ROOT = Path(__file__).parents[2]
 DOWNLOAD_SCRIPT = ROOT / ".github/actions/update-homebrew-tap/download-pypi-sdist.sh"
 
 # This module drives a bash script that only ever runs on the ubuntu release
