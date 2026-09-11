@@ -19,15 +19,17 @@ The PyPI package is `thrdi`; the installed commands are `thirdeye` and `thrdi`
 thirdeye add --claude       # Claude Code
 thirdeye add --codex        # OpenAI Codex CLI
 thirdeye add --cursor       # Cursor
+thirdeye add --copilot      # GitHub Copilot CLI
 ```
 
 `thirdeye add` is idempotent — running it twice for the same platform leaves
 the existing hook entries in place rather than duplicating them.
 
 Hook entries are written into each platform's own config file: Claude Code
-uses `~/.claude/settings.json`, Codex uses `~/.codex/config.toml`, and
+uses `~/.claude/settings.json`, Codex uses `~/.codex/config.toml`,
 Cursor uses `~/.cursor/hooks.json`
-(covering both the IDE chat and the `cursor-agent` CLI).
+(covering both the IDE chat and the `cursor-agent` CLI), and GitHub Copilot CLI
+uses `$COPILOT_HOME/hooks/thirdeye.json` (default `~/.copilot/hooks/thirdeye.json`).
 
 ### Cursor subagent hooks
 
@@ -53,8 +55,39 @@ and this user-level setup does not promise remote capture.
 
 ```bash
 thirdeye remove --claude    # remove only Claude hooks
-thirdeye remove --codex     # etc.
+thirdeye remove --codex
+thirdeye remove --cursor
+thirdeye remove --copilot
 ```
+
+## Copilot CLI V1
+
+GitHub Copilot CLI capture is a V1 immutable raw archive of recordings from the
+selected Copilot home. V2 (reconstructed turns, usage accounting, and OTel
+export) is out of scope. V1 does not export Copilot content.
+
+```bash
+thirdeye add --copilot
+thirdeye copilot status --source-home "$COPILOT_HOME"
+thirdeye copilot sync --source-home "$COPILOT_HOME"
+thirdeye copilot watch --source-home "$COPILOT_HOME" --interval 1
+thirdeye remove --copilot
+```
+
+`--source-home` is optional. Resolution is `--source-home`, then `COPILOT_HOME`,
+then `~/.copilot`. V1 reads only that home's `session-state/**/events.jsonl`,
+`workspace.yaml`, and `session-store.db` (`sessions`, `turns`,
+`assistant_usage_events`). It does not read credentials, token-bearing config,
+or other Copilot files.
+
+`thirdeye add --copilot` writes user-level hooks at
+`$COPILOT_HOME/hooks/thirdeye.json` (default `~/.copilot/hooks/thirdeye.json`).
+The 1.0.83 live probe used repository hooks; V1 does not. `watch` is an explicit
+foreground poller and is not started by add or setup. Captured content has the
+same local sensitivity as other thirdeye sessions and is not exported in V1.
+`sync` and `status` print recoverable source diagnostics (locations and reasons,
+not prompt bodies). Passing the Copilot unit tests is not live certification of
+Copilot CLI.
 
 ## Verify tracing is live
 
@@ -64,6 +97,7 @@ After the next agent run, a new session should appear:
 thirdeye list                      # JSON-per-line, newest first
 thirdeye list --tree               # human-readable
 thirdeye events <sid>              # events for one session
+thirdeye copilot status            # Copilot source health, pending spool/leases
 ```
 
 `<sid>` accepts any unique prefix — usually 4-8 characters is enough.

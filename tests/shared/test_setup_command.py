@@ -45,7 +45,7 @@ def test_setup_appears_in_help() -> None:
 def test_setup_multiselects_agents_skills_and_logfire(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    platforms = {name: _fake_platform(name) for name in ("claude", "codex", "cursor")}
+    platforms = {name: _fake_platform(name) for name in ("claude", "codex", "cursor", "copilot")}
     _fake_resolver(monkeypatch, platforms)
     monkeypatch.setattr("thirdeye.commands.setup.logfire_cmd.is_available", lambda: True)
     monkeypatch.setattr(
@@ -73,7 +73,7 @@ def test_setup_multiselects_agents_skills_and_logfire(
 def test_setup_can_skip_agent_and_skill_multiselects(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    platforms = {name: _fake_platform(name) for name in ("claude", "codex", "cursor")}
+    platforms = {name: _fake_platform(name) for name in ("claude", "codex", "cursor", "copilot")}
     _fake_resolver(monkeypatch, platforms)
     monkeypatch.setattr("thirdeye.commands.setup.logfire_cmd.is_available", lambda: False)
 
@@ -89,7 +89,7 @@ def test_setup_can_skip_agent_and_skill_multiselects(
 def test_setup_skips_entire_logfire_step_when_extra_is_missing(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    platforms = {name: _fake_platform(name) for name in ("claude", "codex", "cursor")}
+    platforms = {name: _fake_platform(name) for name in ("claude", "codex", "cursor", "copilot")}
     _fake_resolver(monkeypatch, platforms)
     monkeypatch.setattr("thirdeye.commands.setup.logfire_cmd.is_available", lambda: False)
 
@@ -104,7 +104,8 @@ def test_setup_does_not_ask_about_already_configured_agents(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     platforms = {
-        name: _fake_platform(name, installed=True) for name in ("claude", "codex", "cursor")
+        name: _fake_platform(name, installed=True)
+        for name in ("claude", "codex", "cursor", "copilot")
     }
     _fake_resolver(monkeypatch, platforms)
     monkeypatch.setattr("thirdeye.commands.setup._install_new_skills", lambda _: "up to date")
@@ -125,6 +126,7 @@ def test_setup_installs_only_new_skills(monkeypatch: pytest.MonkeyPatch) -> None
         "claude": _fake_platform("claude", installed=True),
         "codex": _fake_platform("codex"),
         "cursor": _fake_platform("cursor"),
+        "copilot": _fake_platform("copilot"),
     }
     _fake_resolver(monkeypatch, platforms)
     monkeypatch.setattr("thirdeye.commands.setup.logfire_cmd.is_available", lambda: False)
@@ -151,6 +153,7 @@ def test_setup_offers_to_replace_a_foreign_codex_notifier(
         "claude": _fake_platform("claude"),
         "codex": codex,
         "cursor": _fake_platform("cursor"),
+        "copilot": _fake_platform("copilot"),
     }
 
     def resolve(name: str, **kwargs: object) -> object:
@@ -183,6 +186,7 @@ def test_setup_preserves_foreign_codex_notifier_when_declined(
         "claude": _fake_platform("claude"),
         "codex": CodexPlatform(config_file=config_file, hooks_file=hooks_file),
         "cursor": _fake_platform("cursor"),
+        "copilot": _fake_platform("copilot"),
     }
     _fake_resolver(monkeypatch, platforms)
     monkeypatch.setattr("thirdeye.commands.setup.logfire_cmd.is_available", lambda: False)
@@ -199,7 +203,8 @@ def test_setup_keeps_existing_logfire_token_by_default(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     platforms = {
-        name: _fake_platform(name, installed=True) for name in ("claude", "codex", "cursor")
+        name: _fake_platform(name, installed=True)
+        for name in ("claude", "codex", "cursor", "copilot")
     }
     _fake_resolver(monkeypatch, platforms)
     monkeypatch.setattr("thirdeye.commands.setup._install_new_skills", lambda _: "up to date")
@@ -216,7 +221,8 @@ def test_setup_keeps_existing_logfire_token_by_default(
 
 def test_setup_can_replace_existing_logfire_token(monkeypatch: pytest.MonkeyPatch) -> None:
     platforms = {
-        name: _fake_platform(name, installed=True) for name in ("claude", "codex", "cursor")
+        name: _fake_platform(name, installed=True)
+        for name in ("claude", "codex", "cursor", "copilot")
     }
     _fake_resolver(monkeypatch, platforms)
     monkeypatch.setattr("thirdeye.commands.setup._install_new_skills", lambda _: "up to date")
@@ -233,7 +239,7 @@ def test_setup_can_replace_existing_logfire_token(monkeypatch: pytest.MonkeyPatc
 
 
 def test_setup_surfaces_logfire_auth_failure(monkeypatch: pytest.MonkeyPatch) -> None:
-    platforms = {name: _fake_platform(name) for name in ("claude", "codex", "cursor")}
+    platforms = {name: _fake_platform(name) for name in ("claude", "codex", "cursor", "copilot")}
     _fake_resolver(monkeypatch, platforms)
     monkeypatch.setattr("thirdeye.commands.setup.logfire_cmd.is_available", lambda: True)
     monkeypatch.setattr(
@@ -252,7 +258,8 @@ def test_setup_can_enable_an_existing_disabled_logfire_token(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     platforms = {
-        name: _fake_platform(name, installed=True) for name in ("claude", "codex", "cursor")
+        name: _fake_platform(name, installed=True)
+        for name in ("claude", "codex", "cursor", "copilot")
     }
     _fake_resolver(monkeypatch, platforms)
     monkeypatch.setattr("thirdeye.commands.setup._install_new_skills", lambda _: "up to date")
@@ -284,3 +291,17 @@ def test_skill_targets_follow_configured_agents(platforms: list[str], targets: l
     from thirdeye.commands.setup import _skill_targets
 
     assert _skill_targets(platforms) == targets
+
+
+def test_setup_can_install_copilot_tracing(monkeypatch: pytest.MonkeyPatch) -> None:
+    platforms = {name: _fake_platform(name) for name in ("claude", "codex", "cursor", "copilot")}
+    platforms["copilot"].display_name = "GitHub Copilot CLI"
+    _fake_resolver(monkeypatch, platforms)
+    monkeypatch.setattr("thirdeye.commands.setup.logfire_cmd.is_available", lambda: False)
+
+    result = CliRunner().invoke(main, ["setup"], input="4\nnone\n")
+
+    assert result.exit_code == 0, result.output
+    platforms["copilot"].install.assert_called_once()
+    platforms["claude"].install.assert_not_called()
+    assert "Installed tracing for GitHub Copilot CLI" in result.output

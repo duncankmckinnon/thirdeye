@@ -1,0 +1,5 @@
+[
+  {"table":"turns","primary_key":7,"generation":"db-generation-a","content_revision":"sha256:aaa","row":{"id":7,"session_id":"session-a","content":"first"}},
+  {"table":"turns","primary_key":7,"generation":"db-generation-a","content_revision":"sha256:bbb","row":{"id":7,"session_id":"session-a","content":"updated"}},
+  {"table":"turns","primary_key":7,"generation":"db-generation-b","content_revision":"sha256:ccc","row":{"id":7,"session_id":"session-a","content":"reused after replacement"}}
+]

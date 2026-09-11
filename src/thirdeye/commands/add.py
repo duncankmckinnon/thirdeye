@@ -9,12 +9,14 @@ import click
 from thirdeye.platforms.base import Platform
 from thirdeye.platforms.claude.install import ClaudePlatform
 from thirdeye.platforms.codex.install import CodexPlatform
+from thirdeye.platforms.copilot.install import CopilotPlatform
 from thirdeye.platforms.cursor.install import CursorPlatform
 
 PLATFORMS: dict[str, type[Platform]] = {
     "claude": ClaudePlatform,
     "codex": CodexPlatform,
     "cursor": CursorPlatform,
+    "copilot": CopilotPlatform,
 }
 
 # Config files that may still reference console scripts for platforms this
@@ -25,6 +27,9 @@ ORPHAN_CONFIG_PATHS: tuple[Path, ...] = (Path.home() / ".gemini" / "settings.jso
 
 
 def _platform_options(fn):
+    fn = click.option(
+        "--copilot", "platform_flag", flag_value="copilot", help="GitHub Copilot CLI."
+    )(fn)
     fn = click.option("--cursor", "platform_flag", flag_value="cursor", help="Cursor.")(fn)
     fn = click.option("--codex", "platform_flag", flag_value="codex", help="Codex CLI.")(fn)
     fn = click.option("--claude", "platform_flag", flag_value="claude", help="Claude Code.")(fn)
@@ -33,7 +38,7 @@ def _platform_options(fn):
 
 def _resolve_platform(platform_flag: str | None, *, force: bool = False) -> Platform:
     if not platform_flag:
-        raise click.UsageError("Pick a platform: --claude, --codex, --cursor")
+        raise click.UsageError("Pick a platform: " + ", ".join(f"--{name}" for name in PLATFORMS))
     platform_cls = PLATFORMS[platform_flag]
     if platform_flag == "codex" and force:
         return platform_cls(force=True)

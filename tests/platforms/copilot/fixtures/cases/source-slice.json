@@ -1,0 +1,17 @@
+{
+  "records": [
+    {
+      "source_id": "3c27ee5a0430219b982434b040245491be12dc57e270dcd2461e65d3a1f49839/session-a/event-1",
+      "source_kind": "transcript",
+      "native_session_id": "session-a",
+      "ts": "2026-09-10T17:08:24.000Z",
+      "observed_at": "2026-09-10T17:08:25.000Z",
+      "payload": {"schema_version": 1, "type": "user.message", "data": {"text": "fixture"}},
+      "locator": {"file_generation": "generation-1", "byte_offset": 0, "native_event_id": "event-1"}
+    }
+  ],
+  "next_cursor": {"byte_offset": 128, "file_generation": "generation-1"},
+  "diagnostics": [],
+  "cwd": "/fixture/workspace",
+  "exhausted": false
+}

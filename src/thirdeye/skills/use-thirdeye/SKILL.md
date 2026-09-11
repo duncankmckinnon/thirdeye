@@ -5,7 +5,7 @@ description: Use when an agent needs to inspect, search, or evaluate past agent 
 
 ## Overview
 
-`thirdeye` (PyPI: `thrdi`) captures events from agentic tools (Claude Code, Codex, Cursor)
+`thirdeye` (PyPI: `thrdi`) captures events from agentic tools (Claude Code, Codex, Cursor, GitHub Copilot CLI)
 into a unified per-session event store on disk. Each session's data lives under
 `<thirdeye_home>/traces/<platform>/<sid>/` and contains a sequential log of all events the
 agent emitted during that session. Sessions are addressable by any unique prefix of their session ID,
@@ -22,11 +22,18 @@ for full instructions on installing hooks, verifying data flow, and removing hoo
 thirdeye add --claude
 thirdeye add --codex
 thirdeye add --cursor
+thirdeye add --copilot
+
+# Copilot CLI V1: ingest and health (watch is foreground-only; not started by add)
+thirdeye copilot status --source-home "$COPILOT_HOME"
+thirdeye copilot sync --source-home "$COPILOT_HOME"
+thirdeye copilot watch --source-home "$COPILOT_HOME" --interval 1
 
 # Remove hooks
 thirdeye remove --claude
 thirdeye remove --codex
 thirdeye remove --cursor
+thirdeye remove --copilot
 ```
 
 ## Searching and retrieving session data

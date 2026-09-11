@@ -2,9 +2,10 @@
 
 Windows support is **experimental**. The test suite runs on `windows-latest` in
 CI across Python 3.11 and 3.13, and Claude Code tracing is the verified
-integration. The Codex CLI and Cursor installers are implemented but have not
-been exercised against those tools on Windows. Please file Windows issues at the
-[issue tracker](https://github.com/duncankmckinnon/thirdeye/issues).
+integration. The Codex CLI, Cursor, and Copilot CLI installers are implemented
+but have not been live-certified against those tools on Windows. Passing Copilot
+unit tests is not live certification of Copilot CLI. Please file Windows issues
+at the [issue tracker](https://github.com/duncankmckinnon/thirdeye/issues).
 
 Install with `pipx` or `uv` — Homebrew stays macOS/Linux only.
 
@@ -35,12 +36,14 @@ A copied skill does not track a thirdeye upgrade the way a symlink does. After
 `pipx upgrade thrdi` (or `uv tool upgrade thrdi`), rerun `thirdeye skills add --force`
 to refresh the copied skills.
 
-### 3. Unverified Codex and Cursor hooks
+### 3. Unverified Codex, Cursor, and Copilot hooks
 
-The Codex CLI and Cursor installers are correct by construction but have not been
-run against the real tools on Windows. How each tool invokes a hook command
-there — `cmd.exe`, PowerShell, or a direct `CreateProcess` — is unconfirmed, and
-therefore so is whether a path containing spaces needs quoting.
+The Codex CLI, Cursor, and Copilot CLI installers are correct by construction
+but have not been run against the real tools on Windows. How each tool invokes a
+hook command there — `cmd.exe`, PowerShell, or a direct `CreateProcess` — is
+unconfirmed, and therefore so is whether a path containing spaces needs quoting.
+Copilot V1 still writes user-level `$COPILOT_HOME/hooks/thirdeye.json` (default
+`~/.copilot/hooks/thirdeye.json`); the 1.0.83 probe used repository hooks.
 
 To sidestep the question, on Windows only, when the resolved hook binary path
 contains a space thirdeye writes the bare binary name into the tool's config

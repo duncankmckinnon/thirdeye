@@ -62,6 +62,27 @@ def unlink(path: Path, *, missing_ok: bool = False) -> None:
         path.unlink(missing_ok=missing_ok)
 
 
+def sync_directory(path: Path | str) -> None:
+    """Best-effort ``fsync`` of a directory after ``replace`` or ``unlink``.
+
+    Publishing a file with tmp-plus-replace (or removing a journal) is not
+    durable until the directory entry itself is synced. Some platforms,
+    notably Windows, reject directory ``fsync``; those errors are ignored so
+    callers stay portable.
+    """
+    path = Path(path)
+    try:
+        fd = os.open(path, os.O_RDONLY)
+    except OSError:
+        return
+    try:
+        os.fsync(fd)
+    except OSError:
+        return
+    finally:
+        os.close(fd)
+
+
 def read_text(path: Path | str, *, encoding: str = "utf-8") -> str:
     """``Path.read_text`` with bounded retry on Windows ``PermissionError``.
 
