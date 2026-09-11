@@ -18,7 +18,11 @@ _EVENTS_PER_WRITER = 25
 _SESSION_ID = "CONCURRENT_SESSION"
 _PLATFORM = "claude"
 _CWD = "/concurrency-test"
-_WRITER_TIMEOUT = 30
+# Generous margin: this spawns _WRITER_COUNT real Python interpreters that
+# contend for the same on-disk lock, and a busy or oversubscribed CI runner
+# (observed on GitHub's Windows runners) can push interpreter start-up and
+# lock-wait time well past what a quiet dev machine sees.
+_WRITER_TIMEOUT = 90
 _WRITER_SCRIPT = f"""
 from pathlib import Path
 import sys

@@ -53,12 +53,31 @@ jobs:
         with:
           python-version: ${{ matrix.python-version }}
           allow-prereleases: true
+          cache: pip
+          cache-dependency-path: pyproject.toml
 
       - name: Install dependencies
         run: pip install -e ".[dev,ui,logfire]"
 
-      - name: Run tests with coverage
-        run: pytest tests/ -v --cov-report=xml
+      - name: Run tests
+        shell: bash
+        run: |
+          if [ "${{ runner.os }}" = "Windows" ]; then
+            # Coverage instrumentation adds meaningful overhead on top of
+            # Windows's already-slower file I/O and process spawn, and only
+            # the ubuntu/3.12 run's coverage is uploaded below. `-o addopts=`
+            # clears pyproject's default `--cov` flags for this invocation.
+            #
+            # test_store_concurrency.py spawns 8 real subprocesses of its own
+            # and asserts they finish within a fixed deadline; run it outside
+            # the -n auto pool so it isn't also competing with three other
+            # xdist workers for the runner's CPU, which made its timeout
+            # flakier, not less so, under parallelism.
+            pytest tests/ -n auto -o addopts="" -v --ignore=tests/test_store_concurrency.py
+            pytest tests/test_store_concurrency.py -o addopts="" -v
+          else
+            pytest tests/ -n auto -v --cov-report=xml
+          fi
 
       - name: Upload coverage reports to Codecov
         if: matrix.os == 'ubuntu-latest' && matrix.python-version == '3.12'
