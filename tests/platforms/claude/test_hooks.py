@@ -221,9 +221,20 @@ class TestSessionStartEnvTags:
             return []
         return [json.loads(line) for line in path.read_text().splitlines() if line.strip()]
 
-    def test_no_patterns_set_writes_no_tags(self, monkeypatch, env: Path):
+    def test_unset_capture_env_still_tags_wb_vars_by_default(self, monkeypatch, env: Path):
+        monkeypatch.delenv("THIRDEYE_CAPTURE_ENV", raising=False)
         monkeypatch.setenv("WB_PLAN", "p")
         monkeypatch.setenv("WB_STEP", "test#1")
+        _stdin(monkeypatch, {"session_id": "s1", "cwd": "/p"})
+        hooks.session_start()
+        assert {line["tag"] for line in self._tags_lines(env, "s1")} == {"plan-p", "step-test#1"}
+
+    def test_explicit_empty_capture_env_writes_no_tags(self, monkeypatch, env: Path):
+        import yaml
+
+        monkeypatch.delenv("THIRDEYE_CAPTURE_ENV", raising=False)
+        (env / "config.yaml").write_text(yaml.safe_dump({"capture_env": []}))
+        monkeypatch.setenv("WB_PLAN", "p")
         _stdin(monkeypatch, {"session_id": "s1", "cwd": "/p"})
         hooks.session_start()
         assert not tags_path(session_dir(env, "claude", "s1")).exists()

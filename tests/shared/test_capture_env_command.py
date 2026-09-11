@@ -16,11 +16,11 @@ def _home(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     return tmp_path
 
 
-def test_show_when_unconfigured():
+def test_show_when_unconfigured_reports_the_default():
     result = CliRunner().invoke(capture_env_group, ["show"])
     assert result.exit_code == 0
-    assert "patterns : (none)" in result.output
-    assert "not configured" in result.output
+    assert "patterns : WB_*" in result.output
+    assert "built-in default" in result.output
 
 
 def test_set_persists_and_show_reports_config_source():
@@ -40,11 +40,15 @@ def test_set_accepts_multiple_and_comma_forms():
     assert Config.load().capture_env_patterns == ("A_*", "B_*")
 
 
-def test_clear_removes_the_key():
+def test_clear_disables_capture_rather_than_reverting_to_the_default():
     CliRunner().invoke(capture_env_group, ["set", "WB_*"])
     r = CliRunner().invoke(capture_env_group, ["clear"])
     assert r.exit_code == 0
     assert Config.load().capture_env_patterns == ()
+
+    shown = CliRunner().invoke(capture_env_group, ["show"])
+    assert "patterns : (none)" in shown.output
+    assert "config.yaml" in shown.output
 
 
 def test_env_var_is_reported_as_overriding(monkeypatch: pytest.MonkeyPatch):

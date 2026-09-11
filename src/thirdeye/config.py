@@ -17,6 +17,12 @@ def default_root() -> Path:
     return Path.home() / ".thirdeye"
 
 
+# Workbench stamps run metadata onto the agents it dispatches as WB_* env
+# vars and thirdeye is what turns those into tags/attributes, so capture works
+# out of the box. Opt out with an explicit empty ``capture_env`` in config.yaml.
+DEFAULT_CAPTURE_ENV_PATTERNS: tuple[str, ...] = ("WB_*",)
+
+
 def _parse_patterns(raw: str) -> tuple[str, ...]:
     return tuple(p.strip() for p in raw.split(",") if p.strip())
 
@@ -98,9 +104,15 @@ class Config:
         # override; otherwise fall back to config.yaml's ``capture_env`` so
         # capture does not depend on the launching shell exporting anything
         # (workbench dispatches agents from contexts that may not source rc).
+        # A *present* key is authoritative even when empty — that is how a user
+        # turns capture off; only an absent key takes the default.
         patterns = _parse_patterns(os.environ.get("THIRDEYE_CAPTURE_ENV", ""))
         if not patterns:
-            patterns = _coerce_patterns(raw.get("capture_env"))
+            patterns = (
+                _coerce_patterns(raw["capture_env"])
+                if "capture_env" in raw
+                else DEFAULT_CAPTURE_ENV_PATTERNS
+            )
         return cls(
             root=root,
             capture_env_patterns=patterns,
@@ -129,16 +141,15 @@ class Config:
     def write_capture_env_patterns(self, patterns: tuple[str, ...] | list[str]) -> Config:
         """Persist ``capture_env`` to config.yaml, preserving other top-level keys.
 
-        An empty sequence removes the key. Returns a copy of this Config with
+        An empty sequence persists an empty list rather than removing the key:
+        removing it would fall back to ``DEFAULT_CAPTURE_ENV_PATTERNS``, so
+        clearing would not actually clear. Returns a copy of this Config with
         the new patterns applied. ``THIRDEYE_CAPTURE_ENV`` still overrides this
         at load time when set.
         """
         cleaned = tuple(str(p).strip() for p in patterns if str(p).strip())
         data = _read_config_yaml(self.config_file)
-        if cleaned:
-            data["capture_env"] = list(cleaned)
-        else:
-            data.pop("capture_env", None)
+        data["capture_env"] = list(cleaned)
         _write_config_yaml(self.config_file, data)
         return replace(self, capture_env_patterns=cleaned)
 

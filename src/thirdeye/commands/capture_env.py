@@ -19,14 +19,20 @@ def capture_env_group() -> None:
 def show() -> None:
     import os
 
+    import yaml
+
     config = Config.load()
     env_raw = os.environ.get("THIRDEYE_CAPTURE_ENV", "")
+    try:
+        persisted = yaml.safe_load(config.config_file.read_text(encoding="utf-8")) or {}
+    except (OSError, yaml.YAMLError):
+        persisted = {}
     if env_raw.strip():
         source = "THIRDEYE_CAPTURE_ENV (overrides config.yaml)"
-    elif config.capture_env_patterns:
+    elif isinstance(persisted, dict) and "capture_env" in persisted:
         source = f"config.yaml ({config.config_file})"
     else:
-        source = "(not configured)"
+        source = "built-in default"
     patterns = ", ".join(config.capture_env_patterns) or "(none)"
     click.echo(f"patterns : {patterns}")
     click.echo(f"source   : {source}")
@@ -42,7 +48,7 @@ def set_patterns(patterns: tuple[str, ...]) -> None:
     click.echo(f"written to {config.config_file}")
 
 
-@capture_env_group.command("clear", help="Remove the persisted capture patterns from config.yaml.")
+@capture_env_group.command("clear", help="Turn capture off by persisting an empty capture_env.")
 def clear() -> None:
     Config.load().write_capture_env_patterns(())
-    click.echo("capture_env cleared")
+    click.echo("capture_env cleared (capture disabled)")

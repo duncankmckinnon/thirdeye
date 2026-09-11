@@ -5,13 +5,14 @@ from pathlib import Path
 import pytest
 import yaml
 
-from thirdeye.config import Config, LogfireSettings
+from thirdeye.config import DEFAULT_CAPTURE_ENV_PATTERNS, Config, LogfireSettings
 
 
-def test_load_without_capture_env(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_load_without_capture_env(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("THIRDEYE_HOME", str(tmp_path))
     monkeypatch.delenv("THIRDEYE_CAPTURE_ENV", raising=False)
     config = Config.load()
-    assert config.capture_env_patterns == ()
+    assert config.capture_env_patterns == DEFAULT_CAPTURE_ENV_PATTERNS
 
 
 def test_load_with_capture_env(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -132,12 +133,27 @@ class TestCaptureEnvPatternsFromConfigFile:
         (tmp_path / "config.yaml").write_text("capture_env: 'WB_*'\n")
         assert Config.load().capture_env_patterns == ("FROM_ENV_*",)
 
-    def test_no_env_no_config_key_yields_empty(
+    def test_no_env_no_config_key_falls_back_to_default(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         monkeypatch.setenv("THIRDEYE_HOME", str(tmp_path))
         monkeypatch.delenv("THIRDEYE_CAPTURE_ENV", raising=False)
         (tmp_path / "config.yaml").write_text("logfire:\n  enabled: true\n")
+        assert Config.load().capture_env_patterns == ("WB_*",)
+
+    def test_missing_config_file_falls_back_to_default(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv("THIRDEYE_HOME", str(tmp_path))
+        monkeypatch.delenv("THIRDEYE_CAPTURE_ENV", raising=False)
+        assert Config.load().capture_env_patterns == ("WB_*",)
+
+    def test_explicit_empty_list_opts_out(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv("THIRDEYE_HOME", str(tmp_path))
+        monkeypatch.delenv("THIRDEYE_CAPTURE_ENV", raising=False)
+        (tmp_path / "config.yaml").write_text("capture_env: []\n")
         assert Config.load().capture_env_patterns == ()
 
 
@@ -165,12 +181,14 @@ class TestCaptureEnvPatternsPersistence:
         assert reloaded.logfire == LogfireSettings(enabled=True, token="tok")
         assert reloaded.capture_env_patterns == ("WB_*",)
 
-    def test_write_empty_clears_the_key(
+    def test_write_empty_persists_an_explicit_opt_out(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         monkeypatch.setenv("THIRDEYE_HOME", str(tmp_path))
         monkeypatch.delenv("THIRDEYE_CAPTURE_ENV", raising=False)
         Config.load().write_capture_env_patterns(("WB_*",))
         Config.load().write_capture_env_patterns(())
+        # An empty list, not a removed key: removing it would silently fall
+        # back to the WB_* default, so clearing would not actually clear.
+        assert yaml.safe_load((tmp_path / "config.yaml").read_text())["capture_env"] == []
         assert Config.load().capture_env_patterns == ()
-        assert "capture_env" not in yaml.safe_load((tmp_path / "config.yaml").read_text())
