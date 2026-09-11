@@ -442,8 +442,14 @@ def test_database_replacement_changes_generation_and_resets_cursor(tmp_path: Pat
     old_generation = first["next_cursor"]["database_generation"]
     assert first["exhausted"] is False
 
-    os.remove(database)
-    _write_database(home, session_id="session-a", turns=[(1, "replacement")])
+    replacement_home = tmp_path / "replacement-copilot"
+    replacement = _write_database(
+        replacement_home,
+        session_id="session-a",
+        turns=[(1, "replacement")],
+        journal_mode="DELETE",
+    )
+    os.replace(replacement, database)
 
     after_replace = read_database(paths, "session-a", first["next_cursor"], max_records=10)
     assert after_replace["next_cursor"]["database_generation"] != old_generation

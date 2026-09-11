@@ -276,8 +276,9 @@ def test_read_transcript_replacement_replays_deferred_partial_line(tmp_path: Pat
 
     first = read_transcript(paths, native, {})
     event_path = path / "events.jsonl"
-    event_path.unlink()
-    event_path.write_bytes(finished)
+    replacement = path / "replacement-events.jsonl"
+    replacement.write_bytes(finished)
+    replacement.replace(event_path)
 
     second = read_transcript(paths, native, first["next_cursor"])
     assert "transcript_replaced" in _diagnostic_codes(second)
@@ -311,9 +312,10 @@ def test_read_transcript_completes_deferred_utf8_after_replacement(tmp_path: Pat
     assert first["exhausted"] is False
 
     completed = raw + b"\xac\n"
-    replacement = path / "events.jsonl"
-    replacement.unlink()
+    event_path = path / "events.jsonl"
+    replacement = path / "replacement-events.jsonl"
     replacement.write_bytes(completed)
+    replacement.replace(event_path)
 
     second = read_transcript(paths, native, first["next_cursor"])
     assert "transcript_replaced" in _diagnostic_codes(second)
@@ -448,14 +450,16 @@ def test_read_transcript_replays_after_file_replacement(tmp_path: Path):
     first = read_transcript(paths, native, {})
     assert first["exhausted"] is True
 
-    replacement = path / "events.jsonl"
-    replacement.unlink()
-    replacement.write_text('{"id":"new"}\n', encoding="utf-8")
+    event_path = path / "events.jsonl"
+    replacement = path / "replacement-events.jsonl"
+    replacement_bytes = b'{"id":"new"}\n'
+    replacement.write_bytes(replacement_bytes)
+    replacement.replace(event_path)
 
     second = read_transcript(paths, native, first["next_cursor"])
     assert "transcript_replaced" in _diagnostic_codes(second)
     assert [record["payload"]["id"] for record in _transcript_records(second)] == ["new"]
-    assert second["next_cursor"]["byte_offset"] == len('{"id":"new"}\n')
+    assert second["next_cursor"]["byte_offset"] == len(replacement_bytes)
 
 
 def test_read_transcript_replays_after_truncation(tmp_path: Path):
