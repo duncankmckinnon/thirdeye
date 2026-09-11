@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import time
 from pathlib import Path
 from typing import Any
 
@@ -11,7 +12,7 @@ from thirdeye.paths import platform_dir
 from thirdeye.reader import SessionReader
 
 from .archive import _record_from_event
-from .constants import PLATFORM_NAME
+from .constants import FOLLOWUP_LEASE_FILENAME, PLATFORM_NAME
 from .database import read_database
 from .install import CopilotPlatform
 from .spool import read_spool
@@ -213,6 +214,21 @@ def _spool_sessions(
     return count, sessions, latest, errors
 
 
+def _followup_lease_pending(directory: Path) -> bool:
+    """True when a live follow-up lease file exists beside the session."""
+
+    try:
+        payload = json.loads((directory / FOLLOWUP_LEASE_FILENAME).read_text(encoding="utf-8"))
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError):
+        return False
+    if not isinstance(payload, dict):
+        return False
+    expires_at = payload.get("expires_at")
+    if not isinstance(expires_at, (int, float)):
+        return False
+    return float(expires_at) > time.time()
+
+
 def _archive_status(
     config: Config, paths: SourcePaths
 ) -> tuple[list[dict[str, Any]], SourceRecord | None, list[dict[str, Any]], int, int]:
@@ -243,10 +259,9 @@ def _archive_status(
             continue
         health = state.get("health") if isinstance(state.get("health"), dict) else {}
         diagnostics = health.get("diagnostics") if isinstance(health.get("diagnostics"), list) else []
-        followup = state.get("followup", state.get("pending_followup", False))
-        lease = state.get("lease", state.get("leases", None))
-        pending_followup += int(bool(followup))
-        active_leases += len(lease) if isinstance(lease, list) else int(bool(lease))
+        if _followup_lease_pending(directory):
+            pending_followup += 1
+            active_leases += 1
         sessions.append(
             {
                 "stored_session_id": directory.name,

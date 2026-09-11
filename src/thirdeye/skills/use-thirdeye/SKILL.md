@@ -24,6 +24,11 @@ thirdeye add --codex
 thirdeye add --cursor
 thirdeye add --copilot
 
+# Copilot CLI V1: ingest and health (watch is foreground-only; not started by add)
+thirdeye copilot status --source-home "$COPILOT_HOME"
+thirdeye copilot sync --source-home "$COPILOT_HOME"
+thirdeye copilot watch --source-home "$COPILOT_HOME" --interval 1
+
 # Remove hooks
 thirdeye remove --claude
 thirdeye remove --codex

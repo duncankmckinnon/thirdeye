@@ -23,12 +23,12 @@ from thirdeye._compat import fsops, proc
 from thirdeye._compat.locking import LockMode, LockTimeout, locked
 from thirdeye.config import Config
 from thirdeye.paths import session_dir
+from thirdeye.platforms.copilot.constants import FOLLOWUP_LEASE_FILENAME, PLATFORM_NAME
 from thirdeye.platforms.copilot.identity import stored_session_id, validate_native_id
 from thirdeye.platforms.copilot.types import SourcePaths, SyncResult
 from thirdeye.usage.errlog import log_capture_error
 
-_PLATFORM = "copilot"
-_LEASE_FILENAME = "copilot.followup.json"
+_PLATFORM = PLATFORM_NAME
 _LEASE_LOCK_FILENAME = "copilot.followup.lock"
 _LEASE_SECONDS = 5.0
 _LOCK_PROBE_TIMEOUT = 0.0
@@ -41,7 +41,7 @@ def _directory(config: Config, paths: SourcePaths, native_id: str) -> Path:
 
 
 def _lease_path(directory: Path) -> Path:
-    return directory / _LEASE_FILENAME
+    return directory / FOLLOWUP_LEASE_FILENAME
 
 
 def _lease_lock_path(directory: Path) -> Path:

@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import shutil
 import sqlite3
+import time
 from pathlib import Path
 
 import pytest
@@ -13,7 +14,11 @@ import thirdeye.platforms.copilot.status as status_mod
 from thirdeye.config import Config
 from thirdeye.paths import session_dir
 from thirdeye.platforms.copilot.archive import commit_batch
-from thirdeye.platforms.copilot.constants import OWNED_HOOK_FILENAME, PLATFORM_NAME
+from thirdeye.platforms.copilot.constants import (
+    FOLLOWUP_LEASE_FILENAME,
+    OWNED_HOOK_FILENAME,
+    PLATFORM_NAME,
+)
 from thirdeye.platforms.copilot.hook_payload import parse_hook
 from thirdeye.platforms.copilot.identity import (
     SOURCE_KEY_PREFIX_LEN,
@@ -53,11 +58,12 @@ def _record(
     *,
     source_kind: str = "transcript",
     observed_at: str = OBSERVED_AT_EARLY,
+    native_session_id: str = NATIVE_SESSION_ID,
 ) -> SourceRecord:
     return {
         "source_id": source_id,
         "source_kind": source_kind,
-        "native_session_id": NATIVE_SESSION_ID,
+        "native_session_id": native_session_id,
         "ts": "2026-09-10T17:08:24.000Z",
         "observed_at": observed_at,
         "payload": {"schema_version": 1, "type": "user.message"},
@@ -65,15 +71,27 @@ def _record(
     }
 
 
-def _batch(paths: SourcePaths, records: list[SourceRecord]) -> SourceBatch:
+def _batch(
+    paths: SourcePaths,
+    records: list[SourceRecord],
+    *,
+    native_session_id: str = NATIVE_SESSION_ID,
+) -> SourceBatch:
     return {
         "source_key": paths["source_key"],
-        "native_session_id": NATIVE_SESSION_ID,
+        "native_session_id": native_session_id,
         "cwd": "/proj",
         "records": records,
         "next_cursor": {"generation": 1},
         "diagnostics": [],
     }
+
+
+def _write_lease(directory: Path, *, expires_at: float) -> None:
+    (directory / FOLLOWUP_LEASE_FILENAME).write_text(
+        json.dumps({"generation": "lease-test", "expires_at": expires_at}) + "\n",
+        encoding="utf-8",
+    )
 
 
 def _hook_record(*, observation_id: str, observed_at: str = OBSERVED_AT_LATE) -> SourceRecord:
@@ -230,31 +248,30 @@ def test_capture_status_reports_followup_leases_and_journal(
     copilot_env: tuple[Config, SourcePaths],
 ) -> None:
     config, paths = copilot_env
+    expired_id = "expired-lease-session"
     commit_batch(config, paths, _batch(paths, [_record("status/pending-state")]))
-    directory = session_dir(config.root, PLATFORM_NAME, stored_session_id(paths, NATIVE_SESSION_ID))
-    state = {
-        "schema_version": 1,
-        "source_key": paths["source_key"],
-        "source_home": paths["home"],
-        "native_session_id": NATIVE_SESSION_ID,
-        "cursor": {},
-        "followup": True,
-        "lease": [{"owner": "test"}],
-        "health": {
-            "diagnostics": [{"kind": "test_diagnostic", "message": "retry later"}],
-            "last_successful_import": "2026-09-10T17:08:25.000Z",
-        },
-    }
-    write_state(directory, state)
-    write_journal(directory, {"pending": True})
+    commit_batch(
+        config,
+        paths,
+        _batch(
+            paths,
+            [_record("status/expired-lease", native_session_id=expired_id)],
+            native_session_id=expired_id,
+        ),
+    )
+    live_dir = session_dir(config.root, PLATFORM_NAME, stored_session_id(paths, NATIVE_SESSION_ID))
+    expired_dir = session_dir(config.root, PLATFORM_NAME, stored_session_id(paths, expired_id))
+    now = time.time()
+    _write_lease(live_dir, expires_at=now + 60)
+    _write_lease(expired_dir, expires_at=now - 60)
+    write_journal(live_dir, {"pending": True})
 
     status = capture_status(config, paths)
 
     assert status["pending"]["followup"] == 1
     assert status["pending"]["leases"] == 1
     assert status["pending"]["journals"] == 1
-    assert journal_path(directory).is_file()
-    assert any(error.get("kind") == "test_diagnostic" for error in status["errors"])
+    assert journal_path(live_dir).is_file()
 
 
 def test_capture_status_reports_invalid_archive_state(

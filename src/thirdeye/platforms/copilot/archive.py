@@ -511,33 +511,43 @@ def commit_batch(config: Config, paths: SourcePaths, batch: SourceBatch) -> Sync
         )
 
 
+def _is_child_hook(payload: dict[str, Any]) -> bool:
+    """Child identity lives on hook_payload (and, historically, context)."""
+
+    for mapping in (payload.get("hook_payload"), payload.get("context")):
+        if not isinstance(mapping, dict):
+            continue
+        if mapping.get("agentId") or mapping.get("agent_id"):
+            return True
+        if mapping.get("parentToolCallId") or mapping.get("parent_tool_call_id"):
+            return True
+    return False
+
+
 def _apply_lifecycle(directory: Path, records: list[Any]) -> None:
     """Apply only explicit top-level lifecycle evidence; child stops never close."""
-    close = False
-    reopen = False
+    decision: str | None = None
     for record in records:
         if not isinstance(record, dict) or record.get("source_kind") != "hook":
             continue
         payload = record.get("payload", {})
-        event = payload.get("event") if isinstance(payload, dict) else None
-        context = payload.get("context") if isinstance(payload, dict) else None
-        is_child = isinstance(context, dict) and bool(
-            context.get("parent_tool_call_id") or context.get("agent_id")
-        )
-        if event in {"sessionEnd", "shutdown", "session_end"} and not is_child:
-            close = True
-        if event in {"sessionStart", "resume", "activity", "session_start", "userPromptSubmitted"}:
-            reopen = True
-    if not close and not reopen:
+        if not isinstance(payload, dict):
+            continue
+        event = payload.get("event")
+        if event in {"sessionEnd", "shutdown", "session_end"} and not _is_child_hook(payload):
+            decision = "close"
+        elif event in {"sessionStart", "resume", "activity", "session_start", "userPromptSubmitted"}:
+            decision = "reopen"
+    if decision is None:
         return
     meta_file = meta_path(directory)
     meta = read_meta(meta_file)
     if meta is None:
         return
-    if reopen:
+    if decision == "reopen":
         meta.status = "open"
         meta.ended_at = None
-    elif close:
+    else:
         meta.status = "closed"
         meta.ended_at = utc_iso_ms()
     write_meta(meta_file, meta)

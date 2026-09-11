@@ -385,13 +385,57 @@ def test_session_end_closes_and_resume_reopens(config: Config, paths: SourcePath
     assert meta.ended_at is None
 
 
+def test_last_lifecycle_event_in_batch_wins(config: Config, paths: SourcePaths) -> None:
+    start = _record(
+        "key/a/start",
+        source_kind="hook",
+        payload={"event": "sessionStart", "hook_payload": {}, "context": {}},
+    )
+    end = _record(
+        "key/a/end",
+        source_kind="hook",
+        payload={"event": "sessionEnd", "hook_payload": {}, "context": {}},
+    )
+    commit_batch(config, paths, _batch(paths, [start, end]))
+    meta = read_meta(meta_path(_session_directory(config, paths)))
+    assert meta is not None
+    assert meta.status == "closed"
+    assert meta.ended_at is not None
+
+    later_end = _record(
+        "key/a/end-again",
+        source_kind="hook",
+        payload={"event": "sessionEnd", "hook_payload": {}, "context": {}},
+    )
+    resume = _record(
+        "key/a/resume-after-end",
+        source_kind="hook",
+        payload={"event": "resume", "hook_payload": {}, "context": {}},
+    )
+    commit_batch(
+        config,
+        paths,
+        _batch(
+            paths,
+            [later_end, resume],
+            next_cursor={"generation": 2},
+            base_cursor={"generation": 1},
+        ),
+    )
+    meta = read_meta(meta_path(_session_directory(config, paths)))
+    assert meta is not None
+    assert meta.status == "open"
+    assert meta.ended_at is None
+
+
 def test_child_stop_does_not_close_session(config: Config, paths: SourcePaths) -> None:
     child_stop = _record(
         "key/a/child-stop",
         source_kind="hook",
         payload={
             "event": "sessionEnd",
-            "context": {"agent_id": "child-agent", "parent_tool_call_id": "tool-1"},
+            "hook_payload": {"agentId": "child-agent", "parentToolCallId": "tool-1"},
+            "context": {},
         },
     )
     commit_batch(config, paths, _batch(paths, [child_stop]))

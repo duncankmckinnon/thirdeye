@@ -17,6 +17,8 @@ import thirdeye.platforms.copilot.archive as archive_mod
 import thirdeye.platforms.copilot.capture as capture_mod
 import thirdeye.platforms.copilot.state as state_mod
 from thirdeye.config import Config
+from thirdeye.meta import read_meta
+from thirdeye.paths import meta_path, session_dir
 from thirdeye.platforms.copilot.archive import commit_batch, load_cursor
 from thirdeye.platforms.copilot.capture import (
     capture_session,
@@ -24,6 +26,7 @@ from thirdeye.platforms.copilot.capture import (
     record_hook,
     sync,
 )
+from thirdeye.platforms.copilot.constants import PLATFORM_NAME
 from thirdeye.platforms.copilot.hook_payload import parse_hook
 from thirdeye.platforms.copilot.identity import resolve_sources, stored_session_id
 from thirdeye.platforms.copilot.spool import enqueue_hook, read_spool
@@ -336,6 +339,57 @@ def test_capture_session_prepends_spool_records_before_source_records(
     capture_session(config, paths, NATIVE_SESSION_ID)
 
     assert order[0] == "hook"
+
+
+def test_capture_session_closes_when_spool_drains_start_then_end(
+    copilot_env: tuple[Config, SourcePaths],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    config, paths = copilot_env
+    names = iter(["a" * 32, "b" * 32])
+
+    class _OrderedUUID:
+        def __init__(self, value: str) -> None:
+            self.hex = value
+
+    monkeypatch.setattr(
+        "thirdeye.platforms.copilot.spool.uuid.uuid4",
+        lambda: _OrderedUUID(next(names)),
+    )
+    start = parse_hook(
+        "sessionStart",
+        {
+            "sessionId": NATIVE_SESSION_ID,
+            "timestamp": 1789060102204,
+            "cwd": "/fixture/workspace",
+            "source": "new",
+        },
+        {},
+        observed_at="2026-09-10T17:08:22.000Z",
+        observation_id="spool-start",
+    )
+    end = parse_hook(
+        "sessionEnd",
+        {
+            "sessionId": NATIVE_SESSION_ID,
+            "timestamp": 1789060147875,
+            "cwd": "/fixture/workspace",
+            "reason": "user_exit",
+        },
+        {},
+        observed_at="2026-09-10T17:08:47.000Z",
+        observation_id="spool-end",
+    )
+    enqueue_hook(config, paths, start)
+    enqueue_hook(config, paths, end)
+
+    capture_session(config, paths, NATIVE_SESSION_ID)
+
+    stored = stored_session_id(paths, NATIVE_SESSION_ID)
+    meta = read_meta(meta_path(session_dir(config.root, PLATFORM_NAME, stored)))
+    assert meta is not None
+    assert meta.status == "closed"
+    assert meta.ended_at is not None
 
 
 def test_capture_session_acks_spool_after_successful_commit(
