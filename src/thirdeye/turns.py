@@ -29,6 +29,17 @@ def _record(meta: SessionMeta, events: list[dict[str, Any]]) -> dict[str, Any]:
 
 def session_turns(meta: SessionMeta, store: Store) -> list[dict[str, Any]]:
     """Return durable top-level turn slices reconstructed from stored events."""
+    if meta.platform == "copilot":
+        # Copilot's transcript interleaves child-agent messages with the main
+        # interaction, and its native turn IDs reset for each model cycle.
+        # The V2 projection has already reconstructed completed main user
+        # interactions from explicit identities.  Reading it here preserves
+        # the normal turn-record shape without treating an intermediate or
+        # child assistant message as the end of a user turn.
+        from thirdeye.platforms.copilot.projection_store import read_projected_turns
+
+        return read_projected_turns(store.config, meta.session_id)
+
     events = list(store.reader(meta.session_id).iter_events())
     if meta.platform == "codex":
         starts = [i for i, event in enumerate(events) if event.get("t") == "agent_turn"]
