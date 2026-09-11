@@ -1,0 +1,18 @@
+{
+  "input_records": [
+    {
+      "source_id": "copilot:database:source-a:session-a:assistant_usage_events:db-a:13:sha256:usage-13",
+      "source_kind": "database",
+      "native_session_id": "session-a",
+      "ts": "2026-09-10T17:08:24.498Z",
+      "observed_at": "2026-09-10T17:09:00.000Z",
+      "payload": {"table": "assistant_usage_events", "row": {"id": 13, "turn_index": 0, "agent_id": null, "parent_tool_call_id": null, "model": "gpt-5.6-luna", "input_tokens": 6452, "output_tokens": 107, "cache_read_tokens": 0, "cache_write_tokens": 6449, "reasoning_tokens": 29, "total_nano_aiu": 174125000, "finish_reason": "tool_calls"}},
+      "locator": {"table": "assistant_usage_events", "primary_key": 13, "generation": "db-a", "content_revision": "sha256:usage-13"}
+    }
+  ],
+  "expected": {
+    "usage_rows": [{"session_id": "copilot-source-a-session-a", "seq": 13, "call_id": "copilot:usage:source-a:assistant_usage_events:db-a:13", "ts": "2026-09-10T17:08:24.498Z", "platform": "copilot", "gen_ai.conversation.id": "copilot-source-a-session-a", "gen_ai.provider.name": "unknown", "gen_ai.operation.name": "chat", "gen_ai.response.model": "gpt-5.6-luna", "gen_ai.usage.input_tokens": 6452, "gen_ai.usage.output_tokens": 107, "gen_ai.usage.cache_read.input_tokens": 0, "gen_ai.usage.cache_creation.input_tokens": 6449, "gen_ai.usage.reasoning.output_tokens": 29}],
+    "candidates": [{"usage_source_id": "copilot:database:source-a:session-a:assistant_usage_events:db-a:13:sha256:usage-13", "logical_call_id": "copilot:usage:source-a:assistant_usage_events:db-a:13", "turn_index": 0, "agent_id": null, "parent_tool_call_id": null, "model": "gpt-5.6-luna", "provider": null, "source_ids": ["copilot:database:source-a:session-a:assistant_usage_events:db-a:13:sha256:usage-13"], "source_references": [{"source_id": "copilot:database:source-a:session-a:assistant_usage_events:db-a:13:sha256:usage-13", "source_kind": "database", "role": "usage_row"}], "revision": {"table": "assistant_usage_events", "primary_key": "13", "generation": "db-a", "content_revision": "sha256:usage-13"}, "timestamp": "2026-09-10T17:08:24.498Z", "finish_reason": "tool_calls", "supplemental_metrics": {"total_nano_aiu": 174125000, "duration_ms": null}}],
+    "diagnostics": []
+  }
+}

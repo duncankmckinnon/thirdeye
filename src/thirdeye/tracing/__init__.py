@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from thirdeye.tracing.model import (
+    AccountingCallSpanDict,
     LlmCallSpanDict,
     PermissionRequestSpanDict,
     ToolCallSpanDict,
@@ -10,6 +11,7 @@ from thirdeye.tracing.model import (
 )
 
 __all__ = [
+    "AccountingCallSpanDict",
     "LlmCallSpanDict",
     "PermissionRequestSpanDict",
     "ToolCallSpanDict",

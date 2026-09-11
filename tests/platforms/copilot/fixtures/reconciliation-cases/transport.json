@@ -1,0 +1,23 @@
+{
+  "turn_accounting_calls": [
+    {
+      "accounting_id": "copilot:usage:source-a:assistant_usage_events:db-a:13",
+      "usage": {"session_id": "copilot-source-a-session-a", "seq": 13, "call_id": "copilot:usage:source-a:assistant_usage_events:db-a:13", "ts": "2026-09-10T17:08:24.498Z", "platform": "copilot", "gen_ai.conversation.id": "copilot-source-a-session-a", "gen_ai.provider.name": "unknown", "gen_ai.operation.name": "chat", "gen_ai.response.model": "gpt-5.6-luna", "gen_ai.usage.input_tokens": 6452, "gen_ai.usage.output_tokens": 107},
+      "attribution_status": "matched",
+      "agent_id": null,
+      "attributes": {"copilot.logical_call_id": "copilot:usage:source-a:assistant_usage_events:db-a:13", "copilot.evidence": ["interaction_id:interaction-1", "model:gpt-5.6-luna", "finish:tool_calls"]}
+    }
+  ],
+  "session_accounting_job": {
+    "job_id": "accounting:copilot-source-a-session-a:copilot:usage:source-a:assistant_usage_events:db-a:14",
+    "kind": "session_accounting",
+    "session_id": "copilot-source-a-session-a",
+    "accounting_id": "copilot:usage:source-a:assistant_usage_events:db-a:14",
+    "destination": "session-accounting-span",
+    "attempt": 0,
+    "state": "queued",
+    "usage": {"session_id": "copilot-source-a-session-a", "seq": 14, "call_id": "copilot:usage:source-a:assistant_usage_events:db-a:14", "ts": "2026-09-10T17:08:25.618Z", "platform": "copilot", "gen_ai.conversation.id": "copilot-source-a-session-a", "gen_ai.provider.name": "unknown", "gen_ai.operation.name": "chat", "gen_ai.response.model": "gpt-5.6-luna", "gen_ai.usage.input_tokens": 6587, "gen_ai.usage.output_tokens": 5},
+    "attribution_status": "pending"
+  },
+  "ledger_entry": {"accounting_id": "copilot:usage:source-a:assistant_usage_events:db-a:14", "destination": "session-accounting-span", "emitted": false, "last_error": null}
+}

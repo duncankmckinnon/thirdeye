@@ -1,0 +1,27 @@
+{
+  "projection_state": {
+    "schema_version": 2,
+    "archive_source_ids": ["copilot:transcript:source-a:session-a:event-user-1", "copilot:database:source-a:session-a:assistant_usage_events:db-a:13:sha256:usage-13"],
+    "semantic_state": {"open_interactions": {}},
+    "accounting_state": {"logical_calls": {"copilot:usage:source-a:assistant_usage_events:db-a:13": "sha256:usage-13"}},
+    "projection_revision": "sha256:derived-state-example"
+  },
+  "commit_result": {"events": 2, "turns": 1, "usage": 1, "attributions": 1, "pending": 0, "diagnostics": 0},
+  "read_projected_turns": [
+    {
+      "id": "copilot-source-a-session-a:copilot:turn:source-a:session-a:interaction-1",
+      "turn_id": "copilot:turn:source-a:session-a:interaction-1",
+      "session_id": "copilot-source-a-session-a",
+      "platform": "copilot",
+      "cwd": "/workspace/example",
+      "start_seq": 12,
+      "end_seq": 24,
+      "start_ts": "2026-09-10T17:08:20.000Z",
+      "end_ts": "2026-09-10T17:08:26.000Z",
+      "events": [
+        {"id": "copilot:event:copilot:transcript:source-a:session-a:event-user-1", "kind": "user_prompt", "source_ids": ["copilot:transcript:source-a:session-a:event-user-1"]},
+        {"id": "copilot:event:copilot:transcript:source-a:session-a:event-assistant-1", "kind": "assistant_message", "source_ids": ["copilot:transcript:source-a:session-a:event-assistant-1"]}
+      ]
+    }
+  ]
+}

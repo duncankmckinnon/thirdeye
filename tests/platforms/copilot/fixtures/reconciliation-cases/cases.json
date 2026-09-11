@@ -1,0 +1,12 @@
+{
+  "permission": {"input": "permission request/decision evidence", "required": "emit permission semantic event; do not infer a tool execution or usage call"},
+  "compaction": {"input": "checkpoint or compaction snapshot", "required": "retain source evidence and diagnostics; never add snapshot usage to per-call accounting"},
+  "abort": {"input": "unfinished interaction", "required": "keep it pending and retain open state; missing usage is absent, not zero"},
+  "retry": {"input": "replayed source record", "required": "stable source-derived IDs make projection replay equivalent without duplicate accounting"},
+  "nested_child": {"input": "child prompt/stop hooks with parent session ID", "required": "child evidence stays within its parent main interaction; session-ID-only ownership is not inferred"},
+  "late_row": {"input": "new assistant_usage_events row after transcript completion", "required": "create/revise accounting locally and leave attribution pending unless evidence is uniquely consistent"},
+  "revision": {"input": "same database generation/table/row with new content revision", "required": "replace the existing logical UsageRow or quarantine conflict; do not add another charge"},
+  "identical_concurrent_tools": {"input": "same tool name and arguments in parallel", "required": "use transcript toolCallId/source identity; hooks and nearest timestamps cannot prove pairing"},
+  "ambiguous": {"input": "two candidate calls fit one usage row", "required": "Attribution status ambiguous with both candidate IDs in evidence; choose neither"},
+  "conflicting": {"input": "two revisions assert incompatible metrics for one logical call", "required": "Attribution status conflicting and quarantine diagnostic; do not overwrite a delivered accounting identity"}
+}

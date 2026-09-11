@@ -1,0 +1,15 @@
+{
+  "source_fixture": "../assistant-usage-events.json",
+  "source_key": "observed-source-key",
+  "database_generation": "observed-db-generation",
+  "table": "assistant_usage_events",
+  "calls": [
+    {"row_id": 13, "logical_call_id": "copilot:usage:observed-source-key:assistant_usage_events:observed-db-generation:13", "turn_index": 0, "agent_id": null, "parent_tool_call_id": null, "finish_reason": "tool_calls"},
+    {"row_id": 14, "logical_call_id": "copilot:usage:observed-source-key:assistant_usage_events:observed-db-generation:14", "turn_index": 0, "agent_id": null, "parent_tool_call_id": null, "finish_reason": "stop"},
+    {"row_id": 15, "logical_call_id": "copilot:usage:observed-source-key:assistant_usage_events:observed-db-generation:15", "turn_index": 1, "agent_id": null, "parent_tool_call_id": null, "finish_reason": "tool_calls"},
+    {"row_id": 16, "logical_call_id": "copilot:usage:observed-source-key:assistant_usage_events:observed-db-generation:16", "turn_index": 1, "agent_id": "bf8cb9f3-2097-4db0-a3c8-78a2653b2106", "parent_tool_call_id": "call_qx4FH5DADTeT1qVLb37HNpBk", "finish_reason": "tool_calls"},
+    {"row_id": 17, "logical_call_id": "copilot:usage:observed-source-key:assistant_usage_events:observed-db-generation:17", "turn_index": 1, "agent_id": "bf8cb9f3-2097-4db0-a3c8-78a2653b2106", "parent_tool_call_id": "call_qx4FH5DADTeT1qVLb37HNpBk", "finish_reason": "stop"},
+    {"row_id": 18, "logical_call_id": "copilot:usage:observed-source-key:assistant_usage_events:observed-db-generation:18", "turn_index": 1, "agent_id": null, "parent_tool_call_id": null, "finish_reason": "stop"}
+  ],
+  "invariants": {"call_count": 6, "main_agent_call_count": 4, "child_agent_call_count": 2, "shutdown_usage_is_validation_only": true, "checkpoint_usage_is_additive": false, "auxiliary_model_calls_are_main_usage": false}
+}

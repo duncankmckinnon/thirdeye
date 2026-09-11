@@ -1,0 +1,42 @@
+{
+  "input_records": [
+    {
+      "source_id": "copilot:transcript:source-a:session-a:event-user-1",
+      "source_kind": "transcript",
+      "native_session_id": "session-a",
+      "ts": "2026-09-10T17:08:20.000Z",
+      "observed_at": "2026-09-10T17:09:00.000Z",
+      "payload": {"event": "user.message", "data": {"interactionId": "interaction-1", "agentId": null}},
+      "locator": {"event_id": "event-user-1", "generation": "file-a", "offset": 0}
+    },
+    {
+      "source_id": "copilot:transcript:source-a:session-a:event-assistant-1",
+      "source_kind": "transcript",
+      "native_session_id": "session-a",
+      "ts": "2026-09-10T17:08:24.000Z",
+      "observed_at": "2026-09-10T17:09:00.000Z",
+      "payload": {"event": "assistant.message", "data": {"interactionId": "interaction-1", "agentId": null, "model": "gpt-5.6-luna", "toolCallIds": ["tool-read-a", "tool-read-b"]}},
+      "locator": {"event_id": "event-assistant-1", "generation": "file-a", "offset": 101}
+    },
+    {
+      "source_id": "copilot:transcript:source-a:session-a:event-finish-1",
+      "source_kind": "transcript",
+      "native_session_id": "session-a",
+      "ts": "2026-09-10T17:08:26.000Z",
+      "observed_at": "2026-09-10T17:09:00.000Z",
+      "payload": {"event": "agent.stop", "data": {"interactionId": "interaction-1", "agentId": null, "reason": "tool_calls"}},
+      "locator": {"event_id": "event-finish-1", "generation": "file-a", "offset": 202}
+    }
+  ],
+  "expected": {
+    "events": [
+      {"id": "copilot:event:copilot:transcript:source-a:session-a:event-user-1", "kind": "user_prompt", "ts": "2026-09-10T17:08:20.000Z", "source_ids": ["copilot:transcript:source-a:session-a:event-user-1"], "source_references": [{"source_id": "copilot:transcript:source-a:session-a:event-user-1", "source_kind": "transcript", "role": "user_prompt"}], "attributes": {"interaction_id": "interaction-1", "agent_id": null}},
+      {"id": "copilot:event:copilot:transcript:source-a:session-a:event-assistant-1", "kind": "assistant_message", "ts": "2026-09-10T17:08:24.000Z", "source_ids": ["copilot:transcript:source-a:session-a:event-assistant-1"], "source_references": [{"source_id": "copilot:transcript:source-a:session-a:event-assistant-1", "source_kind": "transcript", "role": "assistant_message"}], "attributes": {"interaction_id": "interaction-1", "agent_id": null}}
+    ],
+    "call_candidates": [
+      {"call_id": "copilot:call:copilot:transcript:source-a:session-a:event-assistant-1", "stored_turn_id": "copilot:turn:source-a:session-a:interaction-1", "interaction_id": "interaction-1", "agent_id": null, "parent_tool_call_id": null, "model": "gpt-5.6-luna", "source_ids": ["copilot:transcript:source-a:session-a:event-assistant-1", "copilot:transcript:source-a:session-a:event-finish-1"], "source_references": [{"source_id": "copilot:transcript:source-a:session-a:event-assistant-1", "source_kind": "transcript", "role": "assistant_message"}, {"source_id": "copilot:transcript:source-a:session-a:event-finish-1", "source_kind": "transcript", "role": "finish"}], "start_ts": "2026-09-10T17:08:24.000Z", "end_ts": "2026-09-10T17:08:26.000Z", "tool_call_ids": ["tool-read-a", "tool-read-b"], "finish_evidence": [{"source_id": "copilot:transcript:source-a:session-a:event-finish-1", "kind": "agent_stop", "value": "tool_calls"}]}
+    ],
+    "pending": [],
+    "diagnostics": []
+  }
+}

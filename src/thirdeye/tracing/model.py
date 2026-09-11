@@ -82,6 +82,22 @@ class InteractionSpanDict(TypedDict):
     attributes: dict[str, Any]
 
 
+class AccountingCallSpanDict(TypedDict):
+    """Generic accounting attached to a turn without importing platform types.
+
+    ``usage`` is exactly :meth:`UsageRow.to_dict` output.  A producer creates
+    an explicit session-accounting export job when no user turn owns it rather
+    than inventing a turn.  ``accounting_id`` is stable across source-row
+    corrections and export retries.
+    """
+
+    accounting_id: str
+    usage: dict[str, Any]
+    attribution_status: str
+    agent_id: str | None
+    attributes: dict[str, Any]
+
+
 TurnStatus = Literal["completed", "interrupted", "errored"]
 
 
@@ -129,3 +145,6 @@ class TurnSpanDict(TypedDict):
     attributes: dict[str, Any]
     # Optional: Cursor interactions exported as spans.
     interactions: NotRequired[list[InteractionSpanDict]]
+    # Optional local accounting that may be exported on the owning chat span
+    # or an explicit accounting span, never both.
+    accounting_calls: NotRequired[list[AccountingCallSpanDict]]
