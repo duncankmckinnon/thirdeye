@@ -157,6 +157,14 @@ class TurnAccountingJobDict(TypedDict):
     attribution_status: str
     agent_id: str | None
     span_id: str
+    attributes: NotRequired[dict[str, Any]]
+    # Worker envelope fields remain optional so the serializable public job
+    # shape above is usable by placement ledgers without filesystem context.
+    session_dir: NotRequired[str]
+    platform: NotRequired[str]
+    cwd: NotRequired[str]
+    captured_attributes: NotRequired[dict[str, Any]]
+    turn_span_id: NotRequired[str]
 
 
 class AccountingLedgerEntryDict(TypedDict):
