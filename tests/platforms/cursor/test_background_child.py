@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-from tests.test_cursor_hook import _capture_detached_jobs, _cursor_payload, _invoke, _job
+from tests.platforms.cursor.test_hooks import _capture_detached_jobs, _cursor_payload, _invoke, _job
 from thirdeye.config import Config, LogfireSettings
 from thirdeye.span_ids import tool_span_id
 from thirdeye.store import Store

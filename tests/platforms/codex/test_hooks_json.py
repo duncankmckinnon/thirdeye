@@ -1,5 +1,5 @@
 """Tests for platforms/codex/hooks_json.py — Codex's newer, stdin-delivered,
-Claude-hooks-shaped hooks.json mechanism. Distinct from test_codex_hooks.py,
+Claude-hooks-shaped hooks.json mechanism. Distinct from test_hooks.py,
 which covers the older argv/thread-id-keyed notify + session_start.
 """
 
@@ -210,7 +210,7 @@ def test_foreign_session_end_does_not_close_marker_or_session(monkeypatch, env: 
             "cursor_version": "1.2.3",
         },
         # The shape Cursor actually sends: no session_id at all, the id lives
-        # under conversation_id (see tests/fixtures/cursor-subagent-stop.json).
+        # under conversation_id (see tests/platforms/cursor/fixtures/subagent-stop.json).
         {
             "conversation_id": "shared-session-id",
             "generation_id": "cursor-generation",

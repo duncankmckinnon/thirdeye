@@ -9,11 +9,11 @@ pass a green test suite while returning zero rows from every real rollout.
 Every kept frame is copied verbatim from a real rollout; only prose, arguments,
 outputs, and filesystem paths are scrubbed. No frame is hand-authored.
 
-The machine-readable companion `codex_rollout.expected.json` is what the
+The machine-readable companion `rollout.expected.json` is what the
 `codex-usage` and `codex-events` tasks load and assert against. Every number in
 it, and every number below, is measured from the shipped `.jsonl` files.
 
-## `codex_rollout.jsonl`
+## `rollout.jsonl`
 
 The primary fixture. Exercises the extractor's per-call reconciliation, including
 the **repeat `token_count` report** that a naive per-frame sum gets wrong.
@@ -81,7 +81,7 @@ rollout, so none is present.
 | expected tool-result events (output family) | 6 |
 | file size | 75,030 bytes |
 
-## `codex_rollout_v0626.jsonl`
+## `rollout-legacy-token-schema.jsonl`
 
 A much smaller fixture proving the **older token schema still parses**.
 
@@ -137,16 +137,16 @@ either fixture.
 Run in-process (this sandbox has no `jq`; Python reproduces the same checks):
 
 ```
-tests/fixtures/usage/codex_rollout.jsonl: 97 lines all valid JSON, 75030 bytes
-tests/fixtures/usage/codex_rollout_v0626.jsonl: 10 lines all valid JSON, 4537 bytes
+tests/platforms/codex/fixtures/rollout.jsonl: 97 lines all valid JSON, 75030 bytes
+tests/platforms/codex/fixtures/rollout-legacy-token-schema.jsonl: 10 lines all valid JSON, 4537 bytes
 REPEAT cumulative values: [4784765]
 naive last_token_usage sum: 6832295
 final cumulative total: 6694163
 differ: True overcount: 138132
 cache_write in fixture1: 162      # 81 frames x 2 usage blocks
 cache_write in fixture2: 0
-PII in codex_rollout.jsonl : []
-PII in codex_rollout_v0626.jsonl : []
+PII in rollout.jsonl : []
+PII in rollout-legacy-token-schema.jsonl : []
 ```
 
 - Each `.jsonl` is ≤ 150 KB (75,030 and 4,537 bytes).
@@ -154,10 +154,10 @@ PII in codex_rollout_v0626.jsonl : []
   repeats), so `naive_per_frame_sum` (6,832,295) differs from
   `final_cumulative_total_tokens` (6,694,163) — the inequality that makes this
   fixture usable.
-- `cache_write_input_tokens` is present in `codex_rollout.jsonl` and absent from
-  `codex_rollout_v0626.jsonl`.
+- `cache_write_input_tokens` is present in `rollout.jsonl` and absent from
+  `rollout-legacy-token-schema.jsonl`.
 
-## `codex_rollout.expected.json`
+## `rollout.expected.json`
 
 The machine-readable companion the extractor tests load. `expected_calls`
 equals `distinct_cumulative_totals` (80). `naive_per_frame_sum` differs from

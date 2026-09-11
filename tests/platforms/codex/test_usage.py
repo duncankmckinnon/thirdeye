@@ -19,14 +19,14 @@ from thirdeye.platforms.codex.usage import (
 from thirdeye.usage.read import iter_calls
 from thirdeye.usage.store import UsageStore
 
-FIXTURES = Path(__file__).parent / "fixtures" / "usage"
-FIXTURE = FIXTURES / "codex_rollout.jsonl"
-FIXTURE_V0626 = FIXTURES / "codex_rollout_v0626.jsonl"
+FIXTURES = Path(__file__).parent / "fixtures"
+FIXTURE = FIXTURES / "rollout.jsonl"
+LEGACY_FIXTURE = FIXTURES / "rollout-legacy-token-schema.jsonl"
 
 # The session id named by each fixture's session_meta frame. resolve_rollout
 # verifies the id against session_meta, so these must match the real data.
 SID = "019fb579-cdda-7a03-86df-65c87b6c4ae2"
-SID_V0626 = "019f0542-0112-7583-bdbe-e55f44ef80b5"
+LEGACY_SID = "019f0542-0112-7583-bdbe-e55f44ef80b5"
 
 
 # Codex writes rollout files as UTF-8 with LF on every platform, and the usage
@@ -45,7 +45,7 @@ def _append_rollout(path: Path, text: str) -> None:
 
 @pytest.fixture
 def expected() -> dict:
-    return json.loads((FIXTURES / "codex_rollout.expected.json").read_text())
+    return json.loads((FIXTURES / "rollout.expected.json").read_text())
 
 
 def _plant(root: Path, fixture: Path, sid: str) -> Path:
@@ -182,14 +182,14 @@ def test_input_is_cache_inclusive_no_addition(
         assert row.input_tokens == raw_input[row.call_id]
 
 
-def test_v0626_cache_creation_is_none(tmp_path: Path) -> None:
+def test_legacy_token_schema_cache_creation_is_none(tmp_path: Path) -> None:
     root = tmp_path / "codex_sessions"
-    _plant(root, FIXTURE_V0626, SID_V0626)
+    _plant(root, LEGACY_FIXTURE, LEGACY_SID)
     rows = capture_usage_codex(
-        thirdeye_home=tmp_path, session_id=SID_V0626, triggering_seq=1, sessions_root=root
+        thirdeye_home=tmp_path, session_id=LEGACY_SID, triggering_seq=1, sessions_root=root
     )
     assert rows > 0
-    sd = session_dir(tmp_path, "codex", SID_V0626)
+    sd = session_dir(tmp_path, "codex", LEGACY_SID)
     written = list(UsageStore(sd).iter_rows())
     assert written
     # cache_write_input_tokens is absent pre-2026-07-30 → None, never 0.
