@@ -1,9 +1,10 @@
 """Explicit-identity Copilot interaction and recursive child-tree assembly.
 
 Callers that partition an archive must include every record belonging to
-still-open interactions.  ``prior_state`` only retains open keys whose
-``source_ids`` are absent from the current partition; a complete archive
-replay with ``prior_state={}`` is always the authoritative result.
+still-open interactions.  ``prior_state`` retains those open keys, including
+completed nested child spans, when their ``source_ids`` are absent from the
+current partition.  A complete archive replay with ``prior_state={}`` is
+always the authoritative result.
 """
 
 from __future__ import annotations
@@ -116,13 +117,16 @@ def build_turns(
     the records that belong to those interactions.
     """
     interactions: dict[str, dict[str, Any]] = {}
-    active_native_turns: dict[tuple[str | None, str], str] = {}
+    active_native_turns: dict[tuple[str | None, str, str], str] = {}
     child_parent: dict[str, tuple[str, str]] = {}
     tool_owner: dict[str, str] = {}
     calls: dict[str, dict[str, Any]] = {}
     tool_spans: dict[str, ToolCallSpanDict] = {}
     pending: list[PendingItem] = []
     diagnostics: list[ProjectionDiagnostic] = []
+    prior = prior_state if isinstance(prior_state, dict) else {}
+    raw_open = prior.get("open_interactions")
+    prior_open = raw_open if isinstance(raw_open, dict) else {}
 
     def ensure(record: SourceRecord, interaction: str, agent: str | None) -> dict[str, Any]:
         key = _key(interaction, agent)
@@ -153,26 +157,41 @@ def build_turns(
         if child and parent_call and parent_call in tool_owner:
             child_parent[child] = (tool_owner[parent_call], parent_call)
 
-    def close_previous_for_agent(agent: str | None, new_interaction: str, ts: str | None) -> None:
-        for item in interactions.values():
-            if item["agent"] != agent or item["interaction"] == new_interaction:
-                continue
-            if item["complete"]:
-                continue
-            item["complete"] = True
-            item["end_ts"] = item["end_ts"] or ts
+    def bind_native_turn(
+        item: dict[str, Any], agent: str | None, interaction: str | None, native_turn: Any
+    ) -> None:
+        if interaction is None or native_turn is None:
+            return
+        active_native_turns[(agent, interaction, str(native_turn))] = item["key"]
 
     def complete_item(item: dict[str, Any], ts: str | None) -> None:
         item["complete"] = True
         item["end_ts"] = ts or item["end_ts"]
 
     def attach_finish(
-        item: dict[str, Any], record: SourceRecord, kind: str
+        item: dict[str, Any], record: SourceRecord, kind: str, native_turn: Any
     ) -> dict[str, Any] | None:
-        last_id = item["calls"][-1] if item["calls"] else None
-        last_call = calls.get(last_id) if last_id else None
-        if last_call is None:
+        turn_key = str(native_turn) if native_turn is not None else None
+        matches: list[dict[str, Any]] = []
+        if turn_key is not None:
+            for call_id in item["calls"]:
+                candidate = calls[call_id]
+                if candidate["finish_evidence"]:
+                    continue
+                if candidate.get("native_turn_id") == turn_key:
+                    matches.append(candidate)
+        if turn_key is None or len(matches) != 1:
+            pending.append(
+                {
+                    "id": f"pending:identity:{record['source_id']}",
+                    "kind": "missing_identity",
+                    "reason": f"{kind} has no uniquely matching open model cycle",
+                    "source_ids": [record["source_id"]],
+                    "evidence": [f"turn_id:{native_turn}"],
+                }
+            )
             return None
+        last_call = matches[0]
         last_call["end_ts"] = record.get("ts")
         if record["source_id"] not in last_call["source_ids"]:
             last_call["source_ids"].append(record["source_id"])
@@ -182,27 +201,31 @@ def build_turns(
         )
         return last_call
 
-    def owner_for_turn_end(record: SourceRecord, native_turn: Any, agent: str | None) -> str | None:
+    def owner_for_native_turn(
+        agent: str | None, native_turn: Any, interaction: str | None
+    ) -> str | None:
         if native_turn is None:
             return None
         turn_key = str(native_turn)
-        bound = active_native_turns.get((agent, turn_key))
-        if bound is not None:
-            return bound
-        matches: list[str] = []
-        for candidate in calls.values():
-            if candidate.get("native_turn_id") != turn_key:
-                continue
-            if candidate["finish_evidence"]:
-                continue
-            if candidate["agent_id"] != agent:
-                continue
-            key = candidate["interaction_key"]
-            if key not in matches:
-                matches.append(key)
-        if len(matches) == 1:
-            return matches[0]
+        if interaction is not None:
+            return active_native_turns.get((agent, interaction, turn_key))
+        matches = [
+            key
+            for (bound_agent, _bound_ix, bound_turn), key in active_native_turns.items()
+            if bound_agent == agent and bound_turn == turn_key
+        ]
+        unique = list(dict.fromkeys(matches))
+        if len(unique) == 1:
+            return unique[0]
         return None
+
+    def drop_native_turn(agent: str | None, native_turn: Any, owner: str | None) -> None:
+        if native_turn is None or owner is None:
+            return
+        turn_key = str(native_turn)
+        for bind_key, bind_owner in list(active_native_turns.items()):
+            if bind_owner == owner and bind_key[0] == agent and bind_key[2] == turn_key:
+                active_native_turns.pop(bind_key, None)
 
     for record in records:
         if record.get("source_kind") != "transcript":
@@ -236,7 +259,6 @@ def build_turns(
                     )
                 )
                 continue
-            close_previous_for_agent(agent, interaction, record.get("ts"))
             item = ensure(record, interaction, agent)
             item["input"] = str(data.get("content") or item["input"])
             continue
@@ -252,9 +274,7 @@ def build_turns(
                 )
                 continue
             item = ensure(record, interaction, agent)
-            native_turn = data.get("turnId")
-            if native_turn is not None:
-                active_native_turns[(agent, str(native_turn))] = item["key"]
+            bind_native_turn(item, agent, interaction, data.get("turnId"))
             continue
 
         if native_type == "assistant.message":
@@ -279,8 +299,9 @@ def build_turns(
                 if isinstance(request, dict) and request.get("toolCallId")
             ]
             content = data.get("content") if isinstance(data.get("content"), str) else ""
-            reasoning = data.get("reasoningSummary") or data.get("intentionSummary")
+            reasoning = data.get("reasoningSummary")
             native_turn = data.get("turnId")
+            bind_native_turn(item, agent, interaction, native_turn)
             candidate = {
                 "call_id": call_id,
                 "stored_turn_id": item["turn_id"],
@@ -411,20 +432,17 @@ def build_turns(
         )
         if is_abort or is_error:
             native_turn = data.get("turnId")
-            owner = (
-                active_native_turns.pop((agent, str(native_turn)), None)
-                if native_turn is not None
-                else None
-            )
+            owner = owner_for_native_turn(agent, native_turn, interaction)
             if owner is None and interaction is not None:
                 owner = (
                     _key(interaction, agent) if _key(interaction, agent) in interactions else None
                 )
+            drop_native_turn(agent, native_turn, owner)
             if owner and owner in interactions:
                 item = interactions[owner]
                 item["status"] = "interrupted" if is_abort else "errored"
                 item["source_ids"].append(record["source_id"])
-                attach_finish(item, record, "abort" if is_abort else "error")
+                attach_finish(item, record, "abort" if is_abort else "error", native_turn)
                 # Abort closes the user turn.  An error leaves it open so a
                 # later model cycle in the same interaction can retry.
                 if is_abort:
@@ -433,14 +451,13 @@ def build_turns(
 
         if native_type == "assistant.turn_end":
             native_turn = data.get("turnId")
-            owner = owner_for_turn_end(record, native_turn, agent)
-            if native_turn is not None:
-                active_native_turns.pop((agent, str(native_turn)), None)
+            owner = owner_for_native_turn(agent, native_turn, interaction)
+            drop_native_turn(agent, native_turn, owner)
             if owner is None:
                 pending.append(
                     {
                         "id": f"pending:identity:{record['source_id']}",
-                        "kind": "incomplete_tool_pair",
+                        "kind": "missing_identity",
                         "reason": "assistant.turn_end has no matching open model cycle",
                         "source_ids": [record["source_id"]],
                         "evidence": [f"turn_id:{native_turn}"],
@@ -450,7 +467,7 @@ def build_turns(
             item = interactions[owner]
             item["source_ids"].append(record["source_id"])
             item["end_ts"] = record.get("ts")
-            last_call = attach_finish(item, record, "assistant_turn_end")
+            last_call = attach_finish(item, record, "assistant_turn_end", native_turn)
             if (
                 last_call is not None
                 and not last_call["tool_call_ids"]
@@ -515,10 +532,46 @@ def build_turns(
         ]
         for item in child_items:
             child_span = spans.get(item["key"])
+            if child_span is None:
+                continue
+            child_span["attributes"]["parent_tool_call_id"] = parent_call
             parent_span = spans.get(parent_key)
-            if child_span is not None and parent_span is not None:
-                child_span["attributes"]["parent_tool_call_id"] = parent_call
+            if parent_span is not None:
                 parent_span["subagents"].append(child_span)
+
+    def nested_children_for(parent_key: str) -> list[TurnSpanDict]:
+        found: list[TurnSpanDict] = []
+        seen: set[str] = set()
+        for child, (pkey, _parent_call) in child_parent.items():
+            if pkey != parent_key:
+                continue
+            for item in interactions.values():
+                if item["agent"] != child or not item["complete"]:
+                    continue
+                child_span = spans.get(item["key"])
+                if child_span is None or child_span["turn_id"] in seen:
+                    continue
+                found.append(deepcopy(child_span))
+                seen.add(child_span["turn_id"])
+        prior_item = prior_open.get(parent_key) if isinstance(prior_open, dict) else None
+        if isinstance(prior_item, dict):
+            for child in prior_item.get("nested_children") or []:
+                if not isinstance(child, dict):
+                    continue
+                turn_id = child.get("turn_id")
+                if not isinstance(turn_id, str) or turn_id in seen:
+                    continue
+                found.append(deepcopy(child))
+                seen.add(turn_id)
+        return found
+
+    for key, span in spans.items():
+        existing = {child["turn_id"] for child in span.get("subagents") or []}
+        for child in nested_children_for(key):
+            if child["turn_id"] in existing:
+                continue
+            span.setdefault("subagents", []).append(child)
+            existing.add(child["turn_id"])
 
     emitted_ids = _collect_nested_turn_ids(
         [span for key, span in spans.items() if interactions[key]["agent"] is None]
@@ -573,7 +626,7 @@ def build_turns(
             if has_finish
             else "user interaction has no assistant.turn_end"
         )
-        open_state[item["key"]] = {
+        retained: dict[str, Any] = {
             "interaction_id": item["interaction"],
             "agent_id": item["agent"],
             "stored_turn_id": item["turn_id"],
@@ -582,6 +635,10 @@ def build_turns(
             "start_ts": item["start_ts"],
             "pending_tool_call_ids": pending_tools,
         }
+        nested = nested_children_for(item["key"])
+        if nested:
+            retained["nested_children"] = nested
+        open_state[item["key"]] = retained
         pending.append(
             {
                 "id": f"pending:{item['turn_id']}",
@@ -601,9 +658,34 @@ def build_turns(
             }
         )
 
-    prior = prior_state.get("open_interactions") if isinstance(prior_state, dict) else None
-    if isinstance(prior, dict):
-        for key, prior_item in prior.items():
+    seen_incomplete_tools = {
+        item["id"] for item in pending if item["kind"] == "incomplete_tool_pair"
+    }
+    for candidate in calls.values():
+        for tool in candidate["tool_call_ids"]:
+            span = tool_spans.get(tool)
+            if span and span.get("end_ts"):
+                continue
+            pending_id = f"pending:tool:{tool}"
+            if pending_id in seen_incomplete_tools:
+                continue
+            source_ids = list(candidate["source_ids"][:1])
+            request_source = (span or {}).get("attributes", {}).get("request_source_id")
+            if request_source:
+                source_ids = [request_source]
+            pending.append(
+                {
+                    "id": pending_id,
+                    "kind": "incomplete_tool_pair",
+                    "reason": "tool request has no execution result",
+                    "source_ids": source_ids,
+                    "evidence": [f"tool_call_id:{tool}"],
+                }
+            )
+            seen_incomplete_tools.add(pending_id)
+
+    if isinstance(prior_open, dict):
+        for key, prior_item in prior_open.items():
             if key in open_state or not isinstance(prior_item, dict):
                 continue
             prior_sources = prior_item.get("source_ids") or []

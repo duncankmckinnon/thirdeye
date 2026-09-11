@@ -288,6 +288,32 @@ def test_subagent_events_use_nested_child_role():
     event = normalize_record(record)[0]
     assert event["kind"] == "subagent_started"
     assert event["source_references"][0]["role"] == "nested_child"
+    assert event["attributes"]["parent_tool_call_id"] == "call_parent_task"
+
+
+def test_unknown_record_without_native_type_is_preserved() -> None:
+    record = _transcript_record(
+        source_id=f"{SOURCE_KEY}/{NATIVE_SESSION_ID}/typeless",
+        native_type="user.message",
+        data={"content": "hello"},
+    )
+    record["payload"].pop("type")
+    event = normalize_record(record)[0]
+    assert event["kind"] == "unknown"
+    assert "native_type" not in event["attributes"]
+    assert event["attributes"]["raw_payload"]["data"]["content"] == "hello"
+    assert event["source_references"][0]["source_kind"] == "transcript"
+
+
+def test_prompt_transformation_transcript_event() -> None:
+    record = _transcript_record(
+        source_id=f"{SOURCE_KEY}/{NATIVE_SESSION_ID}/prompt-xf",
+        native_type="prompt.transformation",
+        data={"interactionId": "ix-1", "prompt": "expanded"},
+    )
+    event = normalize_record(record)[0]
+    assert event["kind"] == "prompt_transformation"
+    assert event["attributes"]["prompt"] == "expanded"
 
 
 # --- unknown and hook observations ---
@@ -312,8 +338,40 @@ def test_hook_pretooluse_stays_hook_observation_not_transcript_execution():
         hook_payload={"toolName": "view", "toolArgs": {"path": "/tmp/a.txt"}},
     )
     event = normalize_record(record)[0]
-    assert event["kind"] == "tool_execution_start"
+    assert event["kind"] in {"notification", "unknown"}
+    assert event["kind"] != "tool_execution_start"
     assert event["source_references"][0]["role"] == "hook"
+    assert event["attributes"]["native_type"] == "preToolUse"
+
+
+def test_external_tool_hooks_are_not_tool_execution_events() -> None:
+    records = [
+        _hook_record(
+            source_id=f"hook/{NATIVE_SESSION_ID}/obs-pre",
+            event="preToolUse",
+            hook_payload={"toolName": "view"},
+        ),
+        _hook_record(
+            source_id=f"hook/{NATIVE_SESSION_ID}/obs-post",
+            event="postToolUse",
+            hook_payload={"toolName": "view"},
+        ),
+        _hook_record(
+            source_id=f"hook/{NATIVE_SESSION_ID}/obs-fail",
+            event="postToolUseFailure",
+            hook_payload={"toolName": "view"},
+        ),
+    ]
+    kinds = [normalize_record(record)[0]["kind"] for record in records]
+    assert kinds == ["notification", "notification", "notification"] or all(
+        kind == "unknown" for kind in kinds
+    )
+    for kind in kinds:
+        assert kind not in {
+            "tool_execution_start",
+            "tool_execution_complete",
+            "tool_execution_failure",
+        }
 
 
 def test_normalize_records_replays_in_order_without_deduplication():
@@ -401,7 +459,10 @@ def test_session_lifecycle_and_subagent_configured_are_not_unknown() -> None:
     )
     assert _event_kinds(model_change) == ["notification"]
     assert _event_kinds(auto_mode) == ["notification"]
-    assert _event_kinds(configured) == ["subagent_started"]
+    configured_event = normalize_record(configured)[0]
+    assert configured_event["kind"] in {"notification", "unknown"}
+    assert configured_event["kind"] != "subagent_started"
+    assert configured_event["attributes"]["native_type"] == "subagent.configured"
 
 
 def test_agent_stop_hook_is_not_session_end() -> None:

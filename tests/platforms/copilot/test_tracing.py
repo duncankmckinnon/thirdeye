@@ -196,6 +196,7 @@ def test_tool_cycle_does_not_complete_user_turn_without_final_answer() -> None:
 
     pending_kinds = Counter(item["kind"] for item in projection["pending"])
     assert pending_kinds["open_interaction"] == 1
+    assert pending_kinds["incomplete_tool_pair"] == 2
     assert "missing_identity" not in pending_kinds
 
     open_key = "6d2b89fd-a653-430c-b532-b0936d72eb42|main"
@@ -210,7 +211,7 @@ def test_tool_cycle_does_not_complete_user_turn_without_final_answer() -> None:
 
 
 def test_partial_user_prompt_stays_open_with_pending_item() -> None:
-    case = _load_json(RECON_CASES / "cases.json")["abort"]
+    case = _load_json(RECON_CASES / "cases.json")["partial_turn"]
     projection, state = build_semantics(case["input_records"], {})
 
     assert projection["turns"] == []
@@ -303,7 +304,7 @@ def test_child_turn_nests_under_parent_when_full_fixture_replayed(
 
 
 def test_prior_open_interaction_state_is_retained_when_replay_still_open() -> None:
-    case = _load_json(RECON_CASES / "cases.json")["abort"]
+    case = _load_json(RECON_CASES / "cases.json")["partial_turn"]
     _, state = build_semantics(case["input_records"], {})
     prior_item = dict(state["open_interactions"]["6d2b89fd-a653-430c-b532-b0936d72eb42|main"])
     prior_item["note"] = "retained-from-incremental-caller"
@@ -407,12 +408,16 @@ def test_observed_versus_synthetic_cases_run_through_build_semantics() -> None:
     assert observed == {"identical_concurrent_tools", "nested_child"}
     assert "retry" in synthetic
     assert "permission" in synthetic
-    for name in ("identical_concurrent_tools", "permission", "abort"):
+    assert "partial_turn" in synthetic
+    assert "abort" in synthetic
+    for name in ("identical_concurrent_tools", "permission", "partial_turn", "abort"):
         projection, _ = build_semantics(cases[name]["input_records"], {})
         assert "events" in projection
         _assert_expected_projection(projection, cases[name]["expected"])
     nested = build_semantics(cases["nested_child"]["input_records"], {})[0]
     assert nested["turns"] == []
+    started = [event for event in nested["events"] if event["kind"] == "subagent_started"]
+    assert started[0]["attributes"]["parent_tool_call_id"] == "call_qx4FH5DADTeT1qVLb37HNpBk"
 
 
 def test_completed_child_without_parent_link_is_pending_not_dropped() -> None:
@@ -702,3 +707,454 @@ def test_semantic_retry_after_error_stays_same_interaction() -> None:
     assert {candidate["interaction_id"] for candidate in projection["call_candidates"]} == {
         "ix-retry"
     }
+
+
+def test_turn_end_attaches_finish_to_matching_native_turn_not_last_call() -> None:
+    records = [
+        _transcript_record(
+            source_id=f"{SOURCE_KEY}/{NATIVE_SESSION_ID}/ov-user",
+            native_type="user.message",
+            data={"content": "two cycles", "interactionId": "ix-overlap", "turnId": "0"},
+        ),
+        _transcript_record(
+            source_id=f"{SOURCE_KEY}/{NATIVE_SESSION_ID}/ov-call-a",
+            native_type="assistant.message",
+            data={
+                "content": "first",
+                "model": "gpt-5.6-luna",
+                "interactionId": "ix-overlap",
+                "turnId": "0",
+                "toolRequests": [],
+            },
+        ),
+        _transcript_record(
+            source_id=f"{SOURCE_KEY}/{NATIVE_SESSION_ID}/ov-call-b",
+            native_type="assistant.message",
+            data={
+                "content": "second",
+                "model": "gpt-5.6-luna",
+                "interactionId": "ix-overlap",
+                "turnId": "1",
+                "phase": "final_answer",
+                "toolRequests": [],
+            },
+        ),
+        _transcript_record(
+            source_id=f"{SOURCE_KEY}/{NATIVE_SESSION_ID}/ov-end-0",
+            native_type="assistant.turn_end",
+            data={"turnId": "0"},
+        ),
+        _transcript_record(
+            source_id=f"{SOURCE_KEY}/{NATIVE_SESSION_ID}/ov-end-1",
+            native_type="assistant.turn_end",
+            data={"turnId": "1"},
+        ),
+    ]
+    projection, _ = build_semantics(records, {})
+    by_id = {candidate["call_id"]: candidate for candidate in projection["call_candidates"]}
+    first = by_id[f"copilot:call:{SOURCE_KEY}/{NATIVE_SESSION_ID}/ov-call-a"]
+    second = by_id[f"copilot:call:{SOURCE_KEY}/{NATIVE_SESSION_ID}/ov-call-b"]
+    assert first["finish_evidence"][0]["source_id"].endswith("/ov-end-0")
+    assert second["finish_evidence"][0]["source_id"].endswith("/ov-end-1")
+    assert (
+        first["end_ts"] != second["end_ts"] or first["finish_evidence"] != second["finish_evidence"]
+    )
+
+
+def test_unmatched_turn_end_is_missing_identity_not_incomplete_tool() -> None:
+    record = _transcript_record(
+        source_id=f"{SOURCE_KEY}/{NATIVE_SESSION_ID}/orphan-end",
+        native_type="assistant.turn_end",
+        data={"turnId": "99"},
+    )
+    _, _, pending, _, _ = build_turns([record])
+    assert pending
+    assert pending[0]["kind"] == "missing_identity"
+    assert all(item["kind"] != "incomplete_tool_pair" for item in pending)
+
+
+def test_incomplete_tools_stay_pending_on_completed_turn() -> None:
+    records = [
+        _transcript_record(
+            source_id=f"{SOURCE_KEY}/{NATIVE_SESSION_ID}/inc-user",
+            native_type="user.message",
+            data={"content": "read then answer", "interactionId": "ix-inc", "turnId": "0"},
+        ),
+        _transcript_record(
+            source_id=f"{SOURCE_KEY}/{NATIVE_SESSION_ID}/inc-tools",
+            native_type="assistant.message",
+            data={
+                "content": "",
+                "model": "gpt-5.6-luna",
+                "interactionId": "ix-inc",
+                "turnId": "0",
+                "toolRequests": [{"toolCallId": "call_missing", "name": "view", "arguments": {}}],
+            },
+        ),
+        _transcript_record(
+            source_id=f"{SOURCE_KEY}/{NATIVE_SESSION_ID}/inc-final",
+            native_type="assistant.message",
+            data={
+                "content": "42",
+                "model": "gpt-5.6-luna",
+                "interactionId": "ix-inc",
+                "turnId": "1",
+                "phase": "final_answer",
+                "toolRequests": [],
+            },
+        ),
+        _transcript_record(
+            source_id=f"{SOURCE_KEY}/{NATIVE_SESSION_ID}/inc-end",
+            native_type="assistant.turn_end",
+            data={"turnId": "1"},
+        ),
+    ]
+    projection, _ = build_semantics(records, {})
+    assert len(projection["turns"]) == 1
+    assert any(
+        item["kind"] == "incomplete_tool_pair" and "call_missing" in item["id"]
+        for item in projection["pending"]
+    )
+
+
+def test_followup_user_message_does_not_mark_previous_turn_completed() -> None:
+    records = [
+        _transcript_record(
+            source_id=f"{SOURCE_KEY}/{NATIVE_SESSION_ID}/prev-user",
+            native_type="user.message",
+            data={"content": "first", "interactionId": "ix-old", "turnId": "0"},
+        ),
+        _transcript_record(
+            source_id=f"{SOURCE_KEY}/{NATIVE_SESSION_ID}/prev-tools",
+            native_type="assistant.message",
+            data={
+                "content": "",
+                "model": "gpt-5.6-luna",
+                "interactionId": "ix-old",
+                "turnId": "0",
+                "toolRequests": [{"toolCallId": "call_out", "name": "view", "arguments": {}}],
+            },
+        ),
+        _transcript_record(
+            source_id=f"{SOURCE_KEY}/{NATIVE_SESSION_ID}/next-user",
+            native_type="user.message",
+            data={"content": "second", "interactionId": "ix-new", "turnId": "0"},
+        ),
+    ]
+    projection, state = build_semantics(records, {})
+    old_turns = [
+        turn for turn in projection["turns"] if turn["attributes"]["interaction_id"] == "ix-old"
+    ]
+    assert old_turns == []
+    assert "ix-old|main" in state["open_interactions"]
+    assert any(
+        item["kind"] == "open_interaction" and "ix-old" in item["evidence"][0]
+        for item in projection["pending"]
+    )
+
+
+def test_completed_child_is_retained_when_later_partition_only_has_parent() -> None:
+    child = "agent-child"
+    parent_tool = "call_parent_task"
+    parent_open = [
+        _transcript_record(
+            source_id=f"{SOURCE_KEY}/{NATIVE_SESSION_ID}/p-user",
+            native_type="user.message",
+            data={"content": "delegate", "interactionId": "ix-parent", "turnId": "0"},
+        ),
+        _transcript_record(
+            source_id=f"{SOURCE_KEY}/{NATIVE_SESSION_ID}/p-task",
+            native_type="assistant.message",
+            data={
+                "content": "",
+                "model": "gpt-5.6-luna",
+                "interactionId": "ix-parent",
+                "turnId": "0",
+                "toolRequests": [{"toolCallId": parent_tool, "name": "task", "arguments": {}}],
+            },
+        ),
+        _transcript_record(
+            source_id=f"{SOURCE_KEY}/{NATIVE_SESSION_ID}/p-task-end",
+            native_type="assistant.turn_end",
+            data={"turnId": "0"},
+        ),
+    ]
+    child_complete = [
+        _transcript_record(
+            source_id=f"{SOURCE_KEY}/{NATIVE_SESSION_ID}/c-start",
+            native_type="subagent.started",
+            data={"toolCallId": parent_tool, "agentName": "explore"},
+            agent=child,
+        ),
+        _transcript_record(
+            source_id=f"{SOURCE_KEY}/{NATIVE_SESSION_ID}/c-user",
+            native_type="user.message",
+            data={"content": "explore", "interactionId": "ix-child", "turnId": "0"},
+            agent=child,
+        ),
+        _transcript_record(
+            source_id=f"{SOURCE_KEY}/{NATIVE_SESSION_ID}/c-final",
+            native_type="assistant.message",
+            data={
+                "content": "42",
+                "model": "gpt-5.6-luna",
+                "interactionId": "ix-child",
+                "turnId": "0",
+                "phase": "final_answer",
+                "toolRequests": [],
+                "parentToolCallId": parent_tool,
+            },
+            agent=child,
+        ),
+        _transcript_record(
+            source_id=f"{SOURCE_KEY}/{NATIVE_SESSION_ID}/c-end",
+            native_type="assistant.turn_end",
+            data={"turnId": "0"},
+            agent=child,
+        ),
+        _transcript_record(
+            source_id=f"{SOURCE_KEY}/{NATIVE_SESSION_ID}/c-stop",
+            native_type="subagent.completed",
+            data={"toolCallId": parent_tool, "agentName": "explore"},
+            agent=child,
+        ),
+    ]
+    parent_close = [
+        _transcript_record(
+            source_id=f"{SOURCE_KEY}/{NATIVE_SESSION_ID}/p-final",
+            native_type="assistant.message",
+            data={
+                "content": "42",
+                "model": "gpt-5.6-luna",
+                "interactionId": "ix-parent",
+                "turnId": "1",
+                "phase": "final_answer",
+                "toolRequests": [],
+            },
+        ),
+        _transcript_record(
+            source_id=f"{SOURCE_KEY}/{NATIVE_SESSION_ID}/p-final-end",
+            native_type="assistant.turn_end",
+            data={"turnId": "1"},
+        ),
+    ]
+    _, state = build_semantics([*parent_open, *child_complete], {})
+    open_parent = state["open_interactions"]["ix-parent|main"]
+    assert open_parent.get("nested_children")
+
+    projection, _ = build_semantics([*parent_open, *parent_close], state)
+    assert len(projection["turns"]) == 1
+    assert len(projection["turns"][0]["subagents"]) == 1
+    assert projection["turns"][0]["subagents"][0]["output_message"] == "42"
+
+    full, _ = build_semantics([*parent_open, *child_complete, *parent_close], {})
+    assert len(full["turns"][0]["subagents"]) == 1
+
+
+def test_reasoning_summary_is_readable_span_content() -> None:
+    records = [
+        _transcript_record(
+            source_id=f"{SOURCE_KEY}/{NATIVE_SESSION_ID}/rs-user",
+            native_type="user.message",
+            data={"content": "why", "interactionId": "ix-rs", "turnId": "0"},
+        ),
+        _transcript_record(
+            source_id=f"{SOURCE_KEY}/{NATIVE_SESSION_ID}/rs-msg",
+            native_type="assistant.message",
+            data={
+                "content": "42",
+                "model": "gpt-5.6-luna",
+                "interactionId": "ix-rs",
+                "turnId": "0",
+                "phase": "final_answer",
+                "reasoningSummary": "added the two file values",
+                "intentionSummary": "tool intent must not become reasoning",
+                "toolRequests": [],
+            },
+        ),
+        _transcript_record(
+            source_id=f"{SOURCE_KEY}/{NATIVE_SESSION_ID}/rs-end",
+            native_type="assistant.turn_end",
+            data={"turnId": "0"},
+        ),
+    ]
+    projection, _ = build_semantics(records, {})
+    parts = projection["turns"][0]["llm_calls"][0]["output_messages"][0]["parts"]
+    reasoning = [part for part in parts if part["type"] == "reasoning"]
+    assert reasoning == [{"type": "reasoning", "content": "added the two file values"}]
+    assert all(part["content"] != "tool intent must not become reasoning" for part in parts)
+
+
+def test_failed_tool_execution_pairs_through_build_turns() -> None:
+    records = [
+        _transcript_record(
+            source_id=f"{SOURCE_KEY}/{NATIVE_SESSION_ID}/fail-user",
+            native_type="user.message",
+            data={"content": "read it", "interactionId": "ix-fail", "turnId": "0"},
+        ),
+        _transcript_record(
+            source_id=f"{SOURCE_KEY}/{NATIVE_SESSION_ID}/fail-req",
+            native_type="assistant.message",
+            data={
+                "content": "",
+                "model": "gpt-5.6-luna",
+                "interactionId": "ix-fail",
+                "turnId": "0",
+                "toolRequests": [
+                    {"toolCallId": "call_denied", "name": "view", "arguments": {"path": "/tmp/x"}}
+                ],
+            },
+        ),
+        _transcript_record(
+            source_id=f"{SOURCE_KEY}/{NATIVE_SESSION_ID}/fail-result",
+            native_type="tool.execution_complete",
+            data={"toolCallId": "call_denied", "success": False, "result": "denied"},
+            ts="2026-09-10T17:08:24.700Z",
+        ),
+        _transcript_record(
+            source_id=f"{SOURCE_KEY}/{NATIVE_SESSION_ID}/fail-final",
+            native_type="assistant.message",
+            data={
+                "content": "could not read",
+                "model": "gpt-5.6-luna",
+                "interactionId": "ix-fail",
+                "turnId": "1",
+                "phase": "final_answer",
+                "toolRequests": [],
+            },
+        ),
+        _transcript_record(
+            source_id=f"{SOURCE_KEY}/{NATIVE_SESSION_ID}/fail-end",
+            native_type="assistant.turn_end",
+            data={"turnId": "1"},
+        ),
+    ]
+    projection, _ = build_semantics(records, {})
+    tools = projection["turns"][0]["llm_calls"][0]["tool_calls"]
+    assert len(tools) == 1
+    assert tools[0]["tool_call_id"] == "call_denied"
+    assert tools[0]["attributes"]["success"] is False
+    assert tools[0]["attributes"]["result"] == "denied"
+    assert tools[0]["end_ts"] == "2026-09-10T17:08:24.700Z"
+    assert not any(item["kind"] == "incomplete_tool_pair" for item in projection["pending"])
+
+
+def test_assistant_markers_without_interaction_id_are_pending() -> None:
+    start = _transcript_record(
+        source_id=f"{SOURCE_KEY}/{NATIVE_SESSION_ID}/noix-start",
+        native_type="assistant.turn_start",
+        data={"turnId": "0"},
+    )
+    message = _transcript_record(
+        source_id=f"{SOURCE_KEY}/{NATIVE_SESSION_ID}/noix-msg",
+        native_type="assistant.message",
+        data={"content": "hello", "model": "gpt-5.6-luna", "turnId": "0", "toolRequests": []},
+    )
+    _, _, pending, _, _ = build_turns([start, message])
+    kinds = [item["kind"] for item in pending]
+    assert kinds.count("missing_identity") >= 2
+    assert all(item["kind"] != "open_interaction" for item in pending)
+
+
+def test_mixed_hook_and_transcript_does_not_double_count_tools() -> None:
+    records: list[SourceRecord] = [
+        _transcript_record(
+            source_id=f"{SOURCE_KEY}/{NATIVE_SESSION_ID}/mix-user",
+            native_type="user.message",
+            data={"content": "read", "interactionId": "ix-mix", "turnId": "0"},
+        ),
+        _transcript_record(
+            source_id=f"{SOURCE_KEY}/{NATIVE_SESSION_ID}/mix-req",
+            native_type="assistant.message",
+            data={
+                "content": "",
+                "model": "gpt-5.6-luna",
+                "interactionId": "ix-mix",
+                "turnId": "0",
+                "toolRequests": [{"toolCallId": "call_mix", "name": "view", "arguments": {}}],
+            },
+        ),
+        {
+            "source_id": f"hook/{NATIVE_SESSION_ID}/obs-pre-mix",
+            "source_kind": "hook",
+            "native_session_id": NATIVE_SESSION_ID,
+            "ts": "2026-09-10T17:08:24.500Z",
+            "observed_at": "2026-09-10T17:09:00.000Z",
+            "payload": {
+                "schema_version": 1,
+                "event": "preToolUse",
+                "hook_payload": {"toolName": "view", "toolArgs": {}},
+                "context": {},
+            },
+            "locator": {"observation_id": "obs-pre-mix", "event": "preToolUse"},
+        },
+        _transcript_record(
+            source_id=f"{SOURCE_KEY}/{NATIVE_SESSION_ID}/mix-start",
+            native_type="tool.execution_start",
+            data={"toolCallId": "call_mix", "toolName": "view", "arguments": {}},
+        ),
+        _transcript_record(
+            source_id=f"{SOURCE_KEY}/{NATIVE_SESSION_ID}/mix-done",
+            native_type="tool.execution_complete",
+            data={"toolCallId": "call_mix", "success": True, "result": "17"},
+        ),
+        _transcript_record(
+            source_id=f"{SOURCE_KEY}/{NATIVE_SESSION_ID}/mix-final",
+            native_type="assistant.message",
+            data={
+                "content": "17",
+                "model": "gpt-5.6-luna",
+                "interactionId": "ix-mix",
+                "turnId": "1",
+                "phase": "final_answer",
+                "toolRequests": [],
+            },
+        ),
+        _transcript_record(
+            source_id=f"{SOURCE_KEY}/{NATIVE_SESSION_ID}/mix-end",
+            native_type="assistant.turn_end",
+            data={"turnId": "1"},
+        ),
+    ]
+    projection, _ = build_semantics(records, {})
+    starts = [event for event in projection["events"] if event["kind"] == "tool_execution_start"]
+    assert len(starts) == 1
+    hook_obs = [
+        event
+        for event in projection["events"]
+        if event["source_ids"] == [f"hook/{NATIVE_SESSION_ID}/obs-pre-mix"]
+    ]
+    assert hook_obs[0]["kind"] in {"notification", "unknown"}
+
+
+def test_cli_fixture_has_one_subagent_started(
+    cli_transcript_records: list[SourceRecord],
+) -> None:
+    projection, _ = build_semantics(cli_transcript_records, {})
+    started = [event for event in projection["events"] if event["kind"] == "subagent_started"]
+    assert len(started) == 1
+    configured = [
+        event
+        for event in projection["events"]
+        if (event.get("attributes") or {}).get("native_type") == "subagent.configured"
+    ]
+    assert configured
+    assert configured[0]["kind"] != "subagent_started"
+
+
+def test_prompt_transformation_flows_through_build_semantics() -> None:
+    records = [
+        _transcript_record(
+            source_id=f"{SOURCE_KEY}/{NATIVE_SESSION_ID}/xf-user",
+            native_type="user.message",
+            data={"content": "hi", "interactionId": "ix-xf", "turnId": "0"},
+        ),
+        _transcript_record(
+            source_id=f"{SOURCE_KEY}/{NATIVE_SESSION_ID}/xf-prompt",
+            native_type="prompt.transformation",
+            data={"interactionId": "ix-xf", "prompt": "expanded hi"},
+        ),
+    ]
+    projection, _ = build_semantics(records, {})
+    kinds = [event["kind"] for event in projection["events"]]
+    assert "prompt_transformation" in kinds

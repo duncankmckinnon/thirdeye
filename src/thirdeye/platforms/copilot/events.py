@@ -32,13 +32,14 @@ _SESSION_LIFECYCLE_NOTIFICATIONS = frozenset(
         "session.auto_mode_resolved",
         "hook.start",
         "hook.end",
+        "preToolUse",
+        "postToolUse",
+        "postToolUseFailure",
+        "subagent.configured",
     }
 )
 _ABORT_TYPES = frozenset({"assistant.abort", "session.abort", "abort"})
 _HOOK_KINDS: dict[str, tuple[NormalizedEventKind, SourceReferenceRole]] = {
-    "preToolUse": ("tool_execution_start", "hook"),
-    "postToolUse": ("tool_execution_complete", "hook"),
-    "postToolUseFailure": ("tool_execution_failure", "hook"),
     "userPromptSubmitted": ("prompt_transformation", "hook"),
     "agentStop": ("agent_stop", "finish"),
     "subagentStart": ("subagent_started", "nested_child"),
@@ -138,7 +139,10 @@ def _unknown(record: SourceRecord, native_type: str | None) -> list[NormalizedEv
     attrs: dict[str, Any] = {"raw_payload": deepcopy(record.get("payload"))}
     if native_type is not None:
         attrs["native_type"] = native_type
-    return [_event(record, "unknown", "hook", attributes=attrs)]
+    role: SourceReferenceRole = (
+        "hook" if record.get("source_kind") == "hook" else "assistant_message"
+    )
+    return [_event(record, "unknown", role, attributes=attrs)]
 
 
 def normalize_record(record: SourceRecord) -> list[NormalizedEvent]:
@@ -307,6 +311,7 @@ def normalize_record(record: SourceRecord) -> list[NormalizedEvent]:
         ]
 
     if native_type == "subagent.started":
+        call = tool_call_id(record)
         return [
             _event(
                 record,
@@ -314,12 +319,14 @@ def normalize_record(record: SourceRecord) -> list[NormalizedEvent]:
                 "nested_child",
                 attributes={
                     **identity,
-                    "tool_call_id": tool_call_id(record),
                     **deepcopy(data),
+                    "tool_call_id": call,
+                    "parent_tool_call_id": call,
                 },
             )
         ]
     if native_type == "subagent.completed":
+        call = tool_call_id(record)
         return [
             _event(
                 record,
@@ -327,18 +334,10 @@ def normalize_record(record: SourceRecord) -> list[NormalizedEvent]:
                 "nested_child",
                 attributes={
                     **identity,
-                    "tool_call_id": tool_call_id(record),
                     **deepcopy(data),
+                    "tool_call_id": call,
+                    "parent_tool_call_id": call,
                 },
-            )
-        ]
-    if native_type == "subagent.configured":
-        return [
-            _event(
-                record,
-                "subagent_started",
-                "nested_child",
-                attributes={**identity, "native_type": native_type, **deepcopy(data)},
             )
         ]
 
@@ -355,7 +354,14 @@ def normalize_record(record: SourceRecord) -> list[NormalizedEvent]:
     mapped = _HOOK_KINDS.get(native_type)
     if mapped is not None:
         kind, role = mapped
-        return [_event(record, kind, role, attributes={**identity, **deepcopy(data)})]
+        return [
+            _event(
+                record,
+                kind,
+                role,
+                attributes={**identity, "native_type": native_type, **deepcopy(data)},
+            )
+        ]
 
     if "error" in native_type.lower():
         return [

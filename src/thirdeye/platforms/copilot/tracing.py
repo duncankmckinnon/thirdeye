@@ -15,9 +15,10 @@ def build_semantics(
 ) -> tuple[SemanticProjection, dict[str, Any]]:
     """Replay immutable source records into semantic events and main turns.
 
-    ``prior_state`` is not evidence.  It only retains still-open interactions
-    whose ``source_ids`` are absent from this partition.  Replaying the
-    complete archive with an empty prior state is always authoritative.
+    ``prior_state`` is not evidence.  It retains still-open interactions
+    (including completed nested children) whose ``source_ids`` are absent
+    from this partition.  Replaying the complete archive with an empty
+    prior state is always authoritative.
     """
     events = normalize_records(records)
     turns, call_candidates, pending, diagnostics, semantic_state = build_turns(

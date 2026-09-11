@@ -477,6 +477,7 @@ class OpenInteractionState(TypedDict):
     last_event_source_id: str | None
     start_ts: str | None
     pending_tool_call_ids: list[str]
+    nested_children: NotRequired[list[TurnSpanDict]]
 
 
 class LogicalCallState(TypedDict):

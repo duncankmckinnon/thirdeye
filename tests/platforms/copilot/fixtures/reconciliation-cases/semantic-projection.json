@@ -260,6 +260,28 @@
         "evidence": [
           "interaction_id:6d2b89fd-a653-430c-b532-b0936d72eb42"
         ]
+      },
+      {
+        "id": "pending:tool:call_YSSva4HCniiETlxdGGjcrHbh",
+        "kind": "incomplete_tool_pair",
+        "reason": "tool request has no execution result",
+        "source_ids": [
+          "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/5a7e8e11-4a6b-49ff-a33e-95d411c4cdd6/a4a17e63-7ba5-422f-8ee9-b495be417328"
+        ],
+        "evidence": [
+          "tool_call_id:call_YSSva4HCniiETlxdGGjcrHbh"
+        ]
+      },
+      {
+        "id": "pending:tool:call_ayHplfzxjRFMTCpmTKEFhCSJ",
+        "kind": "incomplete_tool_pair",
+        "reason": "tool request has no execution result",
+        "source_ids": [
+          "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/5a7e8e11-4a6b-49ff-a33e-95d411c4cdd6/a4a17e63-7ba5-422f-8ee9-b495be417328"
+        ],
+        "evidence": [
+          "tool_call_id:call_ayHplfzxjRFMTCpmTKEFhCSJ"
+        ]
       }
     ],
     "diagnostics": [

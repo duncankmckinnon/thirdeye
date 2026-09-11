@@ -184,9 +184,9 @@
       ]
     }
   },
-  "abort": {
+  "partial_turn": {
     "observed": false,
-    "required": "keep it pending and retain open state; missing usage is absent, not zero",
+    "required": "keep a prompt-only interaction pending; missing usage is absent, not zero",
     "input_records": [
       {
         "source_id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/5a7e8e11-4a6b-49ff-a33e-95d411c4cdd6/f07404d0-af52-4260-89fb-358a10e86034",
@@ -250,6 +250,199 @@
           }
         }
       }
+    }
+  },
+  "abort": {
+    "observed": false,
+    "required": "assistant.abort closes the user turn as interrupted; do not treat a prompt-only slice as abort",
+    "input_records": [
+      {
+        "source_id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/5a7e8e11-4a6b-49ff-a33e-95d411c4cdd6/synthetic-abort-user",
+        "source_kind": "transcript",
+        "native_session_id": "5a7e8e11-4a6b-49ff-a33e-95d411c4cdd6",
+        "ts": "2026-09-10T17:08:24.400Z",
+        "observed_at": "2026-09-10T17:09:00.000Z",
+        "payload": {
+          "type": "user.message",
+          "data": {
+            "content": "hello",
+            "interactionId": "ix-abort",
+            "turnId": "0"
+          },
+          "id": "synthetic-abort-user",
+          "timestamp": "2026-09-10T17:08:24.400Z",
+          "schema_version": 1
+        },
+        "locator": {
+          "file": "events.jsonl",
+          "native_event_id": "synthetic-abort-user"
+        }
+      },
+      {
+        "source_id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/5a7e8e11-4a6b-49ff-a33e-95d411c4cdd6/synthetic-abort-start",
+        "source_kind": "transcript",
+        "native_session_id": "5a7e8e11-4a6b-49ff-a33e-95d411c4cdd6",
+        "ts": "2026-09-10T17:08:24.450Z",
+        "observed_at": "2026-09-10T17:09:00.000Z",
+        "payload": {
+          "type": "assistant.turn_start",
+          "data": {
+            "turnId": "0",
+            "interactionId": "ix-abort"
+          },
+          "id": "synthetic-abort-start",
+          "timestamp": "2026-09-10T17:08:24.450Z",
+          "schema_version": 1
+        },
+        "locator": {
+          "file": "events.jsonl",
+          "native_event_id": "synthetic-abort-start"
+        }
+      },
+      {
+        "source_id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/5a7e8e11-4a6b-49ff-a33e-95d411c4cdd6/synthetic-abort-msg",
+        "source_kind": "transcript",
+        "native_session_id": "5a7e8e11-4a6b-49ff-a33e-95d411c4cdd6",
+        "ts": "2026-09-10T17:08:24.503Z",
+        "observed_at": "2026-09-10T17:09:00.000Z",
+        "payload": {
+          "type": "assistant.message",
+          "data": {
+            "content": "partial",
+            "model": "gpt-5.6-luna",
+            "interactionId": "ix-abort",
+            "turnId": "0",
+            "reasoningSummary": "started answering",
+            "toolRequests": []
+          },
+          "id": "synthetic-abort-msg",
+          "timestamp": "2026-09-10T17:08:24.503Z",
+          "schema_version": 1
+        },
+        "locator": {
+          "file": "events.jsonl",
+          "native_event_id": "synthetic-abort-msg"
+        }
+      },
+      {
+        "source_id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/5a7e8e11-4a6b-49ff-a33e-95d411c4cdd6/synthetic-abort-event",
+        "source_kind": "transcript",
+        "native_session_id": "5a7e8e11-4a6b-49ff-a33e-95d411c4cdd6",
+        "ts": "2026-09-10T17:08:24.800Z",
+        "observed_at": "2026-09-10T17:09:00.000Z",
+        "payload": {
+          "type": "assistant.abort",
+          "data": {
+            "turnId": "0",
+            "interactionId": "ix-abort"
+          },
+          "id": "synthetic-abort-event",
+          "timestamp": "2026-09-10T17:08:24.800Z",
+          "schema_version": 1
+        },
+        "locator": {
+          "file": "events.jsonl",
+          "native_event_id": "synthetic-abort-event"
+        }
+      }
+    ],
+    "expected": {
+      "events": [
+        {
+          "id": "copilot:event:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/5a7e8e11-4a6b-49ff-a33e-95d411c4cdd6/synthetic-abort-user",
+          "kind": "user_prompt",
+          "classification": "main",
+          "ts": "2026-09-10T17:08:24.400Z",
+          "source_ids": [
+            "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/5a7e8e11-4a6b-49ff-a33e-95d411c4cdd6/synthetic-abort-user"
+          ],
+          "attributes": {
+            "interaction_id": "ix-abort"
+          }
+        },
+        {
+          "id": "copilot:event:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/5a7e8e11-4a6b-49ff-a33e-95d411c4cdd6/synthetic-abort-event",
+          "kind": "abort",
+          "classification": "main",
+          "ts": "2026-09-10T17:08:24.800Z",
+          "source_ids": [
+            "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/5a7e8e11-4a6b-49ff-a33e-95d411c4cdd6/synthetic-abort-event"
+          ]
+        }
+      ],
+      "turns": [
+        {
+          "turn_id": "copilot:turn:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa:5a7e8e11-4a6b-49ff-a33e-95d411c4cdd6:ix-abort",
+          "start_ts": "2026-09-10T17:08:24.400Z",
+          "end_ts": "2026-09-10T17:08:24.800Z",
+          "input_message": "hello",
+          "output_message": "partial",
+          "status": "interrupted",
+          "llm_calls": [
+            {
+              "call_id": "copilot:call:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/5a7e8e11-4a6b-49ff-a33e-95d411c4cdd6/synthetic-abort-msg",
+              "provider": "unknown",
+              "model": "gpt-5.6-luna",
+              "start_ts": "2026-09-10T17:08:24.503Z",
+              "end_ts": "2026-09-10T17:08:24.800Z",
+              "input_messages": [
+                {
+                  "role": "user",
+                  "parts": [
+                    {
+                      "type": "text",
+                      "content": "hello"
+                    }
+                  ]
+                }
+              ],
+              "output_messages": [
+                {
+                  "role": "assistant",
+                  "parts": [
+                    {
+                      "type": "text",
+                      "content": "partial"
+                    },
+                    {
+                      "type": "reasoning",
+                      "content": "started answering"
+                    }
+                  ]
+                }
+              ],
+              "usage": {},
+              "tool_calls": []
+            }
+          ],
+          "permission_requests": [],
+          "subagents": [],
+          "attributes": {
+            "interaction_id": "ix-abort",
+            "agent_id": null
+          },
+          "accounting_calls": []
+        }
+      ],
+      "call_candidates": [
+        {
+          "call_id": "copilot:call:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/5a7e8e11-4a6b-49ff-a33e-95d411c4cdd6/synthetic-abort-msg",
+          "stored_turn_id": "copilot:turn:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa:5a7e8e11-4a6b-49ff-a33e-95d411c4cdd6:ix-abort",
+          "interaction_id": "ix-abort",
+          "agent_id": null,
+          "parent_tool_call_id": null,
+          "model": "gpt-5.6-luna",
+          "source_ids": [
+            "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/5a7e8e11-4a6b-49ff-a33e-95d411c4cdd6/synthetic-abort-msg",
+            "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/5a7e8e11-4a6b-49ff-a33e-95d411c4cdd6/synthetic-abort-event"
+          ],
+          "start_ts": "2026-09-10T17:08:24.503Z",
+          "end_ts": "2026-09-10T17:08:24.800Z",
+          "tool_call_ids": []
+        }
+      ],
+      "pending": [],
+      "usage_rows": []
     }
   },
   "retry": {
@@ -515,7 +708,7 @@
           "permission_requests": [],
           "subagents": [
             {
-              "turn_id": "copilot:turn:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa:5a7e8e11-4a6b-49ff-a33e-95d411c4cdd6:7c0fa097-c0e2-48da-b2b6-fcfc1ad83a6b",
+              "turn_id": "copilot:turn:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa:5a7e8e11-4a6b-49ff-a33e-95d411c4cdd6:7c0fa097-c0e2-48da-b2b6-fcfc1ad83a6b:bf8cb9f3-2097-4db0-a3c8-78a2653b2106",
               "start_ts": "2026-09-10T17:08:44.557Z",
               "end_ts": "2026-09-10T17:08:47.463Z",
               "input_message": "Read only /fixture/workspace/alpha.txt and /fixture/workspace/beta.txt. Do not modify files. Do not access any other files or services. Report the sum of the numeric values in those two files.",
