@@ -310,6 +310,10 @@ def test_hook_spools_and_captures_fixture_sources(
     assert read_spool(config, paths, NATIVE_SESSION_ID) == []
 
 
+@pytest.mark.skipif(
+    sys.platform == "win32",
+    reason="Windows CI filesystem scheduling cannot enforce a 250 ms wall-clock budget",
+)
 def test_hook_returns_within_250ms_on_small_fixture(
     copilot_env: tuple[Config, SourcePaths],
     monkeypatch: pytest.MonkeyPatch,

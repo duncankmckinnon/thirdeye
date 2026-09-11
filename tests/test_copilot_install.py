@@ -138,7 +138,10 @@ class TestInstallMergeAndUpgrade:
             json.dumps({"version": HOOK_CONFIG_VERSION, "hooks": {"sessionStart": [stale]}})
         )
         platform = _platform(
-            tmp_path, hooks_file=path, entrypoint="/new/path/thirdeye-copilot-hook"
+            tmp_path,
+            hooks_file=path,
+            entrypoint="/new/path/thirdeye-copilot-hook",
+            windows=False,
         )
         platform.install()
         data = json.loads(path.read_text())

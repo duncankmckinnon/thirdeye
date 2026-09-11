@@ -92,7 +92,15 @@ def _file_generation(database: Path) -> str:
     except FileNotFoundError:
         payload: dict[str, Any] = {"path": database.name, "missing": True}
     else:
-        payload = {"path": database.name, "device": stat.st_dev, "inode": stat.st_ino}
+        payload = {
+            "path": database.name,
+            "device": stat.st_dev,
+            "inode": stat.st_ino,
+            # Windows may quickly reuse st_ino after unlink/recreate.  Creation
+            # time remains stable for ordinary database writes and changes for
+            # a replacement file.  It is also available as birth time on macOS.
+            "birthtime_ns": getattr(stat, "st_birthtime_ns", None),
+        }
     return "sha256:" + hashlib.sha256(_canonical_json(payload).encode("utf-8")).hexdigest()
 
 

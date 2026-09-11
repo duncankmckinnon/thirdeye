@@ -80,11 +80,12 @@ def _generation(path: Path) -> str:
     """Identify the current file object, while remaining stable for appends."""
 
     stat = path.stat()
-    # st_dev/st_ino distinguishes atomic replacement on the platforms we
-    # support and, unlike mtime/ctime, does not change on an ordinary append.
-    # A subsequent size decrease still detects truncation on filesystems where
-    # inode data is unavailable.
-    return f"{stat.st_dev:x}-{stat.st_ino:x}"
+    # st_dev/st_ino distinguishes most atomic replacements.  Windows may
+    # quickly reuse st_ino after unlink/recreate, so include creation time when
+    # the platform exposes it.  All three values remain stable for appends.
+    birthtime_ns = getattr(stat, "st_birthtime_ns", None)
+    suffix = f"-{birthtime_ns:x}" if isinstance(birthtime_ns, int) else ""
+    return f"{stat.st_dev:x}-{stat.st_ino:x}{suffix}"
 
 
 def _valid_timestamp(value: Any) -> str | None:
