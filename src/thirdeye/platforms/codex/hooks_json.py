@@ -155,7 +155,7 @@ def session_start() -> None:
     sd = session_dir(config.root, _PLATFORM, sid)
     # Persist the raw snapshot for the Logfire export path: Codex's argv-invoked
     # notify callback runs detached from the agent process that held these vars,
-    # so otel_export falls back to this (see _persisted_captured_env there).
+    # so it reads this back (see platforms/codex/captured_env.py).
     try:
         mp = meta_path(sd)
         m = read_meta(mp)

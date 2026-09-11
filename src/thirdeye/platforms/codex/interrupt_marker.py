@@ -180,8 +180,17 @@ def _reap(
         return
     try:
         from thirdeye.otel_export import export_turn
+        from thirdeye.platforms.codex.captured_env import resolve_captured_env
 
-        export_turn(config, session_dir_, session_id, _PLATFORM, cwd, turn)
+        export_turn(
+            config,
+            session_dir_,
+            session_id,
+            _PLATFORM,
+            cwd,
+            turn,
+            captured_env=resolve_captured_env(config, session_dir_),
+        )
     except Exception as exc:
         log_capture_error(
             thirdeye_home=config.root,
