@@ -197,7 +197,9 @@ def _rewrite_native_id(value: Any, native_session_id: str, placeholder: str = "N
     offsets/inode generation are per-file-instance, not semantic content).
     """
     if isinstance(value, str):
-        return value.replace(native_session_id, placeholder)
+        for identity in {native_session_id, NATIVE_SESSION_ID, FULL_NATIVE_SESSION_ID}:
+            value = value.replace(identity, placeholder)
+        return value
     if isinstance(value, list):
         return [_rewrite_native_id(item, native_session_id, placeholder) for item in value]
     if isinstance(value, dict):
@@ -306,11 +308,11 @@ def test_reconcile_archive_is_idempotent(
     first = reconcile_archive(config, stored)
     first_turns = read_projected_turns(config, stored)
     first_state = load_projection_state(config, stored)
+    first_document = _document(config, stored)
 
     second = reconcile_archive(config, stored)
     second_turns = read_projected_turns(config, stored)
     second_state = load_projection_state(config, stored)
-    first_document = _document(config, stored)
     second_document = _document(config, stored)
 
     assert first == second
@@ -338,6 +340,10 @@ def test_reconcile_archive_is_idempotent(
     }
     assert normalized_first == normalized_second
     assert first_document["indexes"] == second_document["indexes"]
+    for record in second_document["indexes"]["turns"].values():
+        calls = record["span"].get("accounting_calls", [])
+        call_ids = [call["accounting_id"] for call in calls]
+        assert len(call_ids) == len(set(call_ids))
 
 
 def test_rebuild_is_idempotent_and_matches_initial_reconcile(
@@ -385,11 +391,24 @@ def test_incremental_reconcile_matches_full_replay(
     )
     full = reconcile_archive(config, stored_full)
     full_turns = read_projected_turns(config, stored_full)
+    incremental_document = _document(config, stored_incremental)
+    full_document = _document(config, stored_full)
 
     assert incremental == full
     normalized_incremental = _rewrite_native_id(incremental_turns, NATIVE_SESSION_ID)
     normalized_full = _rewrite_native_id(full_turns, FULL_NATIVE_SESSION_ID)
     assert normalized_incremental == normalized_full
+
+    # Builder state must agree independently of the storage-owned commit
+    # counter and identity-dependent document digest.
+    incremental_state = copy.deepcopy(incremental_document["state"])
+    full_state = copy.deepcopy(full_document["state"])
+    for state in (incremental_state, full_state):
+        state.pop("commit_sequence", None)
+        state.pop("projection_revision", None)
+    assert _rewrite_native_id(incremental_state, NATIVE_SESSION_ID) == _rewrite_native_id(
+        full_state, FULL_NATIVE_SESSION_ID
+    )
 
     # Index keys can fall back to a content digest computed over pre-
     # normalization payloads (see _index_key), so two sessions built from the
@@ -399,7 +418,9 @@ def test_incremental_reconcile_matches_full_replay(
     # that false negative while still catching a real divergence (a usage
     # row, attribution, pending item, or diagnostic present under one path
     # and not the other, or duplicated under either).
-    for name in ("usage", "attributions", "pending", "diagnostics"):
+    # Comparing every index's normalized values includes raw stored turns and
+    # their nested accounting_calls, plus events and the usage identity map.
+    for name in incremental_document["indexes"]:
         incremental_values = _normalized_index_values(
             config, stored_incremental, NATIVE_SESSION_ID, name
         )
@@ -616,36 +637,25 @@ def test_reconcile_reports_error_when_projection_advances_concurrently(
     assert read_projected_turns(config, stored) == baseline_turns
 
 
-def test_usage_sidecar_publish_failure_reports_the_committed_document(
+def test_usage_sidecar_publish_failure_preserves_prior_projection(
     config: Config,
     paths: SourcePaths,
     cli_transcript_records: list[SourceRecord],
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """A post-validation I/O failure while publishing the usage-sidecar
-
-    mirror is a distinct failure mode from a validation failure: by the time
-    it can happen, the projection document has already durably published
-    (see commit_projection's docstring), so the counts reconcile_archive
-    reports must reflect that new document -- not the prior one -- with the
-    error counted on top.  The next reconcile call must self-heal the
-    sidecar without reprocessing anything new.
-    """
+    """A usage-sidecar I/O failure must not replace the readable projection."""
     stored = _seed_full_corpus(config, paths, cli_transcript_records)
     baseline = reconcile_archive(config, stored)
     prior_turns = read_projected_turns(config, stored)
-    baseline_sequence = load_projection_state(config, stored)["commit_sequence"]
+    prior_document = _document(config, stored)
 
     original_publish_usage = projection_store._publish_usage
 
     def selective_boom(
         cfg: Config, sid: str, directory: Path, usage_index: dict[str, Any], *, force: bool = False
     ) -> None:
-        # load_projection_state's self-heal always passes force=True; only
-        # commit_projection's own (non-forced) publish should fail here, so
-        # this reaches the specific "document committed, sidecar mirror
-        # failed" state the docstring describes rather than failing before
-        # commit_projection is ever entered.
+        # Let readers inspect the prior projection normally. Only the commit's
+        # attempt to publish the new sidecar fails.
         if force:
             original_publish_usage(cfg, sid, directory, usage_index, force=force)
             return
@@ -660,14 +670,7 @@ def test_usage_sidecar_publish_failure_reports_the_committed_document(
     assert result["errors"] == baseline["errors"] + 1
     assert result["turns"] == baseline["turns"]
     assert result["usage"] == baseline["usage"]
-    # The document committed despite the sidecar failure -- proven by the
-    # storage-owned commit_sequence advancing even though this call reported
-    # an error -- so turns already reflect the (content-equivalent, since
-    # this rebuilds the same archive) new projection rather than being stuck
-    # on the old one.  Read the raw document rather than load_projection_state
-    # here: that call would itself retry the still-patched, still-failing
-    # sidecar publish as part of its own self-heal.
-    assert _document(config, stored)["state"]["commit_sequence"] == baseline_sequence + 1
+    assert _document(config, stored) == prior_document
     assert read_projected_turns(config, stored) == prior_turns
 
     monkeypatch.undo()

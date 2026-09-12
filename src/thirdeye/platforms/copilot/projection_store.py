@@ -417,21 +417,11 @@ def commit_projection(
     document) leaves the previous projection completely untouched rather
     than losing it to a non-atomic delete-then-commit sequence.
 
-    Durability past that validation point has two distinct failure modes.
-    The projection document is the source of truth and is published with
-    write-ahead journaling (see ``publish_projection_document``): once that
-    call returns, the new document is durably committed, full stop.  The
-    usage sidecar published immediately after is a derived, self-healing
-    mirror of the document's own usage index -- kept as a separate JSONL
-    file only so ``UsageIndex`` can query it without parsing the whole
-    document.  If that second, mirror-only publish raises (a disk error, not
-    a validation error), this function still raises so the caller learns of
-    it, but the already-committed document is *not* rolled back: it reflects
-    the new projection, and the next ``load_projection_state`` call
-    republishes a sidecar that matches it.  A caller must not assume a raise
-    from this function always means "nothing changed" -- check which phase
-    failed via ``read_projection_status``/``load_projection_state`` if that
-    distinction matters.
+    The usage JSONL and ``UsageIndex`` are derived mirrors, but publishing
+    them can fail.  They are therefore updated before the projection document:
+    a sidecar failure leaves the last readable projection untouched.  The
+    projection document remains the commit point and is published with
+    write-ahead journaling (see ``publish_projection_document``).
 
     ``base_commit_sequence``, when given, must equal the ``commit_sequence``
     a caller observed from an earlier ``load_projection_state`` call.  A
@@ -528,8 +518,8 @@ def commit_projection(
             "state": state,
             "indexes": merged_indexes,
         }
-        publish_projection_document(directory, next_document)
         _publish_usage(config, stored_session_id, directory, merged_indexes["usage"])
+        publish_projection_document(directory, next_document)
         return counts
 
 
