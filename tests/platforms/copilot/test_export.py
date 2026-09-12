@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import hashlib
 import json
 import shutil
 from pathlib import Path
@@ -13,6 +12,7 @@ import pytest
 from thirdeye import otel_export
 from thirdeye.config import Config, LogfireSettings
 from thirdeye.paths import session_dir
+from thirdeye.platforms.copilot import export_transport
 from thirdeye.platforms.copilot.archive import commit_batch
 from thirdeye.platforms.copilot.constants import PLATFORM_NAME
 from thirdeye.platforms.copilot.export import queue_exports
@@ -222,16 +222,16 @@ def export_calls(monkeypatch: pytest.MonkeyPatch) -> dict[str, list[Any]]:
         return True
 
     def _turn_accounting(*args: Any, **kwargs: Any) -> bool:
-        calls["turn_accounting"].append(args[6])
+        calls["turn_accounting"].append(args[5])
         return True
 
     def _session_accounting(*args: Any, **kwargs: Any) -> bool:
-        calls["session_accounting"].append(args[5])
+        calls["session_accounting"].append(args[4])
         return True
 
     monkeypatch.setattr(otel_export, "export_turn", _turn)
-    monkeypatch.setattr(otel_export, "export_turn_accounting", _turn_accounting)
-    monkeypatch.setattr(otel_export, "export_session_accounting", _session_accounting)
+    monkeypatch.setattr(export_transport, "queue_turn_accounting", _turn_accounting)
+    monkeypatch.setattr(export_transport, "queue_session_accounting", _session_accounting)
     return calls
 
 
@@ -822,6 +822,34 @@ class TestQueueExports:
         turn = export_calls["turn"][0]
         assert turn["accounting_calls"] == []
 
+    def test_turn_claim_confirms_previously_embedded_chat_accounting(
+        self,
+        enabled_config: Config,
+        paths: SourcePaths,
+        export_calls: dict[str, list[Any]],
+    ) -> None:
+        """The turn acknowledgement is sufficient for accounting that the
+        Copilot ledger already placed inside that turn's chat span. This
+        survives a crash before the shared exporter writes its secondary
+        per-accounting acknowledgement."""
+        stored = _seed_session(enabled_config, paths)
+        _, matched_projection = self._ambiguous_then_matched_projections()
+        queue_exports(enabled_config, stored, matched_projection, include_history=True)
+
+        directory = _directory(enabled_config, stored)
+        claim_path = otel_export._turn_claim_path(directory, TURN_ONE)
+        claim_path.parent.mkdir(parents=True, exist_ok=True)
+        claim_path.write_text("sent", encoding="utf-8", newline="\n")
+        export_calls["turn"].clear()
+        export_calls["turn_accounting"].clear()
+
+        queue_exports(enabled_config, stored, matched_projection, include_history=True)
+
+        placement = load_export_state(enabled_config, stored)["placements"][ACCOUNTING_UNMATCHED]
+        assert placement["destination"] == "chat-span"
+        assert placement["emitted"] is True
+        assert export_calls["turn_accounting"] == []
+
     def test_emitted_placement_skips_requeue(
         self,
         enabled_config: Config,
@@ -911,8 +939,12 @@ class TestQueueExports:
     ) -> None:
         stored = _seed_session(enabled_config, paths)
         monkeypatch.setattr(otel_export, "export_turn", lambda *args, **kwargs: True)
-        monkeypatch.setattr(otel_export, "export_turn_accounting", lambda *args, **kwargs: False)
-        monkeypatch.setattr(otel_export, "export_session_accounting", lambda *args, **kwargs: False)
+        monkeypatch.setattr(
+            export_transport, "queue_turn_accounting", lambda *args, **kwargs: False
+        )
+        monkeypatch.setattr(
+            export_transport, "queue_session_accounting", lambda *args, **kwargs: False
+        )
 
         projection = _projection(
             turns=[
@@ -971,7 +1003,9 @@ class TestQueueExports:
         not linger once a later reconciliation successfully queues the job."""
         stored = _seed_session(enabled_config, paths)
         monkeypatch.setattr(otel_export, "export_turn", lambda *args, **kwargs: False)
-        monkeypatch.setattr(otel_export, "export_turn_accounting", lambda *args, **kwargs: False)
+        monkeypatch.setattr(
+            export_transport, "queue_turn_accounting", lambda *args, **kwargs: False
+        )
 
         projection = _projection(
             turns=[
@@ -1001,7 +1035,9 @@ class TestQueueExports:
         )
 
         monkeypatch.setattr(otel_export, "export_turn", lambda *args, **kwargs: True)
-        monkeypatch.setattr(otel_export, "export_turn_accounting", lambda *args, **kwargs: True)
+        monkeypatch.setattr(
+            export_transport, "queue_turn_accounting", lambda *args, **kwargs: True
+        )
         queue_exports(enabled_config, stored, projection, include_history=True)
 
         state = load_export_state(enabled_config, stored)
@@ -1247,10 +1283,8 @@ class TestQueueExports:
         still pick it up later and deliver the same tokens a second time."""
         stored = _seed_session(enabled_config, paths)
         old_span_id = f"accounting:{stored}:{TURN_ONE}:{ACCOUNTING_UNMATCHED}"
-        jobs_dir = otel_export.otel_jobs_dir(enabled_config.root)
-        jobs_dir.mkdir(parents=True, exist_ok=True)
-        digest = hashlib.sha256(old_span_id.encode("utf-8")).hexdigest()
-        job_path = jobs_dir / f"accounting-{digest}.json"
+        job_path = export_transport.job_path(enabled_config.root, old_span_id)
+        job_path.parent.mkdir(parents=True, exist_ok=True)
         job_path.write_text(json.dumps({"state": "queued", "attempt": 0}), encoding="utf-8")
 
         def _seed(state: dict[str, Any]) -> dict[str, Any]:
@@ -1294,11 +1328,11 @@ class TestQueueExports:
         than guessed."""
         stored = _seed_session(enabled_config, paths)
         old_span_id = f"accounting:{stored}:{TURN_ONE}:{ACCOUNTING_UNMATCHED}"
-        jobs_dir = otel_export.otel_jobs_dir(enabled_config.root)
-        jobs_dir.mkdir(parents=True, exist_ok=True)
-        digest = hashlib.sha256(old_span_id.encode("utf-8")).hexdigest()
-        job_path = jobs_dir / f"accounting-{digest}.json"
+        job_path = export_transport.job_path(enabled_config.root, old_span_id)
+        job_path.parent.mkdir(parents=True, exist_ok=True)
         job_path.write_text(json.dumps({"state": "claimed", "attempt": 0}), encoding="utf-8")
+        claim_path = export_transport.claim_path(job_path)
+        claim_path.write_text("worker-42", encoding="utf-8")
 
         def _seed(state: dict[str, Any]) -> dict[str, Any]:
             placed, _, _ = record_placement(
@@ -1321,12 +1355,52 @@ class TestQueueExports:
         queue_exports(enabled_config, stored, matched_projection, include_history=True)
 
         assert job_path.exists()
+        assert claim_path.exists()
         assert json.loads(job_path.read_text(encoding="utf-8"))["state"] == "claimed"
         state = load_export_state(enabled_config, stored)
         placement = state["placements"][ACCOUNTING_UNMATCHED]
         assert placement["destination"] == "turn-accounting-span"
         assert ACCOUNTING_UNMATCHED in state["conflicts"]
         assert "in flight" in state["conflicts"][ACCOUNTING_UNMATCHED]["reason"]
+
+    def test_relocation_is_quarantined_when_worker_claims_during_cancellation(
+        self,
+        enabled_config: Config,
+        paths: SourcePaths,
+        export_calls: dict[str, list[Any]],
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        stored = _seed_session(enabled_config, paths)
+        old_span_id = f"accounting:{stored}:{TURN_ONE}:{ACCOUNTING_UNMATCHED}"
+
+        def _seed(state: dict[str, Any]) -> dict[str, Any]:
+            placed, _, _ = record_placement(
+                state,
+                accounting_id=ACCOUNTING_UNMATCHED,
+                destination="turn-accounting-span",
+                span_id=old_span_id,
+                usage=_usage_row(call_id=ACCOUNTING_UNMATCHED).to_dict(),
+            )
+            return initialize_eligibility(
+                placed,
+                terminal_turn_ids=[TURN_ONE],
+                accounting_ids=[],
+                include_history=True,
+            )
+
+        update_export_state(enabled_config, stored, _seed)
+        monkeypatch.setattr(
+            export_transport,
+            "cancel",
+            lambda *args: {"state": "claimed", "attempt": 0, "last_error": None},
+        )
+
+        _, matched_projection = self._ambiguous_then_matched_projections()
+        queue_exports(enabled_config, stored, matched_projection, include_history=True)
+
+        state = load_export_state(enabled_config, stored)
+        assert state["placements"][ACCOUNTING_UNMATCHED]["span_id"] == old_span_id
+        assert ACCOUNTING_UNMATCHED in state["conflicts"]
 
     def test_permanently_failed_accounting_job_is_reported_and_not_cleared(
         self,
@@ -1363,18 +1437,71 @@ class TestQueueExports:
             ],
         )
         span_id = f"accounting:{stored}:{TURN_ONE}:{ACCOUNTING_UNMATCHED}"
-        jobs_dir = otel_export.otel_jobs_dir(enabled_config.root)
-        jobs_dir.mkdir(parents=True, exist_ok=True)
-        digest = hashlib.sha256(span_id.encode("utf-8")).hexdigest()
-        job_path = jobs_dir / f"accounting-{digest}.json"
-        job_path.write_text(json.dumps({"state": "failed", "attempt": 5}), encoding="utf-8")
+        job_path = export_transport.job_path(enabled_config.root, span_id)
+        job_path.parent.mkdir(parents=True, exist_ok=True)
+        job_path.write_text(
+            json.dumps(
+                {"state": "failed", "attempt": 5, "last_error": "TimeoutError: collector stalled"}
+            ),
+            encoding="utf-8",
+        )
 
         queued = queue_exports(enabled_config, stored, projection, include_history=True)
         assert queued == 1  # only the turn job; the permanently-failed accounting job does not count
         state = load_export_state(enabled_config, stored)
-        assert state["placements"][ACCOUNTING_UNMATCHED]["last_error"] == (
-            "accounting job permanently failed after 5 attempts"
+        placement = state["placements"][ACCOUNTING_UNMATCHED]
+        assert placement["job_state"] == "failed"
+        assert placement["job_attempt"] == 5
+        assert placement["last_error"] == "TimeoutError: collector stalled"
+
+    @pytest.mark.parametrize(
+        ("job_state", "last_error"),
+        [
+            ("queued", None),
+            ("claimed", None),
+            ("retrying", "ConnectionError: collector unavailable"),
+        ],
+    )
+    def test_accounting_worker_lifecycle_is_reflected_in_ledger(
+        self,
+        enabled_config: Config,
+        paths: SourcePaths,
+        export_calls: dict[str, list[Any]],
+        monkeypatch: pytest.MonkeyPatch,
+        job_state: str,
+        last_error: str | None,
+    ) -> None:
+        stored = _seed_session(enabled_config, paths)
+        projection = _projection(
+            turns=[
+                _main_turn(
+                    accounting_calls=[
+                        _accounting_call(
+                            accounting_id=ACCOUNTING_UNMATCHED,
+                            attribution_status="ambiguous",
+                            call_id=None,
+                            usage=_usage_row(call_id=ACCOUNTING_UNMATCHED).to_dict(),
+                        )
+                    ]
+                )
+            ],
+            usage_rows=[_usage_row(call_id=ACCOUNTING_UNMATCHED)],
+            attributions=[
+                _attribution(logical_call_id=ACCOUNTING_UNMATCHED, status="ambiguous", call_id=None)
+            ],
         )
+        monkeypatch.setattr(
+            export_transport,
+            "status",
+            lambda *args: {"state": job_state, "attempt": 2, "last_error": last_error},
+        )
+
+        queue_exports(enabled_config, stored, projection, include_history=True)
+
+        placement = load_export_state(enabled_config, stored)["placements"][ACCOUNTING_UNMATCHED]
+        assert placement["job_state"] == job_state
+        assert placement["job_attempt"] == 2
+        assert placement["last_error"] == last_error
 
 
 class TestWorkerConfirmedDelivery:
@@ -1427,6 +1554,11 @@ class TestWorkerConfirmedDelivery:
             otel_worker.main([str(job_path)])
 
         monkeypatch.setattr(otel_export, "_spawn", _run)
+
+        def _run_accounting(job_path: Path) -> None:
+            export_transport.main([str(job_path)])
+
+        monkeypatch.setattr(export_transport, "_spawn", _run_accounting)
 
     def test_confirmed_accounting_delivery_survives_restart_without_double_emission(
         self,

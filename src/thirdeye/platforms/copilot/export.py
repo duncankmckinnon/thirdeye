@@ -22,6 +22,7 @@ from thirdeye.meta import read_meta
 from thirdeye.paths import meta_path, session_dir
 from thirdeye.span_ids import chat_span_id
 
+from . import export_transport
 from .constants import PLATFORM_NAME
 from .export_state import (
     clear_placement_error,
@@ -30,6 +31,7 @@ from .export_state import (
     is_accounting_eligible,
     is_turn_eligible,
     mark_placement_error,
+    mark_placement_job_status,
     mark_turn_error,
     record_placement,
     update_export_state,
@@ -238,10 +240,8 @@ def _place(
             # to replace, and if it is, cancel it so an already-dispatched
             # worker can never deliver tokens this ledger no longer points
             # at once it decides on the new destination below.
-            status = otel_export.accounting_job_status(config.root, old_span_id)
-            old_job_state = status.get("state") if status else None
-            if old_job_state == "queued":
-                otel_export.cancel_accounting_job(config.root, old_span_id)
+            status = export_transport.cancel(config.root, old_span_id)
+            old_job_state = status.get("state")
         next_state, entry, accepted = record_placement(
             state,
             accounting_id=accounting_id,
@@ -276,18 +276,30 @@ def _reflect_accounting_job_health(
 
     Returns whether this counts as a successful queue for this pass.
     """
-    status = otel_export.accounting_job_status(config.root, span_id)
-    if status is not None and status.get("state") == "failed":
-        attempt = status.get("attempt")
-        _error_state(
-            config,
-            stored_session_id,
-            accounting_id,
-            f"accounting job permanently failed after {attempt} attempts",
-        )
-        return False
-    _clear_error_state(config, stored_session_id, accounting_id)
-    return True
+    status = export_transport.status(config.root, span_id)
+    if status is None:
+        if otel_export.accounting_export_sent(
+            _directory(config, stored_session_id), accounting_id
+        ):
+            status = {"state": "emitted", "attempt": None, "last_error": None}
+        else:
+            _clear_error_state(config, stored_session_id, accounting_id)
+            return True
+
+    if status.get("state") == "failed" and not status.get("last_error"):
+        status = {
+            **status,
+            "last_error": (
+                f"accounting job permanently failed after {status.get('attempt')} attempts"
+            ),
+        }
+
+    update_export_state(
+        config,
+        stored_session_id,
+        lambda state: mark_placement_job_status(state, accounting_id, status),
+    )
+    return status.get("state") != "failed"
 
 
 def _turn_with_placed_accounting(
@@ -377,8 +389,11 @@ def queue_exports(
         if not is_turn_eligible(state, root_id) or not is_accounting_eligible(state, accounting_id):
             continue
         call_id = item.get("call_id")
-        delivered = otel_export.accounting_export_sent(directory, accounting_id)
         existing_entry = (state.get("placements") or {}).get(accounting_id) or {}
+        turn_sent = otel_export.turn_export_sent(directory, root_id)
+        delivered = otel_export.accounting_export_sent(directory, accounting_id) or (
+            turn_sent and existing_entry.get("destination") == "chat-span"
+        )
         # A chat span already flushed to Logfire is immutable history: usage
         # that resolves to "matched" only *after* that flush can no longer
         # land on it and must use the turn-owned fallback span instead. But
@@ -388,7 +403,7 @@ def queue_exports(
         # what delivered it there -- re-deriving "unavailable" from that same
         # fact would misread an already-settled placement as a conflicting
         # correction.
-        chat_available = not otel_export.turn_export_sent(directory, root_id) or (
+        chat_available = not turn_sent or (
             delivered and existing_entry.get("destination") == "chat-span"
         )
         if (
@@ -421,11 +436,10 @@ def queue_exports(
             continue
         if destination != "turn-accounting-span" or entry is None:
             continue
-        sent = otel_export.export_turn_accounting(
+        sent = export_transport.queue_turn_accounting(
             config,
             directory,
             stored_session_id,
-            PLATFORM_NAME,
             meta.cwd,
             owner_id,
             item,
@@ -479,8 +493,8 @@ def queue_exports(
                 "evidence": list(attribution["evidence"]),
             },
         }
-        sent = otel_export.export_session_accounting(
-            config, directory, stored_session_id, PLATFORM_NAME, meta.cwd, item
+        sent = export_transport.queue_session_accounting(
+            config, directory, stored_session_id, meta.cwd, item
         )
         if sent and _reflect_accounting_job_health(config, stored_session_id, accounting_id, span_id):
             queued += 1

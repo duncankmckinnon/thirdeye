@@ -2,7 +2,7 @@
 
 This state intentionally has no relationship to projection state.  Projection
 state is disposable and rebuilt from the V1 archive; export placement is an
-accounting decision and survives rebuilds.  The generic OTel worker cannot
+accounting decision and survives rebuilds.  The accounting worker cannot
 atomically acknowledge a remote collector and this file, so an absent job is
 never treated as proof of delivery.  A crash after a remote flush can still
 lead to a deterministic retry and therefore a duplicate remote span.
@@ -213,15 +213,11 @@ def record_placement(
     by the worker on success, so this ledger cannot detect delivery on its
     own and must be told.
 
-    ``old_job_state`` is the caller's fresh read (``otel_export.
-    accounting_job_status``) of the *existing* placement's own job file,
-    when relocating to a different destination/span. ``None``/``"queued"``/
-    ``"failed"`` all mean nothing is currently in flight for the old job (it
-    was never queued, is still sitting untouched, or permanently gave up),
-    so relocating is safe. ``"claimed"`` means a worker holds it right now
-    and could deliver at any moment — proven neither safe to relocate nor
-    known to already be delivered, so it is quarantined the same as a
-    confirmed-delivered correction rather than guessed either way.
+    ``old_job_state`` is the Copilot transport's result after atomically
+    attempting to cancel the *existing* placement's own job. ``"cancelled"``
+    means relocation is safe. ``"claimed"`` means a worker holds it right now
+    and could deliver at any moment; ``"emitted"`` means it already completed.
+    Both states quarantine the correction.
 
     Returns ``(state, entry, accepted)``.  A correction is only a durable
     conflict when the existing placement was (or is now known to have been)
@@ -247,7 +243,7 @@ def record_placement(
                 existing = {**existing, "emitted": True, "last_error": None}
                 placements[accounting_id] = existing
             return result, existing, True
-        if already_delivered or old_job_state == "claimed":
+        if already_delivered or old_job_state in {"claimed", "emitted"}:
             if delivered and not existing.get("emitted"):
                 # The candidate is rejected, but the fresh delivery read is
                 # still new information about the *existing* placement —
@@ -312,6 +308,28 @@ def clear_placement_error(state: dict[str, Any], accounting_id: str) -> dict[str
     if entry and entry.get("last_error") is not None:
         entry["last_error"] = None
         result["placements"][accounting_id] = entry
+    return result
+
+
+def mark_placement_job_status(
+    state: dict[str, Any], accounting_id: str, status: dict[str, Any]
+) -> dict[str, Any]:
+    """Persist the worker lifecycle state and its latest delivery error."""
+    result = _normalize(state)
+    entry = _mapping(result["placements"].get(accounting_id))
+    if not entry:
+        return result
+    entry["job_state"] = status.get("state")
+    entry["job_attempt"] = status.get("attempt")
+    worker_error = status.get("last_error")
+    if isinstance(worker_error, str) and worker_error:
+        entry["last_error"] = worker_error
+    elif status.get("state") in {"queued", "claimed"}:
+        entry["last_error"] = None
+    if status.get("state") == "emitted":
+        entry["emitted"] = True
+        entry["last_error"] = None
+    result["placements"][accounting_id] = entry
     return result
 
 
