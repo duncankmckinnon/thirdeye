@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import shutil
 from pathlib import Path
@@ -423,6 +424,63 @@ class TestExportState:
         assert healed_entry is not None
         assert healed_entry["emitted"] is True
         assert healed["placements"]["acct-1"]["emitted"] is True
+
+    def test_record_placement_conflicts_when_old_job_is_claimed_in_flight(self) -> None:
+        """The old job's own worker could deliver at any moment -- relocating
+        while it is ``"claimed"`` is proven neither safe nor already known to
+        be delivered, so it must be quarantined rather than guessed either
+        way, exactly like a confirmed-delivered correction."""
+        usage = _usage_row().to_dict()
+        state, _, accepted = record_placement(
+            empty_export_state(),
+            accounting_id="acct-1",
+            destination="turn-accounting-span",
+            span_id="span-a",
+            usage=usage,
+        )
+        assert accepted is True
+        conflicted, existing, rejected = record_placement(
+            state,
+            accounting_id="acct-1",
+            destination="chat-span",
+            span_id="call-1",
+            usage=usage,
+            old_job_state="claimed",
+        )
+        assert rejected is False
+        assert existing is not None
+        assert existing["destination"] == "turn-accounting-span"
+        assert "acct-1" in conflicted["conflicts"]
+        assert "in flight" in conflicted["conflicts"]["acct-1"]["reason"]
+
+    def test_record_placement_replaces_when_old_job_proven_inert(self) -> None:
+        """Unlike ``"claimed"``, a ``None`` (never queued), ``"queued"``
+        (untouched by any worker), or ``"failed"`` (permanently gave up, will
+        never be retried by the transport) old job state proves nothing is
+        in flight, so relocating is exactly as safe as it always was for an
+        undelivered placement."""
+        usage = _usage_row().to_dict()
+        for old_state in (None, "queued", "failed"):
+            state, _, accepted = record_placement(
+                empty_export_state(),
+                accounting_id="acct-1",
+                destination="turn-accounting-span",
+                span_id="span-a",
+                usage=usage,
+            )
+            assert accepted is True
+            replaced, entry, accepted_again = record_placement(
+                state,
+                accounting_id="acct-1",
+                destination="chat-span",
+                span_id="call-1",
+                usage=usage,
+                old_job_state=old_state,
+            )
+            assert accepted_again is True, old_state
+            assert entry is not None
+            assert entry["destination"] == "chat-span"
+            assert "acct-1" not in replaced["conflicts"]
 
 
 class TestQueueExports:
@@ -1132,6 +1190,192 @@ class TestQueueExports:
         state = load_export_state(enabled_config, stored)
         assert ACCOUNTING_MATCHED not in state["placements"]
 
+    def test_pending_ownerless_usage_is_eligible_once_it_resolves_to_a_completed_turn(
+        self,
+        enabled_config: Config,
+        paths: SourcePaths,
+        export_calls: dict[str, list[Any]],
+    ) -> None:
+        """At first activation a usage row's attribution may still be
+        ``"pending"`` with no ``stored_turn_id`` at all -- unresolved, not
+        confirmed ownerless. That must not be locked into the historical
+        boundary the way a *resolved* ownerless usage row would be: once it
+        later resolves to a real, completed owning turn, it must still be
+        exportable, exactly like any other accounting attached late to an
+        interaction that was open (or simply not yet observed) at
+        activation."""
+        stored = _seed_session(enabled_config, paths)
+        pending_projection = _projection(
+            usage_rows=[_usage_row()],
+            attributions=[
+                _attribution(
+                    logical_call_id=ACCOUNTING_MATCHED,
+                    status="pending",
+                    stored_turn_id=None,
+                    call_id=None,
+                )
+            ],
+        )
+        queued = queue_exports(enabled_config, stored, pending_projection)
+        assert queued == 0
+        state = load_export_state(enabled_config, stored)
+        assert ACCOUNTING_MATCHED not in state["excluded_accounting_ids"]
+
+        resolved_projection = _projection(
+            turns=[_main_turn(accounting_calls=[_accounting_call()])],
+            usage_rows=[_usage_row()],
+            attributions=[_attribution(logical_call_id=ACCOUNTING_MATCHED)],
+        )
+        queued = queue_exports(enabled_config, stored, resolved_projection)
+        assert queued == 1  # the turn job; chat-span placement has no separate job
+        state = load_export_state(enabled_config, stored)
+        assert ACCOUNTING_MATCHED in state["placements"]
+        assert state["placements"][ACCOUNTING_MATCHED]["destination"] == "chat-span"
+
+    def test_relocation_cancels_stale_queued_job_at_old_span(
+        self,
+        enabled_config: Config,
+        paths: SourcePaths,
+        export_calls: dict[str, list[Any]],
+    ) -> None:
+        """A prior reconciliation placed unmatched usage on a turn-accounting
+        fallback span and dispatched its deterministic job, which is still
+        sitting on disk untouched (``"queued"``) because no worker has
+        claimed it yet. When a later reconciliation discovers a real match
+        and relocates the tokens to the chat span, the stale fallback job
+        must be cancelled -- otherwise the already-dispatched worker could
+        still pick it up later and deliver the same tokens a second time."""
+        stored = _seed_session(enabled_config, paths)
+        old_span_id = f"accounting:{stored}:{TURN_ONE}:{ACCOUNTING_UNMATCHED}"
+        jobs_dir = otel_export.otel_jobs_dir(enabled_config.root)
+        jobs_dir.mkdir(parents=True, exist_ok=True)
+        digest = hashlib.sha256(old_span_id.encode("utf-8")).hexdigest()
+        job_path = jobs_dir / f"accounting-{digest}.json"
+        job_path.write_text(json.dumps({"state": "queued", "attempt": 0}), encoding="utf-8")
+
+        def _seed(state: dict[str, Any]) -> dict[str, Any]:
+            placed, _, _ = record_placement(
+                state,
+                accounting_id=ACCOUNTING_UNMATCHED,
+                destination="turn-accounting-span",
+                span_id=old_span_id,
+                usage=_usage_row(call_id=ACCOUNTING_UNMATCHED).to_dict(),
+            )
+            return initialize_eligibility(
+                placed,
+                terminal_turn_ids=[TURN_ONE],
+                accounting_ids=[],
+                include_history=True,
+            )
+
+        update_export_state(enabled_config, stored, _seed)
+        assert job_path.exists()
+
+        _, matched_projection = self._ambiguous_then_matched_projections()
+        queue_exports(enabled_config, stored, matched_projection, include_history=True)
+
+        assert not job_path.exists()
+        state = load_export_state(enabled_config, stored)
+        placement = state["placements"][ACCOUNTING_UNMATCHED]
+        assert placement["destination"] == "chat-span"
+        assert ACCOUNTING_UNMATCHED not in state["conflicts"]
+
+    def test_relocation_is_quarantined_while_old_job_is_claimed(
+        self,
+        enabled_config: Config,
+        paths: SourcePaths,
+        export_calls: dict[str, list[Any]],
+    ) -> None:
+        """Unlike the merely-``"queued"`` case, a job a worker has already
+        ``"claimed"`` could deliver at any moment. Relocating anyway risks a
+        duplicate if it does; leaving the old placement in place and
+        recording it as an inconclusive conflict is the only safe response,
+        the same way a confirmed-delivered correction is quarantined rather
+        than guessed."""
+        stored = _seed_session(enabled_config, paths)
+        old_span_id = f"accounting:{stored}:{TURN_ONE}:{ACCOUNTING_UNMATCHED}"
+        jobs_dir = otel_export.otel_jobs_dir(enabled_config.root)
+        jobs_dir.mkdir(parents=True, exist_ok=True)
+        digest = hashlib.sha256(old_span_id.encode("utf-8")).hexdigest()
+        job_path = jobs_dir / f"accounting-{digest}.json"
+        job_path.write_text(json.dumps({"state": "claimed", "attempt": 0}), encoding="utf-8")
+
+        def _seed(state: dict[str, Any]) -> dict[str, Any]:
+            placed, _, _ = record_placement(
+                state,
+                accounting_id=ACCOUNTING_UNMATCHED,
+                destination="turn-accounting-span",
+                span_id=old_span_id,
+                usage=_usage_row(call_id=ACCOUNTING_UNMATCHED).to_dict(),
+            )
+            return initialize_eligibility(
+                placed,
+                terminal_turn_ids=[TURN_ONE],
+                accounting_ids=[],
+                include_history=True,
+            )
+
+        update_export_state(enabled_config, stored, _seed)
+
+        _, matched_projection = self._ambiguous_then_matched_projections()
+        queue_exports(enabled_config, stored, matched_projection, include_history=True)
+
+        assert job_path.exists()
+        assert json.loads(job_path.read_text(encoding="utf-8"))["state"] == "claimed"
+        state = load_export_state(enabled_config, stored)
+        placement = state["placements"][ACCOUNTING_UNMATCHED]
+        assert placement["destination"] == "turn-accounting-span"
+        assert ACCOUNTING_UNMATCHED in state["conflicts"]
+        assert "in flight" in state["conflicts"][ACCOUNTING_UNMATCHED]["reason"]
+
+    def test_permanently_failed_accounting_job_is_reported_and_not_cleared(
+        self,
+        enabled_config: Config,
+        paths: SourcePaths,
+        export_calls: dict[str, list[Any]],
+    ) -> None:
+        """The generic transport gives up on a deterministic accounting job
+        after exhausting its retries and marks it permanently ``"failed"`` on
+        disk (see ``otel_worker._claim_job``) -- it will never retry that job
+        again on its own. A local write+dispatch reporting success only means
+        the job file exists and a worker was spawned at some point; it must
+        not be conflated with actual delivery health, or a permanently stuck
+        job would silently look fine and have its error cleared forever."""
+        stored = _seed_session(enabled_config, paths)
+        projection = _projection(
+            turns=[
+                _main_turn(
+                    accounting_calls=[
+                        _accounting_call(
+                            accounting_id=ACCOUNTING_UNMATCHED,
+                            attribution_status="ambiguous",
+                            call_id=None,
+                            usage=_usage_row(call_id=ACCOUNTING_UNMATCHED).to_dict(),
+                        )
+                    ]
+                )
+            ],
+            usage_rows=[_usage_row(call_id=ACCOUNTING_UNMATCHED, input_tokens=6587, output_tokens=5)],
+            attributions=[
+                _attribution(
+                    logical_call_id=ACCOUNTING_UNMATCHED, status="ambiguous", call_id=None
+                )
+            ],
+        )
+        span_id = f"accounting:{stored}:{TURN_ONE}:{ACCOUNTING_UNMATCHED}"
+        jobs_dir = otel_export.otel_jobs_dir(enabled_config.root)
+        jobs_dir.mkdir(parents=True, exist_ok=True)
+        digest = hashlib.sha256(span_id.encode("utf-8")).hexdigest()
+        job_path = jobs_dir / f"accounting-{digest}.json"
+        job_path.write_text(json.dumps({"state": "failed", "attempt": 5}), encoding="utf-8")
+
+        queued = queue_exports(enabled_config, stored, projection, include_history=True)
+        assert queued == 1  # only the turn job; the permanently-failed accounting job does not count
+        state = load_export_state(enabled_config, stored)
+        assert state["placements"][ACCOUNTING_UNMATCHED]["last_error"] == (
+            "accounting job permanently failed after 5 attempts"
+        )
+
 
 class TestWorkerConfirmedDelivery:
     """`queue_exports` against a real (locally flushed, never remote) Logfire
@@ -1236,6 +1480,64 @@ class TestWorkerConfirmedDelivery:
         assert len(second_accounting_spans) == 1  # unchanged: no second accounting emission
         state = load_export_state(enabled_config, stored)
         assert state["placements"][ACCOUNTING_UNMATCHED]["emitted"] is True
+
+    def test_chat_embedded_accounting_survives_restart_without_relocation_or_duplicate(
+        self,
+        enabled_config: Config,
+        paths: SourcePaths,
+        wired_instance,
+        exporter,
+    ) -> None:
+        """Matched usage placed on the chat span is delivered as part of the
+        turn's own job -- there is no separate fallback accounting job for
+        it. The durable transport claim must still record that delivery
+        (``otel_export.accounting_export_sent``), or a later reconciliation
+        would see the turn as already sent (so the chat span is no longer
+        available) but the accounting as never delivered, and would
+        "recover" by relocating it to a brand-new turn-accounting fallback
+        span -- duplicating the tokens that were already flushed on the chat
+        span the first time."""
+        stored = _seed_session(enabled_config, paths)
+        projection = _projection(
+            turns=[_main_turn(accounting_calls=[_accounting_call()])],
+            usage_rows=[_usage_row()],
+            attributions=[_attribution(logical_call_id=ACCOUNTING_MATCHED, call_id=CALL_MATCHED)],
+        )
+
+        queue_exports(enabled_config, stored, projection, include_history=True)
+        directory = _directory(enabled_config, stored)
+        assert otel_export.turn_export_sent(directory, TURN_ONE) is True
+        assert otel_export.accounting_export_sent(directory, ACCOUNTING_MATCHED) is True
+        chat_spans = [
+            span for span in exporter.exported_spans_as_dict() if span["name"].startswith("chat")
+        ]
+        assert len(chat_spans) == 1
+        accounting_spans = [
+            span for span in exporter.exported_spans_as_dict() if span["name"] == "accounting"
+        ]
+        assert len(accounting_spans) == 0
+
+        # Simulate a restart: fresh Config/instance state, same durable
+        # ledger, turn claim, and accounting delivery claim on disk.
+        reloaded = Config(
+            root=enabled_config.root,
+            logfire=LogfireSettings(enabled=True, token="fake-token"),
+        )
+        queue_exports(reloaded, stored, projection, include_history=True)
+
+        chat_spans_after = [
+            span for span in exporter.exported_spans_as_dict() if span["name"].startswith("chat")
+        ]
+        accounting_spans_after = [
+            span for span in exporter.exported_spans_as_dict() if span["name"] == "accounting"
+        ]
+        assert len(chat_spans_after) == 1  # unchanged: the turn's own claim is first-wins
+        assert len(accounting_spans_after) == 0  # never relocated to a fallback span
+        state = load_export_state(enabled_config, stored)
+        placement = state["placements"][ACCOUNTING_MATCHED]
+        assert placement["destination"] == "chat-span"
+        assert placement["emitted"] is True
+        assert ACCOUNTING_MATCHED not in state["conflicts"]
 
 
 def _drain_cli_transcript(home: Path) -> list[SourceRecord]:

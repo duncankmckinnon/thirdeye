@@ -123,16 +123,29 @@ def _historical_accounting_ids(
     completes). An identity with no interaction to gate on at all (an
     ownerless usage row, or a ``stored_turn_id`` this projection cannot
     resolve) has no way to become "no longer historical" later, so it keeps
-    the conservative default of being treated as already-seen history.
+    the conservative default of being treated as already-seen history --
+    *unless* its attribution is still ``pending``. A pending join has not
+    told us anything about ownership yet: it may still turn out to belong to
+    an interaction that is open right now, or resolve to a confirmed
+    ownerless status later. Locking it into history the moment it happens to
+    be observed with no owner would exclude it forever, since only an
+    explicit ``--export`` ever removes an id from this boundary once set.
     """
     owners: dict[str, dict[str, Any] | None] = {}
     for accounting_id, (owner, _item) in _accounting_calls(projection).items():
         owners[accounting_id] = _root_for(root_index, owner.get("turn_id"))
+    pending_unowned: set[str] = set()
     for attribution in projection["attributions"]:
         accounting_id = attribution["logical_call_id"]
-        if accounting_id not in owners:
-            owners[accounting_id] = _root_for(root_index, attribution["stored_turn_id"])
+        if accounting_id in owners:
+            continue
+        if attribution["status"] == "pending":
+            pending_unowned.add(accounting_id)
+            continue
+        owners[accounting_id] = _root_for(root_index, attribution["stored_turn_id"])
     for row in projection["usage_rows"]:
+        if row.call_id in pending_unowned:
+            continue
         owners.setdefault(row.call_id, None)
     return sorted(
         accounting_id for accounting_id, root in owners.items() if root is None or _terminal(root)
@@ -216,6 +229,19 @@ def _place(
     captured: dict[str, Any] = {}
 
     def update(state: dict[str, Any]) -> dict[str, Any]:
+        existing = state.get("placements", {}).get(accounting_id) or {}
+        old_span_id = existing.get("span_id")
+        old_job_state: str | None = None
+        if isinstance(old_span_id, str) and old_span_id and old_span_id != span_id:
+            # Relocating to a different span: find out whether the job under
+            # the *old* span id is provably inert before deciding it is safe
+            # to replace, and if it is, cancel it so an already-dispatched
+            # worker can never deliver tokens this ledger no longer points
+            # at once it decides on the new destination below.
+            status = otel_export.accounting_job_status(config.root, old_span_id)
+            old_job_state = status.get("state") if status else None
+            if old_job_state == "queued":
+                otel_export.cancel_accounting_job(config.root, old_span_id)
         next_state, entry, accepted = record_placement(
             state,
             accounting_id=accounting_id,
@@ -223,6 +249,7 @@ def _place(
             span_id=span_id,
             usage=usage,
             delivered=delivered,
+            old_job_state=old_job_state,
         )
         captured["entry"] = entry
         captured["accepted"] = accepted
@@ -230,6 +257,37 @@ def _place(
 
     update_export_state(config, stored_session_id, update)
     return captured.get("entry"), bool(captured.get("accepted"))
+
+
+def _reflect_accounting_job_health(
+    config: Config, stored_session_id: str, accounting_id: str, span_id: str
+) -> bool:
+    """Fold the deterministic accounting job's own on-disk state into the
+    ledger's error tracking after a local write+dispatch reported success.
+
+    A local write succeeding only means the job file exists and a worker was
+    spawned -- it says nothing about whether that worker (this call, or an
+    earlier one that already ran and gave up) ever actually delivered it.
+    Without this check, a job that exhausted its retries and is stuck in a
+    permanent ``"failed"`` state on disk would be silently reported as
+    healthy and have any earlier ``last_error`` cleared on every subsequent
+    reconciliation, even though the generic transport will never retry it
+    again on its own (see ``otel_worker._claim_job``).
+
+    Returns whether this counts as a successful queue for this pass.
+    """
+    status = otel_export.accounting_job_status(config.root, span_id)
+    if status is not None and status.get("state") == "failed":
+        attempt = status.get("attempt")
+        _error_state(
+            config,
+            stored_session_id,
+            accounting_id,
+            f"accounting job permanently failed after {attempt} attempts",
+        )
+        return False
+    _clear_error_state(config, stored_session_id, accounting_id)
+    return True
 
 
 def _turn_with_placed_accounting(
@@ -319,10 +377,20 @@ def queue_exports(
         if not is_turn_eligible(state, root_id) or not is_accounting_eligible(state, accounting_id):
             continue
         call_id = item.get("call_id")
+        delivered = otel_export.accounting_export_sent(directory, accounting_id)
+        existing_entry = (state.get("placements") or {}).get(accounting_id) or {}
         # A chat span already flushed to Logfire is immutable history: usage
         # that resolves to "matched" only *after* that flush can no longer
-        # land on it and must use the turn-owned fallback span instead.
-        chat_available = not otel_export.turn_export_sent(directory, root_id)
+        # land on it and must use the turn-owned fallback span instead. But
+        # if *this* identity was itself the one embedded on that chat span
+        # (confirmed via the durable delivery claim plus the ledger's own
+        # record of where it landed), the turn having been sent is exactly
+        # what delivered it there -- re-deriving "unavailable" from that same
+        # fact would misread an already-settled placement as a conflicting
+        # correction.
+        chat_available = not otel_export.turn_export_sent(directory, root_id) or (
+            delivered and existing_entry.get("destination") == "chat-span"
+        )
         if (
             chat_available
             and item.get("attribution_status") == "matched"
@@ -334,7 +402,6 @@ def queue_exports(
         else:
             destination = "turn-accounting-span"
             span_id = _span_id(stored_session_id, owner_id, accounting_id)
-        delivered = otel_export.accounting_export_sent(directory, accounting_id)
         entry, accepted = _place(
             config,
             stored_session_id,
@@ -364,11 +431,9 @@ def queue_exports(
             item,
             turn_span_id=_turn_span_id(stored_session_id, owner_id),
         )
-        if sent:
+        if sent and _reflect_accounting_job_health(config, stored_session_id, accounting_id, span_id):
             queued += 1
-            if entry.get("last_error") is not None:
-                _clear_error_state(config, stored_session_id, accounting_id)
-        else:
+        elif not sent:
             _error_state(config, stored_session_id, accounting_id, "accounting job was not queued")
 
     # Usage with no known user-turn owner is intentionally a session accounting
@@ -417,11 +482,9 @@ def queue_exports(
         sent = otel_export.export_session_accounting(
             config, directory, stored_session_id, PLATFORM_NAME, meta.cwd, item
         )
-        if sent:
+        if sent and _reflect_accounting_job_health(config, stored_session_id, accounting_id, span_id):
             queued += 1
-            if entry.get("last_error") is not None:
-                _clear_error_state(config, stored_session_id, accounting_id)
-        else:
+        elif not sent:
             _error_state(config, stored_session_id, accounting_id, "accounting job was not queued")
 
     # Generic transport provides a persistent completed-turn claim.  Sending

@@ -202,6 +202,7 @@ def record_placement(
     span_id: str,
     usage: dict[str, Any],
     delivered: bool = False,
+    old_job_state: str | None = None,
 ) -> tuple[dict[str, Any], dict[str, Any] | None, bool]:
     """Persist the first token location for an accounting identity.
 
@@ -212,12 +213,23 @@ def record_placement(
     by the worker on success, so this ledger cannot detect delivery on its
     own and must be told.
 
+    ``old_job_state`` is the caller's fresh read (``otel_export.
+    accounting_job_status``) of the *existing* placement's own job file,
+    when relocating to a different destination/span. ``None``/``"queued"``/
+    ``"failed"`` all mean nothing is currently in flight for the old job (it
+    was never queued, is still sitting untouched, or permanently gave up),
+    so relocating is safe. ``"claimed"`` means a worker holds it right now
+    and could deliver at any moment — proven neither safe to relocate nor
+    known to already be delivered, so it is quarantined the same as a
+    confirmed-delivered correction rather than guessed either way.
+
     Returns ``(state, entry, accepted)``.  A correction is only a durable
     conflict when the existing placement was (or is now known to have been)
-    delivered: rebinding a destination or usage value the remote collector
-    already received would produce two different token totals for the same
-    logical call. A correction to a placement that was only ever queued
-    locally is always safe to replace/requeue.
+    delivered, or when its job might still be in flight: rebinding a
+    destination or usage value the remote collector already has, or might
+    still receive, risks two different token totals for the same logical
+    call. A correction to a placement proven to have never been queued, or
+    proven to have permanently failed, is always safe to replace/requeue.
     """
     result = _normalize(state)
     digest = usage_digest(usage)
@@ -235,7 +247,7 @@ def record_placement(
                 existing = {**existing, "emitted": True, "last_error": None}
                 placements[accounting_id] = existing
             return result, existing, True
-        if already_delivered:
+        if already_delivered or old_job_state == "claimed":
             if delivered and not existing.get("emitted"):
                 # The candidate is rejected, but the fresh delivery read is
                 # still new information about the *existing* placement —
@@ -243,9 +255,14 @@ def record_placement(
                 # ever queued.
                 existing = {**existing, "emitted": True}
                 placements[accounting_id] = existing
+            reason = (
+                "accounting placement or usage changed after confirmed delivery"
+                if already_delivered
+                else "accounting placement or usage changed while the prior job was in flight"
+            )
             result["conflicts"][accounting_id] = {
                 "accounting_id": accounting_id,
-                "reason": "accounting placement or usage changed after confirmed delivery",
+                "reason": reason,
                 "existing": existing,
                 "candidate": {
                     "destination": destination,
@@ -254,8 +271,9 @@ def record_placement(
                 },
             }
             return result, existing, False
-        # Nothing was ever confirmed delivered for this identity: replace the
-        # queued/failed placement outright rather than quarantining it.
+        # Nothing was ever confirmed delivered, and no job is provably in
+        # flight, for this identity: replace the queued/failed placement
+        # outright rather than quarantining it.
         entry = {
             "accounting_id": accounting_id,
             "destination": destination,
