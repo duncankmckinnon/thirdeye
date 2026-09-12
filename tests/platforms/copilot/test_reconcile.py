@@ -11,10 +11,16 @@ from typing import Any
 import pytest
 
 from thirdeye.config import Config
+from thirdeye.paths import session_dir
+from thirdeye.platforms.copilot import projection_store
 from thirdeye.platforms.copilot.archive import commit_batch, iter_captured_records
+from thirdeye.platforms.copilot.constants import PLATFORM_NAME
 from thirdeye.platforms.copilot.identity import resolve_sources, stored_session_id
 from thirdeye.platforms.copilot.projection import build_projection as _real_build_projection
+from thirdeye.platforms.copilot.projection_state import projection_state_path
 from thirdeye.platforms.copilot.projection_store import (
+    ProjectionConflictError,
+    commit_projection,
     load_projection_state,
     read_projected_turns,
 )
@@ -44,6 +50,22 @@ RESULT_KEYS = (
 
 def _load_json(path: Path) -> Any:
     return json.loads(path.read_text(encoding="utf-8"))
+
+
+def _directory(config: Config, stored: str) -> Path:
+    return session_dir(config.root, PLATFORM_NAME, stored)
+
+
+def _document(config: Config, stored: str) -> dict[str, Any]:
+    return json.loads(projection_state_path(_directory(config, stored)).read_text())
+
+
+def _normalized_index_values(
+    config: Config, stored: str, native_session_id: str, index_name: str
+) -> list[Any]:
+    index = _document(config, stored)["indexes"][index_name]
+    normalized = [_rewrite_native_id(item, native_session_id) for item in index.values()]
+    return sorted(normalized, key=lambda item: json.dumps(item, sort_keys=True, default=str))
 
 
 def _drain_cli_transcript(
@@ -288,13 +310,34 @@ def test_reconcile_archive_is_idempotent(
     second = reconcile_archive(config, stored)
     second_turns = read_projected_turns(config, stored)
     second_state = load_projection_state(config, stored)
+    first_document = _document(config, stored)
+    second_document = _document(config, stored)
 
     assert first == second
     assert first_turns == second_turns
-    assert first_state == second_state
+    # commit_sequence is a storage-owned counter that advances on every
+    # successful commit_projection call, whether or not its content changed
+    # -- it must not be idempotent, unlike everything else in builder state.
+    assert second_state["commit_sequence"] == first_state["commit_sequence"] + 1
+    assert {k: v for k, v in first_state.items() if k != "commit_sequence"} == {
+        k: v for k, v in second_state.items() if k != "commit_sequence"
+    }
     for turn in second_turns:
         seqs = [event.get("seq") for event in turn.get("events") or []]
         assert len(seqs) == len(set(seqs)), "re-reconciling must not duplicate turn events"
+    # Full raw indexes (including each turn's nested accounting_calls, which
+    # read_projected_turns intentionally does not surface) must be byte-for-
+    # byte identical across the two re-derivations: re-running reconcile
+    # must not accumulate duplicate accounting calls or usage/attribution
+    # entries inside any index.
+    normalized_first = {
+        k: v for k, v in first_document["state"].items() if k != "commit_sequence"
+    }
+    normalized_second = {
+        k: v for k, v in second_document["state"].items() if k != "commit_sequence"
+    }
+    assert normalized_first == normalized_second
+    assert first_document["indexes"] == second_document["indexes"]
 
 
 def test_rebuild_is_idempotent_and_matches_initial_reconcile(
@@ -347,6 +390,21 @@ def test_incremental_reconcile_matches_full_replay(
     normalized_incremental = _rewrite_native_id(incremental_turns, NATIVE_SESSION_ID)
     normalized_full = _rewrite_native_id(full_turns, FULL_NATIVE_SESSION_ID)
     assert normalized_incremental == normalized_full
+
+    # Index keys can fall back to a content digest computed over pre-
+    # normalization payloads (see _index_key), so two sessions built from the
+    # same content under different native IDs are not guaranteed to share
+    # digest-fallback keys even though their *content* is equivalent.
+    # Comparing normalized values as an order-independent multiset avoids
+    # that false negative while still catching a real divergence (a usage
+    # row, attribution, pending item, or diagnostic present under one path
+    # and not the other, or duplicated under either).
+    for name in ("usage", "attributions", "pending", "diagnostics"):
+        incremental_values = _normalized_index_values(
+            config, stored_incremental, NATIVE_SESSION_ID, name
+        )
+        full_values = _normalized_index_values(config, stored_full, FULL_NATIVE_SESSION_ID, name)
+        assert incremental_values == full_values, f"{name} index diverged between replay paths"
 
 
 def test_reconcile_default_does_not_export(
@@ -478,6 +536,144 @@ def test_commit_failure_during_rebuild_preserves_prior_projection(
     assert result["usage"] == baseline["usage"]
     assert read_projected_turns(config, stored) == prior_turns
     assert load_projection_state(config, stored) == prior_state
+
+
+def test_commit_projection_rejects_a_stale_base_commit_sequence(
+    config: Config,
+    paths: SourcePaths,
+    cli_transcript_records: list[SourceRecord],
+) -> None:
+    """A commit built from state read before a concurrent writer committed
+
+    must be refused rather than silently overwriting that newer commit.
+    This exercises commit_projection's optimistic-concurrency check
+    directly: build a projection from state observed at commit_sequence 1,
+    let another writer advance the stored session to commit_sequence 2, then
+    attempt to commit the stale one with its now-outdated base sequence.
+    """
+    stored = _seed_full_corpus(config, paths, cli_transcript_records)
+    reconcile_archive(config, stored)
+    stale_state = load_projection_state(config, stored)
+    assert stale_state["commit_sequence"] == 1
+    records = list(iter_captured_records(config, stored))
+    stale_projection, stale_next_state = _real_build_projection(records, stale_state)
+    stale_next_state["archive_source_ids"] = [record["source_id"] for record in records]
+
+    reconcile_archive(config, stored, rebuild=True)
+    newer_turns = read_projected_turns(config, stored)
+    newer_state = load_projection_state(config, stored)
+    assert newer_state["commit_sequence"] == 2
+
+    with pytest.raises(ProjectionConflictError):
+        commit_projection(
+            config,
+            stored,
+            stale_projection,
+            stale_next_state,
+            base_commit_sequence=stale_state["commit_sequence"],
+        )
+
+    assert read_projected_turns(config, stored) == newer_turns
+    assert load_projection_state(config, stored) == newer_state
+
+
+def test_reconcile_reports_error_when_projection_advances_concurrently(
+    config: Config,
+    paths: SourcePaths,
+    cli_transcript_records: list[SourceRecord],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """reconcile_archive itself must surface a concurrent-writer conflict
+
+    as an error rather than corrupt state, even though its own load, build,
+    and commit are not one held lock.  A second writer (simulated here by
+    recursively calling reconcile_archive from inside a patched
+    commit_projection, guarded so it only races once) finishes a full
+    rebuild between this call's load and its commit; the racing call's own
+    stale commit must then be refused, and the session must be left exactly
+    as the interleaved rebuild left it.
+    """
+    stored = _seed_full_corpus(config, paths, cli_transcript_records)
+    reconcile_archive(config, stored)
+    baseline_turns = read_projected_turns(config, stored)
+
+    real_commit = projection_store.commit_projection
+    raced = {"done": False}
+
+    def racing_commit(
+        cfg: Config, sid: str, projection: Any, next_state: dict[str, Any], **kwargs: Any
+    ) -> dict[str, int]:
+        if not raced["done"]:
+            raced["done"] = True
+            reconcile_archive(cfg, sid, rebuild=True)
+        return real_commit(cfg, sid, projection, next_state, **kwargs)
+
+    monkeypatch.setattr("thirdeye.platforms.copilot.reconcile.commit_projection", racing_commit)
+
+    result = reconcile_archive(config, stored)
+
+    assert result["errors"] == 1
+    assert read_projected_turns(config, stored) == baseline_turns
+
+
+def test_usage_sidecar_publish_failure_reports_the_committed_document(
+    config: Config,
+    paths: SourcePaths,
+    cli_transcript_records: list[SourceRecord],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A post-validation I/O failure while publishing the usage-sidecar
+
+    mirror is a distinct failure mode from a validation failure: by the time
+    it can happen, the projection document has already durably published
+    (see commit_projection's docstring), so the counts reconcile_archive
+    reports must reflect that new document -- not the prior one -- with the
+    error counted on top.  The next reconcile call must self-heal the
+    sidecar without reprocessing anything new.
+    """
+    stored = _seed_full_corpus(config, paths, cli_transcript_records)
+    baseline = reconcile_archive(config, stored)
+    prior_turns = read_projected_turns(config, stored)
+    baseline_sequence = load_projection_state(config, stored)["commit_sequence"]
+
+    original_publish_usage = projection_store._publish_usage
+
+    def selective_boom(
+        cfg: Config, sid: str, directory: Path, usage_index: dict[str, Any], *, force: bool = False
+    ) -> None:
+        # load_projection_state's self-heal always passes force=True; only
+        # commit_projection's own (non-forced) publish should fail here, so
+        # this reaches the specific "document committed, sidecar mirror
+        # failed" state the docstring describes rather than failing before
+        # commit_projection is ever entered.
+        if force:
+            original_publish_usage(cfg, sid, directory, usage_index, force=force)
+            return
+        raise OSError("disk full while rewriting usage sidecar")
+
+    monkeypatch.setattr(
+        "thirdeye.platforms.copilot.projection_store._publish_usage", selective_boom
+    )
+
+    result = reconcile_archive(config, stored, rebuild=True)
+
+    assert result["errors"] == baseline["errors"] + 1
+    assert result["turns"] == baseline["turns"]
+    assert result["usage"] == baseline["usage"]
+    # The document committed despite the sidecar failure -- proven by the
+    # storage-owned commit_sequence advancing even though this call reported
+    # an error -- so turns already reflect the (content-equivalent, since
+    # this rebuilds the same archive) new projection rather than being stuck
+    # on the old one.  Read the raw document rather than load_projection_state
+    # here: that call would itself retry the still-patched, still-failing
+    # sidecar publish as part of its own self-heal.
+    assert _document(config, stored)["state"]["commit_sequence"] == baseline_sequence + 1
+    assert read_projected_turns(config, stored) == prior_turns
+
+    monkeypatch.undo()
+    healed = reconcile_archive(config, stored)
+    assert healed["errors"] == 0
+    assert read_projected_turns(config, stored) == prior_turns
 
 
 def test_reconcile_unknown_session_reports_error_without_creating_paths(

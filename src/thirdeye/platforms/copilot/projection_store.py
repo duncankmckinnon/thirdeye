@@ -41,6 +41,17 @@ _RAW_EVENT_TYPES = frozenset(
 _INDEX_NAMES = ("events", "turns", "usage", "attributions", "pending", "diagnostics")
 
 
+class ProjectionConflictError(RuntimeError):
+    """A commit observed a newer ``commit_sequence`` than it was based on.
+
+    Raised instead of silently overwriting: a second writer already
+    committed a projection built from more current builder state, so this
+    (older) attempt is discarded rather than winning a last-write-races
+    against the newer one.  The caller should reload projection state and
+    retry.
+    """
+
+
 def _directory(config: Config, stored_session_id: str) -> Path:
     return session_dir(config.root, PLATFORM_NAME, stored_session_id)
 
@@ -391,6 +402,7 @@ def commit_projection(
     next_state: dict[str, Any],
     *,
     replace: bool = False,
+    base_commit_sequence: int | None = None,
 ) -> dict[str, int]:
     """Atomically merge or replace a DTO projection into replayable derived state.
 
@@ -400,15 +412,48 @@ def commit_projection(
 
     ``replace=True`` discards prior derived indexes as part of this same
     locked operation instead of requiring a separate reset call.  Nothing is
-    written to disk until every validation below succeeds, so a rebuild that
-    fails partway (a malformed usage row, an IO error) leaves the previous
-    projection completely untouched rather than losing it to a non-atomic
-    delete-then-commit sequence.
+    written to disk until every validation above this point succeeds, so a
+    commit that fails validation (a malformed usage row, an unknown-schema
+    document) leaves the previous projection completely untouched rather
+    than losing it to a non-atomic delete-then-commit sequence.
+
+    Durability past that validation point has two distinct failure modes.
+    The projection document is the source of truth and is published with
+    write-ahead journaling (see ``publish_projection_document``): once that
+    call returns, the new document is durably committed, full stop.  The
+    usage sidecar published immediately after is a derived, self-healing
+    mirror of the document's own usage index -- kept as a separate JSONL
+    file only so ``UsageIndex`` can query it without parsing the whole
+    document.  If that second, mirror-only publish raises (a disk error, not
+    a validation error), this function still raises so the caller learns of
+    it, but the already-committed document is *not* rolled back: it reflects
+    the new projection, and the next ``load_projection_state`` call
+    republishes a sidecar that matches it.  A caller must not assume a raise
+    from this function always means "nothing changed" -- check which phase
+    failed via ``read_projection_status``/``load_projection_state`` if that
+    distinction matters.
+
+    ``base_commit_sequence``, when given, must equal the ``commit_sequence``
+    a caller observed from an earlier ``load_projection_state`` call.  A
+    mismatch means another writer has committed since that read -- this
+    raises :class:`ProjectionConflictError` instead of overwriting the newer
+    projection with one built from the stale builder state, closing the
+    otherwise unlocked gap between reading prior state, building a new
+    projection from it, and committing here.  This check itself happens
+    before any write in this call, so a conflict never touches disk.
     """
     directory = _directory(config, stored_session_id)
     _require_session(directory, stored_session_id)
     with locked(projection_lock_path(directory), LockMode.EXCLUSIVE):
         document = read_projection_document(directory)
+        current_sequence = _mapping(document.get("state")).get("commit_sequence")
+        current_sequence = current_sequence if isinstance(current_sequence, int) else 0
+        if base_commit_sequence is not None and base_commit_sequence != current_sequence:
+            raise ProjectionConflictError(
+                f"Copilot projection for {stored_session_id!r} advanced from commit "
+                f"{base_commit_sequence} to {current_sequence} since it was loaded; "
+                "reload projection state and retry"
+            )
         indexes = {} if replace else _mapping(document.get("indexes"))
         merged_indexes = {name: dict(_mapping(indexes.get(name))) for name in indexes}
         for name in (*_INDEX_NAMES, "usage_identities"):
@@ -429,6 +474,7 @@ def commit_projection(
             ] = item
 
         state = _replace_state(next_state)
+        state["commit_sequence"] = current_sequence + 1
         identities = _collect_identities(
             merged_indexes["usage_identities"],
             merged_indexes["attributions"],

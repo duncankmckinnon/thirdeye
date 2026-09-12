@@ -52,6 +52,7 @@ def empty_projection_state() -> dict[str, Any]:
         "semantic_state": {"open_interactions": {}},
         "accounting_state": {"logical_calls": {}},
         "projection_revision": "",
+        "commit_sequence": 0,
     }
 
 

@@ -578,7 +578,12 @@ class ProjectionState(TypedDict):
     of the committed indexes when the builder leaves it empty.
     ``index_totals`` is the size of each derived index after the commit, not
     a per-commit delta.  A stale schema version is discarded so a rebuild
-    can reconstruct derived indexes from the V1 archive.
+    can reconstruct derived indexes from the V1 archive.  ``commit_sequence``
+    is a storage-owned counter incremented on every successful
+    ``commit_projection`` call; it is never set by a builder and exists so a
+    caller that read state via ``load_projection_state`` can pass it back as
+    ``base_commit_sequence`` to detect (and refuse) overwriting a projection
+    that a concurrent writer has already advanced.
     """
 
     projection_schema_version: int
@@ -587,3 +592,4 @@ class ProjectionState(TypedDict):
     accounting_state: AccountingProjectionState
     projection_revision: str
     index_totals: NotRequired[dict[str, int]]
+    commit_sequence: NotRequired[int]

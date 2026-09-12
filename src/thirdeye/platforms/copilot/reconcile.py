@@ -92,8 +92,24 @@ def reconcile_archive(
     reproducible projection state as part of the same locked commit used for
     an incremental merge (see ``commit_projection(..., replace=True)``): raw
     archive records and the separate export ledger are untouched, and nothing
-    is written to disk until the replacement projection is fully validated,
-    so a rebuild that fails partway cannot erase the last readable local view.
+    is written to disk until the replacement projection passes validation, so
+    a rebuild that fails validation (a malformed usage row, a stale schema)
+    cannot erase the last readable local view.  A failure *after* that point
+    -- the projection document itself durably publishes, but the derived
+    usage-sidecar mirror then hits an I/O error -- still reports an error
+    here, but the counts below reflect the document that was, in fact,
+    committed; see ``commit_projection`` for why that distinction is not a
+    bug.  Either way the next reconciliation call self-heals the sidecar.
+
+    Loading prior state, building the new projection from it, and committing
+    are not one locked operation -- ``build_projection`` runs unlocked so a
+    slow archive replay does not hold the projection lock.  To close the gap
+    that leaves, the ``commit_sequence`` observed here is passed through to
+    ``commit_projection`` as ``base_commit_sequence``: if another writer
+    committed in the meantime, the commit is refused (``ProjectionConflictError``,
+    reported below as an error) instead of overwriting newer derived state
+    with one built from what is now stale builder state.  This is checked
+    even for ``rebuild``, which otherwise discards ``prior_state`` entirely.
 
     Errors are reported as counts instead of escaping so source capture can
     remain operational when a derived projection is malformed.  Export is a
@@ -101,12 +117,19 @@ def reconcile_archive(
     """
 
     try:
-        prior_state = {} if rebuild else load_projection_state(config, stored_session_id)
+        loaded_state = load_projection_state(config, stored_session_id)
+        base_commit_sequence = loaded_state.get("commit_sequence")
+        prior_state = {} if rebuild else loaded_state
         records = list(iter_captured_records(config, stored_session_id))
         projection, next_state = build_projection(records, prior_state)
         next_state["archive_source_ids"] = [record["source_id"] for record in records]
         counts = commit_projection(
-            config, stored_session_id, projection, next_state, replace=rebuild
+            config,
+            stored_session_id,
+            projection,
+            next_state,
+            replace=rebuild,
+            base_commit_sequence=base_commit_sequence,
         )
     except Exception:
         return _failure_result(config, stored_session_id)
