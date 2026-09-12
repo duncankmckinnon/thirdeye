@@ -13,6 +13,7 @@ import pytest
 from thirdeye.config import Config
 from thirdeye.platforms.copilot.archive import commit_batch, iter_captured_records
 from thirdeye.platforms.copilot.identity import resolve_sources, stored_session_id
+from thirdeye.platforms.copilot.projection import build_projection as _real_build_projection
 from thirdeye.platforms.copilot.projection_store import (
     load_projection_state,
     read_projected_turns,
@@ -25,6 +26,7 @@ from thirdeye.reader import SessionReader
 FIXTURES = Path(__file__).parent / "fixtures"
 RECON = FIXTURES / "reconciliation-cases"
 NATIVE_SESSION_ID = "5a7e8e11-4a6b-49ff-a33e-95d411c4cdd6"
+FULL_NATIVE_SESSION_ID = "5a7e8e11-4a6b-49ff-a33e-95d411c4cdd7"
 SOURCE_KEY = "a" * 64
 GENERATION = "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
 OBSERVED_AT = "2026-09-10T17:09:00.000Z"
@@ -44,8 +46,10 @@ def _load_json(path: Path) -> Any:
     return json.loads(path.read_text(encoding="utf-8"))
 
 
-def _drain_cli_transcript(home: Path) -> list[SourceRecord]:
-    session_dir = home / "session-state" / NATIVE_SESSION_ID
+def _drain_cli_transcript(
+    home: Path, *, native_session_id: str = NATIVE_SESSION_ID
+) -> list[SourceRecord]:
+    session_dir = home / "session-state" / native_session_id
     session_dir.mkdir(parents=True, exist_ok=True)
     shutil.copy(FIXTURES / "events.jsonl", session_dir / "events.jsonl")
     (session_dir / "workspace.yaml").write_text("cwd: /sanitized/workspace\n", encoding="utf-8")
@@ -53,7 +57,7 @@ def _drain_cli_transcript(home: Path) -> list[SourceRecord]:
     cursor: dict[str, Any] = {}
     records: list[SourceRecord] = []
     while True:
-        slice_ = read_transcript(paths, NATIVE_SESSION_ID, cursor)
+        slice_ = read_transcript(paths, native_session_id, cursor)
         records.extend(slice_["records"])
         cursor = slice_["next_cursor"]
         if slice_["exhausted"]:
@@ -74,17 +78,18 @@ def _usage_record(
     content_revision: str,
     generation: str = GENERATION,
     source_key: str = SOURCE_KEY,
+    native_session_id: str = NATIVE_SESSION_ID,
     observed_at: str = OBSERVED_AT,
 ) -> SourceRecord:
     primary_key = row["id"]
     source_id = (
-        f"copilot-db:{source_key}:{NATIVE_SESSION_ID}:assistant_usage_events:"
+        f"copilot-db:{source_key}:{native_session_id}:assistant_usage_events:"
         f"{primary_key}:{content_revision}"
     )
     return {
         "source_id": source_id,
         "source_kind": "database",
-        "native_session_id": NATIVE_SESSION_ID,
+        "native_session_id": native_session_id,
         "ts": row.get("created_at"),
         "observed_at": observed_at,
         "payload": {"table": "assistant_usage_events", "row": row},
@@ -98,22 +103,34 @@ def _usage_record(
     }
 
 
-def _six_call_records(*, source_key: str = SOURCE_KEY) -> list[SourceRecord]:
+def _six_call_records(
+    *, source_key: str = SOURCE_KEY, native_session_id: str = NATIVE_SESSION_ID
+) -> list[SourceRecord]:
     rows = _load_json(FIXTURES / "assistant-usage-events.json")
     revisions = {
         call["row_id"]: call["usage_source_id"].rsplit(":", 1)[-1]
         for call in _load_json(RECON / "observed-six-calls.json")["calls"]
     }
     return [
-        _usage_record(row, content_revision=revisions[row["id"]], source_key=source_key)
+        _usage_record(
+            row,
+            content_revision=revisions[row["id"]],
+            source_key=source_key,
+            native_session_id=native_session_id,
+        )
         for row in rows
     ]
 
 
-def _batch(paths: SourcePaths, records: list[SourceRecord]) -> SourceBatch:
+def _batch(
+    paths: SourcePaths,
+    records: list[SourceRecord],
+    *,
+    native_session_id: str = NATIVE_SESSION_ID,
+) -> SourceBatch:
     return {
         "source_key": paths["source_key"],
-        "native_session_id": NATIVE_SESSION_ID,
+        "native_session_id": native_session_id,
         "cwd": "/proj",
         "records": records,
         "next_cursor": {"generation": 1},
@@ -121,9 +138,15 @@ def _batch(paths: SourcePaths, records: list[SourceRecord]) -> SourceBatch:
     }
 
 
-def _seed_archive(config: Config, paths: SourcePaths, records: list[SourceRecord]) -> str:
-    commit_batch(config, paths, _batch(paths, records))
-    return stored_session_id(paths, NATIVE_SESSION_ID)
+def _seed_archive(
+    config: Config,
+    paths: SourcePaths,
+    records: list[SourceRecord],
+    *,
+    native_session_id: str = NATIVE_SESSION_ID,
+) -> str:
+    commit_batch(config, paths, _batch(paths, records, native_session_id=native_session_id))
+    return stored_session_id(paths, native_session_id)
 
 
 def _substitute_source_key(value: str, source_key: str) -> str:
@@ -140,14 +163,43 @@ def _rewrite_source_key(value: Any, source_key: str) -> Any:
     return value
 
 
+_VOLATILE_KEYS = frozenset({"observed_at", "locator"})
+
+
+def _rewrite_native_id(value: Any, native_session_id: str, placeholder: str = "NATIVE") -> Any:
+    """Normalize identity fields that legitimately differ between two
+
+    independently seeded stored sessions built from the same fixture content:
+    the native session ID baked into IDs/paths, each session's own wall-clock
+    capture timestamp, and each archived copy's own filesystem locator (byte
+    offsets/inode generation are per-file-instance, not semantic content).
+    """
+    if isinstance(value, str):
+        return value.replace(native_session_id, placeholder)
+    if isinstance(value, list):
+        return [_rewrite_native_id(item, native_session_id, placeholder) for item in value]
+    if isinstance(value, dict):
+        return {
+            key: _rewrite_native_id(item, native_session_id, placeholder)
+            for key, item in value.items()
+            if key not in _VOLATILE_KEYS
+        }
+    return value
+
+
 def _append_archive(
-    config: Config, paths: SourcePaths, records: list[SourceRecord], *, generation: int
+    config: Config,
+    paths: SourcePaths,
+    records: list[SourceRecord],
+    *,
+    generation: int,
+    native_session_id: str = NATIVE_SESSION_ID,
 ) -> None:
     commit_batch(
         config,
         paths,
         {
-            **_batch(paths, records),
+            **_batch(paths, records, native_session_id=native_session_id),
             "next_cursor": {"generation": generation},
         },
     )
@@ -175,15 +227,28 @@ def cli_transcript_records(copilot_home: Path) -> list[SourceRecord]:
     return _drain_cli_transcript(copilot_home)
 
 
-def _full_corpus_records(cli_transcript_records: list[SourceRecord]) -> list[SourceRecord]:
+def _full_corpus_records(
+    cli_transcript_records: list[SourceRecord], *, native_session_id: str = NATIVE_SESSION_ID
+) -> list[SourceRecord]:
     source_key = _source_key(cli_transcript_records)
-    return cli_transcript_records + _six_call_records(source_key=source_key)
+    return cli_transcript_records + _six_call_records(
+        source_key=source_key, native_session_id=native_session_id
+    )
 
 
 def _seed_full_corpus(
-    config: Config, paths: SourcePaths, cli_transcript_records: list[SourceRecord]
+    config: Config,
+    paths: SourcePaths,
+    cli_transcript_records: list[SourceRecord],
+    *,
+    native_session_id: str = NATIVE_SESSION_ID,
 ) -> str:
-    return _seed_archive(config, paths, _full_corpus_records(cli_transcript_records))
+    return _seed_archive(
+        config,
+        paths,
+        _full_corpus_records(cli_transcript_records, native_session_id=native_session_id),
+        native_session_id=native_session_id,
+    )
 
 
 def test_reconcile_archive_projects_six_call_corpus(
@@ -217,10 +282,19 @@ def test_reconcile_archive_is_idempotent(
     stored = _seed_full_corpus(config, paths, cli_transcript_records)
 
     first = reconcile_archive(config, stored)
+    first_turns = read_projected_turns(config, stored)
+    first_state = load_projection_state(config, stored)
+
     second = reconcile_archive(config, stored)
+    second_turns = read_projected_turns(config, stored)
+    second_state = load_projection_state(config, stored)
 
     assert first == second
-    assert read_projected_turns(config, stored) == read_projected_turns(config, stored)
+    assert first_turns == second_turns
+    assert first_state == second_state
+    for turn in second_turns:
+        seqs = [event.get("seq") for event in turn.get("events") or []]
+        assert len(seqs) == len(set(seqs)), "re-reconciling must not duplicate turn events"
 
 
 def test_rebuild_is_idempotent_and_matches_initial_reconcile(
@@ -243,6 +317,7 @@ def test_rebuild_is_idempotent_and_matches_initial_reconcile(
 def test_incremental_reconcile_matches_full_replay(
     config: Config,
     paths: SourcePaths,
+    copilot_home: Path,
     cli_transcript_records: list[SourceRecord],
 ) -> None:
     source_key = _source_key(cli_transcript_records)
@@ -256,16 +331,22 @@ def test_incremental_reconcile_matches_full_replay(
     incremental = reconcile_archive(config, stored_incremental)
     incremental_turns = read_projected_turns(config, stored_incremental)
 
-    stored_full = _seed_full_corpus(config, paths, cli_transcript_records)
+    # A genuinely independent stored session -- same source home, but a
+    # different native session ID -- committed in one shot from the same
+    # fixture content.  Reusing the incremental session's own ID here would
+    # make "full" just another reconcile of the archive the incremental case
+    # already fully populated, which proves nothing about replay equivalence.
+    full_transcript = _drain_cli_transcript(copilot_home, native_session_id=FULL_NATIVE_SESSION_ID)
+    stored_full = _seed_full_corpus(
+        config, paths, full_transcript, native_session_id=FULL_NATIVE_SESSION_ID
+    )
     full = reconcile_archive(config, stored_full)
     full_turns = read_projected_turns(config, stored_full)
 
-    assert incremental["turns"] == full["turns"]
-    assert incremental["usage"] == full["usage"]
-    assert incremental["events"] == full["events"]
-    assert [turn["turn_id"] for turn in incremental_turns] == [
-        turn["turn_id"] for turn in full_turns
-    ]
+    assert incremental == full
+    normalized_incremental = _rewrite_native_id(incremental_turns, NATIVE_SESSION_ID)
+    normalized_full = _rewrite_native_id(full_turns, FULL_NATIVE_SESSION_ID)
+    assert normalized_incremental == normalized_full
 
 
 def test_reconcile_default_does_not_export(
@@ -275,19 +356,19 @@ def test_reconcile_default_does_not_export(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     stored = _seed_full_corpus(config, paths, cli_transcript_records)
-    imports: list[str] = []
-    original = __import__
 
-    def tracking_import(name: str, *args: Any, **kwargs: Any) -> Any:
-        imports.append(name)
-        return original(name, *args, **kwargs)
+    def explode(*_args: Any, **_kwargs: Any) -> Any:
+        raise AssertionError("reconcile_archive must not import export assembly by default")
 
-    monkeypatch.setattr("importlib.import_module", tracking_import)
+    # Patch the name bound inside reconcile.py itself: `import_module` there
+    # is `from importlib import import_module`, a local reference that a
+    # patch on `importlib.import_module` would not intercept.
+    monkeypatch.setattr("thirdeye.platforms.copilot.reconcile.import_module", explode)
 
     result = reconcile_archive(config, stored)
 
     assert result["exports"] == 0
-    assert not any("export" in item for item in imports)
+    assert result["errors"] == 0
 
 
 def test_export_failure_does_not_roll_back_projection(
@@ -358,6 +439,45 @@ def test_build_failure_during_rebuild_preserves_prior_projection(
 
     assert result["errors"] == 1
     assert read_projected_turns(config, stored) == prior_turns
+
+
+def test_commit_failure_during_rebuild_preserves_prior_projection(
+    config: Config,
+    paths: SourcePaths,
+    cli_transcript_records: list[SourceRecord],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A rebuild that fails inside commit_projection (after build succeeds)
+
+    must not lose the previous projection.  This is the atomicity gap a
+    delete-then-commit rebuild would have: this test forces the failure to
+    happen after a valid projection has already been built, exercising the
+    commit step itself rather than the build step.
+    """
+    stored = _seed_full_corpus(config, paths, cli_transcript_records)
+    baseline = reconcile_archive(config, stored)
+    prior_turns = read_projected_turns(config, stored)
+    prior_state = load_projection_state(config, stored)
+
+    def build_with_invalid_usage_row(
+        records: list[SourceRecord], prior_state: dict[str, Any]
+    ) -> tuple[Any, dict[str, Any]]:
+        projection, next_state = _real_build_projection(records, prior_state)
+        broken = dict(projection)
+        broken["usage_rows"] = [*projection["usage_rows"], {"not": "a UsageRow instance"}]
+        return broken, next_state
+
+    monkeypatch.setattr(
+        "thirdeye.platforms.copilot.reconcile.build_projection", build_with_invalid_usage_row
+    )
+
+    result = reconcile_archive(config, stored, rebuild=True)
+
+    assert result["errors"] == baseline["errors"] + 1
+    assert result["turns"] == baseline["turns"]
+    assert result["usage"] == baseline["usage"]
+    assert read_projected_turns(config, stored) == prior_turns
+    assert load_projection_state(config, stored) == prior_state
 
 
 def test_reconcile_unknown_session_reports_error_without_creating_paths(

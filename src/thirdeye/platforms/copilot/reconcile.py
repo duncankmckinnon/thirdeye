@@ -8,18 +8,14 @@ failures independent from derived-state failures.
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from importlib import import_module
-from typing import Any, Callable
 
 from thirdeye.config import Config
 
 from .archive import iter_captured_records
 from .projection import build_projection
-from .projection_store import (
-    commit_projection,
-    load_projection_state,
-    reset_projection_state,
-)
+from .projection_store import commit_projection, load_projection_state, read_projection_status
 from .types import Projection
 
 _COUNT_KEYS = ("events", "usage", "turns", "exports", "pending", "ambiguous", "conflicting")
@@ -31,22 +27,18 @@ def _empty_result(*, errors: int = 0) -> dict[str, int]:
     return result
 
 
-def _stored_counts(state: dict[str, Any]) -> dict[str, int]:
-    """Return safe status counts when a projection attempt cannot proceed."""
+def _failure_result(config: Config, stored_session_id: str) -> dict[str, int]:
+    """Report the last successfully published projection's status on failure.
 
-    result = _empty_result()
-    totals = state.get("index_totals")
-    if not isinstance(totals, dict):
-        return result
-    for source, target in (
-        ("events", "events"),
-        ("usage", "usage"),
-        ("turns", "turns"),
-        ("pending", "pending"),
-    ):
-        value = totals.get(source)
-        if isinstance(value, int) and value >= 0:
-            result[target] = value
+    The local projection on disk (if any) is untouched by a failed attempt,
+    so its counts -- not zeros -- describe what a reader will actually see.
+    """
+    try:
+        status = read_projection_status(config, stored_session_id)
+    except Exception:
+        return _empty_result(errors=1)
+    result = {**_empty_result(), **status}
+    result["errors"] = status.get("errors", 0) + 1
     return result
 
 
@@ -79,7 +71,7 @@ def queue_exports(config: Config, stored_session_id: str, projection: Projection
     """
 
     module = import_module(".export", package=__package__)
-    enqueue = getattr(module, "queue_exports")
+    enqueue = module.queue_exports
     if not callable(enqueue):
         raise TypeError("Copilot export assembly does not provide queue_exports")
     exporter: Callable[[Config, str, Projection], int] = enqueue
@@ -96,10 +88,12 @@ def reconcile_archive(
     """Rebuild local Copilot projections from the immutable V1 archive.
 
     A normal reconciliation is a complete archive replay.  Stable derived
-    identities make committing that replay idempotent, while a full replay
-    keeps late usage rows eligible to join semantic evidence captured in an
-    earlier pass.  ``rebuild`` deletes only reproducible projection state;
-    raw archive records and the separate export ledger are untouched.
+    identities make committing that replay idempotent.  ``rebuild`` discards
+    reproducible projection state as part of the same locked commit used for
+    an incremental merge (see ``commit_projection(..., replace=True)``): raw
+    archive records and the separate export ledger are untouched, and nothing
+    is written to disk until the replacement projection is fully validated,
+    so a rebuild that fails partway cannot erase the last readable local view.
 
     Errors are reported as counts instead of escaping so source capture can
     remain operational when a derived projection is malformed.  Export is a
@@ -107,26 +101,15 @@ def reconcile_archive(
     """
 
     try:
-        # Build a replacement before deleting a previous projection.  This is
-        # especially important for an operator-triggered rebuild: malformed
-        # archived evidence must not turn a recoverable projection error into
-        # a loss of the last readable local view.  Rebuild input is empty so
-        # no unfinished incremental state can leak into the full replay.
         prior_state = {} if rebuild else load_projection_state(config, stored_session_id)
         records = list(iter_captured_records(config, stored_session_id))
         projection, next_state = build_projection(records, prior_state)
         next_state["archive_source_ids"] = [record["source_id"] for record in records]
-        if rebuild:
-            reset_projection_state(config, stored_session_id)
-        counts = commit_projection(config, stored_session_id, projection, next_state)
+        counts = commit_projection(
+            config, stored_session_id, projection, next_state, replace=rebuild
+        )
     except Exception:
-        # Do not reset or mutate V1 capture state when derivation fails.
-        try:
-            result = _stored_counts(load_projection_state(config, stored_session_id))
-        except Exception:
-            result = _empty_result()
-        result["errors"] += 1
-        return result
+        return _failure_result(config, stored_session_id)
 
     ambiguous, conflicting = _attribution_counts(projection)
     result = {

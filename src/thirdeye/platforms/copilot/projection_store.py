@@ -389,18 +389,27 @@ def commit_projection(
     stored_session_id: str,
     projection: Projection,
     next_state: dict[str, Any],
+    *,
+    replace: bool = False,
 ) -> dict[str, int]:
-    """Atomically merge a DTO projection into local, replayable derived state.
+    """Atomically merge or replace a DTO projection into replayable derived state.
 
     V1 events are read only from the captured Store archive to form the generic
     turn view.  No source reader is invoked, so a captured session remains
     projectable after Copilot removes its original files.
+
+    ``replace=True`` discards prior derived indexes as part of this same
+    locked operation instead of requiring a separate reset call.  Nothing is
+    written to disk until every validation below succeeds, so a rebuild that
+    fails partway (a malformed usage row, an IO error) leaves the previous
+    projection completely untouched rather than losing it to a non-atomic
+    delete-then-commit sequence.
     """
     directory = _directory(config, stored_session_id)
     _require_session(directory, stored_session_id)
     with locked(projection_lock_path(directory), LockMode.EXCLUSIVE):
         document = read_projection_document(directory)
-        indexes = _mapping(document.get("indexes"))
+        indexes = {} if replace else _mapping(document.get("indexes"))
         merged_indexes = {name: dict(_mapping(indexes.get(name))) for name in indexes}
         for name in (*_INDEX_NAMES, "usage_identities"):
             merged_indexes.setdefault(name, {})
@@ -512,6 +521,47 @@ def read_projected_turns(config: Config, stored_session_id: str) -> list[dict[st
             key=lambda turn: (str(turn.get("start_ts") or ""), str(turn.get("turn_id") or ""))
         )
         return json.loads(_canonical(values))
+
+
+_STATUS_KEYS = ("events", "usage", "turns", "pending", "ambiguous", "conflicting", "errors")
+
+
+def read_projection_status(config: Config, stored_session_id: str) -> dict[str, int]:
+    """Return persisted projection counts without attempting a new derive.
+
+    A caller whose current reconciliation attempt failed can use this to
+    report the status of the last successfully published projection (which
+    remains on disk and readable) instead of fabricating zeroed-out counts.
+    """
+    directory = _existing_session_dir(config, stored_session_id)
+    if directory is None:
+        return dict.fromkeys(_STATUS_KEYS, 0)
+    with locked(projection_lock_path(directory), LockMode.EXCLUSIVE):
+        document = read_projection_document(directory)
+        indexes = _mapping(document.get("indexes"))
+        attributions = _mapping(indexes.get("attributions")).values()
+        diagnostics = _mapping(indexes.get("diagnostics")).values()
+        return {
+            "events": len(_mapping(indexes.get("events"))),
+            "usage": len(_mapping(indexes.get("usage"))),
+            "turns": len(_mapping(indexes.get("turns"))),
+            "pending": len(_mapping(indexes.get("pending"))),
+            "ambiguous": sum(
+                1
+                for item in attributions
+                if isinstance(item, dict) and item.get("status") == "ambiguous"
+            ),
+            "conflicting": sum(
+                1
+                for item in attributions
+                if isinstance(item, dict) and item.get("status") == "conflicting"
+            ),
+            "errors": sum(
+                1
+                for item in diagnostics
+                if isinstance(item, dict) and item.get("severity") == "error"
+            ),
+        }
 
 
 def reset_projection_state(config: Config, stored_session_id: str) -> None:
