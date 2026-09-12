@@ -4,10 +4,9 @@ No network operation happens here.  This module only writes/dispatches the
 generic transport's local jobs; the detached worker performs remote delivery.
 The split cannot provide transactional exactly-once delivery: a crash after a
 remote flush and before acknowledgement can retry a deterministic span. The
-transport's own durable claims (`otel_export.turn_export_sent` /
-`accounting_export_sent`) are what let this module tell "already confirmed
-delivered" apart from "merely queued" across restarts, since the worker
-deletes its own job file on success.
+transport's durable turn claims and Copilot's accounting delivery claims are
+what let this module tell "already confirmed delivered" apart from "merely
+queued" across restarts, since workers delete their job files on success.
 """
 
 from __future__ import annotations
@@ -278,9 +277,7 @@ def _reflect_accounting_job_health(
     """
     status = export_transport.status(config.root, span_id)
     if status is None:
-        if otel_export.accounting_export_sent(
-            _directory(config, stored_session_id), accounting_id
-        ):
+        if export_transport.delivery_sent(_directory(config, stored_session_id), accounting_id):
             status = {"state": "emitted", "attempt": None, "last_error": None}
         else:
             _clear_error_state(config, stored_session_id, accounting_id)
@@ -391,7 +388,7 @@ def queue_exports(
         call_id = item.get("call_id")
         existing_entry = (state.get("placements") or {}).get(accounting_id) or {}
         turn_sent = otel_export.turn_export_sent(directory, root_id)
-        delivered = otel_export.accounting_export_sent(directory, accounting_id) or (
+        delivered = export_transport.delivery_sent(directory, accounting_id) or (
             turn_sent and existing_entry.get("destination") == "chat-span"
         )
         # A chat span already flushed to Logfire is immutable history: usage
@@ -467,7 +464,7 @@ def queue_exports(
         if usage is None:
             continue
         span_id = _span_id(stored_session_id, None, accounting_id)
-        delivered = otel_export.accounting_export_sent(directory, accounting_id)
+        delivered = export_transport.delivery_sent(directory, accounting_id)
         entry, accepted = _place(
             config,
             stored_session_id,
@@ -510,8 +507,8 @@ def queue_exports(
         assembled = _with_deterministic_turn_ids(
             _turn_with_placed_accounting(turn, placements), stored_session_id
         )
-        sent = otel_export.export_turn(
-            config, directory, stored_session_id, PLATFORM_NAME, meta.cwd, assembled
+        sent = export_transport.queue_turn(
+            config, directory, stored_session_id, meta.cwd, assembled
         )
         if sent:
             queued += 1

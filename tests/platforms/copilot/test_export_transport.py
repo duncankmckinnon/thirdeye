@@ -7,7 +7,6 @@ from typing import Any
 
 import pytest
 
-from thirdeye import otel_export
 from thirdeye.config import Config, LogfireSettings
 from thirdeye.platforms.copilot import export_transport
 from thirdeye.platforms.copilot.export_state import record_placement, update_export_state
@@ -88,7 +87,7 @@ def test_queue_does_not_recreate_confirmed_delivery(
     spawned: list[Path] = []
     monkeypatch.setattr(export_transport, "_spawn", spawned.append)
     session_dir = config.root / "traces" / "copilot" / "stored-session"
-    otel_export._mark_accounting_sent(session_dir, "acct-1")
+    export_transport._mark_delivered(session_dir, "acct-1")
     accounting = {
         "accounting_id": "acct-1",
         "usage": {},

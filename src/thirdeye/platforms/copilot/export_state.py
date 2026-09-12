@@ -8,9 +8,8 @@ never treated as proof of delivery.  A crash after a remote flush can still
 lead to a deterministic retry and therefore a duplicate remote span.
 
 ``record_placement`` takes an explicit ``delivered`` flag from the caller
-(who reads the generic transport's independent, durable
-``otel_export.accounting_export_sent`` claim before calling in).  That flag,
-not merely a changed destination, is what turns a correction into a
+(who reads Copilot's independent, durable accounting delivery claim before
+calling in).  That flag, not merely a changed destination, is what turns a correction into a
 quarantined conflict: a correction to a job that never left this machine is
 always safe to replace, while a correction after confirmed delivery can no
 longer relocate tokens the remote collector already has.
@@ -206,9 +205,9 @@ def record_placement(
 ) -> tuple[dict[str, Any], dict[str, Any] | None, bool]:
     """Persist the first token location for an accounting identity.
 
-    ``delivered`` is the caller's fresh read of the generic transport's
-    durable delivery claim for this identity (see
-    ``otel_export.accounting_export_sent``), not this ledger's own possibly
+    ``delivered`` is the caller's fresh read of Copilot's durable delivery
+    claim for this identity (see ``export_transport.delivery_sent``), not
+    this ledger's own possibly
     stale ``emitted`` flag — the local job file backing that flag is deleted
     by the worker on success, so this ledger cannot detect delivery on its
     own and must be told.
