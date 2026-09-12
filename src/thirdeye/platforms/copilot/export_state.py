@@ -6,6 +6,14 @@ accounting decision and survives rebuilds.  The generic OTel worker cannot
 atomically acknowledge a remote collector and this file, so an absent job is
 never treated as proof of delivery.  A crash after a remote flush can still
 lead to a deterministic retry and therefore a duplicate remote span.
+
+``record_placement`` takes an explicit ``delivered`` flag from the caller
+(who reads the generic transport's independent, durable
+``otel_export.accounting_export_sent`` claim before calling in).  That flag,
+not merely a changed destination, is what turns a correction into a
+quarantined conflict: a correction to a job that never left this machine is
+always safe to replace, while a correction after confirmed delivery can no
+longer relocate tokens the remote collector already has.
 """
 
 from __future__ import annotations
@@ -49,6 +57,7 @@ def empty_export_state() -> dict[str, Any]:
         "excluded_accounting_ids": [],
         "placements": {},
         "conflicts": {},
+        "turn_errors": {},
     }
 
 
@@ -62,32 +71,50 @@ def _mapping(value: object) -> dict[str, Any]:
     return value if isinstance(value, dict) else {}
 
 
-def _state(value: dict[str, Any] | None) -> dict[str, Any]:
-    if value is None or value.get("schema_version") != EXPORT_STATE_SCHEMA_VERSION:
-        return empty_export_state()
+def _normalize(value: dict[str, Any]) -> dict[str, Any]:
+    """Fill defaults on a dict already known to carry the current schema.
+
+    Only safe for state this module itself produced (loaded and version
+    checked by :func:`_read`, or built fresh by another function here) —
+    never call this directly on unvalidated bytes off disk.
+    """
     placements = _mapping(value.get("placements"))
     conflicts = _mapping(value.get("conflicts"))
+    turn_errors = _mapping(value.get("turn_errors"))
     return {
         "schema_version": EXPORT_STATE_SCHEMA_VERSION,
         "activated": bool(value.get("activated", False)),
         "excluded_turn_ids": _ids(value.get("excluded_turn_ids")),
         "excluded_accounting_ids": _ids(value.get("excluded_accounting_ids")),
-        "placements": {key: item for key, item in placements.items() if isinstance(key, str) and isinstance(item, dict)},
-        "conflicts": {key: item for key, item in conflicts.items() if isinstance(key, str) and isinstance(item, dict)},
+        "placements": {
+            key: item for key, item in placements.items() if isinstance(key, str) and isinstance(item, dict)
+        },
+        "conflicts": {
+            key: item for key, item in conflicts.items() if isinstance(key, str) and isinstance(item, dict)
+        },
+        "turn_errors": {
+            key: value2 for key, value2 in turn_errors.items() if isinstance(key, str) and isinstance(value2, str)
+        },
     }
 
 
 def _read(directory: Path) -> dict[str, Any]:
-    try:
-        return _state(
-            read_json_object(
-                export_state_path(directory), invalid_message="invalid Copilot export ledger"
-            )
-        )
-    except ValueError:
-        # Export accounting is not disposable.  Do not overwrite a corrupt
-        # ledger and risk emitting tokens at another location.
-        raise ValueError("invalid Copilot export ledger") from None
+    """Load the ledger, failing closed on anything but a genuinely absent file.
+
+    A missing file is the only case that legitimately means "no export has
+    ever run for this session" and may start from empty state. Malformed
+    JSON, a non-object document, or an unrecognized ``schema_version`` are
+    all corruption or a future/unknown format from this module's point of
+    view: silently treating them as empty would forget every placement this
+    ledger recorded and risk emitting tokens at a second location.
+    """
+    raw = read_json_object(export_state_path(directory), invalid_message="invalid Copilot export ledger")
+    if raw is None:
+        return empty_export_state()
+    version = raw.get("schema_version")
+    if version != EXPORT_STATE_SCHEMA_VERSION:
+        raise ValueError(f"unsupported Copilot export ledger schema_version: {version!r}")
+    return _normalize(raw)
 
 
 def _write(directory: Path, state: dict[str, Any]) -> None:
@@ -105,9 +132,7 @@ def load_export_state(config: Config, stored_session_id: str) -> dict[str, Any]:
         return json.loads(json.dumps(_read(directory)))
 
 
-def update_export_state(
-    config: Config, stored_session_id: str, update: Any
-) -> dict[str, Any]:
+def update_export_state(config: Config, stored_session_id: str, update: Any) -> dict[str, Any]:
     """Atomically apply ``update(state)`` and return the published state."""
     directory = _directory(config, stored_session_id)
     with locked(export_lock_path(directory), LockMode.EXCLUSIVE):
@@ -115,7 +140,7 @@ def update_export_state(
         updated = update(state)
         if not isinstance(updated, dict):
             raise TypeError("Copilot export state update must return a dictionary")
-        state = _state(updated)
+        state = _normalize(updated)
         _write(directory, state)
         return json.loads(json.dumps(state))
 
@@ -147,8 +172,14 @@ def initialize_eligibility(
     export opts the supplied completed turns and accounting identities in by
     removing them from that boundary.  New evidence is absent from both lists
     and is therefore eligible after restart.
+
+    Callers are responsible for passing only turn ids and accounting ids that
+    are *actually* already historical (a terminal main interaction, or
+    accounting owned by one) — an interaction still open at first activation
+    must not appear here, or it would stay excluded forever even once it
+    later completes.
     """
-    result = _state(state)
+    result = _normalize(state)
     turn_ids = set(_ids(terminal_turn_ids))
     usage_ids = set(_ids(accounting_ids))
     if not result["activated"]:
@@ -159,9 +190,7 @@ def initialize_eligibility(
         return result
     if include_history:
         result["excluded_turn_ids"] = sorted(set(result["excluded_turn_ids"]) - turn_ids)
-        result["excluded_accounting_ids"] = sorted(
-            set(result["excluded_accounting_ids"]) - usage_ids
-        )
+        result["excluded_accounting_ids"] = sorted(set(result["excluded_accounting_ids"]) - usage_ids)
     return result
 
 
@@ -172,42 +201,77 @@ def record_placement(
     destination: str,
     span_id: str,
     usage: dict[str, Any],
+    delivered: bool = False,
 ) -> tuple[dict[str, Any], dict[str, Any] | None, bool]:
     """Persist the first token location for an accounting identity.
 
-    Returns ``(state, entry, accepted)``.  A source correction or a changed
-    destination after placement is a durable conflict: silently replacing a
-    queued job could produce two different token totals at the same span.
+    ``delivered`` is the caller's fresh read of the generic transport's
+    durable delivery claim for this identity (see
+    ``otel_export.accounting_export_sent``), not this ledger's own possibly
+    stale ``emitted`` flag — the local job file backing that flag is deleted
+    by the worker on success, so this ledger cannot detect delivery on its
+    own and must be told.
+
+    Returns ``(state, entry, accepted)``.  A correction is only a durable
+    conflict when the existing placement was (or is now known to have been)
+    delivered: rebinding a destination or usage value the remote collector
+    already received would produce two different token totals for the same
+    logical call. A correction to a placement that was only ever queued
+    locally is always safe to replace/requeue.
     """
-    result = _state(state)
+    result = _normalize(state)
     digest = usage_digest(usage)
     placements = result["placements"]
     existing = _mapping(placements.get(accounting_id))
     if existing:
+        already_delivered = bool(existing.get("emitted")) or delivered
         same = (
             existing.get("destination") == destination
             and existing.get("span_id") == span_id
             and existing.get("usage_digest") == digest
         )
         if same:
+            if delivered and not existing.get("emitted"):
+                existing = {**existing, "emitted": True, "last_error": None}
+                placements[accounting_id] = existing
             return result, existing, True
-        result["conflicts"][accounting_id] = {
+        if already_delivered:
+            if delivered and not existing.get("emitted"):
+                # The candidate is rejected, but the fresh delivery read is
+                # still new information about the *existing* placement —
+                # record it so the ledger stops looking like it was only
+                # ever queued.
+                existing = {**existing, "emitted": True}
+                placements[accounting_id] = existing
+            result["conflicts"][accounting_id] = {
+                "accounting_id": accounting_id,
+                "reason": "accounting placement or usage changed after confirmed delivery",
+                "existing": existing,
+                "candidate": {
+                    "destination": destination,
+                    "span_id": span_id,
+                    "usage_digest": digest,
+                },
+            }
+            return result, existing, False
+        # Nothing was ever confirmed delivered for this identity: replace the
+        # queued/failed placement outright rather than quarantining it.
+        entry = {
             "accounting_id": accounting_id,
-            "reason": "accounting placement or usage changed after queueing",
-            "existing": existing,
-            "candidate": {
-                "destination": destination,
-                "span_id": span_id,
-                "usage_digest": digest,
-            },
+            "destination": destination,
+            "span_id": span_id,
+            "usage_digest": digest,
+            "emitted": False,
+            "last_error": None,
         }
-        return result, existing, False
+        placements[accounting_id] = entry
+        return result, entry, True
     entry = {
         "accounting_id": accounting_id,
         "destination": destination,
         "span_id": span_id,
         "usage_digest": digest,
-        "emitted": False,
+        "emitted": bool(delivered),
         "last_error": None,
     }
     placements[accounting_id] = entry
@@ -215,7 +279,7 @@ def record_placement(
 
 
 def mark_placement_error(state: dict[str, Any], accounting_id: str, error: str) -> dict[str, Any]:
-    result = _state(state)
+    result = _normalize(state)
     entry = _mapping(result["placements"].get(accounting_id))
     if entry:
         entry["last_error"] = error
@@ -223,19 +287,48 @@ def mark_placement_error(state: dict[str, Any], accounting_id: str, error: str) 
     return result
 
 
+def clear_placement_error(state: dict[str, Any], accounting_id: str) -> dict[str, Any]:
+    """Drop a stale ``last_error`` once a retried job successfully queues."""
+    result = _normalize(state)
+    entry = _mapping(result["placements"].get(accounting_id))
+    if entry and entry.get("last_error") is not None:
+        entry["last_error"] = None
+        result["placements"][accounting_id] = entry
+    return result
+
+
 def mark_placement_delivered(state: dict[str, Any], accounting_id: str) -> dict[str, Any]:
     """Record an externally confirmed delivery, never inferred from a job file.
 
-    The current detached worker has no transactional callback into this
-    ledger.  This hook is deliberately available for a future confirmed
-    transport, while ordinary queueing leaves ``emitted`` false.
+    Ordinary reconciliation no longer needs to call this directly —
+    ``record_placement``'s ``delivered`` flag self-heals ``emitted`` from the
+    durable transport claim on every pass — but it remains available for a
+    caller with its own confirmed-delivery source.
     """
-    result = _state(state)
+    result = _normalize(state)
     entry = _mapping(result["placements"].get(accounting_id))
     if entry:
         entry["emitted"] = True
         entry["last_error"] = None
         result["placements"][accounting_id] = entry
+    return result
+
+
+def mark_turn_error(state: dict[str, Any], turn_id: str, error: str) -> dict[str, Any]:
+    """Record that a whole-turn export job failed to queue locally.
+
+    Kept separate from ``placements`` (keyed by accounting id, not turn id)
+    so a turn-job failure is visible without inventing a fake accounting
+    record for it.
+    """
+    result = _normalize(state)
+    result["turn_errors"][turn_id] = error
+    return result
+
+
+def clear_turn_error(state: dict[str, Any], turn_id: str) -> dict[str, Any]:
+    result = _normalize(state)
+    result["turn_errors"].pop(turn_id, None)
     return result
 
 

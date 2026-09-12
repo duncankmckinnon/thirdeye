@@ -3,7 +3,11 @@
 No network operation happens here.  This module only writes/dispatches the
 generic transport's local jobs; the detached worker performs remote delivery.
 The split cannot provide transactional exactly-once delivery: a crash after a
-remote flush and before acknowledgement can retry a deterministic span.
+remote flush and before acknowledgement can retry a deterministic span. The
+transport's own durable claims (`otel_export.turn_export_sent` /
+`accounting_export_sent`) are what let this module tell "already confirmed
+delivered" apart from "merely queued" across restarts, since the worker
+deletes its own job file on success.
 """
 
 from __future__ import annotations
@@ -20,10 +24,13 @@ from thirdeye.span_ids import chat_span_id
 
 from .constants import PLATFORM_NAME
 from .export_state import (
+    clear_placement_error,
+    clear_turn_error,
     initialize_eligibility,
     is_accounting_eligible,
     is_turn_eligible,
     mark_placement_error,
+    mark_turn_error,
     record_placement,
     update_export_state,
 )
@@ -37,8 +44,8 @@ def _directory(config: Config, stored_session_id: str) -> Path:
     return session_dir(config.root, PLATFORM_NAME, stored_session_id)
 
 
-def _terminal(turn: dict[str, Any]) -> bool:
-    return turn.get("status") in _TERMINAL
+def _terminal(turn: dict[str, Any] | None) -> bool:
+    return bool(turn) and turn.get("status") in _TERMINAL
 
 
 def _walk_turns(turns: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -61,6 +68,37 @@ def _main_terminal_turns(projection: Projection) -> list[dict[str, Any]]:
     ]
 
 
+def _root_owner_index(projection: Projection) -> dict[str, dict[str, Any]]:
+    """Map every turn id, main or nested, to its owning main ``TurnSpanDict``.
+
+    Eligibility and "is this history" are properties of a whole interaction
+    (a main turn and everything nested under it, exported together as one
+    job), never of a nested child's own id — the child is never exported as
+    an independent top-level job, so its id alone is never a member of the
+    boundary lists built from ``_main_terminal_turns``.
+    """
+    index: dict[str, dict[str, Any]] = {}
+
+    def walk(turn: dict[str, Any], root: dict[str, Any]) -> None:
+        turn_id = turn.get("turn_id")
+        if isinstance(turn_id, str):
+            index[turn_id] = root
+        for child in turn.get("subagents") or []:
+            if isinstance(child, dict):
+                walk(child, root)
+
+    for turn in projection["turns"]:
+        if isinstance(turn, dict):
+            walk(turn, turn)
+    return index
+
+
+def _root_for(root_index: dict[str, dict[str, Any]], turn_id: object) -> dict[str, Any] | None:
+    if isinstance(turn_id, str):
+        return root_index.get(turn_id)
+    return None
+
+
 def _accounting_calls(projection: Projection) -> dict[str, tuple[dict[str, Any], dict[str, Any]]]:
     """Map an identity to its owner turn and serialized generic accounting."""
     found: dict[str, tuple[dict[str, Any], dict[str, Any]]] = {}
@@ -75,10 +113,30 @@ def _accounting_calls(projection: Projection) -> dict[str, tuple[dict[str, Any],
     return found
 
 
-def _usage_ids(projection: Projection) -> list[str]:
-    ids = [row.call_id for row in projection["usage_rows"]]
-    ids.extend(item["logical_call_id"] for item in projection["attributions"])
-    return sorted({item for item in ids if isinstance(item, str) and item})
+def _historical_accounting_ids(
+    projection: Projection, root_index: dict[str, dict[str, Any]]
+) -> list[str]:
+    """Accounting identities that are already part of terminal history.
+
+    An identity owned by a still-open interaction must be excluded from this
+    set (and therefore stay eligible for later export once that interaction
+    completes). An identity with no interaction to gate on at all (an
+    ownerless usage row, or a ``stored_turn_id`` this projection cannot
+    resolve) has no way to become "no longer historical" later, so it keeps
+    the conservative default of being treated as already-seen history.
+    """
+    owners: dict[str, dict[str, Any] | None] = {}
+    for accounting_id, (owner, _item) in _accounting_calls(projection).items():
+        owners[accounting_id] = _root_for(root_index, owner.get("turn_id"))
+    for attribution in projection["attributions"]:
+        accounting_id = attribution["logical_call_id"]
+        if accounting_id not in owners:
+            owners[accounting_id] = _root_for(root_index, attribution["stored_turn_id"])
+    for row in projection["usage_rows"]:
+        owners.setdefault(row.call_id, None)
+    return sorted(
+        accounting_id for accounting_id, root in owners.items() if root is None or _terminal(root)
+    )
 
 
 def _span_id(session_id: str, turn_id: str | None, accounting_id: str) -> str:
@@ -103,10 +161,32 @@ def _error_state(config: Config, stored_session_id: str, accounting_id: str, mes
     update_export_state(config, stored_session_id, update)
 
 
+def _turn_error_state(config: Config, stored_session_id: str, turn_id: str, message: str) -> None:
+    def update(state: dict[str, Any]) -> dict[str, Any]:
+        return mark_turn_error(state, turn_id, message)
+
+    update_export_state(config, stored_session_id, update)
+
+
+def _clear_error_state(config: Config, stored_session_id: str, accounting_id: str) -> None:
+    def update(state: dict[str, Any]) -> dict[str, Any]:
+        return clear_placement_error(state, accounting_id)
+
+    update_export_state(config, stored_session_id, update)
+
+
+def _clear_turn_error_state(config: Config, stored_session_id: str, turn_id: str) -> None:
+    def update(state: dict[str, Any]) -> dict[str, Any]:
+        return clear_turn_error(state, turn_id)
+
+    update_export_state(config, stored_session_id, update)
+
+
 def _eligible_state(
     config: Config,
     stored_session_id: str,
     projection: Projection,
+    root_index: dict[str, dict[str, Any]],
     *,
     include_history: bool,
 ) -> dict[str, Any]:
@@ -116,7 +196,7 @@ def _eligible_state(
         return initialize_eligibility(
             state,
             terminal_turn_ids=terminal_ids,
-            accounting_ids=_usage_ids(projection),
+            accounting_ids=_historical_accounting_ids(projection, root_index),
             include_history=include_history,
         )
 
@@ -131,6 +211,7 @@ def _place(
     destination: str,
     span_id: str,
     usage: dict[str, Any],
+    delivered: bool,
 ) -> tuple[dict[str, Any] | None, bool]:
     captured: dict[str, Any] = {}
 
@@ -141,6 +222,7 @@ def _place(
             destination=destination,
             span_id=span_id,
             usage=usage,
+            delivered=delivered,
         )
         captured["entry"] = entry
         captured["accepted"] = accepted
@@ -169,9 +251,7 @@ def _turn_with_placed_accounting(
     return result
 
 
-def _with_deterministic_turn_ids(
-    turn: dict[str, Any], stored_session_id: str
-) -> dict[str, Any]:
+def _with_deterministic_turn_ids(turn: dict[str, Any], stored_session_id: str) -> dict[str, Any]:
     """Finalize a complete turn tree with ids stable across archive replays.
 
     Copilot's stable turn identity is a source-derived string rather than the
@@ -210,8 +290,9 @@ def queue_exports(
     meta = read_meta(meta_path(directory))
     if meta is None:
         raise ValueError(f"unknown Copilot session: {stored_session_id}")
+    root_index = _root_owner_index(projection)
     state = _eligible_state(
-        config, stored_session_id, projection, include_history=include_history
+        config, stored_session_id, projection, root_index, include_history=include_history
     )
     if not _configured(config):
         return 0
@@ -225,22 +306,35 @@ def queue_exports(
     # fallback charge onto a chat span.
     for accounting_id, (owner, item) in accounting.items():
         owner_id = owner.get("turn_id")
+        root = _root_for(root_index, owner_id)
         usage = item["usage"]
         if (
             not isinstance(owner_id, str)
-            or not _terminal(owner)
+            or root is None
+            or not _terminal(root)
             or item.get("attribution_status") not in _EXPORTABLE_ATTRIBUTIONS
         ):
             continue
-        if not is_turn_eligible(state, owner_id) or not is_accounting_eligible(state, accounting_id):
+        root_id = str(root["turn_id"])
+        if not is_turn_eligible(state, root_id) or not is_accounting_eligible(state, accounting_id):
             continue
         call_id = item.get("call_id")
-        if item.get("attribution_status") == "matched" and isinstance(call_id, str) and call_id:
+        # A chat span already flushed to Logfire is immutable history: usage
+        # that resolves to "matched" only *after* that flush can no longer
+        # land on it and must use the turn-owned fallback span instead.
+        chat_available = not otel_export.turn_export_sent(directory, root_id)
+        if (
+            chat_available
+            and item.get("attribution_status") == "matched"
+            and isinstance(call_id, str)
+            and call_id
+        ):
             destination = "chat-span"
             span_id = str(call_id)
         else:
             destination = "turn-accounting-span"
             span_id = _span_id(stored_session_id, owner_id, accounting_id)
+        delivered = otel_export.accounting_export_sent(directory, accounting_id)
         entry, accepted = _place(
             config,
             stored_session_id,
@@ -248,14 +342,15 @@ def queue_exports(
             destination=destination,
             span_id=span_id,
             usage=usage,
+            delivered=delivered,
         )
         if not accepted:
             continue
         if entry is not None:
             placements[accounting_id] = entry
         if entry is not None and entry.get("emitted"):
-            # ``emitted`` means a delivery acknowledgement, unlike a queued
-            # job.  Never recreate an accounting job after that point.
+            # Confirmed delivered, whether just now or on an earlier pass.
+            # Never recreate an accounting job after that point.
             continue
         if destination != "turn-accounting-span" or entry is None:
             continue
@@ -271,6 +366,8 @@ def queue_exports(
         )
         if sent:
             queued += 1
+            if entry.get("last_error") is not None:
+                _clear_error_state(config, stored_session_id, accounting_id)
         else:
             _error_state(config, stored_session_id, accounting_id, "accounting job was not queued")
 
@@ -291,6 +388,7 @@ def queue_exports(
         if usage is None:
             continue
         span_id = _span_id(stored_session_id, None, accounting_id)
+        delivered = otel_export.accounting_export_sent(directory, accounting_id)
         entry, accepted = _place(
             config,
             stored_session_id,
@@ -298,6 +396,7 @@ def queue_exports(
             destination="session-accounting-span",
             span_id=span_id,
             usage=usage,
+            delivered=delivered,
         )
         if not accepted or entry is None:
             continue
@@ -320,6 +419,8 @@ def queue_exports(
         )
         if sent:
             queued += 1
+            if entry.get("last_error") is not None:
+                _clear_error_state(config, stored_session_id, accounting_id)
         else:
             _error_state(config, stored_session_id, accounting_id, "accounting job was not queued")
 
@@ -332,8 +433,13 @@ def queue_exports(
         assembled = _with_deterministic_turn_ids(
             _turn_with_placed_accounting(turn, placements), stored_session_id
         )
-        otel_export.export_turn(
+        sent = otel_export.export_turn(
             config, directory, stored_session_id, PLATFORM_NAME, meta.cwd, assembled
         )
-        queued += 1
+        if sent:
+            queued += 1
+            if turn_id in (state.get("turn_errors") or {}):
+                _clear_turn_error_state(config, stored_session_id, turn_id)
+        else:
+            _turn_error_state(config, stored_session_id, turn_id, "turn export job was not queued")
     return queued

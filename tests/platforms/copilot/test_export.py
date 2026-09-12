@@ -216,8 +216,9 @@ def export_calls(monkeypatch: pytest.MonkeyPatch) -> dict[str, list[Any]]:
         "session_accounting": [],
     }
 
-    def _turn(*args: Any, **kwargs: Any) -> None:
+    def _turn(*args: Any, **kwargs: Any) -> bool:
         calls["turn"].append(args[5])
+        return True
 
     def _turn_accounting(*args: Any, **kwargs: Any) -> bool:
         calls["turn_accounting"].append(args[6])
@@ -293,7 +294,11 @@ class TestExportState:
         assert same_accepted is True
         assert same_entry == entry
 
-    def test_record_placement_conflicts_on_changed_destination(self) -> None:
+    def test_record_placement_replaces_undelivered_placement_on_changed_destination(
+        self,
+    ) -> None:
+        """Nothing was ever confirmed delivered, so a corrected destination
+        just replaces the queued-but-unconfirmed placement outright."""
         usage = _usage_row().to_dict()
         state, _, accepted = record_placement(
             empty_export_state(),
@@ -301,6 +306,56 @@ class TestExportState:
             destination="turn-accounting-span",
             span_id="span-a",
             usage=usage,
+        )
+        assert accepted is True
+        replaced, entry, accepted_again = record_placement(
+            state,
+            accounting_id="acct-1",
+            destination="chat-span",
+            span_id="call-1",
+            usage=usage,
+        )
+        assert accepted_again is True
+        assert entry is not None
+        assert entry["destination"] == "chat-span"
+        assert replaced["placements"]["acct-1"]["destination"] == "chat-span"
+        assert "acct-1" not in replaced["conflicts"]
+
+    def test_record_placement_replaces_undelivered_placement_on_usage_correction(
+        self,
+    ) -> None:
+        usage = _usage_row().to_dict()
+        state, _, accepted = record_placement(
+            empty_export_state(),
+            accounting_id="acct-1",
+            destination="chat-span",
+            span_id="call-1",
+            usage=usage,
+        )
+        assert accepted is True
+        corrected = dict(usage)
+        corrected["output_tokens"] = 999
+        replaced, entry, accepted_again = record_placement(
+            state,
+            accounting_id="acct-1",
+            destination="chat-span",
+            span_id="call-1",
+            usage=corrected,
+        )
+        assert accepted_again is True
+        assert entry is not None
+        assert entry["usage_digest"] == usage_digest(corrected)
+        assert "acct-1" not in replaced["conflicts"]
+
+    def test_record_placement_conflicts_on_changed_destination_after_delivery(self) -> None:
+        usage = _usage_row().to_dict()
+        state, _, accepted = record_placement(
+            empty_export_state(),
+            accounting_id="acct-1",
+            destination="turn-accounting-span",
+            span_id="span-a",
+            usage=usage,
+            delivered=True,
         )
         assert accepted is True
         conflicted, existing, rejected = record_placement(
@@ -315,7 +370,7 @@ class TestExportState:
         assert existing["destination"] == "turn-accounting-span"
         assert "acct-1" in conflicted["conflicts"]
 
-    def test_record_placement_conflicts_on_usage_correction(self) -> None:
+    def test_record_placement_conflicts_on_usage_correction_after_delivery(self) -> None:
         usage = _usage_row().to_dict()
         state, _, accepted = record_placement(
             empty_export_state(),
@@ -323,6 +378,7 @@ class TestExportState:
             destination="chat-span",
             span_id="call-1",
             usage=usage,
+            delivered=True,
         )
         assert accepted is True
         corrected = dict(usage)
@@ -339,6 +395,34 @@ class TestExportState:
         assert conflicted["conflicts"]["acct-1"]["candidate"]["usage_digest"] == usage_digest(
             corrected
         )
+
+    def test_record_placement_self_heals_emitted_flag_when_delivery_confirmed(self) -> None:
+        """Same destination/span/usage as before, but the caller now has a
+        fresh durable-claim read showing delivery succeeded: the ledger's own
+        ``emitted`` flag was never told directly, so this is the only place
+        it catches up."""
+        usage = _usage_row().to_dict()
+        state, entry, _ = record_placement(
+            empty_export_state(),
+            accounting_id="acct-1",
+            destination="chat-span",
+            span_id="call-1",
+            usage=usage,
+        )
+        assert entry is not None
+        assert entry["emitted"] is False
+        healed, healed_entry, accepted = record_placement(
+            state,
+            accounting_id="acct-1",
+            destination="chat-span",
+            span_id="call-1",
+            usage=usage,
+            delivered=True,
+        )
+        assert accepted is True
+        assert healed_entry is not None
+        assert healed_entry["emitted"] is True
+        assert healed["placements"]["acct-1"]["emitted"] is True
 
 
 class TestQueueExports:
@@ -362,6 +446,26 @@ class TestQueueExports:
         assert state["activated"] is True
         assert TURN_ONE in state["excluded_turn_ids"]
         assert ACCOUNTING_MATCHED in state["excluded_accounting_ids"]
+
+    def test_unsupported_ledger_schema_version_fails_closed(
+        self, config: Config, paths: SourcePaths
+    ) -> None:
+        """A missing ledger file legitimately starts from empty state, but a
+        present file with an unrecognized ``schema_version`` must never be
+        silently treated as empty -- that would forget every recorded
+        placement and risk emitting tokens at a second location."""
+        stored = _seed_session(config, paths)
+        directory = _directory(config, stored)
+        directory.mkdir(parents=True, exist_ok=True)
+        export_state_path(directory).write_text(
+            json.dumps({"schema_version": 999, "placements": {"acct-1": {"emitted": True}}}),
+            encoding="utf-8",
+        )
+        with pytest.raises(ValueError, match="unsupported Copilot export ledger schema_version"):
+            load_export_state(config, stored)
+        projection = _projection(turns=[_main_turn()])
+        with pytest.raises(ValueError, match="unsupported Copilot export ledger schema_version"):
+            queue_exports(config, stored, projection)
 
     def test_first_activation_without_history_queues_nothing(
         self,
@@ -534,13 +638,7 @@ class TestQueueExports:
         assert "pending-call" not in state["placements"]
         assert "conflict-call" not in state["placements"]
 
-    def test_fallback_placement_prevents_later_chat_relocation(
-        self,
-        enabled_config: Config,
-        paths: SourcePaths,
-        export_calls: dict[str, list[Any]],
-    ) -> None:
-        stored = _seed_session(enabled_config, paths)
+    def _ambiguous_then_matched_projections(self) -> tuple[Projection, Projection]:
         ambiguous_projection = _projection(
             turns=[
                 _main_turn(
@@ -563,10 +661,6 @@ class TestQueueExports:
                 )
             ],
         )
-        queue_exports(enabled_config, stored, ambiguous_projection, include_history=True)
-        export_calls["turn"].clear()
-        export_calls["turn_accounting"].clear()
-
         matched_projection = _projection(
             turns=[
                 _main_turn(
@@ -583,13 +677,90 @@ class TestQueueExports:
             usage_rows=[_usage_row(call_id=ACCOUNTING_UNMATCHED, input_tokens=6587, output_tokens=5)],
             attributions=[_attribution(logical_call_id=ACCOUNTING_UNMATCHED, call_id=CALL_MATCHED)],
         )
+        return ambiguous_projection, matched_projection
+
+    def test_pre_delivery_correction_relocates_to_chat_without_conflict(
+        self,
+        enabled_config: Config,
+        paths: SourcePaths,
+        export_calls: dict[str, list[Any]],
+    ) -> None:
+        """Nothing was ever confirmed delivered for the fallback placement
+        (no real worker ran), so improved local matching is still free to
+        relocate the tokens onto the now-known chat span."""
+        stored = _seed_session(enabled_config, paths)
+        ambiguous_projection, matched_projection = self._ambiguous_then_matched_projections()
+        queue_exports(enabled_config, stored, ambiguous_projection, include_history=True)
+        export_calls["turn"].clear()
+        export_calls["turn_accounting"].clear()
+
+        queue_exports(enabled_config, stored, matched_projection, include_history=True)
+
+        state = load_export_state(enabled_config, stored)
+        placement = state["placements"][ACCOUNTING_UNMATCHED]
+        assert placement["destination"] == "chat-span"
+        assert placement["span_id"] == CALL_MATCHED
+        assert ACCOUNTING_UNMATCHED not in state["conflicts"]
+        turn = export_calls["turn"][0]
+        assert turn["accounting_calls"][0]["accounting_id"] == ACCOUNTING_UNMATCHED
+
+    def test_fallback_placement_prevents_later_chat_relocation_after_confirmed_delivery(
+        self,
+        enabled_config: Config,
+        paths: SourcePaths,
+        export_calls: dict[str, list[Any]],
+    ) -> None:
+        """Once the durable transport claim shows the fallback span was
+        actually flushed, later local matching can no longer move those
+        tokens onto the chat span — that would double the emitted total."""
+        stored = _seed_session(enabled_config, paths)
+        ambiguous_projection, matched_projection = self._ambiguous_then_matched_projections()
+        queue_exports(enabled_config, stored, ambiguous_projection, include_history=True)
+
+        directory = _directory(enabled_config, stored)
+        otel_export._mark_accounting_sent(directory, ACCOUNTING_UNMATCHED)
+
+        export_calls["turn"].clear()
+        export_calls["turn_accounting"].clear()
+
         queue_exports(enabled_config, stored, matched_projection, include_history=True)
 
         state = load_export_state(enabled_config, stored)
         placement = state["placements"][ACCOUNTING_UNMATCHED]
         assert placement["destination"] == "turn-accounting-span"
+        assert placement["emitted"] is True
         assert ACCOUNTING_UNMATCHED in state["conflicts"]
         assert export_calls["turn_accounting"] == []
+        turn = export_calls["turn"][0]
+        assert turn["accounting_calls"] == []
+
+    def test_confirmed_turn_delivery_routes_new_match_to_fallback(
+        self,
+        enabled_config: Config,
+        paths: SourcePaths,
+        export_calls: dict[str, list[Any]],
+    ) -> None:
+        """Even with no prior accounting placement at all, a chat span that
+        the durable turn claim shows was already flushed is immutable: a
+        newly-matched usage row must land on a turn-accounting fallback
+        span, never on that already-sent chat span."""
+        stored = _seed_session(enabled_config, paths)
+        turn_only_projection = _projection(turns=[_main_turn()])
+        queue_exports(enabled_config, stored, turn_only_projection, include_history=True)
+
+        directory = _directory(enabled_config, stored)
+        claim_path = otel_export._turn_claim_path(directory, TURN_ONE)
+        claim_path.parent.mkdir(parents=True, exist_ok=True)
+        claim_path.write_text("sent", encoding="utf-8", newline="\n")
+
+        export_calls["turn"].clear()
+        _, matched_projection = self._ambiguous_then_matched_projections()
+        queue_exports(enabled_config, stored, matched_projection, include_history=True)
+
+        state = load_export_state(enabled_config, stored)
+        placement = state["placements"][ACCOUNTING_UNMATCHED]
+        assert placement["destination"] == "turn-accounting-span"
+        assert len(export_calls["turn_accounting"]) == 1
         turn = export_calls["turn"][0]
         assert turn["accounting_calls"] == []
 
@@ -681,7 +852,7 @@ class TestQueueExports:
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         stored = _seed_session(enabled_config, paths)
-        monkeypatch.setattr(otel_export, "export_turn", lambda *args, **kwargs: None)
+        monkeypatch.setattr(otel_export, "export_turn", lambda *args, **kwargs: True)
         monkeypatch.setattr(otel_export, "export_turn_accounting", lambda *args, **kwargs: False)
         monkeypatch.setattr(otel_export, "export_session_accounting", lambda *args, **kwargs: False)
 
@@ -713,6 +884,71 @@ class TestQueueExports:
         assert state["placements"][ACCOUNTING_UNMATCHED]["last_error"] == (
             "accounting job was not queued"
         )
+
+    def test_turn_job_failure_is_not_counted_and_is_recorded(
+        self,
+        enabled_config: Config,
+        paths: SourcePaths,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """`otel_export.export_turn` now reports durable queue acceptance,
+        same contract as `export_spans`; a spawn/write failure there must not
+        be silently counted as a successful queue."""
+        stored = _seed_session(enabled_config, paths)
+        monkeypatch.setattr(otel_export, "export_turn", lambda *args, **kwargs: False)
+
+        projection = _projection(turns=[_main_turn()])
+        queued = queue_exports(enabled_config, stored, projection, include_history=True)
+        assert queued == 0
+        state = load_export_state(enabled_config, stored)
+        assert state["turn_errors"][TURN_ONE] == "turn export job was not queued"
+
+    def test_errors_clear_once_a_retry_succeeds(
+        self,
+        enabled_config: Config,
+        paths: SourcePaths,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """A stale `last_error`/turn error from an earlier failed attempt must
+        not linger once a later reconciliation successfully queues the job."""
+        stored = _seed_session(enabled_config, paths)
+        monkeypatch.setattr(otel_export, "export_turn", lambda *args, **kwargs: False)
+        monkeypatch.setattr(otel_export, "export_turn_accounting", lambda *args, **kwargs: False)
+
+        projection = _projection(
+            turns=[
+                _main_turn(
+                    accounting_calls=[
+                        _accounting_call(
+                            accounting_id=ACCOUNTING_UNMATCHED,
+                            attribution_status="ambiguous",
+                            call_id=None,
+                            usage=_usage_row(call_id=ACCOUNTING_UNMATCHED).to_dict(),
+                        )
+                    ]
+                )
+            ],
+            usage_rows=[_usage_row(call_id=ACCOUNTING_UNMATCHED, input_tokens=6587, output_tokens=5)],
+            attributions=[
+                _attribution(
+                    logical_call_id=ACCOUNTING_UNMATCHED, status="ambiguous", call_id=None
+                )
+            ],
+        )
+        queue_exports(enabled_config, stored, projection, include_history=True)
+        state = load_export_state(enabled_config, stored)
+        assert state["turn_errors"][TURN_ONE] == "turn export job was not queued"
+        assert state["placements"][ACCOUNTING_UNMATCHED]["last_error"] == (
+            "accounting job was not queued"
+        )
+
+        monkeypatch.setattr(otel_export, "export_turn", lambda *args, **kwargs: True)
+        monkeypatch.setattr(otel_export, "export_turn_accounting", lambda *args, **kwargs: True)
+        queue_exports(enabled_config, stored, projection, include_history=True)
+
+        state = load_export_state(enabled_config, stored)
+        assert TURN_ONE not in state["turn_errors"]
+        assert state["placements"][ACCOUNTING_UNMATCHED]["last_error"] is None
 
     def test_restart_preserves_ledger_and_boundary(
         self,
@@ -754,6 +990,252 @@ class TestQueueExports:
         queued = queue_exports(enabled_config, stored, projection, include_history=True)
         assert queued == 0
         assert export_calls["turn"] == []
+
+    def test_open_interaction_accounting_becomes_eligible_once_turn_completes(
+        self,
+        enabled_config: Config,
+        paths: SourcePaths,
+        export_calls: dict[str, list[Any]],
+    ) -> None:
+        """First activation must only wall off *already terminal* history.
+
+        A usage row owned by an interaction that is still open at first
+        activation is not history yet — it must stay eligible once that
+        interaction later completes, without an explicit ``--export``.
+        """
+        stored = _seed_session(enabled_config, paths)
+        open_projection = _projection(
+            turns=[
+                _main_turn(
+                    status="in_progress",
+                    accounting_calls=[_accounting_call()],
+                )
+            ],
+            usage_rows=[_usage_row()],
+            attributions=[_attribution(logical_call_id=ACCOUNTING_MATCHED)],
+        )
+        queued = queue_exports(enabled_config, stored, open_projection)
+        assert queued == 0
+
+        completed_projection = _projection(
+            turns=[_main_turn(status="completed", accounting_calls=[_accounting_call()])],
+            usage_rows=[_usage_row()],
+            attributions=[_attribution(logical_call_id=ACCOUNTING_MATCHED)],
+        )
+        queued = queue_exports(enabled_config, stored, completed_projection)
+        assert queued == 1
+        state = load_export_state(enabled_config, stored)
+        assert ACCOUNTING_MATCHED in state["placements"]
+        assert state["placements"][ACCOUNTING_MATCHED]["destination"] == "chat-span"
+
+    def test_pending_attribution_on_open_turn_is_eligible_once_resolved(
+        self,
+        enabled_config: Config,
+        paths: SourcePaths,
+        export_calls: dict[str, list[Any]],
+    ) -> None:
+        """A pending (unresolved) attribution owned by a still-open turn at
+        first activation must not be forever excluded once the interaction
+        finishes and the attribution later resolves to ambiguous/matched."""
+        stored = _seed_session(enabled_config, paths)
+        open_projection = _projection(
+            turns=[
+                _main_turn(
+                    status="in_progress",
+                    accounting_calls=[
+                        _accounting_call(
+                            accounting_id=ACCOUNTING_UNMATCHED,
+                            attribution_status="pending",
+                            call_id=None,
+                            usage=_usage_row(call_id=ACCOUNTING_UNMATCHED).to_dict(),
+                        )
+                    ],
+                )
+            ],
+            usage_rows=[_usage_row(call_id=ACCOUNTING_UNMATCHED)],
+            attributions=[
+                _attribution(
+                    logical_call_id=ACCOUNTING_UNMATCHED, status="pending", call_id=None
+                )
+            ],
+        )
+        queue_exports(enabled_config, stored, open_projection)
+
+        resolved_projection = _projection(
+            turns=[
+                _main_turn(
+                    status="completed",
+                    accounting_calls=[
+                        _accounting_call(
+                            accounting_id=ACCOUNTING_UNMATCHED,
+                            attribution_status="ambiguous",
+                            call_id=None,
+                            usage=_usage_row(call_id=ACCOUNTING_UNMATCHED).to_dict(),
+                        )
+                    ],
+                )
+            ],
+            usage_rows=[_usage_row(call_id=ACCOUNTING_UNMATCHED)],
+            attributions=[
+                _attribution(
+                    logical_call_id=ACCOUNTING_UNMATCHED, status="ambiguous", call_id=None
+                )
+            ],
+        )
+        queued = queue_exports(enabled_config, stored, resolved_projection)
+        assert queued == 2
+        state = load_export_state(enabled_config, stored)
+        assert ACCOUNTING_UNMATCHED in state["placements"]
+
+    def test_child_turn_accounting_stays_excluded_with_its_main_interaction(
+        self,
+        enabled_config: Config,
+        paths: SourcePaths,
+        export_calls: dict[str, list[Any]],
+    ) -> None:
+        """A nested child (subagent) turn is never exported as its own job,
+        so its own id is never a member of the boundary lists built from main
+        turns. Eligibility for its accounting must resolve to the owning main
+        interaction, not the child's own id -- otherwise usage discovered
+        later for a child of an already-excluded historical main turn would
+        wrongly become eligible on its own."""
+        stored = _seed_session(enabled_config, paths)
+        child_turn_id = f"{TURN_ONE}:agent-1"
+        first_projection = _projection(
+            turns=[_main_turn(subagents=[_main_turn(turn_id=child_turn_id)])],
+        )
+        queued = queue_exports(enabled_config, stored, first_projection)
+        assert queued == 0
+        state = load_export_state(enabled_config, stored)
+        assert TURN_ONE in state["excluded_turn_ids"]
+        assert child_turn_id not in state["excluded_turn_ids"]
+
+        late_child_accounting_projection = _projection(
+            turns=[
+                _main_turn(
+                    subagents=[
+                        _main_turn(
+                            turn_id=child_turn_id,
+                            accounting_calls=[_accounting_call()],
+                        )
+                    ]
+                )
+            ],
+            usage_rows=[_usage_row()],
+            attributions=[
+                _attribution(logical_call_id=ACCOUNTING_MATCHED, stored_turn_id=child_turn_id)
+            ],
+        )
+        queued = queue_exports(enabled_config, stored, late_child_accounting_projection)
+        assert queued == 0
+        assert export_calls["turn_accounting"] == []
+        state = load_export_state(enabled_config, stored)
+        assert ACCOUNTING_MATCHED not in state["placements"]
+
+
+class TestWorkerConfirmedDelivery:
+    """`queue_exports` against a real (locally flushed, never remote) Logfire
+    instance and the real detached worker, to verify the durable delivery
+    claim actually prevents a second emission across a simulated restart."""
+
+    @pytest.fixture(autouse=True)
+    def _reset_otel_state(self):
+        pytest.importorskip("logfire")
+        from thirdeye import otel_export as _otel_export
+
+        _otel_export._state["attempted"] = False
+        _otel_export._state["instance"] = None
+        _otel_export._state["id_generator"] = None
+        yield
+        _otel_export._state["attempted"] = False
+        _otel_export._state["instance"] = None
+        _otel_export._state["id_generator"] = None
+
+    @pytest.fixture
+    def exporter(self):
+        from logfire.testing import TestExporter
+
+        return TestExporter()
+
+    @pytest.fixture
+    def wired_instance(self, exporter, monkeypatch: pytest.MonkeyPatch):
+        import logfire
+        from opentelemetry.sdk.trace.export import SimpleSpanProcessor
+
+        instance = logfire.configure(
+            send_to_logfire=False,
+            console=False,
+            additional_span_processors=[SimpleSpanProcessor(exporter)],
+            advanced=logfire.AdvancedOptions(id_generator=otel_export._id_generator()),
+        )
+        monkeypatch.setattr(otel_export, "_get_instance", lambda config, platform: instance)
+        return instance
+
+    @pytest.fixture(autouse=True)
+    def _synchronous_worker(self, monkeypatch: pytest.MonkeyPatch, enabled_config: Config):
+        """Run the detached worker in-process instead of spawning a real
+        child, same as the generic transport's own worker tests do."""
+        from thirdeye import otel_worker
+
+        monkeypatch.setattr(Config, "load", lambda: enabled_config)
+
+        def _run(job_path: Path) -> None:
+            otel_worker.main([str(job_path)])
+
+        monkeypatch.setattr(otel_export, "_spawn", _run)
+
+    def test_confirmed_accounting_delivery_survives_restart_without_double_emission(
+        self,
+        enabled_config: Config,
+        paths: SourcePaths,
+        wired_instance,
+        exporter,
+    ) -> None:
+        stored = _seed_session(enabled_config, paths)
+        projection = _projection(
+            turns=[
+                _main_turn(
+                    accounting_calls=[
+                        _accounting_call(
+                            accounting_id=ACCOUNTING_UNMATCHED,
+                            attribution_status="ambiguous",
+                            call_id=None,
+                            usage=_usage_row(call_id=ACCOUNTING_UNMATCHED).to_dict(),
+                        )
+                    ]
+                )
+            ],
+            usage_rows=[_usage_row(call_id=ACCOUNTING_UNMATCHED, input_tokens=6587, output_tokens=5)],
+            attributions=[
+                _attribution(
+                    logical_call_id=ACCOUNTING_UNMATCHED, status="ambiguous", call_id=None
+                )
+            ],
+        )
+
+        queue_exports(enabled_config, stored, projection, include_history=True)
+        directory = _directory(enabled_config, stored)
+        assert otel_export.accounting_export_sent(directory, ACCOUNTING_UNMATCHED) is True
+        first_accounting_spans = [
+            span for span in exporter.exported_spans_as_dict() if span["name"] == "accounting"
+        ]
+        assert len(first_accounting_spans) == 1
+
+        # Simulate a restart: fresh Config/instance state, same durable
+        # ledger and durable transport claim on disk.
+        reloaded = Config(
+            root=enabled_config.root,
+            logfire=LogfireSettings(enabled=True, token="fake-token"),
+        )
+        queued = queue_exports(reloaded, stored, projection, include_history=True)
+        assert queued == 1  # the turn job re-queues; harmless, first-wins claim there too
+
+        second_accounting_spans = [
+            span for span in exporter.exported_spans_as_dict() if span["name"] == "accounting"
+        ]
+        assert len(second_accounting_spans) == 1  # unchanged: no second accounting emission
+        state = load_export_state(enabled_config, stored)
+        assert state["placements"][ACCOUNTING_UNMATCHED]["emitted"] is True
 
 
 def _drain_cli_transcript(home: Path) -> list[SourceRecord]:

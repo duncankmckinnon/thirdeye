@@ -580,6 +580,39 @@ def turn_export_sent(session_dir_: Path, turn_id: str) -> bool:
         return False
 
 
+def _accounting_claim_path(session_dir_: Path, accounting_id: str) -> Path:
+    # Same hashed-filename rationale as `_turn_claim_path`: an accounting id
+    # is caller-derived and not guaranteed filesystem-safe.
+    digest = hashlib.sha256(accounting_id.encode()).hexdigest()
+    return session_dir_ / "otel-accounting-sent" / f"{digest}.json"
+
+
+def accounting_export_sent(session_dir_: Path, accounting_id: str) -> bool:
+    """Whether one accounting identity's fallback/chat tokens were ever
+    confirmed flushed to Logfire.
+
+    The deterministic accounting job file the worker writes is deleted once
+    delivery succeeds (see `otel_worker._run_accounting_job`), so it cannot
+    be reused as a durable "already delivered" signal — a later caller would
+    see no job file and wrongly conclude nothing was ever sent, and requeue
+    a duplicate. This claim persists independently of that job file, mirroring
+    `_turn_claim_path`, so a caller like Copilot's export ledger can tell a
+    confirmed delivery apart from one that is merely queued or still retrying.
+    """
+    try:
+        return _accounting_claim_path(session_dir_, accounting_id).read_text(
+            encoding="utf-8"
+        ) == "sent"
+    except OSError:
+        return False
+
+
+def _mark_accounting_sent(session_dir_: Path, accounting_id: str) -> None:
+    path = _accounting_claim_path(session_dir_, accounting_id)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text("sent", encoding="utf-8", newline="\n")
+
+
 def _claim_turn_export(session_dir_: Path, turn_id: str) -> bool:
     """First-wins claim on exporting this turn's span tree, ever, for this
     session. A replayed/duplicate hook invocation for the same turn (e.g. the
@@ -617,16 +650,21 @@ def export_turn(
     turn: TurnSpanDict,
     *,
     captured_env: dict[str, str] | None = None,
-) -> None:
+) -> bool:
     """Hand a completed turn off for background export. Never raises, never
     blocks on network I/O — the actual Logfire call happens in a detached
     child process this spawns and does not wait for. See module docstring.
 
     ``captured_env`` lets a caller whose own ``os.environ`` is unreliable
     supply the raw opted-in env dict; when omitted it is read here.
+
+    Returns whether the local job was durably written and dispatched, same
+    contract as :func:`export_spans` — never whether Logfire ever received it.
+    No existing caller inspects the return value, so this is backward
+    compatible with every platform still calling this positionally.
     """
     if not config.logfire.enabled or not config.logfire.token:
-        return
+        return False
     try:
         job_path = _write_job(
             config.root,
@@ -641,6 +679,7 @@ def export_turn(
             },
         )
         _spawn(job_path)
+        return True
     except Exception as exc:
         log_capture_error(
             thirdeye_home=config.root,
@@ -649,6 +688,7 @@ def export_turn(
             platform=platform,
             session_id=session_id,
         )
+        return False
 
 
 def export_spans(
@@ -1085,6 +1125,7 @@ def _export_session_accounting_inner(
     )
     if instance.force_flush(timeout_millis=_FLUSH_TIMEOUT_MS) is False:
         raise RuntimeError("session accounting export was not flushed")
+    _mark_accounting_sent(session_dir_, str(accounting["accounting_id"]))
 
 
 def _export_turn_accounting_inner(
@@ -1126,6 +1167,7 @@ def _export_turn_accounting_inner(
     )
     if instance.force_flush(timeout_millis=_FLUSH_TIMEOUT_MS) is False:
         raise RuntimeError("turn accounting export was not flushed")
+    _mark_accounting_sent(session_dir_, str(accounting["accounting_id"]))
 
 
 @lru_cache(maxsize=128)
