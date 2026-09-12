@@ -41,6 +41,24 @@ def claim_path(path: Path) -> Path:
     return path.with_suffix(f"{path.suffix}.claim")
 
 
+def delivery_claim_path(session_dir: Path, accounting_id: str) -> Path:
+    digest = hashlib.sha256(accounting_id.encode("utf-8")).hexdigest()
+    return session_dir / "copilot-accounting-sent" / f"{digest}.json"
+
+
+def delivery_sent(session_dir: Path, accounting_id: str) -> bool:
+    try:
+        return delivery_claim_path(session_dir, accounting_id).read_text(encoding="utf-8") == "sent"
+    except OSError:
+        return False
+
+
+def _mark_delivered(session_dir: Path, accounting_id: str) -> None:
+    path = delivery_claim_path(session_dir, accounting_id)
+    if _atomic_create(path, "sent"):
+        fsops.sync_directory(path.parent)
+
+
 def _atomic_create(path: Path, text: str) -> bool:
     path.parent.mkdir(parents=True, exist_ok=True)
     try:
@@ -147,6 +165,42 @@ def _spawn(path: Path) -> None:
     proc.spawn_detached([sys.executable, "-m", "thirdeye.platforms.copilot.export_transport", str(path)])
 
 
+def queue_turn(
+    config: Config,
+    session_dir: Path,
+    session_id: str,
+    cwd: str,
+    turn: dict[str, Any],
+) -> bool:
+    """Queue a Copilot turn while preserving the generic worker job shape."""
+    if not config.logfire.enabled or not config.logfire.token:
+        return False
+    try:
+        path = otel_export._write_job(
+            config.root,
+            {
+                "kind": "turn",
+                "captured_attributes": otel_export._resolve_captured_attributes(config, None),
+                "session_dir": str(session_dir),
+                "session_id": session_id,
+                "platform": "copilot",
+                "cwd": cwd,
+                "turn": turn,
+            },
+        )
+        otel_export._spawn(path)
+        return True
+    except Exception as exc:
+        log_capture_error(
+            thirdeye_home=config.root,
+            phase="copilot_turn_export_spawn",
+            error=exc,
+            platform="copilot",
+            session_id=session_id,
+        )
+        return False
+
+
 def _placement_is_current(config: Config, payload: dict[str, Any]) -> bool:
     from .export_state import load_export_state
 
@@ -175,7 +229,7 @@ def _queue(config: Config, payload: dict[str, Any]) -> bool:
         try:
             if not _placement_is_current(config, payload):
                 return True
-            delivered = otel_export.accounting_export_sent(
+            delivered = delivery_sent(
                 Path(str(payload["session_dir"])), str(payload["accounting_id"])
             )
             if not delivered:
@@ -266,6 +320,10 @@ def _acquire(path: Path) -> dict[str, Any] | None:
     if payload is None or payload.get("state") in {"failed", "emitted"}:
         fsops.unlink(owner, missing_ok=True)
         return None
+    if delivery_sent(Path(str(payload["session_dir"])), str(payload["accounting_id"])):
+        fsops.unlink(path, missing_ok=True)
+        fsops.unlink(owner, missing_ok=True)
+        return None
     claimed = {**payload, "state": "claimed"}
     _write_job(path, claimed)
     return claimed
@@ -352,6 +410,9 @@ def run(path: Path) -> None:
         )
     else:
         try:
+            _mark_delivered(
+                Path(str(claimed["session_dir"])), str(claimed["accounting_id"])
+            )
             _write_job(path, {**claimed, "state": "emitted", "last_error": None})
             fsops.unlink(path, missing_ok=True)
         except Exception as exc:

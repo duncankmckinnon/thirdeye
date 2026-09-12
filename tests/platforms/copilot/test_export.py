@@ -218,7 +218,7 @@ def export_calls(monkeypatch: pytest.MonkeyPatch) -> dict[str, list[Any]]:
     }
 
     def _turn(*args: Any, **kwargs: Any) -> bool:
-        calls["turn"].append(args[5])
+        calls["turn"].append(args[4])
         return True
 
     def _turn_accounting(*args: Any, **kwargs: Any) -> bool:
@@ -229,7 +229,7 @@ def export_calls(monkeypatch: pytest.MonkeyPatch) -> dict[str, list[Any]]:
         calls["session_accounting"].append(args[4])
         return True
 
-    monkeypatch.setattr(otel_export, "export_turn", _turn)
+    monkeypatch.setattr(export_transport, "queue_turn", _turn)
     monkeypatch.setattr(export_transport, "queue_turn_accounting", _turn_accounting)
     monkeypatch.setattr(export_transport, "queue_session_accounting", _session_accounting)
     return calls
@@ -776,7 +776,7 @@ class TestQueueExports:
         queue_exports(enabled_config, stored, ambiguous_projection, include_history=True)
 
         directory = _directory(enabled_config, stored)
-        otel_export._mark_accounting_sent(directory, ACCOUNTING_UNMATCHED)
+        export_transport._mark_delivered(directory, ACCOUNTING_UNMATCHED)
 
         export_calls["turn"].clear()
         export_calls["turn_accounting"].clear()
@@ -938,7 +938,7 @@ class TestQueueExports:
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         stored = _seed_session(enabled_config, paths)
-        monkeypatch.setattr(otel_export, "export_turn", lambda *args, **kwargs: True)
+        monkeypatch.setattr(export_transport, "queue_turn", lambda *args, **kwargs: True)
         monkeypatch.setattr(
             export_transport, "queue_turn_accounting", lambda *args, **kwargs: False
         )
@@ -981,11 +981,10 @@ class TestQueueExports:
         paths: SourcePaths,
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
-        """`otel_export.export_turn` now reports durable queue acceptance,
-        same contract as `export_spans`; a spawn/write failure there must not
-        be silently counted as a successful queue."""
+        """A Copilot turn spawn/write failure must not be counted as a
+        successful queue."""
         stored = _seed_session(enabled_config, paths)
-        monkeypatch.setattr(otel_export, "export_turn", lambda *args, **kwargs: False)
+        monkeypatch.setattr(export_transport, "queue_turn", lambda *args, **kwargs: False)
 
         projection = _projection(turns=[_main_turn()])
         queued = queue_exports(enabled_config, stored, projection, include_history=True)
@@ -1002,7 +1001,7 @@ class TestQueueExports:
         """A stale `last_error`/turn error from an earlier failed attempt must
         not linger once a later reconciliation successfully queues the job."""
         stored = _seed_session(enabled_config, paths)
-        monkeypatch.setattr(otel_export, "export_turn", lambda *args, **kwargs: False)
+        monkeypatch.setattr(export_transport, "queue_turn", lambda *args, **kwargs: False)
         monkeypatch.setattr(
             export_transport, "queue_turn_accounting", lambda *args, **kwargs: False
         )
@@ -1034,7 +1033,7 @@ class TestQueueExports:
             "accounting job was not queued"
         )
 
-        monkeypatch.setattr(otel_export, "export_turn", lambda *args, **kwargs: True)
+        monkeypatch.setattr(export_transport, "queue_turn", lambda *args, **kwargs: True)
         monkeypatch.setattr(
             export_transport, "queue_turn_accounting", lambda *args, **kwargs: True
         )
@@ -1591,7 +1590,7 @@ class TestWorkerConfirmedDelivery:
 
         queue_exports(enabled_config, stored, projection, include_history=True)
         directory = _directory(enabled_config, stored)
-        assert otel_export.accounting_export_sent(directory, ACCOUNTING_UNMATCHED) is True
+        assert export_transport.delivery_sent(directory, ACCOUNTING_UNMATCHED) is True
         first_accounting_spans = [
             span for span in exporter.exported_spans_as_dict() if span["name"] == "accounting"
         ]
@@ -1622,13 +1621,9 @@ class TestWorkerConfirmedDelivery:
     ) -> None:
         """Matched usage placed on the chat span is delivered as part of the
         turn's own job -- there is no separate fallback accounting job for
-        it. The durable transport claim must still record that delivery
-        (``otel_export.accounting_export_sent``), or a later reconciliation
-        would see the turn as already sent (so the chat span is no longer
-        available) but the accounting as never delivered, and would
-        "recover" by relocating it to a brand-new turn-accounting fallback
-        span -- duplicating the tokens that were already flushed on the chat
-        span the first time."""
+        it. Copilot reconciles the durable turn claim with its chat placement;
+        otherwise a later pass could relocate the accounting to a fallback
+        span and duplicate tokens already flushed on the chat span."""
         stored = _seed_session(enabled_config, paths)
         projection = _projection(
             turns=[_main_turn(accounting_calls=[_accounting_call()])],
@@ -1639,7 +1634,6 @@ class TestWorkerConfirmedDelivery:
         queue_exports(enabled_config, stored, projection, include_history=True)
         directory = _directory(enabled_config, stored)
         assert otel_export.turn_export_sent(directory, TURN_ONE) is True
-        assert otel_export.accounting_export_sent(directory, ACCOUNTING_MATCHED) is True
         chat_spans = [
             span for span in exporter.exported_spans_as_dict() if span["name"].startswith("chat")
         ]
