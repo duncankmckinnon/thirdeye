@@ -545,6 +545,47 @@ def _write_accounting_job(thirdeye_home: Path, payload: dict[str, Any]) -> Path:
     return job_path
 
 
+def accounting_job_status(thirdeye_home: Path, job_id: str) -> dict[str, Any] | None:
+    """Read the current on-disk state of a deterministic accounting job.
+
+    Returns ``None`` when no job file exists for this id: either it was
+    never queued, or the worker already claimed, emitted, and deleted it
+    (see ``_run_accounting_job``). Callers that need to know "confirmed
+    delivered" rather than "no job file present" must consult
+    ``accounting_export_sent`` separately -- that durable claim is written
+    before the job file is removed, so it survives this function returning
+    ``None`` for an already-delivered identity.
+    """
+    digest = hashlib.sha256(job_id.encode("utf-8")).hexdigest()
+    job_path = otel_jobs_dir(thirdeye_home) / f"accounting-{digest}.json"
+    try:
+        payload = json.loads(job_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return None
+    return {"state": payload.get("state"), "attempt": payload.get("attempt")}
+
+
+def cancel_accounting_job(thirdeye_home: Path, job_id: str) -> None:
+    """Best-effort removal of a still-queued deterministic accounting job.
+
+    Only meant to be called right after ``accounting_job_status`` reported
+    ``"queued"`` for this id -- a caller relocating an accounting identity to
+    a new destination/span uses this to keep the stale job (keyed by the old
+    span id) from being picked up by an already-dispatched worker and
+    delivering tokens nobody's ledger points at anymore. If a worker wins the
+    race and claims the job between that read and this delete, the delete is
+    still safe: the worker holds its payload in memory and only ever
+    rewrites the same path, so removing the file first does not resurrect a
+    delivery that wasn't already in flight, and a worker that instead loses
+    the race hits a benign missing-file read and exits (see
+    ``otel_worker.main``).
+    """
+    digest = hashlib.sha256(job_id.encode("utf-8")).hexdigest()
+    job_path = otel_jobs_dir(thirdeye_home) / f"accounting-{digest}.json"
+    fsops.unlink(job_path, missing_ok=True)
+    fsops.unlink(job_path.with_suffix(f"{job_path.suffix}.claim"), missing_ok=True)
+
+
 def _spawn(job_path: Path) -> None:
     """Hand a job file to a detached ``thirdeye.otel_worker``.
 
@@ -578,6 +619,64 @@ def turn_export_sent(session_dir_: Path, turn_id: str) -> bool:
         return _turn_claim_path(session_dir_, turn_id).read_text(encoding="utf-8") == "sent"
     except OSError:
         return False
+
+
+def _accounting_claim_path(session_dir_: Path, accounting_id: str) -> Path:
+    # Same hashed-filename rationale as `_turn_claim_path`: an accounting id
+    # is caller-derived and not guaranteed filesystem-safe.
+    digest = hashlib.sha256(accounting_id.encode()).hexdigest()
+    return session_dir_ / "otel-accounting-sent" / f"{digest}.json"
+
+
+def accounting_export_sent(session_dir_: Path, accounting_id: str) -> bool:
+    """Whether one accounting identity's fallback/chat tokens were ever
+    confirmed flushed to Logfire.
+
+    The deterministic accounting job file the worker writes is deleted once
+    delivery succeeds (see `otel_worker._run_accounting_job`), so it cannot
+    be reused as a durable "already delivered" signal — a later caller would
+    see no job file and wrongly conclude nothing was ever sent, and requeue
+    a duplicate. This claim persists independently of that job file, mirroring
+    `_turn_claim_path`, so a caller like Copilot's export ledger can tell a
+    confirmed delivery apart from one that is merely queued or still retrying.
+    """
+    try:
+        return _accounting_claim_path(session_dir_, accounting_id).read_text(
+            encoding="utf-8"
+        ) == "sent"
+    except OSError:
+        return False
+
+
+def _mark_accounting_sent(session_dir_: Path, accounting_id: str) -> None:
+    path = _accounting_claim_path(session_dir_, accounting_id)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text("sent", encoding="utf-8", newline="\n")
+
+
+def _embedded_accounting_ids(turn: TurnSpanDict) -> list[str]:
+    """Collect every accounting id a turn's own job carries, recursively.
+
+    ``_export_turn_subtree`` delivers every one of these within the same
+    flush as the turn itself -- merged onto a matching chat span's usage
+    fields, or (if its call id doesn't match a chat span in this turn) as an
+    inline turn-owned accounting span -- so once that flush is confirmed,
+    every id collected here is confirmed delivered too, the same as one
+    delivered through the separate fallback accounting job path.
+    """
+    ids: list[str] = []
+    for accounting in turn.get("accounting_calls") or []:
+        accounting_id = accounting.get("accounting_id")
+        if isinstance(accounting_id, str) and accounting_id:
+            ids.append(accounting_id)
+    for subagent in turn.get("subagents") or []:
+        ids.extend(_embedded_accounting_ids(subagent))
+    return ids
+
+
+def _mark_turn_accounting_delivered(session_dir_: Path, turn: TurnSpanDict) -> None:
+    for accounting_id in _embedded_accounting_ids(turn):
+        _mark_accounting_sent(session_dir_, accounting_id)
 
 
 def _claim_turn_export(session_dir_: Path, turn_id: str) -> bool:
@@ -617,16 +716,21 @@ def export_turn(
     turn: TurnSpanDict,
     *,
     captured_env: dict[str, str] | None = None,
-) -> None:
+) -> bool:
     """Hand a completed turn off for background export. Never raises, never
     blocks on network I/O — the actual Logfire call happens in a detached
     child process this spawns and does not wait for. See module docstring.
 
     ``captured_env`` lets a caller whose own ``os.environ`` is unreliable
     supply the raw opted-in env dict; when omitted it is read here.
+
+    Returns whether the local job was durably written and dispatched, same
+    contract as :func:`export_spans` — never whether Logfire ever received it.
+    No existing caller inspects the return value, so this is backward
+    compatible with every platform still calling this positionally.
     """
     if not config.logfire.enabled or not config.logfire.token:
-        return
+        return False
     try:
         job_path = _write_job(
             config.root,
@@ -641,6 +745,7 @@ def export_turn(
             },
         )
         _spawn(job_path)
+        return True
     except Exception as exc:
         log_capture_error(
             thirdeye_home=config.root,
@@ -649,6 +754,7 @@ def export_turn(
             platform=platform,
             session_id=session_id,
         )
+        return False
 
 
 def export_spans(
@@ -946,6 +1052,7 @@ def _export_turn_inner(
         fsops.unlink(claim_path, missing_ok=True)
         raise
     claim_path.write_text("sent", encoding="utf-8", newline="\n")
+    _mark_turn_accounting_delivered(session_dir_, turn)
 
 
 def _export_subagent_turn_inner(
@@ -996,6 +1103,7 @@ def _export_subagent_turn_inner(
         fsops.unlink(claim_path, missing_ok=True)
         raise
     claim_path.write_text("sent", encoding="utf-8", newline="\n")
+    _mark_turn_accounting_delivered(session_dir_, turn)
 
 
 def _require_export_instance(config: Config, platform: str):
@@ -1085,6 +1193,7 @@ def _export_session_accounting_inner(
     )
     if instance.force_flush(timeout_millis=_FLUSH_TIMEOUT_MS) is False:
         raise RuntimeError("session accounting export was not flushed")
+    _mark_accounting_sent(session_dir_, str(accounting["accounting_id"]))
 
 
 def _export_turn_accounting_inner(
@@ -1126,6 +1235,7 @@ def _export_turn_accounting_inner(
     )
     if instance.force_flush(timeout_millis=_FLUSH_TIMEOUT_MS) is False:
         raise RuntimeError("turn accounting export was not flushed")
+    _mark_accounting_sent(session_dir_, str(accounting["accounting_id"]))
 
 
 @lru_cache(maxsize=128)
