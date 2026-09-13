@@ -228,7 +228,7 @@ def test_copilot_group_appears_in_main_help() -> None:
 def test_copilot_help_lists_subcommands() -> None:
     result = CliRunner().invoke(main, ["copilot", "--help"])
     assert result.exit_code == 0, result.output
-    for subcommand in ("sync", "watch", "status"):
+    for subcommand in ("sync", "reconcile", "watch", "status"):
         assert subcommand in result.output
 
 
@@ -237,6 +237,15 @@ def test_sync_help_documents_flags() -> None:
     assert result.exit_code == 0, result.output
     assert "--session-id" in result.output
     assert "--source-home" in result.output
+    assert "--export" in result.output
+
+
+def test_reconcile_help_documents_flags() -> None:
+    result = CliRunner().invoke(main, ["copilot", "reconcile", "--help"])
+    assert result.exit_code == 0, result.output
+    assert "--session-id" in result.output
+    assert "--rebuild" in result.output
+    assert "--export" in result.output
 
 
 def test_watch_help_documents_interval_and_source_home() -> None:
@@ -252,14 +261,9 @@ def test_status_help_documents_source_home() -> None:
     assert "--source-home" in result.output
 
 
-def test_copilot_commands_have_no_export_flag() -> None:
+def test_watch_and_status_help_have_no_export_flag() -> None:
     runner = CliRunner()
-    for args in (
-        ["copilot", "--help"],
-        ["copilot", "sync", "--help"],
-        ["copilot", "watch", "--help"],
-        ["copilot", "status", "--help"],
-    ):
+    for args in (["copilot", "watch", "--help"], ["copilot", "status", "--help"]):
         result = runner.invoke(main, args)
         assert result.exit_code == 0, result.output
         assert "--export" not in result.output
@@ -288,6 +292,7 @@ def test_copilot_hook_entrypoint_is_importable() -> None:
 
 def test_sync_invokes_capture_sync(isolated_home: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     calls: list[tuple[Any, ...]] = []
+    reconcile_calls: list[tuple[bool, bool]] = []
 
     def fake_sync(
         config: Config, paths: SourcePaths, *, session_id: str | None = None
@@ -295,11 +300,26 @@ def test_sync_invokes_capture_sync(isolated_home: Path, monkeypatch: pytest.Monk
         calls.append((config.root, paths["home"], session_id))
         return _empty_result(sessions=2, records_written=5)
 
+    def fake_reconcile_archived(
+        _config: Config,
+        _paths: SourcePaths,
+        *,
+        export: bool = False,
+        include_history: bool = False,
+    ) -> dict[str, dict[str, int]]:
+        reconcile_calls.append((export, include_history))
+        return {}
+
     monkeypatch.setattr("thirdeye.commands.copilot.capture_sync", fake_sync)
+    monkeypatch.setattr(
+        "thirdeye.commands.copilot.reconcile_archived_sessions",
+        fake_reconcile_archived,
+    )
     result = CliRunner().invoke(main, ["copilot", "sync"])
     assert result.exit_code == 0, result.output
     assert len(calls) == 1
     assert calls[0][2] is None
+    assert reconcile_calls == [(False, False)]
     assert _counts_line(sessions=2, records_written=5) in result.output
 
 
@@ -616,6 +636,123 @@ def test_sync_path_escape_is_click_error(isolated_home: Path, tmp_path: Path) ->
     assert "session_root" in result.output
     assert "escapes" in result.output
     assert str(home) in result.output
+
+
+def test_sync_export_requests_history_reconciliation(
+    isolated_home: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    reconcile_calls: list[tuple[bool, bool]] = []
+
+    def fake_sync(
+        _config: Config, _paths: SourcePaths, *, session_id: str | None = None
+    ) -> SyncResult:
+        return _empty_result(sessions=1)
+
+    def fake_reconcile_archived(
+        _config: Config,
+        _paths: SourcePaths,
+        *,
+        export: bool = False,
+        include_history: bool = False,
+    ) -> dict[str, dict[str, int]]:
+        reconcile_calls.append((export, include_history))
+        return {"stored-1": {"events": 3, "usage": 2, "turns": 1, "exports": 0, "pending": 0, "ambiguous": 0, "conflicting": 0, "errors": 0}}
+
+    monkeypatch.setattr("thirdeye.commands.copilot.capture_sync", fake_sync)
+    monkeypatch.setattr(
+        "thirdeye.commands.copilot.reconcile_archived_sessions",
+        fake_reconcile_archived,
+    )
+    result = CliRunner().invoke(main, ["copilot", "sync", "--export"])
+    assert result.exit_code == 0, result.output
+    assert reconcile_calls == [(True, True)]
+    assert "reconcile events=3 usage=2 turns=1" in result.output
+
+
+def test_reconcile_command_invokes_reconcile_archive(
+    isolated_home: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[tuple[str, bool, bool, bool]] = []
+
+    def fake_reconcile_archive(
+        _config: Config,
+        stored_session_id: str,
+        *,
+        rebuild: bool = False,
+        export: bool = False,
+        include_history: bool = False,
+    ) -> dict[str, int]:
+        calls.append((stored_session_id, rebuild, export, include_history))
+        return {
+            "events": 4,
+            "usage": 6,
+            "turns": 2,
+            "exports": 0,
+            "pending": 1,
+            "ambiguous": 0,
+            "conflicting": 0,
+            "errors": 0,
+        }
+
+    monkeypatch.setattr("thirdeye.commands.copilot.reconcile_archive", fake_reconcile_archive)
+    result = CliRunner().invoke(
+        main,
+        ["copilot", "reconcile", "--session-id", "copilot-abc-stored", "--rebuild", "--export"],
+    )
+    assert result.exit_code == 0, result.output
+    assert calls == [("copilot-abc-stored", True, True, True)]
+    assert "reconcile events=4 usage=6 turns=2 exports_queued=0 pending=1" in result.output
+
+
+def test_reconcile_command_exits_nonzero_on_errors(
+    isolated_home: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        "thirdeye.commands.copilot.reconcile_archive",
+        lambda *_args, **_kwargs: {
+            "events": 0,
+            "usage": 0,
+            "turns": 0,
+            "exports": 0,
+            "pending": 0,
+            "ambiguous": 0,
+            "conflicting": 0,
+            "errors": 1,
+        },
+    )
+    result = CliRunner().invoke(
+        main,
+        ["copilot", "reconcile", "--session-id", "copilot-abc-stored"],
+    )
+    assert result.exit_code != 0, result.output
+    assert "completed with errors" in result.output
+
+
+def test_status_prints_projection_and_export_summaries(
+    isolated_home: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    status = _minimal_status(configured=True)
+    status["sessions"] = [
+        {
+            "stored_session_id": "stored-1",
+            "projection": {"pending": 2, "ambiguous": 1, "conflicting": 0},
+            "export": {"activated": True, "queued": 3, "delivered": 1, "errors": 0},
+        },
+        {
+            "stored_session_id": "stored-2",
+            "projection": {"pending": 0, "ambiguous": 0, "conflicting": 1},
+            "export": {"activated": False, "queued": 0, "delivered": 0, "errors": 2},
+        },
+    ]
+    monkeypatch.setattr("thirdeye.commands.copilot.capture_status", lambda _config, _paths: status)
+    result = CliRunner().invoke(main, ["copilot", "status"])
+    assert result.exit_code == 0, result.output
+    assert "Projection: pending=2 ambiguous=1 conflicting=1" in result.output
+    assert "Export: activated=1 queued=3 delivered=1 errors=2" in result.output
 
 
 # -- watch ---------------------------------------------------------------------

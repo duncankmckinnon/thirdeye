@@ -201,6 +201,8 @@ def test_watch_performs_initial_full_sync(
         raise KeyboardInterrupt
 
     monkeypatch.setattr(watch_mod, "sync", tracking_sync)
+    monkeypatch.setattr(watch_mod, "reconcile_archived_sessions", lambda *_args, **_kwargs: {})
+    monkeypatch.setattr(watch_mod, "reconcile_session", lambda *_args, **_kwargs: _empty_result())
     monkeypatch.setattr(watch_mod, "_SLEEP", stop_immediately)
 
     watch(config, paths, interval=0.1)
@@ -245,11 +247,23 @@ def test_watch_syncs_only_changed_transcript_session(
     _write_transcript(home, OTHER_SESSION_ID)
     events_path = home / "session-state" / NATIVE_SESSION_ID / "events.jsonl"
     calls: list[str | None] = []
+    reconciled: list[str] = []
     cycle = {"count": 0}
 
     def tracking_sync(cfg: Config, p: SourcePaths, *, session_id: str | None = None) -> SyncResult:
         calls.append(session_id)
         return _empty_result()
+
+    def track_reconcile(
+        _config: Config,
+        _paths: SourcePaths,
+        native_session_id: str,
+        *,
+        export: bool = False,
+        include_history: bool = False,
+    ) -> dict[str, int]:
+        reconciled.append(native_session_id)
+        return {"events": 0, "usage": 0, "turns": 0, "exports": 0, "pending": 0, "ambiguous": 0, "conflicting": 0, "errors": 0}
 
     def append_during_poll(_interval: float) -> None:
         cycle["count"] += 1
@@ -260,6 +274,8 @@ def test_watch_syncs_only_changed_transcript_session(
             raise KeyboardInterrupt
 
     monkeypatch.setattr(watch_mod, "sync", tracking_sync)
+    monkeypatch.setattr(watch_mod, "reconcile_archived_sessions", lambda *_args, **_kwargs: {})
+    monkeypatch.setattr(watch_mod, "reconcile_session", track_reconcile)
     monkeypatch.setattr(watch_mod, "_SLEEP", append_during_poll)
 
     watch(config, paths, interval=0.1)
@@ -267,6 +283,7 @@ def test_watch_syncs_only_changed_transcript_session(
     assert calls[0] is None
     assert calls.count(NATIVE_SESSION_ID) == 1
     assert OTHER_SESSION_ID not in calls
+    assert reconciled == [NATIVE_SESSION_ID]
 
 
 def test_watch_detects_database_wal_change(
