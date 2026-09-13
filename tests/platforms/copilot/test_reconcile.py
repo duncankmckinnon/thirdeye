@@ -637,25 +637,36 @@ def test_reconcile_reports_error_when_projection_advances_concurrently(
     assert read_projected_turns(config, stored) == baseline_turns
 
 
-def test_usage_sidecar_publish_failure_preserves_prior_projection(
+def test_usage_sidecar_publish_failure_reports_the_committed_document(
     config: Config,
     paths: SourcePaths,
     cli_transcript_records: list[SourceRecord],
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """A usage-sidecar I/O failure must not replace the readable projection."""
+    """A post-validation I/O failure while publishing the usage-sidecar
+
+    mirror is a distinct failure mode from a validation failure: by the time
+    it can happen, the projection document has already durably published
+    (see commit_projection's docstring), so the counts reconcile_archive
+    reports must reflect that new document -- not the prior one -- with the
+    error counted on top.  The next reconcile call must self-heal the
+    sidecar without reprocessing anything new.
+    """
     stored = _seed_full_corpus(config, paths, cli_transcript_records)
     baseline = reconcile_archive(config, stored)
     prior_turns = read_projected_turns(config, stored)
-    prior_document = _document(config, stored)
+    baseline_sequence = load_projection_state(config, stored)["commit_sequence"]
 
     original_publish_usage = projection_store._publish_usage
 
     def selective_boom(
         cfg: Config, sid: str, directory: Path, usage_index: dict[str, Any], *, force: bool = False
     ) -> None:
-        # Let readers inspect the prior projection normally. Only the commit's
-        # attempt to publish the new sidecar fails.
+        # load_projection_state's self-heal always passes force=True; only
+        # commit_projection's own (non-forced) publish should fail here, so
+        # this reaches the specific "document committed, sidecar mirror
+        # failed" state the docstring describes rather than failing before
+        # commit_projection is ever entered.
         if force:
             original_publish_usage(cfg, sid, directory, usage_index, force=force)
             return
@@ -670,7 +681,14 @@ def test_usage_sidecar_publish_failure_preserves_prior_projection(
     assert result["errors"] == baseline["errors"] + 1
     assert result["turns"] == baseline["turns"]
     assert result["usage"] == baseline["usage"]
-    assert _document(config, stored) == prior_document
+    # The document committed despite the sidecar failure -- proven by the
+    # storage-owned commit_sequence advancing even though this call reported
+    # an error -- so turns already reflect the (content-equivalent, since
+    # this rebuilds the same archive) new projection rather than being stuck
+    # on the old one.  Read the raw document rather than load_projection_state
+    # here: that call would itself retry the still-patched, still-failing
+    # sidecar publish as part of its own self-heal.
+    assert _document(config, stored)["state"]["commit_sequence"] == baseline_sequence + 1
     assert read_projected_turns(config, stored) == prior_turns
 
     monkeypatch.undo()
