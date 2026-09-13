@@ -8,15 +8,17 @@ from pathlib import Path
 from typing import Any
 
 from thirdeye.config import Config
-from thirdeye.paths import platform_dir
+from thirdeye.paths import otel_jobs_dir, platform_dir
 from thirdeye.reader import SessionReader
 
+from . import export_transport
 from .archive import _record_from_event
 from .constants import FOLLOWUP_LEASE_FILENAME, PLATFORM_NAME
 from .database import read_database
 from .export_state import load_export_state
 from .install import CopilotPlatform
 from .projection_store import read_projection_status
+from .runtime import load_runtime_status
 from .spool import read_spool
 from .state import journal_path, read_json, state_path
 from .types import SourcePaths, SourceRecord
@@ -231,6 +233,134 @@ def _followup_lease_pending(directory: Path) -> bool:
     return float(expires_at) > time.time()
 
 
+def _json_object(path: Path) -> dict[str, Any] | None:
+    try:
+        value = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError):
+        return None
+    return value if isinstance(value, dict) else None
+
+
+def _iter_json_jobs(directory: Path) -> list[dict[str, Any]]:
+    payloads: list[dict[str, Any]] = []
+    try:
+        entries = list(directory.iterdir())
+    except OSError:
+        return payloads
+    for path in entries:
+        if not path.is_file() or path.suffix != ".json" or path.name.endswith(".claim"):
+            continue
+        payload = _json_object(path)
+        if payload is not None:
+            payloads.append(payload)
+    return payloads
+
+
+def _export_health(config: Config, stored_session_id: str, directory: Path) -> dict[str, Any]:
+    """Summarize queue/delivery health from claims and jobs, not ledger intent."""
+
+    ledger = load_export_state(config, stored_session_id)
+    placements = ledger.get("placements") if isinstance(ledger.get("placements"), dict) else {}
+    conflicts = ledger.get("conflicts") if isinstance(ledger.get("conflicts"), dict) else {}
+    turn_errors = ledger.get("turn_errors") if isinstance(ledger.get("turn_errors"), dict) else {}
+
+    delivered: set[str] = set()
+    queued: set[str] = set()
+    errored: set[str] = set()
+
+    for accounting_id, item in placements.items():
+        if not isinstance(accounting_id, str) or not isinstance(item, dict):
+            continue
+        key = f"acct:{accounting_id}"
+        span_id = item.get("span_id")
+        sent = export_transport.delivery_sent(directory, accounting_id)
+        job = (
+            export_transport.status(config.root, span_id)
+            if isinstance(span_id, str) and span_id
+            else None
+        )
+        job_state = job.get("state") if job else None
+        if sent or item.get("emitted") or job_state == "emitted":
+            delivered.add(key)
+        elif job_state == "failed":
+            queued.add(key)
+            errored.add(key)
+        elif job_state in {"queued", "claimed", "retrying"}:
+            queued.add(key)
+        else:
+            queued.add(key)
+        if item.get("last_error") or (job and job.get("last_error")):
+            errored.add(key)
+
+    for payload in _iter_json_jobs(export_transport.jobs_dir(config.root)):
+        if payload.get("session_id") != stored_session_id:
+            continue
+        accounting_id = payload.get("accounting_id")
+        key = (
+            f"acct:{accounting_id}"
+            if isinstance(accounting_id, str) and accounting_id
+            else f"acct-job:{payload.get('job_id')}"
+        )
+        if key in delivered:
+            continue
+        state = payload.get("state")
+        if state == "emitted" or (
+            isinstance(accounting_id, str) and export_transport.delivery_sent(directory, accounting_id)
+        ):
+            delivered.add(key)
+            queued.discard(key)
+            continue
+        queued.add(key)
+        if state == "failed" or payload.get("last_error"):
+            errored.add(key)
+
+    sent_dir = directory / "otel-turns-sent"
+    try:
+        claim_files = list(sent_dir.iterdir()) if sent_dir.is_dir() else []
+    except OSError:
+        claim_files = []
+    for path in claim_files:
+        if not path.is_file():
+            continue
+        try:
+            text = path.read_text(encoding="utf-8")
+        except OSError:
+            continue
+        key = f"turn-claim:{path.name}"
+        if text == "sent":
+            delivered.add(key)
+        else:
+            queued.add(key)
+
+    for payload in _iter_json_jobs(otel_jobs_dir(config.root)):
+        if payload.get("session_id") != stored_session_id:
+            continue
+        if payload.get("kind") not in {"turn", "spans", "subagent_turn"}:
+            continue
+        queued.add(f"otel:{payload.get('job_id') or id(payload)}")
+        if payload.get("last_error"):
+            errored.add(f"otel:{payload.get('job_id') or id(payload)}")
+
+    queued -= delivered
+
+    runtime_status = load_runtime_status(config, stored_session_id)
+    last_error = runtime_status.get("last_error")
+    if isinstance(last_error, dict):
+        errored.add("runtime")
+    else:
+        last_error = None
+
+    return {
+        "activated": bool(ledger.get("activated")),
+        "queued": len(queued),
+        "delivered": len(delivered),
+        "errors": len(errored)
+        + len(conflicts)
+        + len(turn_errors),
+        "last_error": last_error,
+    }
+
+
 def _archive_status(
     config: Config, paths: SourcePaths
 ) -> tuple[list[dict[str, Any]], SourceRecord | None, list[dict[str, Any]], int, int]:
@@ -288,28 +418,17 @@ def _archive_status(
                 }
             )
         try:
-            ledger = load_export_state(config, directory.name)
-            placements = ledger.get("placements") if isinstance(ledger.get("placements"), dict) else {}
-            session["export"] = {
-                "activated": bool(ledger.get("activated")),
-                "queued": sum(
-                    1
-                    for item in placements.values()
-                    if isinstance(item, dict) and not item.get("emitted")
-                ),
-                "delivered": sum(
-                    1
-                    for item in placements.values()
-                    if isinstance(item, dict) and item.get("emitted")
-                ),
-                "errors": sum(
-                    1
-                    for item in placements.values()
-                    if isinstance(item, dict) and item.get("last_error")
+            session["export"] = _export_health(config, directory.name, directory)
+            last_error = session["export"].get("last_error")
+            if isinstance(last_error, dict):
+                errors.append(
+                    {
+                        "kind": "copilot_reconcile_error",
+                        "session": directory.name,
+                        "reason": last_error.get("phase") or "copilot_reconcile",
+                        "errors": last_error.get("errors"),
+                    }
                 )
-                + len(ledger.get("conflicts") if isinstance(ledger.get("conflicts"), dict) else {})
-                + len(ledger.get("turn_errors") if isinstance(ledger.get("turn_errors"), dict) else {}),
-            }
         except Exception as error:
             session["export"] = {"activated": False, "queued": 0, "delivered": 0, "errors": 1}
             errors.append(

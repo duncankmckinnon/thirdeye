@@ -258,7 +258,7 @@ def main() -> None:
         paths = resolve_sources(Path(args.source_home))
         native_id = str(args.session_id)
         validate_native_id(native_id)
-        config = Config(root=Path(args.config_root))
+        config = Config.load(root=Path(args.config_root))
         _run(config, paths, native_id, str(args.generation))
     except Exception:
         # This worker is deliberately silent: diagnostics are kept locally and

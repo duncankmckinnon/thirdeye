@@ -77,17 +77,29 @@ def resolve_sources(source_home: Path | None = None) -> SourcePaths:
     return paths
 
 
+def _validate_path_id(value: str, *, label: str) -> None:
+    if not isinstance(value, str) or not value or value.strip() != value:
+        raise ValueError(f"{label} must be a non-empty, trimmed string")
+    if value in {".", ".."}:
+        raise ValueError(f"{label} must not be a traversal segment")
+    if any(character in value for character in ("/", "\\", "\x00", ":")):
+        raise ValueError(f"{label} contains a path separator or invalid path character")
+    if any(ord(character) < 32 for character in value):
+        raise ValueError(f"{label} contains a control character")
+
+
 def validate_native_id(native_id: str) -> None:
     """Ensure a native session ID can never select a path outside its home."""
 
-    if not isinstance(native_id, str) or not native_id or native_id.strip() != native_id:
-        raise ValueError("native session ID must be a non-empty, trimmed string")
-    if native_id in {".", ".."}:
-        raise ValueError("native session ID must not be a traversal segment")
-    if any(character in native_id for character in ("/", "\\", "\x00", ":")):
-        raise ValueError("native session ID contains a path separator or invalid path character")
-    if any(ord(character) < 32 for character in native_id):
-        raise ValueError("native session ID contains a control character")
+    _validate_path_id(native_id, label="native session ID")
+
+
+def validate_stored_session_id(stored_id: str) -> None:
+    """Ensure a stored session ID cannot be used as a path-escape segment."""
+
+    _validate_path_id(stored_id, label="stored session ID")
+    if not stored_id.startswith("copilot-"):
+        raise ValueError("stored session ID must start with 'copilot-'")
 
 
 def stored_session_id(paths: SourcePaths, native_id: str) -> str:

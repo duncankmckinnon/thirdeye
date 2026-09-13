@@ -333,6 +333,19 @@ def test_sync_passes_session_id(isolated_home: Path, monkeypatch: pytest.MonkeyP
         return _empty_result(sessions=1)
 
     monkeypatch.setattr("thirdeye.commands.copilot.capture_sync", fake_sync)
+    monkeypatch.setattr(
+        "thirdeye.commands.copilot.reconcile_session",
+        lambda *_args, **_kwargs: {
+            "events": 0,
+            "usage": 0,
+            "turns": 0,
+            "exports": 0,
+            "pending": 0,
+            "ambiguous": 0,
+            "conflicting": 0,
+            "errors": 0,
+        },
+    )
     result = CliRunner().invoke(main, ["copilot", "sync", "--session-id", NATIVE_SESSION_ID])
     assert result.exit_code == 0, result.output
     assert captured["session_id"] == NATIVE_SESSION_ID
@@ -473,6 +486,19 @@ def test_sync_imported_session_with_diagnostics_exits_zero(
         return _empty_result(sessions=1, records_written=12, errors=1)
 
     monkeypatch.setattr("thirdeye.commands.copilot.capture_sync", fake_sync)
+    monkeypatch.setattr(
+        "thirdeye.commands.copilot.reconcile_session",
+        lambda *_args, **_kwargs: {
+            "events": 0,
+            "usage": 0,
+            "turns": 0,
+            "exports": 0,
+            "pending": 0,
+            "ambiguous": 0,
+            "conflicting": 0,
+            "errors": 0,
+        },
+    )
     result = CliRunner().invoke(
         main,
         ["copilot", "sync", "--session-id", NATIVE_SESSION_ID],
@@ -508,6 +534,19 @@ def test_sync_prints_source_diagnostics_without_content(
 
     monkeypatch.setattr("thirdeye.commands.copilot.capture_sync", fake_sync)
     monkeypatch.setattr("thirdeye.commands.copilot.capture_status", fake_status)
+    monkeypatch.setattr(
+        "thirdeye.commands.copilot.reconcile_session",
+        lambda *_args, **_kwargs: {
+            "events": 0,
+            "usage": 0,
+            "turns": 0,
+            "exports": 0,
+            "pending": 0,
+            "ambiguous": 0,
+            "conflicting": 0,
+            "errors": 0,
+        },
+    )
     result = CliRunner().invoke(main, ["copilot", "sync", "--session-id", NATIVE_SESSION_ID])
     assert result.exit_code == 0, result.output
     assert "transcript_invalid_json" in result.output
@@ -696,7 +735,7 @@ def test_reconcile_command_invokes_reconcile_archive(
             "errors": 0,
         }
 
-    monkeypatch.setattr("thirdeye.commands.copilot.reconcile_archive", fake_reconcile_archive)
+    monkeypatch.setattr("thirdeye.commands.copilot.reconcile_stored_session", fake_reconcile_archive)
     result = CliRunner().invoke(
         main,
         ["copilot", "reconcile", "--session-id", "copilot-abc-stored", "--rebuild", "--export"],
@@ -711,7 +750,7 @@ def test_reconcile_command_exits_nonzero_on_errors(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setattr(
-        "thirdeye.commands.copilot.reconcile_archive",
+        "thirdeye.commands.copilot.reconcile_stored_session",
         lambda *_args, **_kwargs: {
             "events": 0,
             "usage": 0,
@@ -755,6 +794,133 @@ def test_status_prints_projection_and_export_summaries(
     assert "Export: activated=1 queued=3 delivered=1 errors=2" in result.output
 
 
+def test_sync_session_id_reconciles_only_selected_session(
+    isolated_home: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    archived_calls: list[tuple[bool, bool]] = []
+    session_calls: list[tuple[str, bool, bool]] = []
+
+    def fake_sync(
+        _config: Config, _paths: SourcePaths, *, session_id: str | None = None
+    ) -> SyncResult:
+        return _empty_result(sessions=1)
+
+    def fake_archived(
+        _config: Config,
+        _paths: SourcePaths,
+        *,
+        export: bool = False,
+        include_history: bool = False,
+    ) -> dict[str, dict[str, int]]:
+        archived_calls.append((export, include_history))
+        return {"other-stored": {"events": 9, "usage": 0, "turns": 0, "exports": 1, "pending": 0, "ambiguous": 0, "conflicting": 0, "errors": 0}}
+
+    def fake_session(
+        _config: Config,
+        _paths: SourcePaths,
+        native_session_id: str,
+        *,
+        export: bool = False,
+        include_history: bool = False,
+    ) -> dict[str, int]:
+        session_calls.append((native_session_id, export, include_history))
+        return {
+            "events": 1,
+            "usage": 0,
+            "turns": 1,
+            "exports": 0,
+            "pending": 0,
+            "ambiguous": 0,
+            "conflicting": 0,
+            "errors": 0,
+        }
+
+    monkeypatch.setattr("thirdeye.commands.copilot.capture_sync", fake_sync)
+    monkeypatch.setattr("thirdeye.commands.copilot.reconcile_archived_sessions", fake_archived)
+    monkeypatch.setattr("thirdeye.commands.copilot.reconcile_session", fake_session)
+    result = CliRunner().invoke(
+        main, ["copilot", "sync", "--session-id", NATIVE_SESSION_ID, "--export"]
+    )
+    assert result.exit_code == 0, result.output
+    assert archived_calls == []
+    assert session_calls == [(NATIVE_SESSION_ID, True, True)]
+    assert "other-stored" not in result.output
+    assert "reconcile events=1" in result.output
+
+
+def test_sync_missing_session_does_not_reconcile_unrelated_history(
+    isolated_home: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    archived_calls: list[object] = []
+    session_calls: list[object] = []
+
+    def fake_sync(
+        _config: Config, _paths: SourcePaths, *, session_id: str | None = None
+    ) -> SyncResult:
+        return _empty_result(sessions=0, errors=1)
+
+    monkeypatch.setattr("thirdeye.commands.copilot.capture_sync", fake_sync)
+    monkeypatch.setattr(
+        "thirdeye.commands.copilot.reconcile_archived_sessions",
+        lambda *_a, **_k: archived_calls.append(True) or {},
+    )
+    monkeypatch.setattr(
+        "thirdeye.commands.copilot.reconcile_session",
+        lambda *_a, **_k: session_calls.append(True) or {},
+    )
+    result = CliRunner().invoke(main, ["copilot", "sync", "--session-id", NATIVE_SESSION_ID, "--export"])
+    assert result.exit_code != 0, result.output
+    assert "was not found" in result.output
+    assert archived_calls == []
+    assert session_calls == []
+
+
+def test_reconcile_without_session_id_reconciles_all_archives(
+    isolated_home: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[str] = []
+
+    def fake_reconcile(
+        _config: Config,
+        stored_session_id: str,
+        *,
+        rebuild: bool = False,
+        export: bool = False,
+        include_history: bool = False,
+    ) -> dict[str, int]:
+        calls.append(stored_session_id)
+        return {
+            "events": 1,
+            "usage": 0,
+            "turns": 1,
+            "exports": 0,
+            "pending": 0,
+            "ambiguous": 0,
+            "conflicting": 0,
+            "errors": 0,
+        }
+
+    monkeypatch.setattr(
+        "thirdeye.commands.copilot.all_archived_session_ids",
+        lambda _config: ["copilot-aaa-one", "copilot-bbb-two"],
+    )
+    monkeypatch.setattr("thirdeye.commands.copilot.reconcile_stored_session", fake_reconcile)
+    result = CliRunner().invoke(main, ["copilot", "reconcile", "--rebuild"])
+    assert result.exit_code == 0, result.output
+    assert calls == ["copilot-aaa-one", "copilot-bbb-two"]
+    assert result.output.count("reconcile events=1") == 2
+
+
+def test_reconcile_rejects_path_escape_session_id(isolated_home: Path) -> None:
+    result = CliRunner().invoke(main, ["copilot", "reconcile", "--session-id", "../secret"])
+    assert result.exit_code != 0, result.output
+    assert "Traceback" not in result.output
+    assert "path separator" in result.output or "stored session ID" in result.output
+
+
 # -- watch ---------------------------------------------------------------------
 
 
@@ -788,7 +954,8 @@ def test_watch_prints_start_and_stop(isolated_home: Path, monkeypatch: pytest.Mo
     result = CliRunner().invoke(main, ["copilot", "watch", "--interval", "1.5"])
     assert result.exit_code == 0, result.output
     assert "1.5" in result.output
-    assert "local-only" in result.output
+    assert "queued locally" in result.output
+    assert "local-only" not in result.output
     assert "Ctrl-C" in result.output
     assert "Stopped" in result.output
 
