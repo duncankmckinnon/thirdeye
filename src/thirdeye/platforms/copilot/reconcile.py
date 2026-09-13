@@ -62,7 +62,13 @@ def _diagnostic_errors(projection: Projection) -> int:
     )
 
 
-def queue_exports(config: Config, stored_session_id: str, projection: Projection) -> int:
+def queue_exports(
+    config: Config,
+    stored_session_id: str,
+    projection: Projection,
+    *,
+    include_history: bool = False,
+) -> int:
     """Queue export work only when an explicit caller requests it.
 
     Export assembly is intentionally not an import-time dependency of local
@@ -74,8 +80,8 @@ def queue_exports(config: Config, stored_session_id: str, projection: Projection
     enqueue = module.queue_exports
     if not callable(enqueue):
         raise TypeError("Copilot export assembly does not provide queue_exports")
-    exporter: Callable[[Config, str, Projection], int] = enqueue
-    return exporter(config, stored_session_id, projection)
+    exporter: Callable[..., int] = enqueue
+    return exporter(config, stored_session_id, projection, include_history=include_history)
 
 
 def reconcile_archive(
@@ -84,6 +90,7 @@ def reconcile_archive(
     *,
     rebuild: bool = False,
     export: bool = False,
+    include_history: bool = False,
 ) -> dict[str, int]:
     """Rebuild local Copilot projections from the immutable V1 archive.
 
@@ -149,7 +156,9 @@ def reconcile_archive(
         return result
 
     try:
-        result["exports"] = queue_exports(config, stored_session_id, projection)
+        result["exports"] = queue_exports(
+            config, stored_session_id, projection, include_history=include_history
+        )
     except Exception:
         # Export delivery must never roll back a successful local projection.
         result["errors"] += 1

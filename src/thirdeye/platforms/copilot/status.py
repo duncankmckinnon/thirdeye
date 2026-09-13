@@ -14,7 +14,9 @@ from thirdeye.reader import SessionReader
 from .archive import _record_from_event
 from .constants import FOLLOWUP_LEASE_FILENAME, PLATFORM_NAME
 from .database import read_database
+from .export_state import load_export_state
 from .install import CopilotPlatform
+from .projection_store import read_projection_status
 from .spool import read_spool
 from .state import journal_path, read_json, state_path
 from .types import SourcePaths, SourceRecord
@@ -266,16 +268,58 @@ def _archive_status(
         if _followup_lease_pending(directory):
             pending_followup += 1
             active_leases += 1
-        sessions.append(
-            {
-                "stored_session_id": directory.name,
-                "native_session_id": state.get("native_session_id"),
-                "cursor": state.get("cursor", {}),
-                "last_successful_import": health.get("last_successful_import"),
-                "diagnostics": diagnostics,
-                "journal_pending": journal_path(directory).is_file(),
+        session = {
+            "stored_session_id": directory.name,
+            "native_session_id": state.get("native_session_id"),
+            "cursor": state.get("cursor", {}),
+            "last_successful_import": health.get("last_successful_import"),
+            "diagnostics": diagnostics,
+            "journal_pending": journal_path(directory).is_file(),
+        }
+        try:
+            session["projection"] = read_projection_status(config, directory.name)
+        except Exception as error:
+            session["projection"] = {"errors": 1}
+            errors.append(
+                {
+                    "kind": "copilot_projection_unreadable",
+                    "session": directory.name,
+                    "reason": type(error).__name__,
+                }
+            )
+        try:
+            ledger = load_export_state(config, directory.name)
+            placements = ledger.get("placements") if isinstance(ledger.get("placements"), dict) else {}
+            session["export"] = {
+                "activated": bool(ledger.get("activated")),
+                "queued": sum(
+                    1
+                    for item in placements.values()
+                    if isinstance(item, dict) and not item.get("emitted")
+                ),
+                "delivered": sum(
+                    1
+                    for item in placements.values()
+                    if isinstance(item, dict) and item.get("emitted")
+                ),
+                "errors": sum(
+                    1
+                    for item in placements.values()
+                    if isinstance(item, dict) and item.get("last_error")
+                )
+                + len(ledger.get("conflicts") if isinstance(ledger.get("conflicts"), dict) else {})
+                + len(ledger.get("turn_errors") if isinstance(ledger.get("turn_errors"), dict) else {}),
             }
-        )
+        except Exception as error:
+            session["export"] = {"activated": False, "queued": 0, "delivered": 0, "errors": 1}
+            errors.append(
+                {
+                    "kind": "copilot_export_ledger_unreadable",
+                    "session": directory.name,
+                    "reason": type(error).__name__,
+                }
+            )
+        sessions.append(session)
         for diagnostic in diagnostics:
             if isinstance(diagnostic, dict):
                 errors.append({"session": directory.name, **diagnostic})
