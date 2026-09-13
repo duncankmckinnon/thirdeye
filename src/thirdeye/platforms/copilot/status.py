@@ -8,7 +8,7 @@ from pathlib import Path
 from typing import Any
 
 from thirdeye.config import Config
-from thirdeye.paths import otel_jobs_dir, platform_dir
+from thirdeye.paths import otel_jobs_dir, platform_dir, usage_log_path
 from thirdeye.reader import SessionReader
 
 from . import export_transport
@@ -32,6 +32,7 @@ _FILE_LEVEL_DATABASE_CODES = frozenset(
         "copilot_database_read_failed",
     }
 )
+_WORKER_TURN_KINDS = frozenset({"turn", "spans", "subagent_turn"})
 
 
 def _error_capability(path: Path, *, exists: bool, reason: str) -> dict[str, Any]:
@@ -256,8 +257,49 @@ def _iter_json_jobs(directory: Path) -> list[dict[str, Any]]:
     return payloads
 
 
+def _worker_kind(message: object) -> str:
+    text = str(message or "")
+    prefix = "kind="
+    if not text.startswith(prefix):
+        return ""
+    return text[len(prefix) :].split(None, 1)[0]
+
+
+def _iter_worker_turn_failures(config: Config, stored_session_id: str) -> list[dict[str, Any]]:
+    """Read deleted whole-turn export failures from the worker error log.
+
+    Generic turn/spans/subagent jobs are unlinked before delivery. A crash or
+    export failure therefore leaves no job and no sent claim; the durable
+    breadcrumb is ``usage-errors.jsonl``.
+    """
+
+    path = usage_log_path(config.root)
+    try:
+        lines = path.read_text(encoding="utf-8").splitlines()
+    except (OSError, UnicodeDecodeError):
+        return []
+    failures: list[dict[str, Any]] = []
+    for line in lines:
+        if not line.strip():
+            continue
+        try:
+            entry = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if not isinstance(entry, dict):
+            continue
+        if entry.get("phase") != "otel_worker_export_failed":
+            continue
+        if entry.get("session_id") != stored_session_id:
+            continue
+        if _worker_kind(entry.get("message")) not in _WORKER_TURN_KINDS:
+            continue
+        failures.append(entry)
+    return failures
+
+
 def _export_health(config: Config, stored_session_id: str, directory: Path) -> dict[str, Any]:
-    """Summarize queue/delivery health from claims and jobs, not ledger intent."""
+    """Summarize queue/delivery health from claims, jobs, and worker logs."""
 
     ledger = load_export_state(config, stored_session_id)
     placements = ledger.get("placements") if isinstance(ledger.get("placements"), dict) else {}
@@ -340,6 +382,11 @@ def _export_health(config: Config, stored_session_id: str, directory: Path) -> d
         queued.add(f"otel:{payload.get('job_id') or id(payload)}")
         if payload.get("last_error"):
             errored.add(f"otel:{payload.get('job_id') or id(payload)}")
+
+    for index, entry in enumerate(_iter_worker_turn_failures(config, stored_session_id)):
+        key = f"otel-fail:{entry.get('ts') or index}:{entry.get('message')}"
+        queued.add(key)
+        errored.add(key)
 
     queued -= delivered
 

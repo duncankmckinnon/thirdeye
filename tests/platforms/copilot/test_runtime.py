@@ -36,6 +36,7 @@ from thirdeye.platforms.copilot.runtime import (
 from thirdeye.platforms.copilot.state import state_path
 from thirdeye.platforms.copilot.status import capture_status
 from thirdeye.platforms.copilot.types import SourceBatch, SourcePaths, SourceRecord, SyncResult
+from thirdeye.usage.errlog import log_capture_error
 
 FIXTURES = Path(__file__).parent / "fixtures"
 NATIVE_SESSION_ID = "5a7e8e11-4a6b-49ff-a33e-95d411c4cdd6"
@@ -551,6 +552,47 @@ def test_status_counts_turn_job_and_sent_claim(
     export = status["sessions"][0]["export"]
     assert export["queued"] >= 1
     assert export["delivered"] >= 1
+
+
+def test_status_counts_failed_turn_export_from_worker_log(
+    copilot_env: tuple[Config, SourcePaths],
+) -> None:
+    """A failed whole-turn export deletes the job before delivery.
+
+    The only remaining evidence is usage-errors.jsonl. Status must still
+    report backlog and errors without a surviving job or sent claim.
+    """
+
+    config, paths = copilot_env
+    stored = _seed_archive(config, paths)
+    log_capture_error(
+        thirdeye_home=config.root,
+        phase="otel_worker_export_failed",
+        level="error",
+        platform=PLATFORM_NAME,
+        session_id=stored,
+        error=RuntimeError("logfire flush failed"),
+        message="kind=turn",
+    )
+    log_capture_error(
+        thirdeye_home=config.root,
+        phase="otel_worker_export_failed",
+        level="error",
+        platform=PLATFORM_NAME,
+        session_id="copilot-other-session",
+        error=RuntimeError("other session"),
+        message="kind=turn",
+    )
+
+    jobs = otel_jobs_dir(config.root)
+    assert not jobs.exists() or not any(path.suffix == ".json" for path in jobs.iterdir())
+    assert not (session_dir(config.root, PLATFORM_NAME, stored) / "otel-turns-sent").exists()
+
+    status = capture_status(config, paths)
+    export = status["sessions"][0]["export"]
+    assert export["errors"] == 1
+    assert export["queued"] == 1
+    assert export["delivered"] == 0
 
 
 def test_status_exposes_persisted_reconcile_last_error(
