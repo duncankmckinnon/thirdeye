@@ -115,17 +115,22 @@ poller and is not started by add or setup. It can import transcripts and SQLite
 rows even when hooks are absent. `sync` and `status` print recoverable source
 diagnostics (locations and reasons, not prompt bodies).
 
-Normal `sync` and `reconcile` refresh local V2 projections only. To queue
-already-completed retained history for remote delivery, opt in explicitly:
+Normal `sync` and `reconcile` refresh local V2 projections only; they do not
+initialize export eligibility. To mark already-completed retained history as
+export-eligible, opt in explicitly:
 
 ```bash
 thirdeye copilot sync --export --source-home "$COPILOT_HOME"
 thirdeye copilot reconcile --export
 ```
 
-Without that opt-in, V2 records an eligibility boundary: interactions already
-complete when export is first activated remain local-only, while interactions
-that complete afterward may be queued by watch/hooks when remote export is
+Watch and hook follow-up activate live-style export without that history
+opt-in. Their first activation records a durable eligibility boundary even if
+remote export is not presently configured: interactions already complete stay
+local-only, while interactions still open at activation may be queued later if
+they complete and remote export is configured. `--export` instead activates
+with retained completed history included, or later removes those identities
+from an existing boundary. Jobs are dispatched only when remote export is
 configured. `--rebuild` resets only reproducible derived state; it preserves
 the raw archive and the separate delivery ledger. See
 [Copilot CLI capture and reconciliation](docs/copilot-capture.md) for the

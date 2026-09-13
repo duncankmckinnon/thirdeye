@@ -64,10 +64,13 @@ IDs, row revisions, and retained evidence. It does not treat bare transcript
 an exact relationship. Since the observed SQLite rows lack a shared
 assistant-message/provider-call ID, a uniquely consistent mapping is marked
 inferred with evidence; competing candidates stay ambiguous and unresolved rows
-stay pending or conflicting.
+stay pending or conflicting. Database generation/row-ID reuse keeps both
+logical identities and emits `usage_row_id_reuse`; incompatible revisions of
+one call are `usage_revision_conflict`.
 
 `reconciliation-cases/` contains schema-derived synthetic fixtures for
 permission outcomes, compaction, aborts, unknown versions, delayed/revised
 database rows, retries, identical concurrent tools, nested children, and
-uncertain attribution. Those cases are synthetic regression inputs, not claims
-about live Copilot behavior.
+uncertain attribution. Permission and compaction cases emit semantic events;
+abort closes a reconstructed turn as `interrupted`. Those cases are synthetic
+regression inputs, not claims about live Copilot behavior.

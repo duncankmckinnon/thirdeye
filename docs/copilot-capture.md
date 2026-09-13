@@ -33,12 +33,15 @@ delivery history.
 
 ## Raw and derived views
 
-Generic event commands continue to expose the retained raw evidence. Copilot
-main-turn views, searches, evaluation inputs, and usage views consume V2's
-normalized projections, so raw transcript/database/hook evidence does not show
-up a second time as a semantic event. Completed main interactions are the
-projected user-turn records; child-agent events and tools remain nested evidence
-within their owning main interaction.
+Generic event commands (`events`, `show`, `tail`, `search`) continue to expose
+the retained raw Store evidence. Session-scoped evaluation timelines also read
+those raw events. Copilot user-turn views, turn-scoped dataset inputs, and
+usage dashboards consume V2's derived projections: completed main interactions
+via the projected turn index, and per-call usage via the rewritten `usage.jsonl`
+sidecar. Raw transcript, database, and hook records therefore remain searchable
+as captured, and they do not appear a second time as semantic events in default
+turn views. Child-agent events and tools remain nested evidence within their
+owning main interaction.
 
 The `status` command separates source capability/ingestion diagnostics from
 projection and export state. In particular, pending, ambiguous, and conflicting
@@ -55,15 +58,20 @@ therefore remain in the correct subtree. Tool requests/executions are paired by
 their invocation IDs, which distinguishes simultaneous identical calls.
 
 The retained external hook stream is supplementary. Its pre/post tool payloads
-do not provide an invocation ID, prompt/stop hooks can use a child agent ID in
-the session field, and its coverage need not equal transcript hook coverage.
-It must not be used as proof of an exact tool pairing or as a session-ID-only
-turn state machine. A prompt may also arrive before `SessionStart`.
+do not provide an invocation ID, and its coverage need not equal transcript
+hook coverage. Child `userPromptSubmitted` and `agentStop` hooks put the child
+ID in `sessionId`; `subagentStart`/`subagentStop` retain the parent session ID
+and expose the child separately as `agentId`. Hooks must not be used as proof
+of an exact tool pairing or as a session-ID-only turn state machine. A prompt
+may also arrive before `SessionStart`.
 
 Unknown transcript schemas/events remain source evidence and searchable raw
-records. A missing identity, missing completion, permission decision, abort,
-compaction, or otherwise incomplete record produces an explicit pending or
-diagnostic result rather than an invented completed turn.
+records. Permission decisions and compaction produce normalized semantic
+events; they are not inferred as tool executions or extra usage calls.
+`assistant.abort` terminates a reconstructed turn with `status="interrupted"`.
+A missing identity, missing completion, unknown version, or otherwise
+incomplete record produces an explicit pending or diagnostic result rather
+than an invented completed turn.
 
 ## Usage accounting and attribution
 
@@ -75,11 +83,14 @@ generation is classified separately and cannot inflate conversation totals.
 Unknown model providers remain `unknown`; Copilot nano-AI-unit billing is kept
 separate from any estimated USD model price.
 
-Each logical database call has a stable accounting identity across revisions.
-An authoritative row correction replaces its local derived `UsageRow`; a
-generation/row-ID reuse or incompatible correction is quarantined as a
-conflict, not counted as another call. Delayed rows remain eligible for a later
-reconciliation.
+Each logical database call has a stable accounting identity across revisions
+of the same generation and row. An authoritative row correction replaces its
+local derived `UsageRow` under that identity. Database generation/row-ID reuse
+is a different call: V2 keeps both logical identities and emits a
+`usage_row_id_reuse` warning rather than relabeling the first call. An
+incompatible correction of one logical call is quarantined as
+`usage_revision_conflict` and is not counted as another charge. Delayed rows
+remain eligible for a later reconciliation.
 
 The observed database schema has user `turn_index`, agent ID, parent tool-call
 ID, model, ordering, finish/tool evidence, and token/billing/latency fields,
@@ -91,7 +102,9 @@ deliberately conservative:
   consistent candidate. Its evidence is retained with the attribution.
 - `pending` means more source evidence may resolve ownership.
 - `ambiguous` lists competing candidates and chooses none.
-- `conflicting` quarantines incompatible revision or join evidence.
+- `conflicting` quarantines incompatible join evidence. Incompatible database
+  revisions are a separate `usage_revision_conflict` diagnostic, not this
+  attribution status.
 
 An unmatched terminal usage row still appears in local accounting. It can be
 represented as an explicit user-turn/agent accounting span, or as session-level
@@ -100,12 +113,18 @@ user turn merely to place tokens.
 
 ## Export eligibility, retries, and corrections
 
-Local reconciliation never exports history by default. `sync --export` or
-`reconcile --export` explicitly opts the selected completed retained history
-into export eligibility. When live export is configured, first activation also
-records a durable boundary: already-terminal history stays local-only, while
-an interaction open at activation becomes eligible if it completes later.
-The boundary survives restart and derived-state rebuild.
+Local reconciliation never exports history by default. Plain `sync` and
+`reconcile` refresh local projections only and do not initialize the export
+ledger. `sync --export` or `reconcile --export` calls export assembly with
+history included: that first activation marks the selected completed retained
+history as eligible. Watch and hook follow-up also call export assembly, but
+without the history opt-in. Their first activation records a durable boundary
+even when remote export is not presently configured: already-terminal history
+stays local-only, while an interaction open at activation becomes eligible if
+it completes later. A later `--export` can remove those identities from an
+existing boundary. The boundary survives restart and derived-state rebuild.
+Jobs are dispatched only when remote export is configured; a configured or
+queued export is not a successful delivery.
 
 Export assembly writes durable, deterministic local jobs. Matched accounting is
 placed on its chat span; unmatched accounting uses one explicit accounting span.
