@@ -1,6 +1,6 @@
 # Copilot CLI capture probe
 
-Captured 2026-09-10 on macOS using Copilot CLI 1.0.83, with automatic model selection (resolved to gpt-5.6-luna). These are observed fixtures for adapter design, not an implemented adapter or a regression test suite.
+Captured 2026-09-10 on macOS using Copilot CLI 1.0.83, with automatic model selection (resolved to gpt-5.6-luna). These are observed fixtures for adapter design and archive-replay regression input; they are not live validation of another Copilot runtime, native VS Code, or cloud history.
 
 ## Successful scenario
 
@@ -49,3 +49,25 @@ Persisted usage checkpoint events contain aggregate billing and cache-frontier d
 The raw transcript also contains two auxiliary model.model_call_success records for gpt-4o-mini session-title generation, with request/response content, usage and latency. These were omitted from the sanitized transcript. Do not treat them as the main-agent model-call history or add their usage to the six-row total without explicitly accounting for auxiliary calls.
 
 The database also has sessions, turns, checkpoints, session_files, session_refs and full-text search tables. Our session has two complete turns but no session_files rows despite four file reads, so the database's discovery/index tables do not replace raw tool execution events. Files beside the transcript include workspace.yaml (identity/repo/title), checkpoints/index.md (empty here), and rewind-file-snapshots/tracking.json (tracking metadata only here).
+
+## V2 replay use
+
+V2 tests construct a V1 archive from this corpus through capture APIs, then
+reconcile that archive. They do not require a generated archive fixture or the
+original Copilot home. The six `assistant_usage_events` rows are the primary
+accounting ledger: checkpoint/shutdown values only validate their totals, and
+the raw `model.*` title-generation records must remain auxiliary.
+
+The reconciler uses source identities, interaction/agent identifiers, tool-call
+IDs, row revisions, and retained evidence. It does not treat bare transcript
+`turnId`, hook timing, tool name, row count, or a nearest timestamp as proof of
+an exact relationship. Since the observed SQLite rows lack a shared
+assistant-message/provider-call ID, a uniquely consistent mapping is marked
+inferred with evidence; competing candidates stay ambiguous and unresolved rows
+stay pending or conflicting.
+
+`reconciliation-cases/` contains schema-derived synthetic fixtures for
+permission outcomes, compaction, aborts, unknown versions, delayed/revised
+database rows, retries, identical concurrent tools, nested children, and
+uncertain attribution. Those cases are synthetic regression inputs, not claims
+about live Copilot behavior.
