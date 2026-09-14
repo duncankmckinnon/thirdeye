@@ -347,7 +347,8 @@ def _export_health(config: Config, stored_session_id: str, directory: Path) -> d
             continue
         state = payload.get("state")
         if state == "emitted" or (
-            isinstance(accounting_id, str) and export_transport.delivery_sent(directory, accounting_id)
+            isinstance(accounting_id, str)
+            and export_transport.delivery_sent(directory, accounting_id)
         ):
             delivered.add(key)
             queued.discard(key)
@@ -401,9 +402,7 @@ def _export_health(config: Config, stored_session_id: str, directory: Path) -> d
         "activated": bool(ledger.get("activated")),
         "queued": len(queued),
         "delivered": len(delivered),
-        "errors": len(errored)
-        + len(conflicts)
-        + len(turn_errors),
+        "errors": len(errored) + len(conflicts) + len(turn_errors),
         "last_error": last_error,
     }
 

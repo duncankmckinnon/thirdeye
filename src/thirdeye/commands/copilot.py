@@ -311,7 +311,9 @@ def sync_cmd(session_id: str | None, export_history: bool, source_home: Path | N
         )
 
 
-@copilot_group.command("reconcile", help="Build Copilot V2 projections from retained local archives.")
+@copilot_group.command(
+    "reconcile", help="Build Copilot V2 projections from retained local archives."
+)
 @click.option("--session-id", default=None, help="Exact stored Thirdeye Copilot session ID.")
 @click.option("--rebuild", is_flag=True, default=False, help="Rebuild derived state only.")
 @click.option(

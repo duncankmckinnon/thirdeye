@@ -36,9 +36,7 @@ def _direct_ids(candidate: dict[str, Any], *, semantic: bool) -> set[str]:
     """Read future native linkage fields without making one up today."""
 
     result = {
-        value
-        for field in _DIRECT_ID_FIELDS
-        if (value := _string(candidate.get(field))) is not None
+        value for field in _DIRECT_ID_FIELDS if (value := _string(candidate.get(field))) is not None
     }
     # A future accounting producer may carry the semantic durable call ID.
     # The current accounting shape uses logical_call_id instead, so this does
@@ -87,9 +85,7 @@ def _cycle_order(calls: list[CallCandidate]) -> list[CallCandidate]:
     )
 
 
-def _identity_group(
-    call: CallCandidate, calls: list[CallCandidate]
-) -> list[CallCandidate]:
+def _identity_group(call: CallCandidate, calls: list[CallCandidate]) -> list[CallCandidate]:
     group = [
         item
         for item in calls
@@ -172,9 +168,7 @@ def _turn_for_usage(
     return interaction, _string(root.get("stored_turn_id"))
 
 
-def _base_attribution(
-    usage: AccountingCandidate, stored_turn_id: str | None
-) -> Attribution:
+def _base_attribution(usage: AccountingCandidate, stored_turn_id: str | None) -> Attribution:
     return {
         "usage_source_id": usage["usage_source_id"],
         "logical_call_id": usage["logical_call_id"],

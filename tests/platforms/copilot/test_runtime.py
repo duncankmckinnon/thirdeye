@@ -194,7 +194,9 @@ def test_reconcile_session_maps_native_id_to_stored_session(
             "errors": 0,
         }
 
-    monkeypatch.setattr("thirdeye.platforms.copilot.runtime.reconcile_archive", fake_reconcile_archive)
+    monkeypatch.setattr(
+        "thirdeye.platforms.copilot.runtime.reconcile_archive", fake_reconcile_archive
+    )
     result = reconcile_session(config, paths, NATIVE_SESSION_ID, export=True, include_history=True)
 
     assert result["turns"] == 1
@@ -245,7 +247,9 @@ def test_reconcile_archived_sessions_replays_all_retained_sessions(
             "errors": 0,
         }
 
-    monkeypatch.setattr("thirdeye.platforms.copilot.runtime.reconcile_archive", fake_reconcile_archive)
+    monkeypatch.setattr(
+        "thirdeye.platforms.copilot.runtime.reconcile_archive", fake_reconcile_archive
+    )
     results = reconcile_archived_sessions(config, paths)
 
     assert set(seen) == {first, second}
@@ -261,7 +265,9 @@ def test_reconcile_archived_sessions_works_after_source_removal(
     session_dir_path = home / "session-state" / NATIVE_SESSION_ID
     session_dir_path.mkdir(parents=True)
     shutil.copy(FIXTURES / "events.jsonl", session_dir_path / "events.jsonl")
-    (session_dir_path / "workspace.yaml").write_text("cwd: /sanitized/workspace\n", encoding="utf-8")
+    (session_dir_path / "workspace.yaml").write_text(
+        "cwd: /sanitized/workspace\n", encoding="utf-8"
+    )
 
     from thirdeye.platforms.copilot.capture import sync
 
@@ -358,9 +364,7 @@ def test_followup_logs_returned_reconcile_errors(
     def fake_capture(_config: Config, _paths: SourcePaths, _native_id: str) -> SyncResult:
         return _empty_result(sessions=1)
 
-    def fake_reconcile_archive(
-        *_args: Any, **_kwargs: Any
-    ) -> dict[str, int]:
+    def fake_reconcile_archive(*_args: Any, **_kwargs: Any) -> dict[str, int]:
         return {
             "events": 0,
             "usage": 0,
@@ -373,7 +377,9 @@ def test_followup_logs_returned_reconcile_errors(
         }
 
     monkeypatch.setattr("thirdeye.platforms.copilot.capture.capture_session", fake_capture)
-    monkeypatch.setattr("thirdeye.platforms.copilot.runtime.reconcile_archive", fake_reconcile_archive)
+    monkeypatch.setattr(
+        "thirdeye.platforms.copilot.runtime.reconcile_archive", fake_reconcile_archive
+    )
     _run(config, paths, NATIVE_SESSION_ID, generation)
 
     status = load_runtime_status(config, stored)

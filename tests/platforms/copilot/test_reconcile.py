@@ -332,9 +332,7 @@ def test_reconcile_archive_is_idempotent(
     # byte identical across the two re-derivations: re-running reconcile
     # must not accumulate duplicate accounting calls or usage/attribution
     # entries inside any index.
-    normalized_first = {
-        k: v for k, v in first_document["state"].items() if k != "commit_sequence"
-    }
+    normalized_first = {k: v for k, v in first_document["state"].items() if k != "commit_sequence"}
     normalized_second = {
         k: v for k, v in second_document["state"].items() if k != "commit_sequence"
     }
@@ -735,18 +733,14 @@ def test_rebuild_preserves_immutable_archive_records(
     stored = _seed_full_corpus(config, paths, cli_transcript_records)
     before = {
         event["data"]["source_record"]["source_id"]
-        for event in SessionReader(
-            config.root / "traces" / "copilot" / stored
-        ).iter_events()
+        for event in SessionReader(config.root / "traces" / "copilot" / stored).iter_events()
     }
 
     reconcile_archive(config, stored, rebuild=True)
 
     after = {
         event["data"]["source_record"]["source_id"]
-        for event in SessionReader(
-            config.root / "traces" / "copilot" / stored
-        ).iter_events()
+        for event in SessionReader(config.root / "traces" / "copilot" / stored).iter_events()
     }
     assert before == after
 
@@ -765,9 +759,7 @@ def test_late_row_archive_reconcile_resolves_after_full_replay(
     turn_end = copy.deepcopy(final_answer)
     turn_end.update(
         {
-            "source_id": (
-                f"{source_key}/{NATIVE_SESSION_ID}/4a386a37-ca7e-4ebc-a746-cdda20f2a4bb"
-            ),
+            "source_id": (f"{source_key}/{NATIVE_SESSION_ID}/4a386a37-ca7e-4ebc-a746-cdda20f2a4bb"),
             "payload": {
                 "type": "assistant.turn_end",
                 "data": {"turnId": "1"},

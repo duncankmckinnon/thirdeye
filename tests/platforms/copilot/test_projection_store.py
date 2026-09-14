@@ -315,9 +315,7 @@ def test_child_agent_top_level_turns_are_excluded(config: Config, paths: SourceP
     assert [turn["turn_id"] for turn in turns] == [main_turn["turn_id"]]
 
 
-def test_nested_child_archive_events_stay_on_main_turn(
-    config: Config, paths: SourcePaths
-) -> None:
+def test_nested_child_archive_events_stay_on_main_turn(config: Config, paths: SourcePaths) -> None:
     stored = _seed_archive(
         config,
         paths,

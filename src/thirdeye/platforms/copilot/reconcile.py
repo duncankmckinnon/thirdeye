@@ -56,9 +56,7 @@ def _attribution_counts(projection: Projection) -> tuple[int, int]:
 
 def _diagnostic_errors(projection: Projection) -> int:
     return sum(
-        1
-        for diagnostic in projection["diagnostics"]
-        if diagnostic.get("severity") == "error"
+        1 for diagnostic in projection["diagnostics"] if diagnostic.get("severity") == "error"
     )
 
 

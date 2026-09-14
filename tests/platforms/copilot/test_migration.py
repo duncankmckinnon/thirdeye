@@ -554,9 +554,7 @@ def test_stale_journal_schema_is_discarded_without_raising(
     assert not projection_journal_path(directory).exists()
 
 
-def test_corrupt_journal_is_discarded_and_snapshot_used(
-    config: Config, paths: SourcePaths
-) -> None:
+def test_corrupt_journal_is_discarded_and_snapshot_used(config: Config, paths: SourcePaths) -> None:
     stored = _seed_v1_archive(config, paths)
     commit_projection(config, stored, _sample_projection(stored), empty_projection_state())
     directory = _directory(config, stored)

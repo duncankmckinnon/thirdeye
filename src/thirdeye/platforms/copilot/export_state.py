@@ -86,13 +86,19 @@ def _normalize(value: dict[str, Any]) -> dict[str, Any]:
         "excluded_turn_ids": _ids(value.get("excluded_turn_ids")),
         "excluded_accounting_ids": _ids(value.get("excluded_accounting_ids")),
         "placements": {
-            key: item for key, item in placements.items() if isinstance(key, str) and isinstance(item, dict)
+            key: item
+            for key, item in placements.items()
+            if isinstance(key, str) and isinstance(item, dict)
         },
         "conflicts": {
-            key: item for key, item in conflicts.items() if isinstance(key, str) and isinstance(item, dict)
+            key: item
+            for key, item in conflicts.items()
+            if isinstance(key, str) and isinstance(item, dict)
         },
         "turn_errors": {
-            key: value2 for key, value2 in turn_errors.items() if isinstance(key, str) and isinstance(value2, str)
+            key: value2
+            for key, value2 in turn_errors.items()
+            if isinstance(key, str) and isinstance(value2, str)
         },
     }
 
@@ -107,7 +113,9 @@ def _read(directory: Path) -> dict[str, Any]:
     view: silently treating them as empty would forget every placement this
     ledger recorded and risk emitting tokens at a second location.
     """
-    raw = read_json_object(export_state_path(directory), invalid_message="invalid Copilot export ledger")
+    raw = read_json_object(
+        export_state_path(directory), invalid_message="invalid Copilot export ledger"
+    )
     if raw is None:
         return empty_export_state()
     version = raw.get("schema_version")
@@ -189,7 +197,9 @@ def initialize_eligibility(
         return result
     if include_history:
         result["excluded_turn_ids"] = sorted(set(result["excluded_turn_ids"]) - turn_ids)
-        result["excluded_accounting_ids"] = sorted(set(result["excluded_accounting_ids"]) - usage_ids)
+        result["excluded_accounting_ids"] = sorted(
+            set(result["excluded_accounting_ids"]) - usage_ids
+        )
     return result
 
 

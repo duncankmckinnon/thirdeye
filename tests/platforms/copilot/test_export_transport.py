@@ -43,9 +43,7 @@ def _write(config: Config, payload: dict[str, Any]) -> Path:
     return path
 
 
-def _seed_placement(
-    config: Config, payload: dict[str, Any], *, span_id: str | None = None
-) -> None:
+def _seed_placement(config: Config, payload: dict[str, Any], *, span_id: str | None = None) -> None:
     def _record(state: dict[str, Any]) -> dict[str, Any]:
         updated, _, _ = record_placement(
             state,

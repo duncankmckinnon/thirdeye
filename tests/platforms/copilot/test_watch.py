@@ -281,7 +281,16 @@ def test_watch_syncs_only_changed_transcript_session(
         include_history: bool = False,
     ) -> dict[str, int]:
         reconciled.append(native_session_id)
-        return {"events": 0, "usage": 0, "turns": 0, "exports": 0, "pending": 0, "ambiguous": 0, "conflicting": 0, "errors": 0}
+        return {
+            "events": 0,
+            "usage": 0,
+            "turns": 0,
+            "exports": 0,
+            "pending": 0,
+            "ambiguous": 0,
+            "conflicting": 0,
+            "errors": 0,
+        }
 
     def append_during_poll(_interval: float) -> None:
         cycle["count"] += 1

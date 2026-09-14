@@ -696,7 +696,18 @@ def test_sync_export_requests_history_reconciliation(
         include_history: bool = False,
     ) -> dict[str, dict[str, int]]:
         reconcile_calls.append((export, include_history))
-        return {"stored-1": {"events": 3, "usage": 2, "turns": 1, "exports": 0, "pending": 0, "ambiguous": 0, "conflicting": 0, "errors": 0}}
+        return {
+            "stored-1": {
+                "events": 3,
+                "usage": 2,
+                "turns": 1,
+                "exports": 0,
+                "pending": 0,
+                "ambiguous": 0,
+                "conflicting": 0,
+                "errors": 0,
+            }
+        }
 
     monkeypatch.setattr("thirdeye.commands.copilot.capture_sync", fake_sync)
     monkeypatch.setattr(
@@ -735,7 +746,9 @@ def test_reconcile_command_invokes_reconcile_archive(
             "errors": 0,
         }
 
-    monkeypatch.setattr("thirdeye.commands.copilot.reconcile_stored_session", fake_reconcile_archive)
+    monkeypatch.setattr(
+        "thirdeye.commands.copilot.reconcile_stored_session", fake_reconcile_archive
+    )
     result = CliRunner().invoke(
         main,
         ["copilot", "reconcile", "--session-id", "copilot-abc-stored", "--rebuild", "--export"],
@@ -814,7 +827,18 @@ def test_sync_session_id_reconciles_only_selected_session(
         include_history: bool = False,
     ) -> dict[str, dict[str, int]]:
         archived_calls.append((export, include_history))
-        return {"other-stored": {"events": 9, "usage": 0, "turns": 0, "exports": 1, "pending": 0, "ambiguous": 0, "conflicting": 0, "errors": 0}}
+        return {
+            "other-stored": {
+                "events": 9,
+                "usage": 0,
+                "turns": 0,
+                "exports": 1,
+                "pending": 0,
+                "ambiguous": 0,
+                "conflicting": 0,
+                "errors": 0,
+            }
+        }
 
     def fake_session(
         _config: Config,
@@ -870,7 +894,9 @@ def test_sync_missing_session_does_not_reconcile_unrelated_history(
         "thirdeye.commands.copilot.reconcile_session",
         lambda *_a, **_k: session_calls.append(True) or {},
     )
-    result = CliRunner().invoke(main, ["copilot", "sync", "--session-id", NATIVE_SESSION_ID, "--export"])
+    result = CliRunner().invoke(
+        main, ["copilot", "sync", "--session-id", NATIVE_SESSION_ID, "--export"]
+    )
     assert result.exit_code != 0, result.output
     assert "was not found" in result.output
     assert archived_calls == []

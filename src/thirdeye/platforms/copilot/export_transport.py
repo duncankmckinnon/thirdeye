@@ -162,7 +162,9 @@ def cancel(root: Path, job_id: str) -> dict[str, Any]:
 
 
 def _spawn(path: Path) -> None:
-    proc.spawn_detached([sys.executable, "-m", "thirdeye.platforms.copilot.export_transport", str(path)])
+    proc.spawn_detached(
+        [sys.executable, "-m", "thirdeye.platforms.copilot.export_transport", str(path)]
+    )
 
 
 def queue_turn(
@@ -410,9 +412,7 @@ def run(path: Path) -> None:
         )
     else:
         try:
-            _mark_delivered(
-                Path(str(claimed["session_dir"])), str(claimed["accounting_id"])
-            )
+            _mark_delivered(Path(str(claimed["session_dir"])), str(claimed["accounting_id"]))
             _write_job(path, {**claimed, "state": "emitted", "last_error": None})
             fsops.unlink(path, missing_ok=True)
         except Exception as exc:
