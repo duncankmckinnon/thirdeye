@@ -24,10 +24,12 @@ thirdeye add --codex
 thirdeye add --cursor
 thirdeye add --copilot
 
-# Copilot V1: ingest and health (watch is foreground-only; not started by add)
+# Copilot archive + derived state (watch is foreground-only; not started by add)
 thirdeye copilot status --source-home "$COPILOT_HOME"
 thirdeye copilot sync --source-home "$COPILOT_HOME"
+thirdeye copilot reconcile
 thirdeye copilot watch --source-home "$COPILOT_HOME" --interval 1
+thirdeye copilot sync --export --source-home "$COPILOT_HOME"
 
 # Remove hooks
 thirdeye remove --claude

@@ -352,6 +352,7 @@ class CallCandidate(TypedDict):
     interaction_id: str | None
     agent_id: str | None
     parent_tool_call_id: str | None
+    native_turn_id: str | None
     model: str | None
     source_ids: list[str]
     source_references: list[SourceReference]

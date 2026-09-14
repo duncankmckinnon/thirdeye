@@ -181,6 +181,73 @@ def _base_attribution(usage: AccountingCandidate, stored_turn_id: str | None) ->
     }
 
 
+def _ordered_call_matches(
+    calls: list[CallCandidate], accounting: list[AccountingCandidate]
+) -> dict[str, CallCandidate]:
+    """Match the verified prefix of each Copilot model-cycle stream.
+
+    Copilot's usage rows have no assistant-message ID.  Its SQLite primary-key
+    order and transcript order are nevertheless a stable paired stream within
+    one session.  Once a pair disagrees, the suffix is deliberately left for
+    turn-level aggregation rather than shifted onto later chat calls.
+    """
+
+    by_identity_calls: dict[tuple[object, object, object], list[CallCandidate]] = defaultdict(list)
+    by_identity_usage: dict[tuple[object, object, object], list[AccountingCandidate]] = defaultdict(
+        list
+    )
+    for call in calls:
+        by_identity_calls[
+            (call.get("agent_id"), call.get("parent_tool_call_id"), call.get("model"))
+        ].append(call)
+    for usage in accounting:
+        by_identity_usage[
+            (usage.get("agent_id"), usage.get("parent_tool_call_id"), usage.get("model"))
+        ].append(usage)
+
+    def usage_order(usage: AccountingCandidate) -> tuple[int, object]:
+        primary_key = usage["revision"]["primary_key"]
+        return (
+            (0, primary_key)
+            if isinstance(primary_key, int) and not isinstance(primary_key, bool)
+            else (1, str(primary_key))
+        )
+
+    interaction_start: dict[str, str] = {}
+    for call in calls:
+        interaction = _string(call.get("interaction_id"))
+        if interaction is None:
+            continue
+        start = str(call.get("start_ts") or "")
+        interaction_start[interaction] = min(interaction_start.get(interaction, start), start)
+
+    def call_order(call: CallCandidate) -> tuple[str, str, str]:
+        native_turn = call.get("native_turn_id")
+        try:
+            turn = (
+                f"{int(native_turn):020d}"
+                if native_turn is not None
+                else str(call.get("start_ts") or "")
+            )
+        except ValueError:
+            turn = str(call.get("start_ts") or "")
+        interaction = _string(call.get("interaction_id"))
+        return (
+            interaction_start.get(interaction or "", str(call.get("start_ts") or "")),
+            turn,
+            call["call_id"],
+        )
+
+    matches: dict[str, CallCandidate] = {}
+    for identity, rows in by_identity_usage.items():
+        candidates = sorted(by_identity_calls.get(identity, []), key=call_order)
+        for usage, call in zip(sorted(rows, key=usage_order), candidates, strict=False):
+            if not _finish_matches(usage, call):
+                break
+            matches[usage["logical_call_id"]] = call
+    return matches
+
+
 def join_usage(semantic: SemanticProjection, accounting: AccountingProjection) -> list[Attribution]:
     """Join each accounting candidate at most once, retaining uncertainty.
 
@@ -192,6 +259,7 @@ def join_usage(semantic: SemanticProjection, accounting: AccountingProjection) -
     calls = list(semantic.get("call_candidates") or [])
     by_tool = _tool_index(calls)
     indexes, roots = _interaction_indexes(calls, by_tool)
+    ordered_matches = _ordered_call_matches(calls, list(accounting.get("candidates") or []))
     preliminary: list[tuple[Attribution, CallCandidate | None]] = []
 
     for usage in accounting.get("candidates") or []:
@@ -221,6 +289,33 @@ def join_usage(semantic: SemanticProjection, accounting: AccountingProjection) -
                 evidence=["join_kind:direct", f"call_id:{call['call_id']}"],
             )
             preliminary.append((result, call))
+            continue
+
+        ordered = ordered_matches.get(usage["logical_call_id"])
+        if ordered is not None:
+            root = _root_candidate(ordered, by_tool) or ordered
+            order = _identity_group(ordered, calls).index(ordered)
+            initiator = (usage.get("supplemental_metrics") or {}).get("initiator")
+            result.update(
+                stored_turn_id=_string(root.get("stored_turn_id")),
+                agent_id=ordered.get("agent_id"),
+                call_id=ordered["call_id"],
+                status="matched",
+                join_kind="inferred",
+                evidence=[
+                    "join_kind:inferred",
+                    f"interaction_id:{root.get('interaction_id')}",
+                    f"turn_index:{usage.get('turn_index')}",
+                    f"agent_id:{usage.get('agent_id')}",
+                    f"parent_tool_call_id:{usage.get('parent_tool_call_id')}",
+                    f"model:{usage.get('model')}",
+                    f"finish:{usage.get('finish_reason')}",
+                    f"initiator:{initiator}",
+                    f"order:{order}",
+                    f"call_id:{ordered['call_id']}",
+                ],
+            )
+            preliminary.append((result, ordered))
             continue
 
         if interaction is None:
