@@ -1,7 +1,7 @@
-# Copilot CLI capture and reconciliation
+# Copilot capture and reconciliation
 
 thirdeye's Copilot integration is local, archive-first CLI capture. It supports
-GitHub Copilot CLI recordings; it does not claim support for native VS Code,
+GitHub Copilot recordings; it does not claim support for native VS Code,
 Copilot cloud history, or Copilot as an evaluator/Ask backend.
 
 ## V1 archive to V2 projections
@@ -50,7 +50,7 @@ successful remote delivery.
 
 ## Source evidence and turn reconstruction
 
-For the observed Copilot CLI 1.0.83 corpus, a user interaction is identified by
+For the observed Copilot 1.0.83 corpus, a user interaction is identified by
 `interactionId` with agent identity, not by a bare transcript `turnId` (which
 resets). A child is attached through `agentId`, `parentToolCallId`, and the
 parent task's `subagent.started.data.toolCallId`; interleaved transcript events

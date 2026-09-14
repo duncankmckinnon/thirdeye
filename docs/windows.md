@@ -2,9 +2,9 @@
 
 Windows support is **experimental**. The test suite runs on `windows-latest` in
 CI on Python 3.12, and Claude Code tracing is the verified
-integration. The Codex CLI, Cursor, and Copilot CLI installers are implemented
+integration. The Codex CLI, Cursor, and Copilot installers are implemented
 but have not been live-certified against those tools on Windows. Passing Copilot
-unit tests is not live certification of Copilot CLI. Please file Windows issues
+unit tests is not live certification of Copilot. Please file Windows issues
 at the [issue tracker](https://github.com/duncankmckinnon/thirdeye/issues).
 
 Install with `pipx` or `uv` — Homebrew stays macOS/Linux only.
@@ -38,7 +38,7 @@ to refresh the copied skills.
 
 ### 3. Unverified Codex, Cursor, and Copilot hooks
 
-The Codex CLI, Cursor, and Copilot CLI installers are correct by construction
+The Codex CLI, Cursor, and Copilot installers are correct by construction
 but have not been run against the real tools on Windows. How each tool invokes a
 hook command there — `cmd.exe`, PowerShell, or a direct `CreateProcess` — is
 unconfirmed, and therefore so is whether a path containing spaces needs quoting.

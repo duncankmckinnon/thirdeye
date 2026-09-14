@@ -19,7 +19,7 @@ The PyPI package is `thrdi`; the installed commands are `thirdeye` and `thrdi`
 thirdeye add --claude       # Claude Code
 thirdeye add --codex        # OpenAI Codex CLI
 thirdeye add --cursor       # Cursor
-thirdeye add --copilot      # GitHub Copilot CLI
+thirdeye add --copilot      # GitHub Copilot
 ```
 
 `thirdeye add` is idempotent — running it twice for the same platform leaves
@@ -28,7 +28,7 @@ the existing hook entries in place rather than duplicating them.
 Hook entries are written into each platform's own config file: Claude Code
 uses `~/.claude/settings.json`, Codex uses `~/.codex/config.toml`,
 Cursor uses `~/.cursor/hooks.json`
-(covering both the IDE chat and the `cursor-agent` CLI), and GitHub Copilot CLI
+(covering both the IDE chat and the `cursor-agent` CLI), and GitHub Copilot
 uses `$COPILOT_HOME/hooks/thirdeye.json` (default `~/.copilot/hooks/thirdeye.json`).
 
 ### Cursor subagent hooks
@@ -60,9 +60,9 @@ thirdeye remove --cursor
 thirdeye remove --copilot
 ```
 
-## Copilot CLI V1
+## Copilot V1
 
-GitHub Copilot CLI capture is a V1 immutable raw archive of recordings from the
+GitHub Copilot capture is a V1 immutable raw archive of recordings from the
 selected Copilot home. V2 (reconstructed turns, usage accounting, and OTel
 export) is out of scope. V1 does not export Copilot content.
 
@@ -87,7 +87,7 @@ foreground poller and is not started by add or setup. Captured content has the
 same local sensitivity as other thirdeye sessions and is not exported in V1.
 `sync` and `status` print recoverable source diagnostics (locations and reasons,
 not prompt bodies). Passing the Copilot unit tests is not live certification of
-Copilot CLI.
+Copilot.
 
 ## Verify tracing is live
 
