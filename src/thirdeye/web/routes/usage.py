@@ -15,6 +15,29 @@ from thirdeye.usage.aggregate import aggregate_by_day
 from thirdeye.usage.read import iter_calls
 
 
+def _copilot_usage_display(rows: list, labels: dict[str, dict]) -> list[dict]:
+    display = []
+    for row in rows:
+        extra = labels.get(row.call_id, {})
+        display.append(
+            {
+                "seq": row.seq,
+                "response_model": row.response_model,
+                "input_tokens": row.input_tokens,
+                "output_tokens": row.output_tokens,
+                "cache_read_input_tokens": row.cache_read_input_tokens,
+                "cache_creation_input_tokens": row.cache_creation_input_tokens,
+                "reasoning_output_tokens": row.reasoning_output_tokens,
+                "total_tokens": row.total_tokens,
+                "ts": row.ts,
+                "copilot_billing_nano_aiu": extra.get("copilot.billing.nano_aiu"),
+                "duration_ms": extra.get("copilot.latency.duration_ms"),
+                "output_ttft_ms": extra.get("copilot.latency.output_ttft_ms"),
+            }
+        )
+    return display
+
+
 async def _session_usage(request: Request) -> HTMLResponse:
     prefix = request.path_params["sid"]
     store = request.app.state.store
@@ -25,12 +48,24 @@ async def _session_usage(request: Request) -> HTMLResponse:
         raise HTTPException(status_code=404, detail=str(e)) from e
     sdir = session_dir(config.root, platform, sid)
     rows = list(iter_calls(sdir))
+    labels = {}
+    if platform == "copilot":
+        from thirdeye.platforms.copilot.projection_store import read_usage_labels
+
+        labels = read_usage_labels(config, sid)
+        rows = _copilot_usage_display(rows, labels)
     aggregate = store.stats(session_id=sid)
     templates = request.app.state.templates
     return templates.TemplateResponse(
         request,
         "usage/session.html",
-        {"rows": rows, "aggregate": aggregate, "sid": sid, "platform": platform},
+        {
+            "rows": rows,
+            "aggregate": aggregate,
+            "sid": sid,
+            "platform": platform,
+            "show_copilot_labels": platform == "copilot",
+        },
     )
 
 

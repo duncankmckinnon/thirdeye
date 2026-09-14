@@ -32,6 +32,11 @@
         <th class="num">cache read</th>
         <th class="num">cache creation</th>
         <th class="num">reasoning</th>
+        {% if show_copilot_labels %}
+        <th class="num">copilot native billing (nano-AIU)</th>
+        <th class="num">duration_ms</th>
+        <th class="num">TTFT (ms)</th>
+        {% endif %}
         <th class="num">total</th>
         <th>ts</th>
       </tr>
@@ -46,6 +51,11 @@
         <td class="num">{{ row.cache_read_input_tokens if row.cache_read_input_tokens is not none else "-" }}</td>
         <td class="num">{{ row.cache_creation_input_tokens if row.cache_creation_input_tokens is not none else "-" }}</td>
         <td class="num">{{ row.reasoning_output_tokens if row.reasoning_output_tokens is not none else "-" }}</td>
+        {% if show_copilot_labels %}
+        <td class="num">{{ row.copilot_billing_nano_aiu if row.copilot_billing_nano_aiu is not none else "-" }}</td>
+        <td class="num">{{ row.duration_ms if row.duration_ms is not none else "-" }}</td>
+        <td class="num">{{ row.output_ttft_ms if row.output_ttft_ms is not none else "-" }}</td>
+        {% endif %}
         <td class="num">{{ row.total_tokens }}</td>
         <td>{{ row.ts }}</td>
       </tr>

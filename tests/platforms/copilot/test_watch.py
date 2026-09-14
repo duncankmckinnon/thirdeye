@@ -45,6 +45,24 @@ def _empty_result(**overrides: int) -> SyncResult:
     return result
 
 
+def _stub_reconcile(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(watch_mod, "reconcile_archived_sessions", lambda *_args, **_kwargs: {})
+    monkeypatch.setattr(
+        watch_mod,
+        "reconcile_session",
+        lambda *_args, **_kwargs: {
+            "events": 0,
+            "usage": 0,
+            "turns": 0,
+            "exports": 0,
+            "pending": 0,
+            "ambiguous": 0,
+            "conflicting": 0,
+            "errors": 0,
+        },
+    )
+
+
 def _write_transcript(home: Path, native_id: str, *, events_path: Path | None = None) -> Path:
     session_dir = home / "session-state" / native_id
     session_dir.mkdir(parents=True, exist_ok=True)
@@ -201,6 +219,7 @@ def test_watch_performs_initial_full_sync(
         raise KeyboardInterrupt
 
     monkeypatch.setattr(watch_mod, "sync", tracking_sync)
+    _stub_reconcile(monkeypatch)
     monkeypatch.setattr(watch_mod, "_SLEEP", stop_immediately)
 
     watch(config, paths, interval=0.1)
@@ -228,6 +247,7 @@ def test_watch_skips_per_session_sync_when_sources_are_quiet(
             raise KeyboardInterrupt
 
     monkeypatch.setattr(watch_mod, "sync", tracking_sync)
+    _stub_reconcile(monkeypatch)
     monkeypatch.setattr(watch_mod, "_SLEEP", sleep_then_interrupt)
 
     watch(config, paths, interval=0.1)
@@ -245,11 +265,23 @@ def test_watch_syncs_only_changed_transcript_session(
     _write_transcript(home, OTHER_SESSION_ID)
     events_path = home / "session-state" / NATIVE_SESSION_ID / "events.jsonl"
     calls: list[str | None] = []
+    reconciled: list[str] = []
     cycle = {"count": 0}
 
     def tracking_sync(cfg: Config, p: SourcePaths, *, session_id: str | None = None) -> SyncResult:
         calls.append(session_id)
         return _empty_result()
+
+    def track_reconcile(
+        _config: Config,
+        _paths: SourcePaths,
+        native_session_id: str,
+        *,
+        export: bool = False,
+        include_history: bool = False,
+    ) -> dict[str, int]:
+        reconciled.append(native_session_id)
+        return {"events": 0, "usage": 0, "turns": 0, "exports": 0, "pending": 0, "ambiguous": 0, "conflicting": 0, "errors": 0}
 
     def append_during_poll(_interval: float) -> None:
         cycle["count"] += 1
@@ -260,6 +292,8 @@ def test_watch_syncs_only_changed_transcript_session(
             raise KeyboardInterrupt
 
     monkeypatch.setattr(watch_mod, "sync", tracking_sync)
+    monkeypatch.setattr(watch_mod, "reconcile_archived_sessions", lambda *_args, **_kwargs: {})
+    monkeypatch.setattr(watch_mod, "reconcile_session", track_reconcile)
     monkeypatch.setattr(watch_mod, "_SLEEP", append_during_poll)
 
     watch(config, paths, interval=0.1)
@@ -267,6 +301,7 @@ def test_watch_syncs_only_changed_transcript_session(
     assert calls[0] is None
     assert calls.count(NATIVE_SESSION_ID) == 1
     assert OTHER_SESSION_ID not in calls
+    assert reconciled == [NATIVE_SESSION_ID]
 
 
 def test_watch_detects_database_wal_change(
@@ -300,6 +335,7 @@ def test_watch_detects_database_wal_change(
             raise KeyboardInterrupt
 
     monkeypatch.setattr(watch_mod, "sync", tracking_sync)
+    _stub_reconcile(monkeypatch)
     monkeypatch.setattr(watch_mod, "_SLEEP", mutate_database)
 
     watch(config, paths, interval=0.1)
@@ -328,6 +364,7 @@ def test_watch_detects_spool_change(
             raise KeyboardInterrupt
 
     monkeypatch.setattr(watch_mod, "sync", tracking_sync)
+    _stub_reconcile(monkeypatch)
     monkeypatch.setattr(watch_mod, "_SLEEP", enqueue_during_poll)
 
     watch(config, paths, interval=0.1)
@@ -360,6 +397,7 @@ def test_watch_retries_sessions_with_pending_or_errors(
             raise KeyboardInterrupt
 
     monkeypatch.setattr(watch_mod, "sync", flaky_sync)
+    _stub_reconcile(monkeypatch)
     monkeypatch.setattr(watch_mod, "_SLEEP", three_poll_cycles)
 
     watch(config, paths, interval=0.1)
@@ -374,6 +412,7 @@ def test_watch_exits_cleanly_on_keyboard_interrupt(
     config, paths = copilot_env
 
     monkeypatch.setattr(watch_mod, "sync", lambda *args, **kwargs: _empty_result())
+    _stub_reconcile(monkeypatch)
     monkeypatch.setattr(
         watch_mod, "_SLEEP", lambda _interval: (_ for _ in ()).throw(KeyboardInterrupt)
     )
@@ -453,6 +492,7 @@ def test_watch_does_not_retry_deleted_database_session(
             raise KeyboardInterrupt
 
     monkeypatch.setattr(watch_mod, "sync", tracking_sync)
+    _stub_reconcile(monkeypatch)
     monkeypatch.setattr(watch_mod, "_SLEEP", delete_then_poll)
 
     watch(config, paths, interval=0.1)
@@ -485,6 +525,7 @@ def test_watch_syncs_recreated_database_after_deletion(
             raise KeyboardInterrupt
 
     monkeypatch.setattr(watch_mod, "sync", tracking_sync)
+    _stub_reconcile(monkeypatch)
     monkeypatch.setattr(watch_mod, "_SLEEP", delete_then_recreate)
 
     watch(config, paths, interval=0.1)

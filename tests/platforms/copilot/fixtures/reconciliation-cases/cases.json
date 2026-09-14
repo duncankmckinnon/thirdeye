@@ -1,0 +1,1742 @@
+{
+  "permission": {
+    "observed": false,
+    "required": "emit permission semantic event; do not infer a tool execution or usage call",
+    "input_records": [
+      {
+        "source_id": "hook/5a7e8e11-4a6b-49ff-a33e-95d411c4cdd6/obs-permission-1",
+        "source_kind": "hook",
+        "native_session_id": "5a7e8e11-4a6b-49ff-a33e-95d411c4cdd6",
+        "ts": "2026-09-10T17:08:24.500Z",
+        "observed_at": "2026-09-10T17:09:00.000Z",
+        "payload": {
+          "schema_version": 1,
+          "event": "permissionRequest",
+          "hook_payload": {
+            "sessionId": "5a7e8e11-4a6b-49ff-a33e-95d411c4cdd6",
+            "timestamp": 1789060104500,
+            "cwd": "/fixture/workspace",
+            "toolName": "view",
+            "toolArgs": {
+              "path": "/fixture/workspace/alpha.txt"
+            }
+          },
+          "context": {}
+        },
+        "locator": {
+          "observation_id": "obs-permission-1",
+          "event": "permissionRequest"
+        }
+      }
+    ],
+    "expected": {
+      "events": [
+        {
+          "id": "copilot:event:hook/5a7e8e11-4a6b-49ff-a33e-95d411c4cdd6/obs-permission-1",
+          "kind": "permission_request",
+          "classification": "main",
+          "ts": "2026-09-10T17:08:24.500Z",
+          "source_ids": [
+            "hook/5a7e8e11-4a6b-49ff-a33e-95d411c4cdd6/obs-permission-1"
+          ],
+          "source_references": [
+            {
+              "source_id": "hook/5a7e8e11-4a6b-49ff-a33e-95d411c4cdd6/obs-permission-1",
+              "source_kind": "hook",
+              "role": "permission_request"
+            }
+          ],
+          "attributes": {
+            "tool_name": "view"
+          }
+        }
+      ],
+      "call_candidates": [],
+      "usage_rows": [],
+      "attributions": []
+    }
+  },
+  "compaction": {
+    "observed": false,
+    "required": "retain source evidence and diagnostics; never add snapshot usage to per-call accounting",
+    "input_records": [
+      {
+        "source_id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/5a7e8e11-4a6b-49ff-a33e-95d411c4cdd6/synthetic-checkpoint-1",
+        "source_kind": "transcript",
+        "native_session_id": "5a7e8e11-4a6b-49ff-a33e-95d411c4cdd6",
+        "ts": "2026-09-10T17:08:25.700Z",
+        "observed_at": "2026-09-10T17:09:00.000Z",
+        "payload": {
+          "type": "session.usage_checkpoint",
+          "data": {
+            "inputTokens": 26416,
+            "outputTokens": 229,
+            "cacheReadTokens": 19522,
+            "cacheWriteTokens": 6882,
+            "reasoningTokens": 39,
+            "totalNanoAiu": 238814000
+          },
+          "id": "synthetic-checkpoint-1",
+          "timestamp": "2026-09-10T17:08:25.700Z",
+          "parentId": "0080e44c-ad62-4288-b2b2-061ec2b73d80",
+          "schema_version": 1
+        },
+        "locator": {
+          "file": "events.jsonl",
+          "file_generation": "1-abc",
+          "byte_offset": 0,
+          "byte_length": 297,
+          "native_event_id": "synthetic-checkpoint-1"
+        }
+      },
+      {
+        "source_id": "copilot-db:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa:5a7e8e11-4a6b-49ff-a33e-95d411c4cdd6:assistant_usage_events:13:sha256:68bf2ca8903d9bdfe15a9d61144ba8b9b0e352678680e4490f2259bd2f468f47",
+        "source_kind": "database",
+        "native_session_id": "5a7e8e11-4a6b-49ff-a33e-95d411c4cdd6",
+        "ts": "2026-09-10T17:08:24.498Z",
+        "observed_at": "2026-09-10T17:09:00.000Z",
+        "payload": {
+          "table": "assistant_usage_events",
+          "row": {
+            "id": 13,
+            "session_id": "5a7e8e11-4a6b-49ff-a33e-95d411c4cdd6",
+            "turn_index": 0,
+            "agent_id": null,
+            "parent_tool_call_id": null,
+            "model": "gpt-5.6-luna",
+            "input_tokens": 6452,
+            "output_tokens": 107,
+            "cache_read_tokens": 0,
+            "cache_write_tokens": 6449,
+            "reasoning_tokens": 29,
+            "total_nano_aiu": 174125000,
+            "request_multiplier": 1.0,
+            "duration_ms": 2263,
+            "time_to_first_token_ms": 1571.1477920000002,
+            "output_ttft_ms": 1571.1479590000001,
+            "inter_token_latency_ms": 7.393025117647059,
+            "initiator": "user",
+            "api_endpoint": "ws:/responses",
+            "reasoning_effort": "medium",
+            "finish_reason": "tool_calls",
+            "content_filter_triggered": 0,
+            "token_details_json": "[{\"batchSize\":1000000,\"costPerBatch\":20000000000,\"tokenCount\":3,\"tokenType\":\"input\"},{\"batchSize\":1000000,\"costPerBatch\":2000000000,\"tokenCount\":0,\"tokenType\":\"cache_read\"},{\"batchSize\":1000000,\"costPerBatch\":25000000000,\"tokenCount\":6449,\"tokenType\":\"cache_write\"},{\"batchSize\":1000000,\"costPerBatch\":120000000000,\"tokenCount\":107,\"tokenType\":\"output\"}]",
+            "created_at": "2026-09-10T17:08:24.498Z"
+          }
+        },
+        "locator": {
+          "database": "/example/.copilot/session-store.db",
+          "table": "assistant_usage_events",
+          "primary_key": 13,
+          "content_revision": "sha256:68bf2ca8903d9bdfe15a9d61144ba8b9b0e352678680e4490f2259bd2f468f47",
+          "generation": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+        }
+      }
+    ],
+    "expected": {
+      "events": [
+        {
+          "id": "copilot:event:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/5a7e8e11-4a6b-49ff-a33e-95d411c4cdd6/synthetic-checkpoint-1",
+          "kind": "compaction",
+          "classification": "checkpoint",
+          "ts": "2026-09-10T17:08:25.700Z",
+          "source_ids": [
+            "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/5a7e8e11-4a6b-49ff-a33e-95d411c4cdd6/synthetic-checkpoint-1"
+          ],
+          "source_references": [
+            {
+              "source_id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/5a7e8e11-4a6b-49ff-a33e-95d411c4cdd6/synthetic-checkpoint-1",
+              "source_kind": "transcript",
+              "role": "checkpoint"
+            }
+          ],
+          "attributes": {}
+        }
+      ],
+      "usage_rows": [
+        {
+          "session_id": "copilot-aaaaaaaaaaaaaaaa-5a7e8e11-4a6b-49ff-a33e-95d411c4cdd6",
+          "seq": 0,
+          "call_id": "copilot:usage:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa:assistant_usage_events:sha256%3Abbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb:13",
+          "ts": "2026-09-10T17:08:24.498Z",
+          "platform": "copilot",
+          "gen_ai.conversation.id": "copilot-aaaaaaaaaaaaaaaa-5a7e8e11-4a6b-49ff-a33e-95d411c4cdd6",
+          "gen_ai.provider.name": "unknown",
+          "gen_ai.operation.name": "chat",
+          "gen_ai.response.model": "gpt-5.6-luna",
+          "gen_ai.usage.input_tokens": 6452,
+          "gen_ai.usage.output_tokens": 107,
+          "gen_ai.usage.cache_read.input_tokens": 0,
+          "gen_ai.usage.cache_creation.input_tokens": 6449,
+          "gen_ai.usage.reasoning.output_tokens": 29
+        }
+      ],
+      "diagnostics": [
+        {
+          "code": "checkpoint_not_additive",
+          "severity": "info",
+          "message": "checkpoint snapshot validates totals and is not a seventh call",
+          "source_ids": [
+            "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/5a7e8e11-4a6b-49ff-a33e-95d411c4cdd6/synthetic-checkpoint-1"
+          ],
+          "details": {}
+        }
+      ]
+    }
+  },
+  "partial_turn": {
+    "observed": false,
+    "required": "keep a prompt-only interaction pending; missing usage is absent, not zero",
+    "input_records": [
+      {
+        "source_id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/5a7e8e11-4a6b-49ff-a33e-95d411c4cdd6/f07404d0-af52-4260-89fb-358a10e86034",
+        "source_kind": "transcript",
+        "native_session_id": "5a7e8e11-4a6b-49ff-a33e-95d411c4cdd6",
+        "ts": "2026-09-10T17:08:22.203Z",
+        "observed_at": "2026-09-10T17:09:00.000Z",
+        "payload": {
+          "type": "user.message",
+          "data": {
+            "content": "Read alpha.txt and beta.txt with separate view calls in parallel and report their sum. Only read those two files.",
+            "messageId": "a856cb38-7609-45ab-8a55-645553155db3",
+            "supportedNativeDocumentMimeTypes": [],
+            "delivery": "idle",
+            "interactionId": "6d2b89fd-a653-430c-b532-b0936d72eb42",
+            "turnId": "0",
+            "parentAgentTaskId": "fd800f7a-8163-4304-9681-efde4731e879"
+          },
+          "id": "f07404d0-af52-4260-89fb-358a10e86034",
+          "timestamp": "2026-09-10T17:08:22.203Z",
+          "parentId": "3942810f-1caf-4251-82fb-3bf72698147a",
+          "schema_version": 1
+        },
+        "locator": {
+          "file": "events.jsonl",
+          "file_generation": "1-abc",
+          "byte_offset": 2122,
+          "byte_length": 548,
+          "native_event_id": "f07404d0-af52-4260-89fb-358a10e86034"
+        }
+      }
+    ],
+    "expected": {
+      "turns": [],
+      "usage_rows": [],
+      "pending": [
+        {
+          "id": "pending:copilot:turn:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa:5a7e8e11-4a6b-49ff-a33e-95d411c4cdd6:6d2b89fd-a653-430c-b532-b0936d72eb42",
+          "kind": "open_interaction",
+          "reason": "user interaction has no assistant.turn_end",
+          "source_ids": [
+            "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/5a7e8e11-4a6b-49ff-a33e-95d411c4cdd6/f07404d0-af52-4260-89fb-358a10e86034"
+          ],
+          "evidence": [
+            "interaction_id:6d2b89fd-a653-430c-b532-b0936d72eb42"
+          ]
+        }
+      ],
+      "semantic_state": {
+        "open_interactions": {
+          "6d2b89fd-a653-430c-b532-b0936d72eb42|main": {
+            "interaction_id": "6d2b89fd-a653-430c-b532-b0936d72eb42",
+            "agent_id": null,
+            "stored_turn_id": "copilot:turn:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa:5a7e8e11-4a6b-49ff-a33e-95d411c4cdd6:6d2b89fd-a653-430c-b532-b0936d72eb42",
+            "source_ids": [
+              "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/5a7e8e11-4a6b-49ff-a33e-95d411c4cdd6/f07404d0-af52-4260-89fb-358a10e86034"
+            ],
+            "last_event_source_id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/5a7e8e11-4a6b-49ff-a33e-95d411c4cdd6/f07404d0-af52-4260-89fb-358a10e86034",
+            "start_ts": "2026-09-10T17:08:22.203Z",
+            "pending_tool_call_ids": []
+          }
+        }
+      }
+    }
+  },
+  "abort": {
+    "observed": false,
+    "required": "assistant.abort closes the user turn as interrupted; do not treat a prompt-only slice as abort",
+    "input_records": [
+      {
+        "source_id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/5a7e8e11-4a6b-49ff-a33e-95d411c4cdd6/synthetic-abort-user",
+        "source_kind": "transcript",
+        "native_session_id": "5a7e8e11-4a6b-49ff-a33e-95d411c4cdd6",
+        "ts": "2026-09-10T17:08:24.400Z",
+        "observed_at": "2026-09-10T17:09:00.000Z",
+        "payload": {
+          "type": "user.message",
+          "data": {
+            "content": "hello",
+            "interactionId": "ix-abort",
+            "turnId": "0"
+          },
+          "id": "synthetic-abort-user",
+          "timestamp": "2026-09-10T17:08:24.400Z",
+          "schema_version": 1
+        },
+        "locator": {
+          "file": "events.jsonl",
+          "native_event_id": "synthetic-abort-user"
+        }
+      },
+      {
+        "source_id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/5a7e8e11-4a6b-49ff-a33e-95d411c4cdd6/synthetic-abort-start",
+        "source_kind": "transcript",
+        "native_session_id": "5a7e8e11-4a6b-49ff-a33e-95d411c4cdd6",
+        "ts": "2026-09-10T17:08:24.450Z",
+        "observed_at": "2026-09-10T17:09:00.000Z",
+        "payload": {
+          "type": "assistant.turn_start",
+          "data": {
+            "turnId": "0",
+            "interactionId": "ix-abort"
+          },
+          "id": "synthetic-abort-start",
+          "timestamp": "2026-09-10T17:08:24.450Z",
+          "schema_version": 1
+        },
+        "locator": {
+          "file": "events.jsonl",
+          "native_event_id": "synthetic-abort-start"
+        }
+      },
+      {
+        "source_id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/5a7e8e11-4a6b-49ff-a33e-95d411c4cdd6/synthetic-abort-msg",
+        "source_kind": "transcript",
+        "native_session_id": "5a7e8e11-4a6b-49ff-a33e-95d411c4cdd6",
+        "ts": "2026-09-10T17:08:24.503Z",
+        "observed_at": "2026-09-10T17:09:00.000Z",
+        "payload": {
+          "type": "assistant.message",
+          "data": {
+            "content": "partial",
+            "model": "gpt-5.6-luna",
+            "interactionId": "ix-abort",
+            "turnId": "0",
+            "reasoningSummary": "started answering",
+            "toolRequests": []
+          },
+          "id": "synthetic-abort-msg",
+          "timestamp": "2026-09-10T17:08:24.503Z",
+          "schema_version": 1
+        },
+        "locator": {
+          "file": "events.jsonl",
+          "native_event_id": "synthetic-abort-msg"
+        }
+      },
+      {
+        "source_id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/5a7e8e11-4a6b-49ff-a33e-95d411c4cdd6/synthetic-abort-event",
+        "source_kind": "transcript",
+        "native_session_id": "5a7e8e11-4a6b-49ff-a33e-95d411c4cdd6",
+        "ts": "2026-09-10T17:08:24.800Z",
+        "observed_at": "2026-09-10T17:09:00.000Z",
+        "payload": {
+          "type": "assistant.abort",
+          "data": {
+            "turnId": "0",
+            "interactionId": "ix-abort"
+          },
+          "id": "synthetic-abort-event",
+          "timestamp": "2026-09-10T17:08:24.800Z",
+          "schema_version": 1
+        },
+        "locator": {
+          "file": "events.jsonl",
+          "native_event_id": "synthetic-abort-event"
+        }
+      }
+    ],
+    "expected": {
+      "events": [
+        {
+          "id": "copilot:event:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/5a7e8e11-4a6b-49ff-a33e-95d411c4cdd6/synthetic-abort-user",
+          "kind": "user_prompt",
+          "classification": "main",
+          "ts": "2026-09-10T17:08:24.400Z",
+          "source_ids": [
+            "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/5a7e8e11-4a6b-49ff-a33e-95d411c4cdd6/synthetic-abort-user"
+          ],
+          "attributes": {
+            "interaction_id": "ix-abort"
+          }
+        },
+        {
+          "id": "copilot:event:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/5a7e8e11-4a6b-49ff-a33e-95d411c4cdd6/synthetic-abort-event",
+          "kind": "abort",
+          "classification": "main",
+          "ts": "2026-09-10T17:08:24.800Z",
+          "source_ids": [
+            "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/5a7e8e11-4a6b-49ff-a33e-95d411c4cdd6/synthetic-abort-event"
+          ]
+        }
+      ],
+      "turns": [
+        {
+          "turn_id": "copilot:turn:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa:5a7e8e11-4a6b-49ff-a33e-95d411c4cdd6:ix-abort",
+          "start_ts": "2026-09-10T17:08:24.400Z",
+          "end_ts": "2026-09-10T17:08:24.800Z",
+          "input_message": "hello",
+          "output_message": "partial",
+          "status": "interrupted",
+          "llm_calls": [
+            {
+              "call_id": "copilot:call:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/5a7e8e11-4a6b-49ff-a33e-95d411c4cdd6/synthetic-abort-msg",
+              "provider": "unknown",
+              "model": "gpt-5.6-luna",
+              "start_ts": "2026-09-10T17:08:24.503Z",
+              "end_ts": "2026-09-10T17:08:24.800Z",
+              "input_messages": [
+                {
+                  "role": "user",
+                  "parts": [
+                    {
+                      "type": "text",
+                      "content": "hello"
+                    }
+                  ]
+                }
+              ],
+              "output_messages": [
+                {
+                  "role": "assistant",
+                  "parts": [
+                    {
+                      "type": "text",
+                      "content": "partial"
+                    },
+                    {
+                      "type": "reasoning",
+                      "content": "started answering"
+                    }
+                  ]
+                }
+              ],
+              "usage": {},
+              "tool_calls": []
+            }
+          ],
+          "permission_requests": [],
+          "subagents": [],
+          "attributes": {
+            "interaction_id": "ix-abort",
+            "agent_id": null
+          },
+          "accounting_calls": []
+        }
+      ],
+      "call_candidates": [
+        {
+          "call_id": "copilot:call:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/5a7e8e11-4a6b-49ff-a33e-95d411c4cdd6/synthetic-abort-msg",
+          "stored_turn_id": "copilot:turn:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa:5a7e8e11-4a6b-49ff-a33e-95d411c4cdd6:ix-abort",
+          "interaction_id": "ix-abort",
+          "agent_id": null,
+          "parent_tool_call_id": null,
+          "model": "gpt-5.6-luna",
+          "source_ids": [
+            "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/5a7e8e11-4a6b-49ff-a33e-95d411c4cdd6/synthetic-abort-msg",
+            "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/5a7e8e11-4a6b-49ff-a33e-95d411c4cdd6/synthetic-abort-event"
+          ],
+          "start_ts": "2026-09-10T17:08:24.503Z",
+          "end_ts": "2026-09-10T17:08:24.800Z",
+          "tool_call_ids": []
+        }
+      ],
+      "pending": [],
+      "usage_rows": []
+    }
+  },
+  "retry": {
+    "observed": false,
+    "required": "stable source-derived IDs make projection replay equivalent without duplicate accounting",
+    "input_records": [
+      {
+        "source_id": "copilot-db:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa:5a7e8e11-4a6b-49ff-a33e-95d411c4cdd6:assistant_usage_events:13:sha256:68bf2ca8903d9bdfe15a9d61144ba8b9b0e352678680e4490f2259bd2f468f47",
+        "source_kind": "database",
+        "native_session_id": "5a7e8e11-4a6b-49ff-a33e-95d411c4cdd6",
+        "ts": "2026-09-10T17:08:24.498Z",
+        "observed_at": "2026-09-10T17:09:00.000Z",
+        "payload": {
+          "table": "assistant_usage_events",
+          "row": {
+            "id": 13,
+            "session_id": "5a7e8e11-4a6b-49ff-a33e-95d411c4cdd6",
+            "turn_index": 0,
+            "agent_id": null,
+            "parent_tool_call_id": null,
+            "model": "gpt-5.6-luna",
+            "input_tokens": 6452,
+            "output_tokens": 107,
+            "cache_read_tokens": 0,
+            "cache_write_tokens": 6449,
+            "reasoning_tokens": 29,
+            "total_nano_aiu": 174125000,
+            "request_multiplier": 1.0,
+            "duration_ms": 2263,
+            "time_to_first_token_ms": 1571.1477920000002,
+            "output_ttft_ms": 1571.1479590000001,
+            "inter_token_latency_ms": 7.393025117647059,
+            "initiator": "user",
+            "api_endpoint": "ws:/responses",
+            "reasoning_effort": "medium",
+            "finish_reason": "tool_calls",
+            "content_filter_triggered": 0,
+            "token_details_json": "[{\"batchSize\":1000000,\"costPerBatch\":20000000000,\"tokenCount\":3,\"tokenType\":\"input\"},{\"batchSize\":1000000,\"costPerBatch\":2000000000,\"tokenCount\":0,\"tokenType\":\"cache_read\"},{\"batchSize\":1000000,\"costPerBatch\":25000000000,\"tokenCount\":6449,\"tokenType\":\"cache_write\"},{\"batchSize\":1000000,\"costPerBatch\":120000000000,\"tokenCount\":107,\"tokenType\":\"output\"}]",
+            "created_at": "2026-09-10T17:08:24.498Z"
+          }
+        },
+        "locator": {
+          "database": "/example/.copilot/session-store.db",
+          "table": "assistant_usage_events",
+          "primary_key": 13,
+          "content_revision": "sha256:68bf2ca8903d9bdfe15a9d61144ba8b9b0e352678680e4490f2259bd2f468f47",
+          "generation": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+        }
+      },
+      {
+        "source_id": "copilot-db:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa:5a7e8e11-4a6b-49ff-a33e-95d411c4cdd6:assistant_usage_events:13:sha256:68bf2ca8903d9bdfe15a9d61144ba8b9b0e352678680e4490f2259bd2f468f47",
+        "source_kind": "database",
+        "native_session_id": "5a7e8e11-4a6b-49ff-a33e-95d411c4cdd6",
+        "ts": "2026-09-10T17:08:24.498Z",
+        "observed_at": "2026-09-10T17:09:00.000Z",
+        "payload": {
+          "table": "assistant_usage_events",
+          "row": {
+            "id": 13,
+            "session_id": "5a7e8e11-4a6b-49ff-a33e-95d411c4cdd6",
+            "turn_index": 0,
+            "agent_id": null,
+            "parent_tool_call_id": null,
+            "model": "gpt-5.6-luna",
+            "input_tokens": 6452,
+            "output_tokens": 107,
+            "cache_read_tokens": 0,
+            "cache_write_tokens": 6449,
+            "reasoning_tokens": 29,
+            "total_nano_aiu": 174125000,
+            "request_multiplier": 1.0,
+            "duration_ms": 2263,
+            "time_to_first_token_ms": 1571.1477920000002,
+            "output_ttft_ms": 1571.1479590000001,
+            "inter_token_latency_ms": 7.393025117647059,
+            "initiator": "user",
+            "api_endpoint": "ws:/responses",
+            "reasoning_effort": "medium",
+            "finish_reason": "tool_calls",
+            "content_filter_triggered": 0,
+            "token_details_json": "[{\"batchSize\":1000000,\"costPerBatch\":20000000000,\"tokenCount\":3,\"tokenType\":\"input\"},{\"batchSize\":1000000,\"costPerBatch\":2000000000,\"tokenCount\":0,\"tokenType\":\"cache_read\"},{\"batchSize\":1000000,\"costPerBatch\":25000000000,\"tokenCount\":6449,\"tokenType\":\"cache_write\"},{\"batchSize\":1000000,\"costPerBatch\":120000000000,\"tokenCount\":107,\"tokenType\":\"output\"}]",
+            "created_at": "2026-09-10T17:08:24.498Z"
+          }
+        },
+        "locator": {
+          "database": "/example/.copilot/session-store.db",
+          "table": "assistant_usage_events",
+          "primary_key": 13,
+          "content_revision": "sha256:68bf2ca8903d9bdfe15a9d61144ba8b9b0e352678680e4490f2259bd2f468f47",
+          "generation": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+        }
+      }
+    ],
+    "expected": {
+      "usage_rows": [
+        {
+          "session_id": "copilot-aaaaaaaaaaaaaaaa-5a7e8e11-4a6b-49ff-a33e-95d411c4cdd6",
+          "seq": 0,
+          "call_id": "copilot:usage:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa:assistant_usage_events:sha256%3Abbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb:13",
+          "ts": "2026-09-10T17:08:24.498Z",
+          "platform": "copilot",
+          "gen_ai.conversation.id": "copilot-aaaaaaaaaaaaaaaa-5a7e8e11-4a6b-49ff-a33e-95d411c4cdd6",
+          "gen_ai.provider.name": "unknown",
+          "gen_ai.operation.name": "chat",
+          "gen_ai.response.model": "gpt-5.6-luna",
+          "gen_ai.usage.input_tokens": 6452,
+          "gen_ai.usage.output_tokens": 107,
+          "gen_ai.usage.cache_read.input_tokens": 0,
+          "gen_ai.usage.cache_creation.input_tokens": 6449,
+          "gen_ai.usage.reasoning.output_tokens": 29
+        }
+      ],
+      "candidates": [
+        {
+          "usage_source_id": "copilot-db:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa:5a7e8e11-4a6b-49ff-a33e-95d411c4cdd6:assistant_usage_events:13:sha256:68bf2ca8903d9bdfe15a9d61144ba8b9b0e352678680e4490f2259bd2f468f47",
+          "logical_call_id": "copilot:usage:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa:assistant_usage_events:sha256%3Abbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb:13",
+          "turn_index": 0,
+          "agent_id": null,
+          "parent_tool_call_id": null,
+          "model": "gpt-5.6-luna",
+          "provider": null,
+          "source_ids": [
+            "copilot-db:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa:5a7e8e11-4a6b-49ff-a33e-95d411c4cdd6:assistant_usage_events:13:sha256:68bf2ca8903d9bdfe15a9d61144ba8b9b0e352678680e4490f2259bd2f468f47"
+          ],
+          "source_references": [
+            {
+              "source_id": "copilot-db:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa:5a7e8e11-4a6b-49ff-a33e-95d411c4cdd6:assistant_usage_events:13:sha256:68bf2ca8903d9bdfe15a9d61144ba8b9b0e352678680e4490f2259bd2f468f47",
+              "source_kind": "database",
+              "role": "usage_row"
+            }
+          ],
+          "revision": {
+            "table": "assistant_usage_events",
+            "primary_key": "13",
+            "generation": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+            "content_revision": "sha256:68bf2ca8903d9bdfe15a9d61144ba8b9b0e352678680e4490f2259bd2f468f47"
+          },
+          "timestamp": "2026-09-10T17:08:24.498Z",
+          "finish_reason": "tool_calls",
+          "supplemental_metrics": {
+            "total_nano_aiu": 174125000,
+            "request_multiplier": 1.0,
+            "initiator": "user",
+            "api_endpoint": "ws:/responses",
+            "reasoning_effort": "medium",
+            "content_filter_triggered": 0,
+            "token_details_json": "[{\"batchSize\":1000000,\"costPerBatch\":20000000000,\"tokenCount\":3,\"tokenType\":\"input\"},{\"batchSize\":1000000,\"costPerBatch\":2000000000,\"tokenCount\":0,\"tokenType\":\"cache_read\"},{\"batchSize\":1000000,\"costPerBatch\":25000000000,\"tokenCount\":6449,\"tokenType\":\"cache_write\"},{\"batchSize\":1000000,\"costPerBatch\":120000000000,\"tokenCount\":107,\"tokenType\":\"output\"}]",
+            "duration_ms": 2263,
+            "time_to_first_token_ms": 1571.1477920000002,
+            "output_ttft_ms": 1571.1479590000001,
+            "inter_token_latency_ms": 7.393025117647059
+          }
+        }
+      ]
+    }
+  },
+  "nested_child": {
+    "observed": true,
+    "required": "child evidence stays within its parent main interaction; session-ID-only ownership is not inferred",
+    "input_records": [
+      {
+        "source_id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/5a7e8e11-4a6b-49ff-a33e-95d411c4cdd6/6dff9fa5-c2df-41da-912b-d1ffd0706076",
+        "source_kind": "transcript",
+        "native_session_id": "5a7e8e11-4a6b-49ff-a33e-95d411c4cdd6",
+        "ts": "2026-09-10T17:08:44.058Z",
+        "observed_at": "2026-09-10T17:09:00.000Z",
+        "payload": {
+          "type": "subagent.started",
+          "data": {
+            "toolCallId": "call_qx4FH5DADTeT1qVLb37HNpBk",
+            "agentName": "explore",
+            "agentDisplayName": "sum-alpha-beta",
+            "agentDescription": "Sum two text files",
+            "model": "gpt-5.6-luna",
+            "resumable": false,
+            "agentType": "explore",
+            "executionMode": "sync"
+          },
+          "agentId": "bf8cb9f3-2097-4db0-a3c8-78a2653b2106",
+          "id": "6dff9fa5-c2df-41da-912b-d1ffd0706076",
+          "timestamp": "2026-09-10T17:08:44.058Z",
+          "parentId": "0049f918-7bb9-478a-8c91-b6f8353525a9",
+          "schema_version": 1
+        },
+        "locator": {
+          "file": "events.jsonl",
+          "file_generation": "1-abc",
+          "byte_offset": 15821,
+          "byte_length": 474,
+          "native_event_id": "6dff9fa5-c2df-41da-912b-d1ffd0706076"
+        }
+      },
+      {
+        "source_id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/5a7e8e11-4a6b-49ff-a33e-95d411c4cdd6/d4e30206-94f5-47d5-b15e-7411b9708aec",
+        "source_kind": "transcript",
+        "native_session_id": "5a7e8e11-4a6b-49ff-a33e-95d411c4cdd6",
+        "ts": "2026-09-10T17:08:44.557Z",
+        "observed_at": "2026-09-10T17:09:00.000Z",
+        "payload": {
+          "type": "user.message",
+          "data": {
+            "content": "Read only /fixture/workspace/alpha.txt and /fixture/workspace/beta.txt. Do not modify files. Do not access any other files or services. Report the sum of the numeric values in those two files.",
+            "source": "agent-5a7e8e11-4a6b-49ff-a33e-95d411c4cdd6",
+            "supportedNativeDocumentMimeTypes": [],
+            "delivery": "idle",
+            "interactionId": "7c0fa097-c0e2-48da-b2b6-fcfc1ad83a6b",
+            "turnId": "0",
+            "parentAgentTaskId": "5a3e63ac-c073-40ba-b07a-010d534b363e"
+          },
+          "agentId": "bf8cb9f3-2097-4db0-a3c8-78a2653b2106",
+          "id": "d4e30206-94f5-47d5-b15e-7411b9708aec",
+          "timestamp": "2026-09-10T17:08:44.557Z",
+          "parentId": "3bd18700-90c6-4b2f-aaaa-63760bdfa89a",
+          "schema_version": 1
+        },
+        "locator": {
+          "file": "events.jsonl",
+          "file_generation": "1-abc",
+          "byte_offset": 18718,
+          "byte_length": 681,
+          "native_event_id": "d4e30206-94f5-47d5-b15e-7411b9708aec"
+        }
+      },
+      {
+        "source_id": "hook/bf8cb9f3-2097-4db0-a3c8-78a2653b2106/obs-child-prompt-1",
+        "source_kind": "hook",
+        "native_session_id": "bf8cb9f3-2097-4db0-a3c8-78a2653b2106",
+        "ts": "2026-09-10T17:08:44.530Z",
+        "observed_at": "2026-09-10T17:09:00.000Z",
+        "payload": {
+          "schema_version": 1,
+          "event": "userPromptSubmitted",
+          "hook_payload": {
+            "sessionId": "bf8cb9f3-2097-4db0-a3c8-78a2653b2106",
+            "timestamp": 1789060124530,
+            "cwd": "/fixture/workspace",
+            "prompt": "Read only /fixture/workspace/alpha.txt and /fixture/workspace/beta.txt. Do not modify files. Do not access any other files or services. Report the sum of the numeric values in those two files."
+          },
+          "context": {}
+        },
+        "locator": {
+          "observation_id": "obs-child-prompt-1",
+          "event": "userPromptSubmitted"
+        }
+      }
+    ],
+    "expected": {
+      "main_turn_ids": [
+        "copilot:turn:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa:5a7e8e11-4a6b-49ff-a33e-95d411c4cdd6:793d3703-6f4a-4814-8877-34a7325848ce"
+      ],
+      "child_owned_by": "copilot:turn:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa:5a7e8e11-4a6b-49ff-a33e-95d411c4cdd6:793d3703-6f4a-4814-8877-34a7325848ce",
+      "child_hook_native_session_id": "bf8cb9f3-2097-4db0-a3c8-78a2653b2106",
+      "do_not_infer_from_session_id_alone": true,
+      "turns": [
+        {
+          "turn_id": "copilot:turn:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa:5a7e8e11-4a6b-49ff-a33e-95d411c4cdd6:793d3703-6f4a-4814-8877-34a7325848ce",
+          "start_ts": "2026-09-10T17:08:42.192Z",
+          "end_ts": "2026-09-10T17:08:48.287Z",
+          "input_message": "Invoke one explore subagent to read only alpha.txt and beta.txt and report their sum. Do not modify files or access other files or services. Then report its answer.",
+          "output_message": "42",
+          "status": "completed",
+          "llm_calls": [],
+          "permission_requests": [],
+          "subagents": [
+            {
+              "turn_id": "copilot:turn:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa:5a7e8e11-4a6b-49ff-a33e-95d411c4cdd6:7c0fa097-c0e2-48da-b2b6-fcfc1ad83a6b:bf8cb9f3-2097-4db0-a3c8-78a2653b2106",
+              "start_ts": "2026-09-10T17:08:44.557Z",
+              "end_ts": "2026-09-10T17:08:47.463Z",
+              "input_message": "Read only /fixture/workspace/alpha.txt and /fixture/workspace/beta.txt. Do not modify files. Do not access any other files or services. Report the sum of the numeric values in those two files.",
+              "output_message": "42",
+              "status": "completed",
+              "llm_calls": [],
+              "permission_requests": [],
+              "subagents": [],
+              "attributes": {
+                "agent_id": "bf8cb9f3-2097-4db0-a3c8-78a2653b2106",
+                "parent_tool_call_id": "call_qx4FH5DADTeT1qVLb37HNpBk",
+                "agent_name": "explore"
+              }
+            }
+          ],
+          "attributes": {
+            "interaction_id": "793d3703-6f4a-4814-8877-34a7325848ce",
+            "agent_id": null
+          }
+        }
+      ],
+      "events": [
+        {
+          "id": "copilot:event:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/5a7e8e11-4a6b-49ff-a33e-95d411c4cdd6/6dff9fa5-c2df-41da-912b-d1ffd0706076",
+          "kind": "subagent_started",
+          "classification": "main",
+          "ts": "2026-09-10T17:08:44.058Z",
+          "source_ids": [
+            "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/5a7e8e11-4a6b-49ff-a33e-95d411c4cdd6/6dff9fa5-c2df-41da-912b-d1ffd0706076"
+          ],
+          "source_references": [
+            {
+              "source_id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/5a7e8e11-4a6b-49ff-a33e-95d411c4cdd6/6dff9fa5-c2df-41da-912b-d1ffd0706076",
+              "source_kind": "transcript",
+              "role": "nested_child"
+            }
+          ],
+          "attributes": {
+            "agent_id": "bf8cb9f3-2097-4db0-a3c8-78a2653b2106",
+            "parent_tool_call_id": "call_qx4FH5DADTeT1qVLb37HNpBk"
+          }
+        }
+      ]
+    }
+  },
+  "late_row": {
+    "observed": false,
+    "required": "create/revise accounting locally and leave attribution pending unless evidence is uniquely consistent",
+    "input_records": [
+      {
+        "source_id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/5a7e8e11-4a6b-49ff-a33e-95d411c4cdd6/f07404d0-af52-4260-89fb-358a10e86034",
+        "source_kind": "transcript",
+        "native_session_id": "5a7e8e11-4a6b-49ff-a33e-95d411c4cdd6",
+        "ts": "2026-09-10T17:08:22.203Z",
+        "observed_at": "2026-09-10T17:09:00.000Z",
+        "payload": {
+          "type": "user.message",
+          "data": {
+            "content": "Read alpha.txt and beta.txt with separate view calls in parallel and report their sum. Only read those two files.",
+            "messageId": "a856cb38-7609-45ab-8a55-645553155db3",
+            "supportedNativeDocumentMimeTypes": [],
+            "delivery": "idle",
+            "interactionId": "6d2b89fd-a653-430c-b532-b0936d72eb42",
+            "turnId": "0",
+            "parentAgentTaskId": "fd800f7a-8163-4304-9681-efde4731e879"
+          },
+          "id": "f07404d0-af52-4260-89fb-358a10e86034",
+          "timestamp": "2026-09-10T17:08:22.203Z",
+          "parentId": "3942810f-1caf-4251-82fb-3bf72698147a",
+          "schema_version": 1
+        },
+        "locator": {
+          "file": "events.jsonl",
+          "file_generation": "1-abc",
+          "byte_offset": 2122,
+          "byte_length": 548,
+          "native_event_id": "f07404d0-af52-4260-89fb-358a10e86034"
+        }
+      },
+      {
+        "source_id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/5a7e8e11-4a6b-49ff-a33e-95d411c4cdd6/a4a17e63-7ba5-422f-8ee9-b495be417328",
+        "source_kind": "transcript",
+        "native_session_id": "5a7e8e11-4a6b-49ff-a33e-95d411c4cdd6",
+        "ts": "2026-09-10T17:08:24.503Z",
+        "observed_at": "2026-09-10T17:09:00.000Z",
+        "payload": {
+          "type": "assistant.message",
+          "data": {
+            "messageId": "5a29b09d-5e7d-4603-975e-7801ce54232b",
+            "model": "gpt-5.6-luna",
+            "content": "",
+            "toolRequests": [
+              {
+                "toolCallId": "call_YSSva4HCniiETlxdGGjcrHbh",
+                "name": "view",
+                "arguments": {
+                  "path": "/fixture/workspace/alpha.txt"
+                },
+                "type": "function",
+                "intentionSummary": "view the file at /fixture/workspace/alpha.txt."
+              },
+              {
+                "toolCallId": "call_ayHplfzxjRFMTCpmTKEFhCSJ",
+                "name": "view",
+                "arguments": {
+                  "path": "/fixture/workspace/beta.txt"
+                },
+                "type": "function",
+                "intentionSummary": "view the file at /fixture/workspace/beta.txt."
+              }
+            ],
+            "interactionId": "6d2b89fd-a653-430c-b532-b0936d72eb42",
+            "turnId": "0",
+            "rte": true
+          },
+          "id": "a4a17e63-7ba5-422f-8ee9-b495be417328",
+          "timestamp": "2026-09-10T17:08:24.503Z",
+          "parentId": "64f9e436-651f-4a9d-919c-a4d7abad2652",
+          "schema_version": 1
+        },
+        "locator": {
+          "file": "events.jsonl",
+          "file_generation": "1-abc",
+          "byte_offset": 3731,
+          "byte_length": 793,
+          "native_event_id": "a4a17e63-7ba5-422f-8ee9-b495be417328"
+        }
+      },
+      {
+        "source_id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/5a7e8e11-4a6b-49ff-a33e-95d411c4cdd6/0080e44c-ad62-4288-b2b2-061ec2b73d80",
+        "source_kind": "transcript",
+        "native_session_id": "5a7e8e11-4a6b-49ff-a33e-95d411c4cdd6",
+        "ts": "2026-09-10T17:08:24.593Z",
+        "observed_at": "2026-09-10T17:09:00.000Z",
+        "payload": {
+          "type": "assistant.turn_end",
+          "data": {
+            "turnId": "0"
+          },
+          "id": "0080e44c-ad62-4288-b2b2-061ec2b73d80",
+          "timestamp": "2026-09-10T17:08:24.593Z",
+          "parentId": "032cf87e-05b7-4e5f-96b9-1fda1a8242f5",
+          "schema_version": 1
+        },
+        "locator": {
+          "file": "events.jsonl",
+          "file_generation": "1-abc",
+          "byte_offset": 9311,
+          "byte_length": 195,
+          "native_event_id": "0080e44c-ad62-4288-b2b2-061ec2b73d80"
+        }
+      },
+      {
+        "source_id": "copilot-db:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa:5a7e8e11-4a6b-49ff-a33e-95d411c4cdd6:assistant_usage_events:14:sha256:20cb0f98d6130c8d0e139391cfc8e245d1d0ac96d41469c4da60f26e6d9e0a26",
+        "source_kind": "database",
+        "native_session_id": "5a7e8e11-4a6b-49ff-a33e-95d411c4cdd6",
+        "ts": "2026-09-10T17:08:25.618Z",
+        "observed_at": "2026-09-10T17:09:00.000Z",
+        "payload": {
+          "table": "assistant_usage_events",
+          "row": {
+            "id": 14,
+            "session_id": "5a7e8e11-4a6b-49ff-a33e-95d411c4cdd6",
+            "turn_index": 0,
+            "agent_id": null,
+            "parent_tool_call_id": null,
+            "model": "gpt-5.6-luna",
+            "input_tokens": 6587,
+            "output_tokens": 5,
+            "cache_read_tokens": 6449,
+            "cache_write_tokens": 135,
+            "reasoning_tokens": 0,
+            "total_nano_aiu": 16933000,
+            "request_multiplier": 1.0,
+            "duration_ms": 1017,
+            "time_to_first_token_ms": 942.6416250000001,
+            "output_ttft_ms": 942.642416,
+            "inter_token_latency_ms": null,
+            "initiator": "agent",
+            "api_endpoint": "ws:/responses",
+            "reasoning_effort": "medium",
+            "finish_reason": "stop",
+            "content_filter_triggered": 0,
+            "token_details_json": "[{\"batchSize\":1000000,\"costPerBatch\":20000000000,\"tokenCount\":3,\"tokenType\":\"input\"},{\"batchSize\":1000000,\"costPerBatch\":2000000000,\"tokenCount\":6449,\"tokenType\":\"cache_read\"},{\"batchSize\":1000000,\"costPerBatch\":25000000000,\"tokenCount\":135,\"tokenType\":\"cache_write\"},{\"batchSize\":1000000,\"costPerBatch\":120000000000,\"tokenCount\":5,\"tokenType\":\"output\"}]",
+            "created_at": "2026-09-10T17:08:25.618Z"
+          }
+        },
+        "locator": {
+          "database": "/example/.copilot/session-store.db",
+          "table": "assistant_usage_events",
+          "primary_key": 14,
+          "content_revision": "sha256:20cb0f98d6130c8d0e139391cfc8e245d1d0ac96d41469c4da60f26e6d9e0a26",
+          "generation": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+        }
+      }
+    ],
+    "expected": {
+      "usage_rows": [
+        {
+          "session_id": "copilot-aaaaaaaaaaaaaaaa-5a7e8e11-4a6b-49ff-a33e-95d411c4cdd6",
+          "seq": 0,
+          "call_id": "copilot:usage:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa:assistant_usage_events:sha256%3Abbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb:14",
+          "ts": "2026-09-10T17:08:25.618Z",
+          "platform": "copilot",
+          "gen_ai.conversation.id": "copilot-aaaaaaaaaaaaaaaa-5a7e8e11-4a6b-49ff-a33e-95d411c4cdd6",
+          "gen_ai.provider.name": "unknown",
+          "gen_ai.operation.name": "chat",
+          "gen_ai.response.model": "gpt-5.6-luna",
+          "gen_ai.usage.input_tokens": 6587,
+          "gen_ai.usage.output_tokens": 5,
+          "gen_ai.usage.cache_read.input_tokens": 6449,
+          "gen_ai.usage.cache_creation.input_tokens": 135,
+          "gen_ai.usage.reasoning.output_tokens": 0
+        }
+      ],
+      "attributions": [
+        {
+          "usage_source_id": "copilot-db:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa:5a7e8e11-4a6b-49ff-a33e-95d411c4cdd6:assistant_usage_events:14:sha256:20cb0f98d6130c8d0e139391cfc8e245d1d0ac96d41469c4da60f26e6d9e0a26",
+          "logical_call_id": "copilot:usage:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa:assistant_usage_events:sha256%3Abbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb:14",
+          "stored_turn_id": "copilot:turn:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa:5a7e8e11-4a6b-49ff-a33e-95d411c4cdd6:6d2b89fd-a653-430c-b532-b0936d72eb42",
+          "agent_id": null,
+          "call_id": null,
+          "status": "pending",
+          "join_kind": null,
+          "evidence": [
+            "logical_call_id:copilot:usage:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa:assistant_usage_events:sha256%3Abbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb:14",
+            "interaction_id:6d2b89fd-a653-430c-b532-b0936d72eb42",
+            "turn_index:0"
+          ]
+        }
+      ]
+    }
+  },
+  "revision": {
+    "observed": false,
+    "required": "replace the existing logical UsageRow or quarantine conflict; do not add another charge",
+    "input_records": [
+      {
+        "source_id": "copilot-db:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa:5a7e8e11-4a6b-49ff-a33e-95d411c4cdd6:assistant_usage_events:13:sha256:68bf2ca8903d9bdfe15a9d61144ba8b9b0e352678680e4490f2259bd2f468f47",
+        "source_kind": "database",
+        "native_session_id": "5a7e8e11-4a6b-49ff-a33e-95d411c4cdd6",
+        "ts": "2026-09-10T17:08:24.498Z",
+        "observed_at": "2026-09-10T17:09:00.000Z",
+        "payload": {
+          "table": "assistant_usage_events",
+          "row": {
+            "id": 13,
+            "session_id": "5a7e8e11-4a6b-49ff-a33e-95d411c4cdd6",
+            "turn_index": 0,
+            "agent_id": null,
+            "parent_tool_call_id": null,
+            "model": "gpt-5.6-luna",
+            "input_tokens": 6452,
+            "output_tokens": 107,
+            "cache_read_tokens": 0,
+            "cache_write_tokens": 6449,
+            "reasoning_tokens": 29,
+            "total_nano_aiu": 174125000,
+            "request_multiplier": 1.0,
+            "duration_ms": 2263,
+            "time_to_first_token_ms": 1571.1477920000002,
+            "output_ttft_ms": 1571.1479590000001,
+            "inter_token_latency_ms": 7.393025117647059,
+            "initiator": "user",
+            "api_endpoint": "ws:/responses",
+            "reasoning_effort": "medium",
+            "finish_reason": "tool_calls",
+            "content_filter_triggered": 0,
+            "token_details_json": "[{\"batchSize\":1000000,\"costPerBatch\":20000000000,\"tokenCount\":3,\"tokenType\":\"input\"},{\"batchSize\":1000000,\"costPerBatch\":2000000000,\"tokenCount\":0,\"tokenType\":\"cache_read\"},{\"batchSize\":1000000,\"costPerBatch\":25000000000,\"tokenCount\":6449,\"tokenType\":\"cache_write\"},{\"batchSize\":1000000,\"costPerBatch\":120000000000,\"tokenCount\":107,\"tokenType\":\"output\"}]",
+            "created_at": "2026-09-10T17:08:24.498Z"
+          }
+        },
+        "locator": {
+          "database": "/example/.copilot/session-store.db",
+          "table": "assistant_usage_events",
+          "primary_key": 13,
+          "content_revision": "sha256:68bf2ca8903d9bdfe15a9d61144ba8b9b0e352678680e4490f2259bd2f468f47",
+          "generation": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+        }
+      },
+      {
+        "source_id": "copilot-db:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa:5a7e8e11-4a6b-49ff-a33e-95d411c4cdd6:assistant_usage_events:13:sha256:fe8383e7e562b4986c48b7b03ce880a54fd4ef03ae1721047ca41261e4ff85ca",
+        "source_kind": "database",
+        "native_session_id": "5a7e8e11-4a6b-49ff-a33e-95d411c4cdd6",
+        "ts": "2026-09-10T17:08:24.498Z",
+        "observed_at": "2026-09-10T17:09:00.000Z",
+        "payload": {
+          "table": "assistant_usage_events",
+          "row": {
+            "id": 13,
+            "session_id": "5a7e8e11-4a6b-49ff-a33e-95d411c4cdd6",
+            "turn_index": 0,
+            "agent_id": null,
+            "parent_tool_call_id": null,
+            "model": "gpt-5.6-luna",
+            "input_tokens": 6452,
+            "output_tokens": 999,
+            "cache_read_tokens": 0,
+            "cache_write_tokens": 6449,
+            "reasoning_tokens": 29,
+            "total_nano_aiu": 174125000,
+            "request_multiplier": 1.0,
+            "duration_ms": 2263,
+            "time_to_first_token_ms": 1571.1477920000002,
+            "output_ttft_ms": 1571.1479590000001,
+            "inter_token_latency_ms": 7.393025117647059,
+            "initiator": "user",
+            "api_endpoint": "ws:/responses",
+            "reasoning_effort": "medium",
+            "finish_reason": "tool_calls",
+            "content_filter_triggered": 0,
+            "token_details_json": "[{\"batchSize\":1000000,\"costPerBatch\":20000000000,\"tokenCount\":3,\"tokenType\":\"input\"},{\"batchSize\":1000000,\"costPerBatch\":2000000000,\"tokenCount\":0,\"tokenType\":\"cache_read\"},{\"batchSize\":1000000,\"costPerBatch\":25000000000,\"tokenCount\":6449,\"tokenType\":\"cache_write\"},{\"batchSize\":1000000,\"costPerBatch\":120000000000,\"tokenCount\":107,\"tokenType\":\"output\"}]",
+            "created_at": "2026-09-10T17:08:24.498Z"
+          }
+        },
+        "locator": {
+          "database": "/example/.copilot/session-store.db",
+          "table": "assistant_usage_events",
+          "primary_key": 13,
+          "content_revision": "sha256:fe8383e7e562b4986c48b7b03ce880a54fd4ef03ae1721047ca41261e4ff85ca",
+          "generation": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+        }
+      }
+    ],
+    "expected": {
+      "logical_call_ids": [
+        "copilot:usage:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa:assistant_usage_events:sha256%3Abbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb:13"
+      ],
+      "usage_row_count": 1,
+      "usage_source_id": "copilot-db:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa:5a7e8e11-4a6b-49ff-a33e-95d411c4cdd6:assistant_usage_events:13:sha256:fe8383e7e562b4986c48b7b03ce880a54fd4ef03ae1721047ca41261e4ff85ca",
+      "replaced_output_tokens": 999
+    }
+  },
+  "identical_concurrent_tools": {
+    "observed": true,
+    "required": "use transcript toolCallId/source identity; hooks and nearest timestamps cannot prove pairing",
+    "input_records": [
+      {
+        "source_id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/5a7e8e11-4a6b-49ff-a33e-95d411c4cdd6/a4a17e63-7ba5-422f-8ee9-b495be417328",
+        "source_kind": "transcript",
+        "native_session_id": "5a7e8e11-4a6b-49ff-a33e-95d411c4cdd6",
+        "ts": "2026-09-10T17:08:24.503Z",
+        "observed_at": "2026-09-10T17:09:00.000Z",
+        "payload": {
+          "type": "assistant.message",
+          "data": {
+            "messageId": "5a29b09d-5e7d-4603-975e-7801ce54232b",
+            "model": "gpt-5.6-luna",
+            "content": "",
+            "toolRequests": [
+              {
+                "toolCallId": "call_YSSva4HCniiETlxdGGjcrHbh",
+                "name": "view",
+                "arguments": {
+                  "path": "/fixture/workspace/alpha.txt"
+                },
+                "type": "function",
+                "intentionSummary": "view the file at /fixture/workspace/alpha.txt."
+              },
+              {
+                "toolCallId": "call_ayHplfzxjRFMTCpmTKEFhCSJ",
+                "name": "view",
+                "arguments": {
+                  "path": "/fixture/workspace/beta.txt"
+                },
+                "type": "function",
+                "intentionSummary": "view the file at /fixture/workspace/beta.txt."
+              }
+            ],
+            "interactionId": "6d2b89fd-a653-430c-b532-b0936d72eb42",
+            "turnId": "0",
+            "rte": true
+          },
+          "id": "a4a17e63-7ba5-422f-8ee9-b495be417328",
+          "timestamp": "2026-09-10T17:08:24.503Z",
+          "parentId": "64f9e436-651f-4a9d-919c-a4d7abad2652",
+          "schema_version": 1
+        },
+        "locator": {
+          "file": "events.jsonl",
+          "file_generation": "1-abc",
+          "byte_offset": 3731,
+          "byte_length": 793,
+          "native_event_id": "a4a17e63-7ba5-422f-8ee9-b495be417328"
+        }
+      },
+      {
+        "source_id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/5a7e8e11-4a6b-49ff-a33e-95d411c4cdd6/a7f7bf04-589e-4989-a4a2-7ee687279627",
+        "source_kind": "transcript",
+        "native_session_id": "5a7e8e11-4a6b-49ff-a33e-95d411c4cdd6",
+        "ts": "2026-09-10T17:08:24.506Z",
+        "observed_at": "2026-09-10T17:09:00.000Z",
+        "payload": {
+          "type": "tool.execution_start",
+          "data": {
+            "toolCallId": "call_YSSva4HCniiETlxdGGjcrHbh",
+            "toolName": "view",
+            "arguments": {
+              "path": "/fixture/workspace/alpha.txt"
+            },
+            "turnId": "0",
+            "model": "gpt-5.6-luna"
+          },
+          "id": "a7f7bf04-589e-4989-a4a2-7ee687279627",
+          "timestamp": "2026-09-10T17:08:24.506Z",
+          "parentId": "a4a17e63-7ba5-422f-8ee9-b495be417328",
+          "schema_version": 1
+        },
+        "locator": {
+          "file": "events.jsonl",
+          "file_generation": "1-abc",
+          "byte_offset": 4524,
+          "byte_length": 344,
+          "native_event_id": "a7f7bf04-589e-4989-a4a2-7ee687279627"
+        }
+      },
+      {
+        "source_id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/5a7e8e11-4a6b-49ff-a33e-95d411c4cdd6/39e9da78-9bc3-4e1a-9629-f6680d1aeb4d",
+        "source_kind": "transcript",
+        "native_session_id": "5a7e8e11-4a6b-49ff-a33e-95d411c4cdd6",
+        "ts": "2026-09-10T17:08:24.506Z",
+        "observed_at": "2026-09-10T17:09:00.000Z",
+        "payload": {
+          "type": "tool.execution_start",
+          "data": {
+            "toolCallId": "call_ayHplfzxjRFMTCpmTKEFhCSJ",
+            "toolName": "view",
+            "arguments": {
+              "path": "/fixture/workspace/beta.txt"
+            },
+            "turnId": "0",
+            "model": "gpt-5.6-luna"
+          },
+          "id": "39e9da78-9bc3-4e1a-9629-f6680d1aeb4d",
+          "timestamp": "2026-09-10T17:08:24.506Z",
+          "parentId": "a7f7bf04-589e-4989-a4a2-7ee687279627",
+          "schema_version": 1
+        },
+        "locator": {
+          "file": "events.jsonl",
+          "file_generation": "1-abc",
+          "byte_offset": 4868,
+          "byte_length": 343,
+          "native_event_id": "39e9da78-9bc3-4e1a-9629-f6680d1aeb4d"
+        }
+      }
+    ],
+    "expected": {
+      "tool_call_ids": [
+        "call_YSSva4HCniiETlxdGGjcrHbh",
+        "call_ayHplfzxjRFMTCpmTKEFhCSJ"
+      ],
+      "event_ids": [
+        "copilot:event:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/5a7e8e11-4a6b-49ff-a33e-95d411c4cdd6/a7f7bf04-589e-4989-a4a2-7ee687279627",
+        "copilot:event:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/5a7e8e11-4a6b-49ff-a33e-95d411c4cdd6/39e9da78-9bc3-4e1a-9629-f6680d1aeb4d"
+      ],
+      "forbidden_join_keys": [
+        "tool_name",
+        "timestamp",
+        "parentId",
+        "turnId"
+      ]
+    }
+  },
+  "ambiguous": {
+    "observed": false,
+    "required": "Attribution status ambiguous with both candidate IDs in evidence; choose neither",
+    "input_records": [
+      {
+        "source_id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/5a7e8e11-4a6b-49ff-a33e-95d411c4cdd6/a4a17e63-7ba5-422f-8ee9-b495be417328",
+        "source_kind": "transcript",
+        "native_session_id": "5a7e8e11-4a6b-49ff-a33e-95d411c4cdd6",
+        "ts": "2026-09-10T17:08:24.503Z",
+        "observed_at": "2026-09-10T17:09:00.000Z",
+        "payload": {
+          "type": "assistant.message",
+          "data": {
+            "messageId": "5a29b09d-5e7d-4603-975e-7801ce54232b",
+            "model": "gpt-5.6-luna",
+            "content": "",
+            "toolRequests": [
+              {
+                "toolCallId": "call_YSSva4HCniiETlxdGGjcrHbh",
+                "name": "view",
+                "arguments": {
+                  "path": "/fixture/workspace/alpha.txt"
+                },
+                "type": "function",
+                "intentionSummary": "view the file at /fixture/workspace/alpha.txt."
+              },
+              {
+                "toolCallId": "call_ayHplfzxjRFMTCpmTKEFhCSJ",
+                "name": "view",
+                "arguments": {
+                  "path": "/fixture/workspace/beta.txt"
+                },
+                "type": "function",
+                "intentionSummary": "view the file at /fixture/workspace/beta.txt."
+              }
+            ],
+            "interactionId": "6d2b89fd-a653-430c-b532-b0936d72eb42",
+            "turnId": "0",
+            "rte": true
+          },
+          "id": "a4a17e63-7ba5-422f-8ee9-b495be417328",
+          "timestamp": "2026-09-10T17:08:24.503Z",
+          "parentId": "64f9e436-651f-4a9d-919c-a4d7abad2652",
+          "schema_version": 1
+        },
+        "locator": {
+          "file": "events.jsonl",
+          "file_generation": "1-abc",
+          "byte_offset": 3731,
+          "byte_length": 793,
+          "native_event_id": "a4a17e63-7ba5-422f-8ee9-b495be417328"
+        }
+      },
+      {
+        "source_id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/5a7e8e11-4a6b-49ff-a33e-95d411c4cdd6/33cc6465-29e1-4a04-8bdb-00241474b4d2",
+        "source_kind": "transcript",
+        "native_session_id": "5a7e8e11-4a6b-49ff-a33e-95d411c4cdd6",
+        "ts": "2026-09-10T17:08:25.624Z",
+        "observed_at": "2026-09-10T17:09:00.000Z",
+        "payload": {
+          "type": "assistant.message",
+          "data": {
+            "messageId": "162d92b0-5d31-444c-b96f-b6c551527d2b",
+            "model": "gpt-5.6-luna",
+            "content": "42",
+            "toolRequests": [],
+            "interactionId": "6d2b89fd-a653-430c-b532-b0936d72eb42",
+            "turnId": "1",
+            "phase": "final_answer",
+            "rte": true
+          },
+          "id": "33cc6465-29e1-4a04-8bdb-00241474b4d2",
+          "timestamp": "2026-09-10T17:08:25.624Z",
+          "parentId": "667fe48a-70a1-473b-b005-454964022344",
+          "schema_version": 1
+        },
+        "locator": {
+          "file": "events.jsonl",
+          "file_generation": "1-abc",
+          "byte_offset": 9760,
+          "byte_length": 404,
+          "native_event_id": "33cc6465-29e1-4a04-8bdb-00241474b4d2"
+        }
+      },
+      {
+        "source_id": "copilot-db:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa:5a7e8e11-4a6b-49ff-a33e-95d411c4cdd6:assistant_usage_events:13:sha256:68bf2ca8903d9bdfe15a9d61144ba8b9b0e352678680e4490f2259bd2f468f47",
+        "source_kind": "database",
+        "native_session_id": "5a7e8e11-4a6b-49ff-a33e-95d411c4cdd6",
+        "ts": "2026-09-10T17:08:24.498Z",
+        "observed_at": "2026-09-10T17:09:00.000Z",
+        "payload": {
+          "table": "assistant_usage_events",
+          "row": {
+            "id": 13,
+            "session_id": "5a7e8e11-4a6b-49ff-a33e-95d411c4cdd6",
+            "turn_index": 0,
+            "agent_id": null,
+            "parent_tool_call_id": null,
+            "model": "gpt-5.6-luna",
+            "input_tokens": 6452,
+            "output_tokens": 107,
+            "cache_read_tokens": 0,
+            "cache_write_tokens": 6449,
+            "reasoning_tokens": 29,
+            "total_nano_aiu": 174125000,
+            "request_multiplier": 1.0,
+            "duration_ms": 2263,
+            "time_to_first_token_ms": 1571.1477920000002,
+            "output_ttft_ms": 1571.1479590000001,
+            "inter_token_latency_ms": 7.393025117647059,
+            "initiator": "user",
+            "api_endpoint": "ws:/responses",
+            "reasoning_effort": "medium",
+            "finish_reason": "tool_calls",
+            "content_filter_triggered": 0,
+            "token_details_json": "[{\"batchSize\":1000000,\"costPerBatch\":20000000000,\"tokenCount\":3,\"tokenType\":\"input\"},{\"batchSize\":1000000,\"costPerBatch\":2000000000,\"tokenCount\":0,\"tokenType\":\"cache_read\"},{\"batchSize\":1000000,\"costPerBatch\":25000000000,\"tokenCount\":6449,\"tokenType\":\"cache_write\"},{\"batchSize\":1000000,\"costPerBatch\":120000000000,\"tokenCount\":107,\"tokenType\":\"output\"}]",
+            "created_at": "2026-09-10T17:08:24.498Z"
+          }
+        },
+        "locator": {
+          "database": "/example/.copilot/session-store.db",
+          "table": "assistant_usage_events",
+          "primary_key": 13,
+          "content_revision": "sha256:68bf2ca8903d9bdfe15a9d61144ba8b9b0e352678680e4490f2259bd2f468f47",
+          "generation": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+        }
+      }
+    ],
+    "expected": {
+      "attributions": [
+        {
+          "usage_source_id": "copilot-db:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa:5a7e8e11-4a6b-49ff-a33e-95d411c4cdd6:assistant_usage_events:13:sha256:68bf2ca8903d9bdfe15a9d61144ba8b9b0e352678680e4490f2259bd2f468f47",
+          "logical_call_id": "copilot:usage:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa:assistant_usage_events:sha256%3Abbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb:13",
+          "stored_turn_id": "copilot:turn:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa:5a7e8e11-4a6b-49ff-a33e-95d411c4cdd6:6d2b89fd-a653-430c-b532-b0936d72eb42",
+          "agent_id": null,
+          "call_id": null,
+          "status": "ambiguous",
+          "join_kind": null,
+          "evidence": [
+            "call_id:copilot:call:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/5a7e8e11-4a6b-49ff-a33e-95d411c4cdd6/a4a17e63-7ba5-422f-8ee9-b495be417328",
+            "call_id:copilot:call:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/5a7e8e11-4a6b-49ff-a33e-95d411c4cdd6/33cc6465-29e1-4a04-8bdb-00241474b4d2",
+            "interaction_id:6d2b89fd-a653-430c-b532-b0936d72eb42",
+            "model:gpt-5.6-luna",
+            "turn_index:0"
+          ]
+        }
+      ]
+    }
+  },
+  "conflicting": {
+    "observed": false,
+    "required": "ProjectionDiagnostic usage_revision_conflict quarantines incompatible revisions. Attribution.status conflicting is a join conflict, not that diagnostic.",
+    "input_records": [
+      {
+        "source_id": "copilot-db:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa:5a7e8e11-4a6b-49ff-a33e-95d411c4cdd6:assistant_usage_events:13:sha256:68bf2ca8903d9bdfe15a9d61144ba8b9b0e352678680e4490f2259bd2f468f47",
+        "source_kind": "database",
+        "native_session_id": "5a7e8e11-4a6b-49ff-a33e-95d411c4cdd6",
+        "ts": "2026-09-10T17:08:24.498Z",
+        "observed_at": "2026-09-10T17:09:00.000Z",
+        "payload": {
+          "table": "assistant_usage_events",
+          "row": {
+            "id": 13,
+            "session_id": "5a7e8e11-4a6b-49ff-a33e-95d411c4cdd6",
+            "turn_index": 0,
+            "agent_id": null,
+            "parent_tool_call_id": null,
+            "model": "gpt-5.6-luna",
+            "input_tokens": 6452,
+            "output_tokens": 107,
+            "cache_read_tokens": 0,
+            "cache_write_tokens": 6449,
+            "reasoning_tokens": 29,
+            "total_nano_aiu": 174125000,
+            "request_multiplier": 1.0,
+            "duration_ms": 2263,
+            "time_to_first_token_ms": 1571.1477920000002,
+            "output_ttft_ms": 1571.1479590000001,
+            "inter_token_latency_ms": 7.393025117647059,
+            "initiator": "user",
+            "api_endpoint": "ws:/responses",
+            "reasoning_effort": "medium",
+            "finish_reason": "tool_calls",
+            "content_filter_triggered": 0,
+            "token_details_json": "[{\"batchSize\":1000000,\"costPerBatch\":20000000000,\"tokenCount\":3,\"tokenType\":\"input\"},{\"batchSize\":1000000,\"costPerBatch\":2000000000,\"tokenCount\":0,\"tokenType\":\"cache_read\"},{\"batchSize\":1000000,\"costPerBatch\":25000000000,\"tokenCount\":6449,\"tokenType\":\"cache_write\"},{\"batchSize\":1000000,\"costPerBatch\":120000000000,\"tokenCount\":107,\"tokenType\":\"output\"}]",
+            "created_at": "2026-09-10T17:08:24.498Z"
+          }
+        },
+        "locator": {
+          "database": "/example/.copilot/session-store.db",
+          "table": "assistant_usage_events",
+          "primary_key": 13,
+          "content_revision": "sha256:68bf2ca8903d9bdfe15a9d61144ba8b9b0e352678680e4490f2259bd2f468f47",
+          "generation": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+        }
+      },
+      {
+        "source_id": "copilot-db:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa:5a7e8e11-4a6b-49ff-a33e-95d411c4cdd6:assistant_usage_events:13:sha256:bc82d51eaf6061d225d88e973fdaa5549ad7177a50376de381a3a33aadacfd13",
+        "source_kind": "database",
+        "native_session_id": "5a7e8e11-4a6b-49ff-a33e-95d411c4cdd6",
+        "ts": "2026-09-10T17:08:24.498Z",
+        "observed_at": "2026-09-10T17:09:00.000Z",
+        "payload": {
+          "table": "assistant_usage_events",
+          "row": {
+            "id": 13,
+            "session_id": "5a7e8e11-4a6b-49ff-a33e-95d411c4cdd6",
+            "turn_index": 0,
+            "agent_id": null,
+            "parent_tool_call_id": null,
+            "model": "gpt-5.6-luna",
+            "input_tokens": 1,
+            "output_tokens": 1,
+            "cache_read_tokens": 0,
+            "cache_write_tokens": 6449,
+            "reasoning_tokens": 29,
+            "total_nano_aiu": 1,
+            "request_multiplier": 1.0,
+            "duration_ms": 2263,
+            "time_to_first_token_ms": 1571.1477920000002,
+            "output_ttft_ms": 1571.1479590000001,
+            "inter_token_latency_ms": 7.393025117647059,
+            "initiator": "user",
+            "api_endpoint": "ws:/responses",
+            "reasoning_effort": "medium",
+            "finish_reason": "tool_calls",
+            "content_filter_triggered": 0,
+            "token_details_json": "[{\"batchSize\":1000000,\"costPerBatch\":20000000000,\"tokenCount\":3,\"tokenType\":\"input\"},{\"batchSize\":1000000,\"costPerBatch\":2000000000,\"tokenCount\":0,\"tokenType\":\"cache_read\"},{\"batchSize\":1000000,\"costPerBatch\":25000000000,\"tokenCount\":6449,\"tokenType\":\"cache_write\"},{\"batchSize\":1000000,\"costPerBatch\":120000000000,\"tokenCount\":107,\"tokenType\":\"output\"}]",
+            "created_at": "2026-09-10T17:08:24.498Z"
+          }
+        },
+        "locator": {
+          "database": "/example/.copilot/session-store.db",
+          "table": "assistant_usage_events",
+          "primary_key": 13,
+          "content_revision": "sha256:bc82d51eaf6061d225d88e973fdaa5549ad7177a50376de381a3a33aadacfd13",
+          "generation": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+        }
+      }
+    ],
+    "expected": {
+      "usage_row_count": 0,
+      "diagnostics": [
+        {
+          "code": "usage_revision_conflict",
+          "severity": "error",
+          "message": "incompatible metrics for one logical call; quarantined",
+          "source_ids": [
+            "copilot-db:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa:5a7e8e11-4a6b-49ff-a33e-95d411c4cdd6:assistant_usage_events:13:sha256:68bf2ca8903d9bdfe15a9d61144ba8b9b0e352678680e4490f2259bd2f468f47",
+            "copilot-db:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa:5a7e8e11-4a6b-49ff-a33e-95d411c4cdd6:assistant_usage_events:13:sha256:bc82d51eaf6061d225d88e973fdaa5549ad7177a50376de381a3a33aadacfd13"
+          ],
+          "details": {
+            "logical_call_id": "copilot:usage:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa:assistant_usage_events:sha256%3Abbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb:13"
+          }
+        }
+      ],
+      "attributions": [
+        {
+          "usage_source_id": "copilot-db:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa:5a7e8e11-4a6b-49ff-a33e-95d411c4cdd6:assistant_usage_events:13:sha256:68bf2ca8903d9bdfe15a9d61144ba8b9b0e352678680e4490f2259bd2f468f47",
+          "logical_call_id": "copilot:usage:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa:assistant_usage_events:sha256%3Abbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb:13",
+          "stored_turn_id": "copilot:turn:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa:5a7e8e11-4a6b-49ff-a33e-95d411c4cdd6:6d2b89fd-a653-430c-b532-b0936d72eb42",
+          "agent_id": null,
+          "call_id": null,
+          "status": "conflicting",
+          "join_kind": null,
+          "evidence": [
+            "call_id:copilot:call:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/5a7e8e11-4a6b-49ff-a33e-95d411c4cdd6/a4a17e63-7ba5-422f-8ee9-b495be417328",
+            "call_id:copilot:call:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/5a7e8e11-4a6b-49ff-a33e-95d411c4cdd6/33cc6465-29e1-4a04-8bdb-00241474b4d2",
+            "join_conflict:rebinding_after_emission"
+          ]
+        }
+      ]
+    }
+  },
+  "auxiliary_title_generation": {
+    "observed": false,
+    "required": "classify model.* title generation separately; do not add to the six-call total",
+    "input_records": [
+      {
+        "source_id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/5a7e8e11-4a6b-49ff-a33e-95d411c4cdd6/synthetic-title-1",
+        "source_kind": "transcript",
+        "native_session_id": "5a7e8e11-4a6b-49ff-a33e-95d411c4cdd6",
+        "ts": "2026-09-10T17:08:08.000Z",
+        "observed_at": "2026-09-10T17:09:00.000Z",
+        "payload": {
+          "type": "model.model_call_success",
+          "data": {
+            "model": "gpt-4o-mini",
+            "purpose": "session_title",
+            "input_tokens": 120,
+            "output_tokens": 8
+          },
+          "id": "synthetic-title-1",
+          "timestamp": "2026-09-10T17:08:08.000Z",
+          "parentId": null,
+          "schema_version": 1
+        },
+        "locator": {
+          "file": "events.jsonl",
+          "file_generation": "1-abc",
+          "byte_offset": 0,
+          "byte_length": 210,
+          "native_event_id": "synthetic-title-1"
+        }
+      }
+    ],
+    "expected": {
+      "events": [
+        {
+          "id": "copilot:event:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/5a7e8e11-4a6b-49ff-a33e-95d411c4cdd6/synthetic-title-1",
+          "kind": "auxiliary_model_call",
+          "classification": "title_generation",
+          "ts": "2026-09-10T17:08:08.000Z",
+          "source_ids": [
+            "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/5a7e8e11-4a6b-49ff-a33e-95d411c4cdd6/synthetic-title-1"
+          ],
+          "source_references": [
+            {
+              "source_id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/5a7e8e11-4a6b-49ff-a33e-95d411c4cdd6/synthetic-title-1",
+              "source_kind": "transcript",
+              "role": "auxiliary_model"
+            }
+          ],
+          "attributes": {
+            "model": "gpt-4o-mini"
+          }
+        }
+      ],
+      "call_candidates": [],
+      "usage_rows": [],
+      "diagnostics": [
+        {
+          "code": "auxiliary_excluded_from_main",
+          "severity": "info",
+          "message": "title-generation model.* record classified auxiliary",
+          "source_ids": [
+            "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/5a7e8e11-4a6b-49ff-a33e-95d411c4cdd6/synthetic-title-1"
+          ],
+          "details": {
+            "classification": "title_generation",
+            "model": "gpt-4o-mini"
+          }
+        }
+      ]
+    }
+  },
+  "unknown_version": {
+    "observed": false,
+    "required": "retain raw payload as unknown; pending/diagnostic rather than a completed turn; no fabricated grouping",
+    "input_records": [
+      {
+        "source_id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/5a7e8e11-4a6b-49ff-a33e-95d411c4cdd6/synthetic-unknown-version-1",
+        "source_kind": "transcript",
+        "native_session_id": "5a7e8e11-4a6b-49ff-a33e-95d411c4cdd6",
+        "ts": "2026-09-10T17:08:22.203Z",
+        "observed_at": "2026-09-10T17:09:00.000Z",
+        "payload": {
+          "type": "user.message",
+          "data": {
+            "content": "hello from an unsupported transcript schema",
+            "interactionId": "6d2b89fd-a653-430c-b532-b0936d72eb42",
+            "turnId": "0"
+          },
+          "id": "synthetic-unknown-version-1",
+          "timestamp": "2026-09-10T17:08:22.203Z",
+          "parentId": null,
+          "schema_version": 2
+        },
+        "locator": {
+          "file": "events.jsonl",
+          "file_generation": "1-abc",
+          "byte_offset": 0,
+          "byte_length": 240,
+          "native_event_id": "synthetic-unknown-version-1"
+        }
+      }
+    ],
+    "expected": {
+      "events": [
+        {
+          "id": "copilot:event:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/5a7e8e11-4a6b-49ff-a33e-95d411c4cdd6/synthetic-unknown-version-1",
+          "kind": "unknown",
+          "classification": "main",
+          "ts": "2026-09-10T17:08:22.203Z",
+          "source_ids": [
+            "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/5a7e8e11-4a6b-49ff-a33e-95d411c4cdd6/synthetic-unknown-version-1"
+          ],
+          "attributes": {
+            "native_type": "user.message",
+            "raw_payload": {
+              "type": "user.message",
+              "data": {
+                "content": "hello from an unsupported transcript schema",
+                "interactionId": "6d2b89fd-a653-430c-b532-b0936d72eb42",
+                "turnId": "0"
+              },
+              "id": "synthetic-unknown-version-1",
+              "timestamp": "2026-09-10T17:08:22.203Z",
+              "parentId": null,
+              "schema_version": 2
+            }
+          }
+        }
+      ],
+      "turns": [],
+      "call_candidates": [],
+      "pending": [
+        {
+          "id": "pending:unknown-version:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/5a7e8e11-4a6b-49ff-a33e-95d411c4cdd6/synthetic-unknown-version-1",
+          "kind": "missing_source_capability",
+          "reason": "unknown transcript schema_version",
+          "source_ids": [
+            "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/5a7e8e11-4a6b-49ff-a33e-95d411c4cdd6/synthetic-unknown-version-1"
+          ],
+          "evidence": [
+            "schema_version:2"
+          ]
+        }
+      ],
+      "diagnostics": [
+        {
+          "code": "capability_gap",
+          "severity": "warning",
+          "message": "unknown transcript schema_version; raw payload retained",
+          "source_ids": [
+            "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/5a7e8e11-4a6b-49ff-a33e-95d411c4cdd6/synthetic-unknown-version-1"
+          ],
+          "details": {
+            "schema_version": 2
+          }
+        }
+      ]
+    }
+  },
+  "identical_concurrent_identical_args": {
+    "observed": false,
+    "required": "pair concurrent identical view arguments by toolCallId only; arguments/tool_name/timestamp cannot prove pairing",
+    "input_records": [
+      {
+        "source_id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/5a7e8e11-4a6b-49ff-a33e-95d411c4cdd6/synthetic-identical-args-asst",
+        "source_kind": "transcript",
+        "native_session_id": "5a7e8e11-4a6b-49ff-a33e-95d411c4cdd6",
+        "ts": "2026-09-10T17:08:24.503Z",
+        "observed_at": "2026-09-10T17:09:00.000Z",
+        "payload": {
+          "type": "assistant.message",
+          "data": {
+            "messageId": "synthetic-identical-args-msg",
+            "model": "gpt-5.6-luna",
+            "content": "",
+            "toolRequests": [
+              {
+                "toolCallId": "call_identical_args_alpha_1",
+                "name": "view",
+                "arguments": {
+                  "path": "/fixture/workspace/alpha.txt"
+                },
+                "type": "function",
+                "intentionSummary": "view the file at /fixture/workspace/alpha.txt."
+              },
+              {
+                "toolCallId": "call_identical_args_alpha_2",
+                "name": "view",
+                "arguments": {
+                  "path": "/fixture/workspace/alpha.txt"
+                },
+                "type": "function",
+                "intentionSummary": "view the file at /fixture/workspace/alpha.txt."
+              }
+            ],
+            "interactionId": "6d2b89fd-a653-430c-b532-b0936d72eb42",
+            "turnId": "0",
+            "rte": true
+          },
+          "id": "synthetic-identical-args-asst",
+          "timestamp": "2026-09-10T17:08:24.503Z",
+          "parentId": "64f9e436-651f-4a9d-919c-a4d7abad2652",
+          "schema_version": 1
+        },
+        "locator": {
+          "file": "events.jsonl",
+          "file_generation": "1-abc",
+          "byte_offset": 3731,
+          "byte_length": 793,
+          "native_event_id": "synthetic-identical-args-asst"
+        }
+      },
+      {
+        "source_id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/5a7e8e11-4a6b-49ff-a33e-95d411c4cdd6/synthetic-identical-args-exec-a",
+        "source_kind": "transcript",
+        "native_session_id": "5a7e8e11-4a6b-49ff-a33e-95d411c4cdd6",
+        "ts": "2026-09-10T17:08:24.506Z",
+        "observed_at": "2026-09-10T17:09:00.000Z",
+        "payload": {
+          "type": "tool.execution_start",
+          "data": {
+            "toolCallId": "call_identical_args_alpha_1",
+            "toolName": "view",
+            "arguments": {
+              "path": "/fixture/workspace/alpha.txt"
+            },
+            "turnId": "0",
+            "model": "gpt-5.6-luna"
+          },
+          "id": "synthetic-identical-args-exec-a",
+          "timestamp": "2026-09-10T17:08:24.506Z",
+          "parentId": "synthetic-identical-args-asst",
+          "schema_version": 1
+        },
+        "locator": {
+          "file": "events.jsonl",
+          "file_generation": "1-abc",
+          "byte_offset": 4524,
+          "byte_length": 344,
+          "native_event_id": "synthetic-identical-args-exec-a"
+        }
+      },
+      {
+        "source_id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/5a7e8e11-4a6b-49ff-a33e-95d411c4cdd6/synthetic-identical-args-exec-b",
+        "source_kind": "transcript",
+        "native_session_id": "5a7e8e11-4a6b-49ff-a33e-95d411c4cdd6",
+        "ts": "2026-09-10T17:08:24.506Z",
+        "observed_at": "2026-09-10T17:09:00.000Z",
+        "payload": {
+          "type": "tool.execution_start",
+          "data": {
+            "toolCallId": "call_identical_args_alpha_2",
+            "toolName": "view",
+            "arguments": {
+              "path": "/fixture/workspace/alpha.txt"
+            },
+            "turnId": "0",
+            "model": "gpt-5.6-luna"
+          },
+          "id": "synthetic-identical-args-exec-b",
+          "timestamp": "2026-09-10T17:08:24.506Z",
+          "parentId": "synthetic-identical-args-exec-a",
+          "schema_version": 1
+        },
+        "locator": {
+          "file": "events.jsonl",
+          "file_generation": "1-abc",
+          "byte_offset": 4868,
+          "byte_length": 343,
+          "native_event_id": "synthetic-identical-args-exec-b"
+        }
+      }
+    ],
+    "expected": {
+      "tool_call_ids": [
+        "call_identical_args_alpha_1",
+        "call_identical_args_alpha_2"
+      ],
+      "event_ids": [
+        "copilot:event:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/5a7e8e11-4a6b-49ff-a33e-95d411c4cdd6/synthetic-identical-args-exec-a",
+        "copilot:event:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/5a7e8e11-4a6b-49ff-a33e-95d411c4cdd6/synthetic-identical-args-exec-b"
+      ],
+      "forbidden_join_keys": [
+        "arguments",
+        "tool_name",
+        "timestamp",
+        "parentId",
+        "turnId"
+      ]
+    }
+  }
+}

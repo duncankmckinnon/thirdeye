@@ -2,14 +2,13 @@
 
 from __future__ import annotations
 
-import json
-import os
-import tempfile
 from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
 from thirdeye._compat import fsops
+
+from .jsonio import atomic_write_json, read_json_object
 
 STATE_SCHEMA_VERSION = 1
 STATE_FILENAME = "copilot.state.json"
@@ -39,39 +38,27 @@ def lock_path(session_dir: Path) -> Path:
 
 
 def _atomic_json(path: Path, value: dict[str, Any]) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    fd, temp_name = tempfile.mkstemp(dir=path.parent, prefix=f"{path.name}.", suffix=".tmp")
-    try:
-        with os.fdopen(fd, "w", encoding="utf-8", newline="\n") as stream:
-            json.dump(value, stream, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
-            stream.write("\n")
-            stream.flush()
-            os.fsync(stream.fileno())
-        fsops.replace(temp_name, path)
-        if path.name == STATE_FILENAME:
-            _fault("after_state_replace")
-        elif path.name == JOURNAL_FILENAME:
-            _fault("after_journal_replace")
-        fsops.sync_directory(path.parent)
-        _fault("after_dirsync")
-    except BaseException:
-        fsops.unlink(Path(temp_name), missing_ok=True)
-        raise
+    after_replace = None
+    if path.name == STATE_FILENAME:
+        after_replace = "after_state_replace"
+    elif path.name == JOURNAL_FILENAME:
+        after_replace = "after_journal_replace"
+    atomic_write_json(
+        path,
+        value,
+        on_replaced=(lambda: _fault(after_replace)) if after_replace else None,
+        on_synced=lambda: _fault("after_dirsync"),
+    )
 
 
 def read_json(path: Path) -> dict[str, Any] | None:
     try:
-        raw = json.loads(fsops.read_text(path, encoding="utf-8"))
-    except FileNotFoundError:
-        return None
-    except (OSError, json.JSONDecodeError):
-        # A malformed state file is never silently used as a fresh cursor.  The
-        # archive caller turns this into a diagnostic and leaves the evidence
-        # log itself readable.
-        raise ValueError(f"invalid Copilot archive state: {path}") from None
-    if not isinstance(raw, dict):
-        raise ValueError(f"invalid Copilot archive state: {path}")
-    return raw
+        return read_json_object(path, invalid_message=f"invalid Copilot archive state: {path}")
+    except OSError as exc:
+        # A malformed or unreadable state file is never silently used as a
+        # fresh cursor.  The archive caller turns this into a diagnostic and
+        # leaves the evidence log itself readable.
+        raise ValueError(f"invalid Copilot archive state: {path}") from exc
 
 
 def write_state(session_dir: Path, value: dict[str, Any]) -> None:

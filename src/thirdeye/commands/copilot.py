@@ -14,7 +14,17 @@ from thirdeye.platforms.copilot.capture import (
 )
 from thirdeye.platforms.copilot.capture import sync as capture_sync
 from thirdeye.platforms.copilot.constants import COPILOT_HOME_ENV
-from thirdeye.platforms.copilot.identity import resolve_sources, validate_native_id
+from thirdeye.platforms.copilot.identity import (
+    resolve_sources,
+    validate_native_id,
+    validate_stored_session_id,
+)
+from thirdeye.platforms.copilot.runtime import (
+    all_archived_session_ids,
+    reconcile_archived_sessions,
+    reconcile_session,
+    reconcile_stored_session,
+)
 from thirdeye.platforms.copilot.status import capture_status
 from thirdeye.platforms.copilot.types import SourcePaths, SyncResult
 from thirdeye.platforms.copilot.watch import watch as watch_loop
@@ -146,11 +156,27 @@ def _status_error_affects_exit(error: object) -> bool:
         return False
     if _is_retryable_code(error.get("code")):
         return False
-    return error.get("kind") != "missing_source_time"
+    if error.get("kind") in {"missing_source_time", "copilot_reconcile_error"}:
+        return False
+    return True
 
 
 def _print_sync_result(result: SyncResult) -> None:
     click.echo(_counts_line(result))
+
+
+def _print_reconcile_result(result: dict[str, int]) -> None:
+    click.echo(
+        "reconcile "
+        f"events={result.get('events', 0)} "
+        f"usage={result.get('usage', 0)} "
+        f"turns={result.get('turns', 0)} "
+        f"exports_queued={result.get('exports', 0)} "
+        f"pending={result.get('pending', 0)} "
+        f"ambiguous={result.get('ambiguous', 0)} "
+        f"conflicting={result.get('conflicting', 0)} "
+        f"errors={result.get('errors', 0)}"
+    )
 
 
 def _print_sync_followup(config: Config, paths: SourcePaths, result: SyncResult) -> None:
@@ -194,6 +220,25 @@ def _print_status(status: dict[str, Any]) -> None:
         f"leases={pending.get('leases', 0)} "
         f"journals={pending.get('journals', 0)}"
     )
+    projections = [
+        item.get("projection") for item in status.get("sessions") or [] if isinstance(item, dict)
+    ]
+    exports = [
+        item.get("export") for item in status.get("sessions") or [] if isinstance(item, dict)
+    ]
+    click.echo(
+        "Projection: "
+        f"pending={sum(item.get('pending', 0) for item in projections if isinstance(item, dict))} "
+        f"ambiguous={sum(item.get('ambiguous', 0) for item in projections if isinstance(item, dict))} "
+        f"conflicting={sum(item.get('conflicting', 0) for item in projections if isinstance(item, dict))}"
+    )
+    click.echo(
+        "Export: "
+        f"activated={sum(1 for item in exports if isinstance(item, dict) and item.get('activated'))} "
+        f"queued={sum(item.get('queued', 0) for item in exports if isinstance(item, dict))} "
+        f"delivered={sum(item.get('delivered', 0) for item in exports if isinstance(item, dict))} "
+        f"errors={sum(item.get('errors', 0) for item in exports if isinstance(item, dict))}"
+    )
     errors = status.get("errors") or []
     informational = [error for error in errors if not _status_error_affects_exit(error)]
     blocking = [error for error in errors if _status_error_affects_exit(error)]
@@ -220,8 +265,15 @@ def copilot_group() -> None:
 
 @copilot_group.command("sync", help="One-shot local ingestion of Copilot CLI recordings.")
 @click.option("--session-id", default=None, help="Exact native Copilot session ID.")
+@click.option(
+    "--export",
+    "export_history",
+    is_flag=True,
+    default=False,
+    help="Queue completed archived history for export after local reconciliation.",
+)
 @_source_home_option
-def sync_cmd(session_id: str | None, source_home: Path | None) -> None:
+def sync_cmd(session_id: str | None, export_history: bool, source_home: Path | None) -> None:
     config = Config.load()
     paths = _resolve_paths(source_home)
     try:
@@ -231,11 +283,71 @@ def sync_cmd(session_id: str | None, source_home: Path | None) -> None:
     except ValueError as exc:
         raise click.ClickException(str(exc)) from exc
     _print_sync_result(result)
+    # Every sync refreshes only local V2 projections. Explicit opt-in is the
+    # only sync path that can include completed history in export eligibility.
+    # A selected native ID never exports or rebuilds unrelated archives.
+    if session_id is None:
+        if export_history:
+            for derived in reconcile_archived_sessions(
+                config, paths, export=True, include_history=True
+            ).values():
+                _print_reconcile_result(derived)
+        else:
+            reconcile_archived_sessions(config, paths)
+    elif result["sessions"] > 0:
+        derived = reconcile_session(
+            config,
+            paths,
+            session_id,
+            export=export_history,
+            include_history=export_history,
+        )
+        if export_history:
+            _print_reconcile_result(derived)
     _print_sync_followup(config, paths, result)
     if session_id is not None and result["sessions"] == 0:
         raise click.ClickException(
             f"Copilot session {session_id} was not found or could not be imported"
         )
+
+
+@copilot_group.command("reconcile", help="Build Copilot V2 projections from retained local archives.")
+@click.option("--session-id", default=None, help="Exact stored Thirdeye Copilot session ID.")
+@click.option("--rebuild", is_flag=True, default=False, help="Rebuild derived state only.")
+@click.option(
+    "--export",
+    "export_history",
+    is_flag=True,
+    default=False,
+    help="Queue completed archived history for export after local reconciliation.",
+)
+def reconcile_cmd(session_id: str | None, rebuild: bool, export_history: bool) -> None:
+    config = Config.load()
+    if session_id is None:
+        stored_ids = all_archived_session_ids(config)
+    else:
+        try:
+            validate_stored_session_id(session_id)
+            stored_ids = [session_id]
+        except ValueError as exc:
+            raise click.ClickException(str(exc)) from exc
+    failed = False
+    for stored_id in stored_ids:
+        try:
+            result = reconcile_stored_session(
+                config,
+                stored_id,
+                rebuild=rebuild,
+                export=export_history,
+                include_history=export_history,
+            )
+        except ValueError as exc:
+            raise click.ClickException(str(exc)) from exc
+        _print_reconcile_result(result)
+        if result.get("errors", 0):
+            failed = True
+    if failed:
+        raise click.ClickException("Copilot reconciliation completed with errors")
 
 
 @copilot_group.command("watch", help="Poll local Copilot CLI recordings until interrupted.")
@@ -252,7 +364,8 @@ def watch_cmd(source_home: Path | None, interval: float) -> None:
     config = Config.load()
     paths = _resolve_paths(source_home)
     click.echo(
-        f"Watching Copilot home {paths['home']} every {interval}s (local-only). Ctrl-C to stop."
+        f"Watching Copilot home {paths['home']} every {interval}s. "
+        "Configured exports are queued locally. Ctrl-C to stop."
     )
     try:
         watch_loop(config, paths, interval=interval)

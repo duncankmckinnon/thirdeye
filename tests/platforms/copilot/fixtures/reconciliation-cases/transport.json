@@ -1,0 +1,186 @@
+{
+  "rules": {
+    "call_id_set": "export tokens on the matching LlmCallSpanDict chat span",
+    "call_id_null": "export on a user-turn or agent accounting span, never a fabricated turn",
+    "llm_call_usage": "LlmCallSpanDict.usage stays empty whenever accounting_calls is present",
+    "never_both": "matched chat span and fallback accounting span are mutually exclusive",
+    "span_id_chat": "existing chat span id for call_id; no extra span",
+    "span_id_turn": "accounting:{session_id}:{turn_id}:{accounting_id}",
+    "span_id_session": "accounting:{session_id}:{accounting_id}"
+  },
+  "turn_accounting_calls": [
+    {
+      "accounting_id": "copilot:usage:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa:assistant_usage_events:sha256%3Abbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb:13",
+      "usage": {
+        "session_id": "copilot-aaaaaaaaaaaaaaaa-5a7e8e11-4a6b-49ff-a33e-95d411c4cdd6",
+        "seq": 0,
+        "call_id": "copilot:usage:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa:assistant_usage_events:sha256%3Abbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb:13",
+        "ts": "2026-09-10T17:08:24.498Z",
+        "platform": "copilot",
+        "gen_ai.conversation.id": "copilot-aaaaaaaaaaaaaaaa-5a7e8e11-4a6b-49ff-a33e-95d411c4cdd6",
+        "gen_ai.provider.name": "unknown",
+        "gen_ai.operation.name": "chat",
+        "gen_ai.response.model": "gpt-5.6-luna",
+        "gen_ai.usage.input_tokens": 6452,
+        "gen_ai.usage.output_tokens": 107,
+        "gen_ai.usage.cache_read.input_tokens": 0,
+        "gen_ai.usage.cache_creation.input_tokens": 6449,
+        "gen_ai.usage.reasoning.output_tokens": 29
+      },
+      "attribution_status": "matched",
+      "agent_id": null,
+      "call_id": "copilot:call:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/5a7e8e11-4a6b-49ff-a33e-95d411c4cdd6/a4a17e63-7ba5-422f-8ee9-b495be417328",
+      "attributes": {
+        "accounting.destination": "chat-span",
+        "copilot.logical_call_id": "copilot:usage:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa:assistant_usage_events:sha256%3Abbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb:13",
+        "copilot.evidence": [
+          "join_kind:inferred",
+          "interaction_id:6d2b89fd-a653-430c-b532-b0936d72eb42",
+          "model:gpt-5.6-luna",
+          "turn_index:0",
+          "finish:tool_calls",
+          "initiator:user",
+          "order:0"
+        ]
+      }
+    }
+  ],
+  "turn_owned_unmatched_job": {
+    "job_id": "accounting:copilot-aaaaaaaaaaaaaaaa-5a7e8e11-4a6b-49ff-a33e-95d411c4cdd6:copilot:turn:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa:5a7e8e11-4a6b-49ff-a33e-95d411c4cdd6:6d2b89fd-a653-430c-b532-b0936d72eb42:copilot:usage:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa:assistant_usage_events:sha256%3Abbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb:14",
+    "kind": "turn_accounting",
+    "session_id": "copilot-aaaaaaaaaaaaaaaa-5a7e8e11-4a6b-49ff-a33e-95d411c4cdd6",
+    "turn_id": "copilot:turn:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa:5a7e8e11-4a6b-49ff-a33e-95d411c4cdd6:6d2b89fd-a653-430c-b532-b0936d72eb42",
+    "accounting_id": "copilot:usage:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa:assistant_usage_events:sha256%3Abbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb:14",
+    "destination": "turn-accounting-span",
+    "attempt": 0,
+    "state": "queued",
+    "usage": {
+      "session_id": "copilot-aaaaaaaaaaaaaaaa-5a7e8e11-4a6b-49ff-a33e-95d411c4cdd6",
+      "seq": 0,
+      "call_id": "copilot:usage:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa:assistant_usage_events:sha256%3Abbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb:14",
+      "ts": "2026-09-10T17:08:25.618Z",
+      "platform": "copilot",
+      "gen_ai.conversation.id": "copilot-aaaaaaaaaaaaaaaa-5a7e8e11-4a6b-49ff-a33e-95d411c4cdd6",
+      "gen_ai.provider.name": "unknown",
+      "gen_ai.operation.name": "chat",
+      "gen_ai.response.model": "gpt-5.6-luna",
+      "gen_ai.usage.input_tokens": 6587,
+      "gen_ai.usage.output_tokens": 5,
+      "gen_ai.usage.cache_read.input_tokens": 6449,
+      "gen_ai.usage.cache_creation.input_tokens": 135,
+      "gen_ai.usage.reasoning.output_tokens": 0
+    },
+    "attribution_status": "pending",
+    "agent_id": null,
+    "span_id": "accounting:copilot-aaaaaaaaaaaaaaaa-5a7e8e11-4a6b-49ff-a33e-95d411c4cdd6:copilot:turn:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa:5a7e8e11-4a6b-49ff-a33e-95d411c4cdd6:6d2b89fd-a653-430c-b532-b0936d72eb42:copilot:usage:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa:assistant_usage_events:sha256%3Abbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb:14"
+  },
+  "session_accounting_job": {
+    "job_id": "accounting:copilot-aaaaaaaaaaaaaaaa-5a7e8e11-4a6b-49ff-a33e-95d411c4cdd6:copilot:usage:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa:assistant_usage_events:sha256%3Abbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb:14",
+    "kind": "session_accounting",
+    "session_id": "copilot-aaaaaaaaaaaaaaaa-5a7e8e11-4a6b-49ff-a33e-95d411c4cdd6",
+    "accounting_id": "copilot:usage:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa:assistant_usage_events:sha256%3Abbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb:14",
+    "destination": "session-accounting-span",
+    "attempt": 0,
+    "state": "queued",
+    "usage": {
+      "session_id": "copilot-aaaaaaaaaaaaaaaa-5a7e8e11-4a6b-49ff-a33e-95d411c4cdd6",
+      "seq": 0,
+      "call_id": "copilot:usage:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa:assistant_usage_events:sha256%3Abbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb:14",
+      "ts": "2026-09-10T17:08:25.618Z",
+      "platform": "copilot",
+      "gen_ai.conversation.id": "copilot-aaaaaaaaaaaaaaaa-5a7e8e11-4a6b-49ff-a33e-95d411c4cdd6",
+      "gen_ai.provider.name": "unknown",
+      "gen_ai.operation.name": "chat",
+      "gen_ai.response.model": "gpt-5.6-luna",
+      "gen_ai.usage.input_tokens": 6587,
+      "gen_ai.usage.output_tokens": 5,
+      "gen_ai.usage.cache_read.input_tokens": 6449,
+      "gen_ai.usage.cache_creation.input_tokens": 135,
+      "gen_ai.usage.reasoning.output_tokens": 0
+    },
+    "attribution_status": "pending",
+    "span_id": "accounting:copilot-aaaaaaaaaaaaaaaa-5a7e8e11-4a6b-49ff-a33e-95d411c4cdd6:copilot:usage:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa:assistant_usage_events:sha256%3Abbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb:14"
+  },
+  "ledger_entry": {
+    "accounting_id": "copilot:usage:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa:assistant_usage_events:sha256%3Abbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb:14",
+    "destination": "session-accounting-span",
+    "span_id": "accounting:copilot-aaaaaaaaaaaaaaaa-5a7e8e11-4a6b-49ff-a33e-95d411c4cdd6:copilot:usage:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa:assistant_usage_events:sha256%3Abbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb:14",
+    "emitted": false,
+    "last_error": null
+  },
+  "turn_span_with_accounting_calls": {
+    "turn_id": "copilot:turn:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa:5a7e8e11-4a6b-49ff-a33e-95d411c4cdd6:6d2b89fd-a653-430c-b532-b0936d72eb42",
+    "start_ts": "2026-09-10T17:08:22.203Z",
+    "end_ts": "2026-09-10T17:08:25.626Z",
+    "input_message": "Read alpha.txt and beta.txt with separate view calls in parallel and report their sum. Only read those two files.",
+    "output_message": "42",
+    "status": "completed",
+    "llm_calls": [
+      {
+        "call_id": "copilot:call:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/5a7e8e11-4a6b-49ff-a33e-95d411c4cdd6/a4a17e63-7ba5-422f-8ee9-b495be417328",
+        "provider": "unknown",
+        "model": "gpt-5.6-luna",
+        "start_ts": "2026-09-10T17:08:24.503Z",
+        "end_ts": "2026-09-10T17:08:24.593Z",
+        "input_messages": [],
+        "output_messages": [],
+        "usage": {},
+        "tool_calls": []
+      }
+    ],
+    "permission_requests": [],
+    "subagents": [],
+    "attributes": {
+      "interaction_id": "6d2b89fd-a653-430c-b532-b0936d72eb42",
+      "agent_id": null
+    },
+    "accounting_calls": [
+      {
+        "accounting_id": "copilot:usage:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa:assistant_usage_events:sha256%3Abbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb:13",
+        "usage": {
+          "session_id": "copilot-aaaaaaaaaaaaaaaa-5a7e8e11-4a6b-49ff-a33e-95d411c4cdd6",
+          "seq": 0,
+          "call_id": "copilot:usage:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa:assistant_usage_events:sha256%3Abbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb:13",
+          "ts": "2026-09-10T17:08:24.498Z",
+          "platform": "copilot",
+          "gen_ai.conversation.id": "copilot-aaaaaaaaaaaaaaaa-5a7e8e11-4a6b-49ff-a33e-95d411c4cdd6",
+          "gen_ai.provider.name": "unknown",
+          "gen_ai.operation.name": "chat",
+          "gen_ai.response.model": "gpt-5.6-luna",
+          "gen_ai.usage.input_tokens": 6452,
+          "gen_ai.usage.output_tokens": 107,
+          "gen_ai.usage.cache_read.input_tokens": 0,
+          "gen_ai.usage.cache_creation.input_tokens": 6449,
+          "gen_ai.usage.reasoning.output_tokens": 29
+        },
+        "attribution_status": "matched",
+        "agent_id": null,
+        "call_id": "copilot:call:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/5a7e8e11-4a6b-49ff-a33e-95d411c4cdd6/a4a17e63-7ba5-422f-8ee9-b495be417328",
+        "attributes": {"accounting.destination": "chat-span"}
+      },
+      {
+        "accounting_id": "copilot:usage:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa:assistant_usage_events:sha256%3Abbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb:14",
+        "usage": {
+          "session_id": "copilot-aaaaaaaaaaaaaaaa-5a7e8e11-4a6b-49ff-a33e-95d411c4cdd6",
+          "seq": 0,
+          "call_id": "copilot:usage:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa:assistant_usage_events:sha256%3Abbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb:14",
+          "ts": "2026-09-10T17:08:25.618Z",
+          "platform": "copilot",
+          "gen_ai.conversation.id": "copilot-aaaaaaaaaaaaaaaa-5a7e8e11-4a6b-49ff-a33e-95d411c4cdd6",
+          "gen_ai.provider.name": "unknown",
+          "gen_ai.operation.name": "chat",
+          "gen_ai.response.model": "gpt-5.6-luna",
+          "gen_ai.usage.input_tokens": 6587,
+          "gen_ai.usage.output_tokens": 5,
+          "gen_ai.usage.cache_read.input_tokens": 6449,
+          "gen_ai.usage.cache_creation.input_tokens": 135,
+          "gen_ai.usage.reasoning.output_tokens": 0
+        },
+        "attribution_status": "pending",
+        "agent_id": null,
+        "call_id": null,
+        "attributes": {"accounting.destination": "turn-accounting-span"}
+      }
+    ]
+  }
+}

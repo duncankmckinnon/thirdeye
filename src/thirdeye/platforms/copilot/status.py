@@ -8,13 +8,17 @@ from pathlib import Path
 from typing import Any
 
 from thirdeye.config import Config
-from thirdeye.paths import platform_dir
+from thirdeye.paths import otel_jobs_dir, platform_dir, usage_log_path
 from thirdeye.reader import SessionReader
 
+from . import export_transport
 from .archive import _record_from_event
 from .constants import FOLLOWUP_LEASE_FILENAME, PLATFORM_NAME
 from .database import read_database
+from .export_state import load_export_state
 from .install import CopilotPlatform
+from .projection_store import read_projection_status
+from .runtime import load_runtime_status
 from .spool import read_spool
 from .state import journal_path, read_json, state_path
 from .types import SourcePaths, SourceRecord
@@ -28,6 +32,7 @@ _FILE_LEVEL_DATABASE_CODES = frozenset(
         "copilot_database_read_failed",
     }
 )
+_WORKER_TURN_KINDS = frozenset({"turn", "spans", "subagent_turn"})
 
 
 def _error_capability(path: Path, *, exists: bool, reason: str) -> dict[str, Any]:
@@ -229,6 +234,180 @@ def _followup_lease_pending(directory: Path) -> bool:
     return float(expires_at) > time.time()
 
 
+def _json_object(path: Path) -> dict[str, Any] | None:
+    try:
+        value = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError):
+        return None
+    return value if isinstance(value, dict) else None
+
+
+def _iter_json_jobs(directory: Path) -> list[dict[str, Any]]:
+    payloads: list[dict[str, Any]] = []
+    try:
+        entries = list(directory.iterdir())
+    except OSError:
+        return payloads
+    for path in entries:
+        if not path.is_file() or path.suffix != ".json" or path.name.endswith(".claim"):
+            continue
+        payload = _json_object(path)
+        if payload is not None:
+            payloads.append(payload)
+    return payloads
+
+
+def _worker_kind(message: object) -> str:
+    text = str(message or "")
+    prefix = "kind="
+    if not text.startswith(prefix):
+        return ""
+    return text[len(prefix) :].split(None, 1)[0]
+
+
+def _iter_worker_turn_failures(config: Config, stored_session_id: str) -> list[dict[str, Any]]:
+    """Read deleted whole-turn export failures from the worker error log.
+
+    Generic turn/spans/subagent jobs are unlinked before delivery. A crash or
+    export failure therefore leaves no job and no sent claim; the durable
+    breadcrumb is ``usage-errors.jsonl``.
+    """
+
+    path = usage_log_path(config.root)
+    try:
+        lines = path.read_text(encoding="utf-8").splitlines()
+    except (OSError, UnicodeDecodeError):
+        return []
+    failures: list[dict[str, Any]] = []
+    for line in lines:
+        if not line.strip():
+            continue
+        try:
+            entry = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if not isinstance(entry, dict):
+            continue
+        if entry.get("phase") != "otel_worker_export_failed":
+            continue
+        if entry.get("session_id") != stored_session_id:
+            continue
+        if _worker_kind(entry.get("message")) not in _WORKER_TURN_KINDS:
+            continue
+        failures.append(entry)
+    return failures
+
+
+def _export_health(config: Config, stored_session_id: str, directory: Path) -> dict[str, Any]:
+    """Summarize queue/delivery health from claims, jobs, and worker logs."""
+
+    ledger = load_export_state(config, stored_session_id)
+    placements = ledger.get("placements") if isinstance(ledger.get("placements"), dict) else {}
+    conflicts = ledger.get("conflicts") if isinstance(ledger.get("conflicts"), dict) else {}
+    turn_errors = ledger.get("turn_errors") if isinstance(ledger.get("turn_errors"), dict) else {}
+
+    delivered: set[str] = set()
+    queued: set[str] = set()
+    errored: set[str] = set()
+
+    for accounting_id, item in placements.items():
+        if not isinstance(accounting_id, str) or not isinstance(item, dict):
+            continue
+        key = f"acct:{accounting_id}"
+        span_id = item.get("span_id")
+        sent = export_transport.delivery_sent(directory, accounting_id)
+        job = (
+            export_transport.status(config.root, span_id)
+            if isinstance(span_id, str) and span_id
+            else None
+        )
+        job_state = job.get("state") if job else None
+        if sent or item.get("emitted") or job_state == "emitted":
+            delivered.add(key)
+        elif job_state == "failed":
+            queued.add(key)
+            errored.add(key)
+        elif job_state in {"queued", "claimed", "retrying"}:
+            queued.add(key)
+        else:
+            queued.add(key)
+        if item.get("last_error") or (job and job.get("last_error")):
+            errored.add(key)
+
+    for payload in _iter_json_jobs(export_transport.jobs_dir(config.root)):
+        if payload.get("session_id") != stored_session_id:
+            continue
+        accounting_id = payload.get("accounting_id")
+        key = (
+            f"acct:{accounting_id}"
+            if isinstance(accounting_id, str) and accounting_id
+            else f"acct-job:{payload.get('job_id')}"
+        )
+        if key in delivered:
+            continue
+        state = payload.get("state")
+        if state == "emitted" or (
+            isinstance(accounting_id, str) and export_transport.delivery_sent(directory, accounting_id)
+        ):
+            delivered.add(key)
+            queued.discard(key)
+            continue
+        queued.add(key)
+        if state == "failed" or payload.get("last_error"):
+            errored.add(key)
+
+    sent_dir = directory / "otel-turns-sent"
+    try:
+        claim_files = list(sent_dir.iterdir()) if sent_dir.is_dir() else []
+    except OSError:
+        claim_files = []
+    for path in claim_files:
+        if not path.is_file():
+            continue
+        try:
+            text = path.read_text(encoding="utf-8")
+        except OSError:
+            continue
+        key = f"turn-claim:{path.name}"
+        if text == "sent":
+            delivered.add(key)
+        else:
+            queued.add(key)
+
+    for payload in _iter_json_jobs(otel_jobs_dir(config.root)):
+        if payload.get("session_id") != stored_session_id:
+            continue
+        if payload.get("kind") not in {"turn", "spans", "subagent_turn"}:
+            continue
+        queued.add(f"otel:{payload.get('job_id') or id(payload)}")
+        if payload.get("last_error"):
+            errored.add(f"otel:{payload.get('job_id') or id(payload)}")
+
+    for index, entry in enumerate(_iter_worker_turn_failures(config, stored_session_id)):
+        key = f"otel-fail:{entry.get('ts') or index}:{entry.get('message')}"
+        queued.add(key)
+        errored.add(key)
+
+    queued -= delivered
+
+    runtime_status = load_runtime_status(config, stored_session_id)
+    last_error = runtime_status.get("last_error")
+    if isinstance(last_error, dict):
+        errored.add("runtime")
+    else:
+        last_error = None
+
+    return {
+        "activated": bool(ledger.get("activated")),
+        "queued": len(queued),
+        "delivered": len(delivered),
+        "errors": len(errored)
+        + len(conflicts)
+        + len(turn_errors),
+        "last_error": last_error,
+    }
+
+
 def _archive_status(
     config: Config, paths: SourcePaths
 ) -> tuple[list[dict[str, Any]], SourceRecord | None, list[dict[str, Any]], int, int]:
@@ -266,16 +445,47 @@ def _archive_status(
         if _followup_lease_pending(directory):
             pending_followup += 1
             active_leases += 1
-        sessions.append(
-            {
-                "stored_session_id": directory.name,
-                "native_session_id": state.get("native_session_id"),
-                "cursor": state.get("cursor", {}),
-                "last_successful_import": health.get("last_successful_import"),
-                "diagnostics": diagnostics,
-                "journal_pending": journal_path(directory).is_file(),
-            }
-        )
+        session = {
+            "stored_session_id": directory.name,
+            "native_session_id": state.get("native_session_id"),
+            "cursor": state.get("cursor", {}),
+            "last_successful_import": health.get("last_successful_import"),
+            "diagnostics": diagnostics,
+            "journal_pending": journal_path(directory).is_file(),
+        }
+        try:
+            session["projection"] = read_projection_status(config, directory.name)
+        except Exception as error:
+            session["projection"] = {"errors": 1}
+            errors.append(
+                {
+                    "kind": "copilot_projection_unreadable",
+                    "session": directory.name,
+                    "reason": type(error).__name__,
+                }
+            )
+        try:
+            session["export"] = _export_health(config, directory.name, directory)
+            last_error = session["export"].get("last_error")
+            if isinstance(last_error, dict):
+                errors.append(
+                    {
+                        "kind": "copilot_reconcile_error",
+                        "session": directory.name,
+                        "reason": last_error.get("phase") or "copilot_reconcile",
+                        "errors": last_error.get("errors"),
+                    }
+                )
+        except Exception as error:
+            session["export"] = {"activated": False, "queued": 0, "delivered": 0, "errors": 1}
+            errors.append(
+                {
+                    "kind": "copilot_export_ledger_unreadable",
+                    "session": directory.name,
+                    "reason": type(error).__name__,
+                }
+            )
+        sessions.append(session)
         for diagnostic in diagnostics:
             if isinstance(diagnostic, dict):
                 errors.append({"session": directory.name, **diagnostic})

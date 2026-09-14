@@ -18,6 +18,7 @@ from thirdeye.config import Config
 from .capture import sync
 from .database import discover_database_sessions
 from .identity import validate_native_id
+from .runtime import reconcile_archived_sessions, reconcile_session
 from .sources import discover_sessions
 from .types import SourcePaths
 
@@ -143,8 +144,9 @@ def watch(config: Config, paths: SourcePaths, *, interval: float = 1.0) -> None:
     The initial sync drains the bounded source snapshot.  Later cycles invoke
     per-session sync only after a transcript, database/WAL, or spool position
     changes (or after a retryable result), avoiding repeated parsing of quiet
-    completed sessions.  All capture remains local; this function never
-    exports data and never starts a background service.
+    completed sessions. Capture and derived replay remain local. When live
+    export is configured, reconciliation may queue detached jobs; this
+    foreground loop never delivers remotely itself.
     """
 
     if not isinstance(interval, (int, float)) or isinstance(interval, bool):
@@ -158,6 +160,9 @@ def watch(config: Config, paths: SourcePaths, *, interval: float = 1.0) -> None:
         # on the first poll ensures that append receives a later capture.
         previous = _source_snapshot(config, paths)
         initial = sync(config, paths)
+        # Activation replays retained V1 evidence, including sessions whose
+        # transcript/database was removed after capture.
+        reconcile_archived_sessions(config, paths, export=True)
         retry = set(previous["sessions"]) if _result_needs_retry(initial, present=True) else set()
         while True:
             _SLEEP(float(interval))
@@ -168,6 +173,7 @@ def watch(config: Config, paths: SourcePaths, *, interval: float = 1.0) -> None:
                 # KeyboardInterrupt is intentionally checked between sessions;
                 # a current archive commit remains crash-recoverable.
                 result = sync(config, paths, session_id=native_id)
+                reconcile_session(config, paths, native_id, export=True)
                 if _result_needs_retry(result, present=native_id in current["sessions"]):
                     retry.add(native_id)
             previous = current

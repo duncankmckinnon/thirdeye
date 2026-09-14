@@ -221,6 +221,22 @@ def _run(config: Config, paths: SourcePaths, native_id: str, generation: str) ->
                     silent_fallback=True,
                 )
             else:
+                if result is not None:
+                    # Derived work is coalesced here, never in the hook
+                    # process. A projection problem cannot affect capture.
+                    try:
+                        from thirdeye.platforms.copilot.runtime import reconcile_session
+
+                        reconcile_session(config, paths, native_id, export=True)
+                    except Exception as exc:
+                        log_capture_error(
+                            thirdeye_home=config.root,
+                            phase="copilot_followup_reconcile",
+                            error=exc,
+                            platform=_PLATFORM,
+                            session_id=native_id,
+                            silent_fallback=True,
+                        )
                 if result is not None and result["errors"] == 0 and result["pending"] == 0:
                     return
             remaining = deadline - time.monotonic()
@@ -242,7 +258,7 @@ def main() -> None:
         paths = resolve_sources(Path(args.source_home))
         native_id = str(args.session_id)
         validate_native_id(native_id)
-        config = Config(root=Path(args.config_root))
+        config = Config.load(root=Path(args.config_root))
         _run(config, paths, native_id, str(args.generation))
     except Exception:
         # This worker is deliberately silent: diagnostics are kept locally and

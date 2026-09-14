@@ -1,0 +1,303 @@
+{
+  "note": "input_records are V1 SourceRecords. Pure-function tests may pass them directly to build_semantics. They are not a generated archive. This slice is a tool cycle: assistant.turn_end attaches finish_evidence without requiring assistant.turn_start, but outstanding tools keep the user interaction open. A completed TurnSpanDict is not emitted.",
+  "input_records": [
+    {
+      "source_id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/5a7e8e11-4a6b-49ff-a33e-95d411c4cdd6/f07404d0-af52-4260-89fb-358a10e86034",
+      "source_kind": "transcript",
+      "native_session_id": "5a7e8e11-4a6b-49ff-a33e-95d411c4cdd6",
+      "ts": "2026-09-10T17:08:22.203Z",
+      "observed_at": "2026-09-10T17:09:00.000Z",
+      "payload": {
+        "type": "user.message",
+        "data": {
+          "content": "Read alpha.txt and beta.txt with separate view calls in parallel and report their sum. Only read those two files.",
+          "messageId": "a856cb38-7609-45ab-8a55-645553155db3",
+          "supportedNativeDocumentMimeTypes": [],
+          "delivery": "idle",
+          "interactionId": "6d2b89fd-a653-430c-b532-b0936d72eb42",
+          "turnId": "0",
+          "parentAgentTaskId": "fd800f7a-8163-4304-9681-efde4731e879"
+        },
+        "id": "f07404d0-af52-4260-89fb-358a10e86034",
+        "timestamp": "2026-09-10T17:08:22.203Z",
+        "parentId": "3942810f-1caf-4251-82fb-3bf72698147a",
+        "schema_version": 1
+      },
+      "locator": {
+        "file": "events.jsonl",
+        "file_generation": "1-abc",
+        "byte_offset": 2122,
+        "byte_length": 548,
+        "native_event_id": "f07404d0-af52-4260-89fb-358a10e86034"
+      }
+    },
+    {
+      "source_id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/5a7e8e11-4a6b-49ff-a33e-95d411c4cdd6/a4a17e63-7ba5-422f-8ee9-b495be417328",
+      "source_kind": "transcript",
+      "native_session_id": "5a7e8e11-4a6b-49ff-a33e-95d411c4cdd6",
+      "ts": "2026-09-10T17:08:24.503Z",
+      "observed_at": "2026-09-10T17:09:00.000Z",
+      "payload": {
+        "type": "assistant.message",
+        "data": {
+          "messageId": "5a29b09d-5e7d-4603-975e-7801ce54232b",
+          "model": "gpt-5.6-luna",
+          "content": "",
+          "toolRequests": [
+            {
+              "toolCallId": "call_YSSva4HCniiETlxdGGjcrHbh",
+              "name": "view",
+              "arguments": {
+                "path": "/fixture/workspace/alpha.txt"
+              },
+              "type": "function",
+              "intentionSummary": "view the file at /fixture/workspace/alpha.txt."
+            },
+            {
+              "toolCallId": "call_ayHplfzxjRFMTCpmTKEFhCSJ",
+              "name": "view",
+              "arguments": {
+                "path": "/fixture/workspace/beta.txt"
+              },
+              "type": "function",
+              "intentionSummary": "view the file at /fixture/workspace/beta.txt."
+            }
+          ],
+          "interactionId": "6d2b89fd-a653-430c-b532-b0936d72eb42",
+          "turnId": "0",
+          "rte": true
+        },
+        "id": "a4a17e63-7ba5-422f-8ee9-b495be417328",
+        "timestamp": "2026-09-10T17:08:24.503Z",
+        "parentId": "64f9e436-651f-4a9d-919c-a4d7abad2652",
+        "schema_version": 1
+      },
+      "locator": {
+        "file": "events.jsonl",
+        "file_generation": "1-abc",
+        "byte_offset": 3731,
+        "byte_length": 793,
+        "native_event_id": "a4a17e63-7ba5-422f-8ee9-b495be417328"
+      }
+    },
+    {
+      "source_id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/5a7e8e11-4a6b-49ff-a33e-95d411c4cdd6/0080e44c-ad62-4288-b2b2-061ec2b73d80",
+      "source_kind": "transcript",
+      "native_session_id": "5a7e8e11-4a6b-49ff-a33e-95d411c4cdd6",
+      "ts": "2026-09-10T17:08:24.593Z",
+      "observed_at": "2026-09-10T17:09:00.000Z",
+      "payload": {
+        "type": "assistant.turn_end",
+        "data": {
+          "turnId": "0"
+        },
+        "id": "0080e44c-ad62-4288-b2b2-061ec2b73d80",
+        "timestamp": "2026-09-10T17:08:24.593Z",
+        "parentId": "032cf87e-05b7-4e5f-96b9-1fda1a8242f5",
+        "schema_version": 1
+      },
+      "locator": {
+        "file": "events.jsonl",
+        "file_generation": "1-abc",
+        "byte_offset": 9311,
+        "byte_length": 195,
+        "native_event_id": "0080e44c-ad62-4288-b2b2-061ec2b73d80"
+      }
+    }
+  ],
+  "expected": {
+    "events": [
+      {
+        "id": "copilot:event:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/5a7e8e11-4a6b-49ff-a33e-95d411c4cdd6/f07404d0-af52-4260-89fb-358a10e86034",
+        "kind": "user_prompt",
+        "classification": "main",
+        "ts": "2026-09-10T17:08:22.203Z",
+        "source_ids": [
+          "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/5a7e8e11-4a6b-49ff-a33e-95d411c4cdd6/f07404d0-af52-4260-89fb-358a10e86034"
+        ],
+        "source_references": [
+          {
+            "source_id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/5a7e8e11-4a6b-49ff-a33e-95d411c4cdd6/f07404d0-af52-4260-89fb-358a10e86034",
+            "source_kind": "transcript",
+            "role": "user_prompt"
+          }
+        ],
+        "attributes": {
+          "interaction_id": "6d2b89fd-a653-430c-b532-b0936d72eb42",
+          "agent_id": null
+        }
+      },
+      {
+        "id": "copilot:event:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/5a7e8e11-4a6b-49ff-a33e-95d411c4cdd6/a4a17e63-7ba5-422f-8ee9-b495be417328",
+        "kind": "assistant_message",
+        "classification": "main",
+        "ts": "2026-09-10T17:08:24.503Z",
+        "source_ids": [
+          "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/5a7e8e11-4a6b-49ff-a33e-95d411c4cdd6/a4a17e63-7ba5-422f-8ee9-b495be417328"
+        ],
+        "source_references": [
+          {
+            "source_id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/5a7e8e11-4a6b-49ff-a33e-95d411c4cdd6/a4a17e63-7ba5-422f-8ee9-b495be417328",
+            "source_kind": "transcript",
+            "role": "assistant_message"
+          }
+        ],
+        "attributes": {
+          "interaction_id": "6d2b89fd-a653-430c-b532-b0936d72eb42",
+          "agent_id": null
+        }
+      },
+      {
+        "id": "copilot:event:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/5a7e8e11-4a6b-49ff-a33e-95d411c4cdd6/a4a17e63-7ba5-422f-8ee9-b495be417328:tool:call_YSSva4HCniiETlxdGGjcrHbh",
+        "kind": "tool_request",
+        "classification": "main",
+        "ts": "2026-09-10T17:08:24.503Z",
+        "source_ids": [
+          "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/5a7e8e11-4a6b-49ff-a33e-95d411c4cdd6/a4a17e63-7ba5-422f-8ee9-b495be417328"
+        ],
+        "source_references": [
+          {
+            "source_id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/5a7e8e11-4a6b-49ff-a33e-95d411c4cdd6/a4a17e63-7ba5-422f-8ee9-b495be417328",
+            "source_kind": "transcript",
+            "role": "tool_request"
+          }
+        ],
+        "attributes": {
+          "tool_call_id": "call_YSSva4HCniiETlxdGGjcrHbh",
+          "name": "view"
+        }
+      },
+      {
+        "id": "copilot:event:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/5a7e8e11-4a6b-49ff-a33e-95d411c4cdd6/a4a17e63-7ba5-422f-8ee9-b495be417328:tool:call_ayHplfzxjRFMTCpmTKEFhCSJ",
+        "kind": "tool_request",
+        "classification": "main",
+        "ts": "2026-09-10T17:08:24.503Z",
+        "source_ids": [
+          "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/5a7e8e11-4a6b-49ff-a33e-95d411c4cdd6/a4a17e63-7ba5-422f-8ee9-b495be417328"
+        ],
+        "source_references": [
+          {
+            "source_id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/5a7e8e11-4a6b-49ff-a33e-95d411c4cdd6/a4a17e63-7ba5-422f-8ee9-b495be417328",
+            "source_kind": "transcript",
+            "role": "tool_request"
+          }
+        ],
+        "attributes": {
+          "tool_call_id": "call_ayHplfzxjRFMTCpmTKEFhCSJ",
+          "name": "view"
+        }
+      },
+      {
+        "id": "copilot:event:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/5a7e8e11-4a6b-49ff-a33e-95d411c4cdd6/0080e44c-ad62-4288-b2b2-061ec2b73d80",
+        "kind": "assistant_turn_end",
+        "classification": "main",
+        "ts": "2026-09-10T17:08:24.593Z",
+        "source_ids": [
+          "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/5a7e8e11-4a6b-49ff-a33e-95d411c4cdd6/0080e44c-ad62-4288-b2b2-061ec2b73d80"
+        ],
+        "source_references": [
+          {
+            "source_id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/5a7e8e11-4a6b-49ff-a33e-95d411c4cdd6/0080e44c-ad62-4288-b2b2-061ec2b73d80",
+            "source_kind": "transcript",
+            "role": "finish"
+          }
+        ],
+        "attributes": {
+          "turn_id": "0"
+        }
+      }
+    ],
+    "turns": [],
+    "call_candidates": [
+      {
+        "call_id": "copilot:call:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/5a7e8e11-4a6b-49ff-a33e-95d411c4cdd6/a4a17e63-7ba5-422f-8ee9-b495be417328",
+        "stored_turn_id": "copilot:turn:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa:5a7e8e11-4a6b-49ff-a33e-95d411c4cdd6:6d2b89fd-a653-430c-b532-b0936d72eb42",
+        "interaction_id": "6d2b89fd-a653-430c-b532-b0936d72eb42",
+        "agent_id": null,
+        "parent_tool_call_id": null,
+        "model": "gpt-5.6-luna",
+        "source_ids": [
+          "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/5a7e8e11-4a6b-49ff-a33e-95d411c4cdd6/a4a17e63-7ba5-422f-8ee9-b495be417328",
+          "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/5a7e8e11-4a6b-49ff-a33e-95d411c4cdd6/0080e44c-ad62-4288-b2b2-061ec2b73d80"
+        ],
+        "source_references": [
+          {
+            "source_id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/5a7e8e11-4a6b-49ff-a33e-95d411c4cdd6/a4a17e63-7ba5-422f-8ee9-b495be417328",
+            "source_kind": "transcript",
+            "role": "assistant_message"
+          },
+          {
+            "source_id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/5a7e8e11-4a6b-49ff-a33e-95d411c4cdd6/0080e44c-ad62-4288-b2b2-061ec2b73d80",
+            "source_kind": "transcript",
+            "role": "finish"
+          }
+        ],
+        "start_ts": "2026-09-10T17:08:24.503Z",
+        "end_ts": "2026-09-10T17:08:24.593Z",
+        "tool_call_ids": [
+          "call_YSSva4HCniiETlxdGGjcrHbh",
+          "call_ayHplfzxjRFMTCpmTKEFhCSJ"
+        ],
+        "finish_evidence": [
+          {
+            "source_id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/5a7e8e11-4a6b-49ff-a33e-95d411c4cdd6/0080e44c-ad62-4288-b2b2-061ec2b73d80",
+            "kind": "assistant_turn_end",
+            "value": null
+          }
+        ]
+      }
+    ],
+    "pending": [
+      {
+        "id": "pending:copilot:turn:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa:5a7e8e11-4a6b-49ff-a33e-95d411c4cdd6:6d2b89fd-a653-430c-b532-b0936d72eb42",
+        "kind": "open_interaction",
+        "reason": "user interaction has no completed final assistant turn",
+        "source_ids": [
+          "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/5a7e8e11-4a6b-49ff-a33e-95d411c4cdd6/f07404d0-af52-4260-89fb-358a10e86034",
+          "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/5a7e8e11-4a6b-49ff-a33e-95d411c4cdd6/a4a17e63-7ba5-422f-8ee9-b495be417328",
+          "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/5a7e8e11-4a6b-49ff-a33e-95d411c4cdd6/0080e44c-ad62-4288-b2b2-061ec2b73d80"
+        ],
+        "evidence": [
+          "interaction_id:6d2b89fd-a653-430c-b532-b0936d72eb42"
+        ]
+      },
+      {
+        "id": "pending:tool:call_YSSva4HCniiETlxdGGjcrHbh",
+        "kind": "incomplete_tool_pair",
+        "reason": "tool request has no execution result",
+        "source_ids": [
+          "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/5a7e8e11-4a6b-49ff-a33e-95d411c4cdd6/a4a17e63-7ba5-422f-8ee9-b495be417328"
+        ],
+        "evidence": [
+          "tool_call_id:call_YSSva4HCniiETlxdGGjcrHbh"
+        ]
+      },
+      {
+        "id": "pending:tool:call_ayHplfzxjRFMTCpmTKEFhCSJ",
+        "kind": "incomplete_tool_pair",
+        "reason": "tool request has no execution result",
+        "source_ids": [
+          "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/5a7e8e11-4a6b-49ff-a33e-95d411c4cdd6/a4a17e63-7ba5-422f-8ee9-b495be417328"
+        ],
+        "evidence": [
+          "tool_call_id:call_ayHplfzxjRFMTCpmTKEFhCSJ"
+        ]
+      }
+    ],
+    "diagnostics": [
+      {
+        "code": "open_interaction",
+        "severity": "info",
+        "message": "user interaction has no completed final assistant turn",
+        "source_ids": [
+          "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/5a7e8e11-4a6b-49ff-a33e-95d411c4cdd6/f07404d0-af52-4260-89fb-358a10e86034",
+          "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/5a7e8e11-4a6b-49ff-a33e-95d411c4cdd6/a4a17e63-7ba5-422f-8ee9-b495be417328",
+          "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/5a7e8e11-4a6b-49ff-a33e-95d411c4cdd6/0080e44c-ad62-4288-b2b2-061ec2b73d80"
+        ],
+        "details": {
+          "interaction_id": "6d2b89fd-a653-430c-b532-b0936d72eb42"
+        }
+      }
+    ]
+  }
+}

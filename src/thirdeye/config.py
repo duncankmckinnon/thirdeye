@@ -91,9 +91,9 @@ class Config:
     logfire: LogfireSettings = field(default_factory=LogfireSettings)
 
     @classmethod
-    def load(cls) -> Config:
-        root = default_root()
-        raw = _read_config_yaml(root / "config.yaml")
+    def load(cls, root: Path | None = None) -> Config:
+        resolved = Path(root) if root is not None else default_root()
+        raw = _read_config_yaml(resolved / "config.yaml")
         # THIRDEYE_CAPTURE_ENV wins when set, so a one-off run can still
         # override; otherwise fall back to config.yaml's ``capture_env`` so
         # capture does not depend on the launching shell exporting anything
@@ -102,7 +102,7 @@ class Config:
         if not patterns:
             patterns = _coerce_patterns(raw.get("capture_env"))
         return cls(
-            root=root,
+            root=resolved,
             capture_env_patterns=patterns,
             logfire=LogfireSettings.from_dict(raw.get("logfire")),
         )

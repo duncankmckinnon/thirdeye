@@ -1,0 +1,121 @@
+{
+  "note": "input_records are V1 database SourceRecords. Pure-function tests may pass them directly to build_accounting.",
+  "input_records": [
+    {
+      "source_id": "copilot-db:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa:5a7e8e11-4a6b-49ff-a33e-95d411c4cdd6:assistant_usage_events:13:sha256:68bf2ca8903d9bdfe15a9d61144ba8b9b0e352678680e4490f2259bd2f468f47",
+      "source_kind": "database",
+      "native_session_id": "5a7e8e11-4a6b-49ff-a33e-95d411c4cdd6",
+      "ts": "2026-09-10T17:08:24.498Z",
+      "observed_at": "2026-09-10T17:09:00.000Z",
+      "payload": {
+        "table": "assistant_usage_events",
+        "row": {
+          "id": 13,
+          "session_id": "5a7e8e11-4a6b-49ff-a33e-95d411c4cdd6",
+          "turn_index": 0,
+          "agent_id": null,
+          "parent_tool_call_id": null,
+          "model": "gpt-5.6-luna",
+          "input_tokens": 6452,
+          "output_tokens": 107,
+          "cache_read_tokens": 0,
+          "cache_write_tokens": 6449,
+          "reasoning_tokens": 29,
+          "total_nano_aiu": 174125000,
+          "request_multiplier": 1.0,
+          "duration_ms": 2263,
+          "time_to_first_token_ms": 1571.1477920000002,
+          "output_ttft_ms": 1571.1479590000001,
+          "inter_token_latency_ms": 7.393025117647059,
+          "initiator": "user",
+          "api_endpoint": "ws:/responses",
+          "reasoning_effort": "medium",
+          "finish_reason": "tool_calls",
+          "content_filter_triggered": 0,
+          "token_details_json": "[{\"batchSize\":1000000,\"costPerBatch\":20000000000,\"tokenCount\":3,\"tokenType\":\"input\"},{\"batchSize\":1000000,\"costPerBatch\":2000000000,\"tokenCount\":0,\"tokenType\":\"cache_read\"},{\"batchSize\":1000000,\"costPerBatch\":25000000000,\"tokenCount\":6449,\"tokenType\":\"cache_write\"},{\"batchSize\":1000000,\"costPerBatch\":120000000000,\"tokenCount\":107,\"tokenType\":\"output\"}]",
+          "created_at": "2026-09-10T17:08:24.498Z"
+        }
+      },
+      "locator": {
+        "database": "/example/.copilot/session-store.db",
+        "table": "assistant_usage_events",
+        "primary_key": 13,
+        "content_revision": "sha256:68bf2ca8903d9bdfe15a9d61144ba8b9b0e352678680e4490f2259bd2f468f47",
+        "generation": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+      }
+    }
+  ],
+  "expected": {
+    "usage_rows": [
+      {
+        "session_id": "copilot-aaaaaaaaaaaaaaaa-5a7e8e11-4a6b-49ff-a33e-95d411c4cdd6",
+        "seq": 0,
+        "call_id": "copilot:usage:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa:assistant_usage_events:sha256%3Abbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb:13",
+        "ts": "2026-09-10T17:08:24.498Z",
+        "platform": "copilot",
+        "gen_ai.conversation.id": "copilot-aaaaaaaaaaaaaaaa-5a7e8e11-4a6b-49ff-a33e-95d411c4cdd6",
+        "gen_ai.provider.name": "unknown",
+        "gen_ai.operation.name": "chat",
+        "gen_ai.response.model": "gpt-5.6-luna",
+        "gen_ai.usage.input_tokens": 6452,
+        "gen_ai.usage.output_tokens": 107,
+        "gen_ai.usage.cache_read.input_tokens": 0,
+        "gen_ai.usage.cache_creation.input_tokens": 6449,
+        "gen_ai.usage.reasoning.output_tokens": 29
+      }
+    ],
+    "candidates": [
+      {
+        "usage_source_id": "copilot-db:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa:5a7e8e11-4a6b-49ff-a33e-95d411c4cdd6:assistant_usage_events:13:sha256:68bf2ca8903d9bdfe15a9d61144ba8b9b0e352678680e4490f2259bd2f468f47",
+        "logical_call_id": "copilot:usage:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa:assistant_usage_events:sha256%3Abbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb:13",
+        "turn_index": 0,
+        "agent_id": null,
+        "parent_tool_call_id": null,
+        "model": "gpt-5.6-luna",
+        "provider": null,
+        "source_ids": [
+          "copilot-db:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa:5a7e8e11-4a6b-49ff-a33e-95d411c4cdd6:assistant_usage_events:13:sha256:68bf2ca8903d9bdfe15a9d61144ba8b9b0e352678680e4490f2259bd2f468f47"
+        ],
+        "source_references": [
+          {
+            "source_id": "copilot-db:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa:5a7e8e11-4a6b-49ff-a33e-95d411c4cdd6:assistant_usage_events:13:sha256:68bf2ca8903d9bdfe15a9d61144ba8b9b0e352678680e4490f2259bd2f468f47",
+            "source_kind": "database",
+            "role": "usage_row"
+          }
+        ],
+        "revision": {
+          "table": "assistant_usage_events",
+          "primary_key": "13",
+          "generation": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+          "content_revision": "sha256:68bf2ca8903d9bdfe15a9d61144ba8b9b0e352678680e4490f2259bd2f468f47"
+        },
+        "timestamp": "2026-09-10T17:08:24.498Z",
+        "finish_reason": "tool_calls",
+        "supplemental_metrics": {
+          "total_nano_aiu": 174125000,
+          "request_multiplier": 1.0,
+          "initiator": "user",
+          "api_endpoint": "ws:/responses",
+          "reasoning_effort": "medium",
+          "content_filter_triggered": 0,
+          "token_details_json": "[{\"batchSize\":1000000,\"costPerBatch\":20000000000,\"tokenCount\":3,\"tokenType\":\"input\"},{\"batchSize\":1000000,\"costPerBatch\":2000000000,\"tokenCount\":0,\"tokenType\":\"cache_read\"},{\"batchSize\":1000000,\"costPerBatch\":25000000000,\"tokenCount\":6449,\"tokenType\":\"cache_write\"},{\"batchSize\":1000000,\"costPerBatch\":120000000000,\"tokenCount\":107,\"tokenType\":\"output\"}]",
+          "duration_ms": 2263,
+          "time_to_first_token_ms": 1571.1477920000002,
+          "output_ttft_ms": 1571.1479590000001,
+          "inter_token_latency_ms": 7.393025117647059
+        }
+      }
+    ],
+    "diagnostics": [
+      {
+        "code": "unknown_provider",
+        "severity": "info",
+        "message": "database usage rows do not name a provider; UsageRow uses the unknown sentinel",
+        "source_ids": [
+          "copilot-db:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa:5a7e8e11-4a6b-49ff-a33e-95d411c4cdd6:assistant_usage_events:13:sha256:68bf2ca8903d9bdfe15a9d61144ba8b9b0e352678680e4490f2259bd2f468f47"
+        ],
+        "details": {}
+      }
+    ]
+  }
+}
