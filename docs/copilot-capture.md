@@ -157,19 +157,3 @@ compaction, abort, unknown-version, delayed-row, revision, retry, identical
 concurrent-tool, nested-child, and uncertain-attribution behavior. They are
 deterministic regression inputs, not live validation. Optional future live
 tests remain separate and require no CI credentials.
-
-## V2 static acceptance
-
-This document is the V2 acceptance record for Copilot CLI archive capture.
-It covers V1-to-V2 upgrade (immutable source envelopes, versioned derived
-indexes, `--rebuild` without resetting the export ledger), cross-source
-correctness (transcript/hook/database reconstruction without live Copilot
-files), exact join evidence (no timestamp/row-count/tool-name proof),
-accounting corrections (revision replacement vs generation-reuse quarantine,
-pre-delivery job rewrite vs post-delivery conflict), history export opt-in
-(`--export` defaulting false; enqueue is not delivery), and unresolved source
-limitations (no native VS Code/cloud capture, no shared assistant-message ID,
-hooks without invocation IDs). No pytest run is required for this static
-acceptance, and it does not claim native VS Code or Copilot cloud support.
-
-VERDICT: PASS
