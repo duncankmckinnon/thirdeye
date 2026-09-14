@@ -12,6 +12,7 @@ import pytest
 from thirdeye import otel_export
 from thirdeye.config import Config, LogfireSettings
 from thirdeye.paths import session_dir
+from thirdeye.platforms.copilot import export_state as copilot_export_state
 from thirdeye.platforms.copilot import export_transport
 from thirdeye.platforms.copilot.archive import commit_batch
 from thirdeye.platforms.copilot.constants import PLATFORM_NAME
@@ -234,6 +235,39 @@ def export_calls(monkeypatch: pytest.MonkeyPatch) -> dict[str, list[Any]]:
 
 
 class TestExportState:
+    def test_pending_unowned_accounting_defaults_on_legacy_state(
+        self, config: Config, paths: SourcePaths
+    ) -> None:
+        stored = _seed_session(config, paths)
+        export_state_path(_directory(config, stored)).write_text(
+            json.dumps({"schema_version": 1, "activated": True}),
+            encoding="utf-8",
+        )
+
+        state = load_export_state(config, stored)
+
+        assert state["pending_unowned_accounting"] == []
+
+    def test_pending_unowned_accounting_normalizes_and_replaces(
+        self, config: Config, paths: SourcePaths
+    ) -> None:
+        stored = _seed_session(config, paths)
+        saved = update_export_state(
+            config,
+            stored,
+            lambda state: {
+                **state,
+                "pending_unowned_accounting": ["usage-b", "usage-a", "usage-a", None],
+            },
+        )
+        saved["placements"]["usage-a"] = {"destination": "chat-span"}
+
+        updated = copilot_export_state.set_pending_unowned_accounting(saved, ["usage-c"])
+
+        assert saved["pending_unowned_accounting"] == ["usage-a", "usage-b"]
+        assert updated["pending_unowned_accounting"] == ["usage-c"]
+        assert updated["placements"] == saved["placements"]
+
     def test_initialize_eligibility_first_activation_excludes_terminal_history(self) -> None:
         state = initialize_eligibility(
             empty_export_state(),

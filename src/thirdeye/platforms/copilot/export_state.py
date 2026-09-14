@@ -57,6 +57,7 @@ def empty_export_state() -> dict[str, Any]:
         "placements": {},
         "conflicts": {},
         "turn_errors": {},
+        "pending_unowned_accounting": [],
     }
 
 
@@ -85,6 +86,7 @@ def _normalize(value: dict[str, Any]) -> dict[str, Any]:
         "activated": bool(value.get("activated", False)),
         "excluded_turn_ids": _ids(value.get("excluded_turn_ids")),
         "excluded_accounting_ids": _ids(value.get("excluded_accounting_ids")),
+        "pending_unowned_accounting": _ids(value.get("pending_unowned_accounting")),
         "placements": {
             key: item
             for key, item in placements.items()
@@ -164,6 +166,15 @@ def is_turn_eligible(state: dict[str, Any], turn_id: str) -> bool:
 
 def is_accounting_eligible(state: dict[str, Any], accounting_id: str) -> bool:
     return accounting_id not in set(_ids(state.get("excluded_accounting_ids")))
+
+
+def set_pending_unowned_accounting(
+    state: dict[str, Any], accounting_ids: list[str]
+) -> dict[str, Any]:
+    """Replace the accounting identities waiting for ownership evidence."""
+    result = _normalize(state)
+    result["pending_unowned_accounting"] = _ids(accounting_ids)
+    return result
 
 
 def initialize_eligibility(
