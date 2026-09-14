@@ -218,7 +218,6 @@ PendingItemKind = Literal[
     "missing_source_capability",
     "missing_identity",
     "incomplete_tool_pair",
-    "delayed_row",
 ]
 
 DiagnosticCode = Literal[
@@ -498,6 +497,7 @@ class Projection(TypedDict):
     attributions: list[Attribution]
     pending: list[PendingItem]
     diagnostics: list[ProjectionDiagnostic]
+    accounting_candidates: NotRequired[list[AccountingCandidate]]
 
 
 class ProjectedTurnRecord(TypedDict):

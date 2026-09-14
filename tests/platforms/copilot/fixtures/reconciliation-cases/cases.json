@@ -935,8 +935,8 @@
           "join_kind": null,
           "evidence": [
             "logical_call_id:copilot:usage:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa:assistant_usage_events:sha256%3Abbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb:14",
-            "turn_index:0",
-            "delayed_row:true"
+            "interaction_id:6d2b89fd-a653-430c-b532-b0936d72eb42",
+            "turn_index:0"
           ]
         }
       ]
@@ -1516,6 +1516,226 @@
             "model": "gpt-4o-mini"
           }
         }
+      ]
+    }
+  },
+  "unknown_version": {
+    "observed": false,
+    "required": "retain raw payload as unknown; pending/diagnostic rather than a completed turn; no fabricated grouping",
+    "input_records": [
+      {
+        "source_id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/5a7e8e11-4a6b-49ff-a33e-95d411c4cdd6/synthetic-unknown-version-1",
+        "source_kind": "transcript",
+        "native_session_id": "5a7e8e11-4a6b-49ff-a33e-95d411c4cdd6",
+        "ts": "2026-09-10T17:08:22.203Z",
+        "observed_at": "2026-09-10T17:09:00.000Z",
+        "payload": {
+          "type": "user.message",
+          "data": {
+            "content": "hello from an unsupported transcript schema",
+            "interactionId": "6d2b89fd-a653-430c-b532-b0936d72eb42",
+            "turnId": "0"
+          },
+          "id": "synthetic-unknown-version-1",
+          "timestamp": "2026-09-10T17:08:22.203Z",
+          "parentId": null,
+          "schema_version": 2
+        },
+        "locator": {
+          "file": "events.jsonl",
+          "file_generation": "1-abc",
+          "byte_offset": 0,
+          "byte_length": 240,
+          "native_event_id": "synthetic-unknown-version-1"
+        }
+      }
+    ],
+    "expected": {
+      "events": [
+        {
+          "id": "copilot:event:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/5a7e8e11-4a6b-49ff-a33e-95d411c4cdd6/synthetic-unknown-version-1",
+          "kind": "unknown",
+          "classification": "main",
+          "ts": "2026-09-10T17:08:22.203Z",
+          "source_ids": [
+            "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/5a7e8e11-4a6b-49ff-a33e-95d411c4cdd6/synthetic-unknown-version-1"
+          ],
+          "attributes": {
+            "native_type": "user.message",
+            "raw_payload": {
+              "type": "user.message",
+              "data": {
+                "content": "hello from an unsupported transcript schema",
+                "interactionId": "6d2b89fd-a653-430c-b532-b0936d72eb42",
+                "turnId": "0"
+              },
+              "id": "synthetic-unknown-version-1",
+              "timestamp": "2026-09-10T17:08:22.203Z",
+              "parentId": null,
+              "schema_version": 2
+            }
+          }
+        }
+      ],
+      "turns": [],
+      "call_candidates": [],
+      "pending": [
+        {
+          "id": "pending:unknown-version:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/5a7e8e11-4a6b-49ff-a33e-95d411c4cdd6/synthetic-unknown-version-1",
+          "kind": "missing_source_capability",
+          "reason": "unknown transcript schema_version",
+          "source_ids": [
+            "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/5a7e8e11-4a6b-49ff-a33e-95d411c4cdd6/synthetic-unknown-version-1"
+          ],
+          "evidence": [
+            "schema_version:2"
+          ]
+        }
+      ],
+      "diagnostics": [
+        {
+          "code": "capability_gap",
+          "severity": "warning",
+          "message": "unknown transcript schema_version; raw payload retained",
+          "source_ids": [
+            "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/5a7e8e11-4a6b-49ff-a33e-95d411c4cdd6/synthetic-unknown-version-1"
+          ],
+          "details": {
+            "schema_version": 2
+          }
+        }
+      ]
+    }
+  },
+  "identical_concurrent_identical_args": {
+    "observed": false,
+    "required": "pair concurrent identical view arguments by toolCallId only; arguments/tool_name/timestamp cannot prove pairing",
+    "input_records": [
+      {
+        "source_id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/5a7e8e11-4a6b-49ff-a33e-95d411c4cdd6/synthetic-identical-args-asst",
+        "source_kind": "transcript",
+        "native_session_id": "5a7e8e11-4a6b-49ff-a33e-95d411c4cdd6",
+        "ts": "2026-09-10T17:08:24.503Z",
+        "observed_at": "2026-09-10T17:09:00.000Z",
+        "payload": {
+          "type": "assistant.message",
+          "data": {
+            "messageId": "synthetic-identical-args-msg",
+            "model": "gpt-5.6-luna",
+            "content": "",
+            "toolRequests": [
+              {
+                "toolCallId": "call_identical_args_alpha_1",
+                "name": "view",
+                "arguments": {
+                  "path": "/fixture/workspace/alpha.txt"
+                },
+                "type": "function",
+                "intentionSummary": "view the file at /fixture/workspace/alpha.txt."
+              },
+              {
+                "toolCallId": "call_identical_args_alpha_2",
+                "name": "view",
+                "arguments": {
+                  "path": "/fixture/workspace/alpha.txt"
+                },
+                "type": "function",
+                "intentionSummary": "view the file at /fixture/workspace/alpha.txt."
+              }
+            ],
+            "interactionId": "6d2b89fd-a653-430c-b532-b0936d72eb42",
+            "turnId": "0",
+            "rte": true
+          },
+          "id": "synthetic-identical-args-asst",
+          "timestamp": "2026-09-10T17:08:24.503Z",
+          "parentId": "64f9e436-651f-4a9d-919c-a4d7abad2652",
+          "schema_version": 1
+        },
+        "locator": {
+          "file": "events.jsonl",
+          "file_generation": "1-abc",
+          "byte_offset": 3731,
+          "byte_length": 793,
+          "native_event_id": "synthetic-identical-args-asst"
+        }
+      },
+      {
+        "source_id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/5a7e8e11-4a6b-49ff-a33e-95d411c4cdd6/synthetic-identical-args-exec-a",
+        "source_kind": "transcript",
+        "native_session_id": "5a7e8e11-4a6b-49ff-a33e-95d411c4cdd6",
+        "ts": "2026-09-10T17:08:24.506Z",
+        "observed_at": "2026-09-10T17:09:00.000Z",
+        "payload": {
+          "type": "tool.execution_start",
+          "data": {
+            "toolCallId": "call_identical_args_alpha_1",
+            "toolName": "view",
+            "arguments": {
+              "path": "/fixture/workspace/alpha.txt"
+            },
+            "turnId": "0",
+            "model": "gpt-5.6-luna"
+          },
+          "id": "synthetic-identical-args-exec-a",
+          "timestamp": "2026-09-10T17:08:24.506Z",
+          "parentId": "synthetic-identical-args-asst",
+          "schema_version": 1
+        },
+        "locator": {
+          "file": "events.jsonl",
+          "file_generation": "1-abc",
+          "byte_offset": 4524,
+          "byte_length": 344,
+          "native_event_id": "synthetic-identical-args-exec-a"
+        }
+      },
+      {
+        "source_id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/5a7e8e11-4a6b-49ff-a33e-95d411c4cdd6/synthetic-identical-args-exec-b",
+        "source_kind": "transcript",
+        "native_session_id": "5a7e8e11-4a6b-49ff-a33e-95d411c4cdd6",
+        "ts": "2026-09-10T17:08:24.506Z",
+        "observed_at": "2026-09-10T17:09:00.000Z",
+        "payload": {
+          "type": "tool.execution_start",
+          "data": {
+            "toolCallId": "call_identical_args_alpha_2",
+            "toolName": "view",
+            "arguments": {
+              "path": "/fixture/workspace/alpha.txt"
+            },
+            "turnId": "0",
+            "model": "gpt-5.6-luna"
+          },
+          "id": "synthetic-identical-args-exec-b",
+          "timestamp": "2026-09-10T17:08:24.506Z",
+          "parentId": "synthetic-identical-args-exec-a",
+          "schema_version": 1
+        },
+        "locator": {
+          "file": "events.jsonl",
+          "file_generation": "1-abc",
+          "byte_offset": 4868,
+          "byte_length": 343,
+          "native_event_id": "synthetic-identical-args-exec-b"
+        }
+      }
+    ],
+    "expected": {
+      "tool_call_ids": [
+        "call_identical_args_alpha_1",
+        "call_identical_args_alpha_2"
+      ],
+      "event_ids": [
+        "copilot:event:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/5a7e8e11-4a6b-49ff-a33e-95d411c4cdd6/synthetic-identical-args-exec-a",
+        "copilot:event:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/5a7e8e11-4a6b-49ff-a33e-95d411c4cdd6/synthetic-identical-args-exec-b"
+      ],
+      "forbidden_join_keys": [
+        "arguments",
+        "tool_name",
+        "timestamp",
+        "parentId",
+        "turnId"
       ]
     }
   }

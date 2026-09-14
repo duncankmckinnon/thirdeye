@@ -106,6 +106,7 @@ def test_global_usage_platform_filter_shows_copilot_rows(client, web_config, tmp
     assert "selected>copilot<" in r.text.replace("\n", "")
     assert str(USAGE_TOKENS_ONE + USAGE_TOKENS_TWO) in r.text
     assert str(USAGE_TOKENS_TWO * 2) not in r.text
+    assert "copilot native billing (nano-AIU)" in r.text
 
 
 def test_session_usage_renders_per_call_rows_with_model(client, web_config):

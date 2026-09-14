@@ -569,6 +569,39 @@ def read_projected_turns(config: Config, stored_session_id: str) -> list[dict[st
         return json.loads(_canonical(values))
 
 
+def _collect_usage_labels(turn: dict[str, Any], labels: dict[str, dict[str, Any]]) -> None:
+    for call in _items(turn.get("accounting_calls")):
+        mapped = _mapping(call)
+        accounting_id = mapped.get("accounting_id")
+        attributes = _mapping(mapped.get("attributes"))
+        extra = {
+            key: value
+            for key, value in attributes.items()
+            if str(key).startswith("copilot.billing") or str(key).startswith("copilot.latency")
+        }
+        if isinstance(accounting_id, str) and extra:
+            labels[accounting_id] = extra
+    for child in _items(turn.get("subagents")):
+        if isinstance(child, dict):
+            _collect_usage_labels(child, labels)
+
+
+def read_usage_labels(config: Config, stored_session_id: str) -> dict[str, dict[str, Any]]:
+    """Read Copilot native billing/latency labels from stored turn accounting."""
+
+    directory = _existing_session_dir(config, stored_session_id)
+    if directory is None:
+        return {}
+    with locked(projection_lock_path(directory), LockMode.EXCLUSIVE):
+        document = read_projection_document(directory)
+        turns = _mapping(_mapping(document.get("indexes")).get("turns"))
+        labels: dict[str, dict[str, Any]] = {}
+        for record in turns.values():
+            if isinstance(record, dict):
+                _collect_usage_labels(_mapping(record.get("span")), labels)
+        return json.loads(_canonical(labels))
+
+
 _STATUS_KEYS = ("events", "usage", "turns", "pending", "ambiguous", "conflicting", "errors")
 
 

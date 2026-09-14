@@ -35,6 +35,10 @@
       <div class="aggregate-value">{{ report.totals.input_tokens }}</div></div>
     <div class="aggregate-card"><div class="aggregate-label">output tokens</div>
       <div class="aggregate-value">{{ report.totals.output_tokens }}</div></div>
+    {% if filters.platform == "copilot" %}
+    <div class="aggregate-card"><div class="aggregate-label">copilot native billing (nano-AIU)</div>
+      <div class="aggregate-value">session usage</div></div>
+    {% endif %}
   </div>
 
   <script type="application/json" id="chart-data">{{ chart_data_json | safe }}</script>

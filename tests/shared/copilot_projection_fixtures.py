@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import json
+import shutil
 from pathlib import Path
 from typing import Any
 
@@ -9,8 +11,10 @@ from thirdeye.config import Config
 from thirdeye.platforms.copilot.archive import commit_batch
 from thirdeye.platforms.copilot.constants import PLATFORM_NAME
 from thirdeye.platforms.copilot.identity import resolve_sources, stored_session_id
+from thirdeye.platforms.copilot.projection import build_projection
 from thirdeye.platforms.copilot.projection_state import empty_projection_state
 from thirdeye.platforms.copilot.projection_store import commit_projection
+from thirdeye.platforms.copilot.transcript import read_transcript
 from thirdeye.platforms.copilot.types import Projection, SourceBatch, SourceRecord
 from thirdeye.usage.types import UsageRow
 
@@ -292,4 +296,78 @@ def seed_two_main_interaction_projection(config: Config, tmp_path: Path) -> str:
         "diagnostics": [],
     }
     commit_projection(config, stored_id, projection, empty_projection_state())
+    return stored_id
+
+
+_COPILOT_FIXTURES = Path(__file__).resolve().parents[1] / "platforms" / "copilot" / "fixtures"
+_OBSERVED_AT = "2026-09-10T17:09:00.000Z"
+
+
+def seed_observed_six_call_projection(config: Config, tmp_path: Path) -> str:
+    """Archive the observed CLI corpus and commit its six-call projection."""
+    home = tmp_path / "copilot-home"
+    home.mkdir(parents=True, exist_ok=True)
+    session_path = home / "session-state" / NATIVE_ID
+    session_path.mkdir(parents=True, exist_ok=True)
+    shutil.copy(_COPILOT_FIXTURES / "events.jsonl", session_path / "events.jsonl")
+    (session_path / "workspace.yaml").write_text("cwd: /sanitized/workspace\n", encoding="utf-8")
+    paths = resolve_sources(home)
+    cursor: dict[str, Any] = {}
+    transcript: list[SourceRecord] = []
+    while True:
+        slice_ = read_transcript(paths, NATIVE_ID, cursor)
+        transcript.extend(slice_["records"])
+        cursor = slice_["next_cursor"]
+        if slice_["exhausted"]:
+            break
+    source_key = next(
+        record["source_id"].split("/", 1)[0]
+        for record in transcript
+        if record["source_kind"] == "transcript"
+    )
+    rows = json.loads((_COPILOT_FIXTURES / "assistant-usage-events.json").read_text())
+    revisions = {
+        call["row_id"]: call["usage_source_id"].rsplit(":", 1)[-1]
+        for call in json.loads(
+            (_COPILOT_FIXTURES / "reconciliation-cases" / "observed-six-calls.json").read_text()
+        )["calls"]
+    }
+    usage_records: list[SourceRecord] = []
+    for row in rows:
+        content_revision = revisions[row["id"]]
+        usage_records.append(
+            {
+                "source_id": (
+                    f"copilot-db:{source_key}:{NATIVE_ID}:assistant_usage_events:"
+                    f"{row['id']}:{content_revision}"
+                ),
+                "source_kind": "database",
+                "native_session_id": NATIVE_ID,
+                "ts": row.get("created_at"),
+                "observed_at": _OBSERVED_AT,
+                "payload": {"table": "assistant_usage_events", "row": row},
+                "locator": {
+                    "database": "/example/.copilot/session-store.db",
+                    "table": "assistant_usage_events",
+                    "primary_key": row["id"],
+                    "content_revision": content_revision,
+                    "generation": (
+                        "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+                    ),
+                },
+            }
+        )
+    records = transcript + usage_records
+    batch: SourceBatch = {
+        "source_key": paths["source_key"],
+        "native_session_id": NATIVE_ID,
+        "cwd": "/fixture/workspace",
+        "records": records,
+        "next_cursor": {"generation": 1},
+        "diagnostics": [],
+    }
+    commit_batch(config, paths, batch)
+    stored_id = stored_session_id(paths, NATIVE_ID)
+    projection, next_state = build_projection(records, {})
+    commit_projection(config, stored_id, projection, next_state)
     return stored_id

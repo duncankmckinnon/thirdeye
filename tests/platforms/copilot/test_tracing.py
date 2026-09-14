@@ -11,7 +11,10 @@ from typing import Any
 
 import pytest
 
-from thirdeye.platforms.copilot.identity import resolve_sources
+from thirdeye.config import Config
+from thirdeye.platforms.copilot.archive import commit_batch
+from thirdeye.platforms.copilot.identity import resolve_sources, stored_session_id
+from thirdeye.platforms.copilot.reconcile import reconcile_archive
 from thirdeye.platforms.copilot.tracing import build_semantics
 from thirdeye.platforms.copilot.transcript import read_transcript
 from thirdeye.platforms.copilot.turns import build_turns
@@ -268,6 +271,27 @@ def test_identical_concurrent_tools_pair_by_tool_call_id() -> None:
     assert len({event["attributes"]["tool_call_id"] for event in start_events}) == 2
 
 
+def test_identical_concurrent_identical_args_pair_by_tool_call_id() -> None:
+    case = _load_json(RECON_CASES / "cases.json")["identical_concurrent_identical_args"]
+    assert case["observed"] is False
+    projection, _ = build_semantics(case["input_records"], {})
+    expected = case["expected"]
+
+    start_events = [
+        event for event in projection["events"] if event["kind"] == "tool_execution_start"
+    ]
+    assert sorted(event["id"] for event in start_events) == sorted(expected["event_ids"])
+    assert sorted(event["attributes"]["tool_call_id"] for event in start_events) == sorted(
+        expected["tool_call_ids"]
+    )
+    arguments = [event["attributes"].get("arguments") for event in start_events]
+    assert arguments[0] == arguments[1]
+    assert {event["attributes"].get("name") for event in start_events} == {"view"}
+    candidate = projection["call_candidates"][0]
+    assert candidate["tool_call_ids"] == expected["tool_call_ids"]
+    assert len({event["attributes"]["tool_call_id"] for event in start_events}) == 2
+
+
 # --- nested child ownership ---
 
 
@@ -401,7 +425,7 @@ def test_retry_case_is_database_only_and_emits_no_semantic_events() -> None:
     assert projection["pending"] == []
 
 
-def test_observed_versus_synthetic_cases_run_through_build_semantics() -> None:
+def test_observed_versus_synthetic_cases_run_through_build_semantics(tmp_path: Path) -> None:
     cases = _load_json(RECON_CASES / "cases.json")
     observed = {name for name, case in cases.items() if case["observed"]}
     synthetic = {name for name, case in cases.items() if not case["observed"]}
@@ -410,7 +434,16 @@ def test_observed_versus_synthetic_cases_run_through_build_semantics() -> None:
     assert "permission" in synthetic
     assert "partial_turn" in synthetic
     assert "abort" in synthetic
-    for name in ("identical_concurrent_tools", "permission", "partial_turn", "abort"):
+    assert "unknown_version" in synthetic
+    assert "identical_concurrent_identical_args" in synthetic
+    for name in (
+        "identical_concurrent_tools",
+        "permission",
+        "partial_turn",
+        "abort",
+        "unknown_version",
+        "identical_concurrent_identical_args",
+    ):
         projection, _ = build_semantics(cases[name]["input_records"], {})
         assert "events" in projection
         _assert_expected_projection(projection, cases[name]["expected"])
@@ -418,6 +451,40 @@ def test_observed_versus_synthetic_cases_run_through_build_semantics() -> None:
     assert nested["turns"] == []
     started = [event for event in nested["events"] if event["kind"] == "subagent_started"]
     assert started[0]["attributes"]["parent_tool_call_id"] == "call_qx4FH5DADTeT1qVLb37HNpBk"
+
+    unknown = cases["unknown_version"]
+    unknown_projection, _ = build_semantics(unknown["input_records"], {})
+    assert unknown_projection["turns"] == []
+    unknown_event = next(
+        event for event in unknown_projection["events"] if event["kind"] == "unknown"
+    )
+    assert "raw_payload" in unknown_event["attributes"]
+    assert unknown_event["attributes"]["raw_payload"]["schema_version"] == 2
+    assert any(
+        item["kind"] == "missing_source_capability" for item in unknown_projection["pending"]
+    )
+
+    config = Config(root=tmp_path / "thirdeye")
+    home = tmp_path / "copilot-home"
+    home.mkdir()
+    paths = resolve_sources(home)
+    native_session_id = unknown["input_records"][0]["native_session_id"]
+    commit_batch(
+        config,
+        paths,
+        {
+            "source_key": paths["source_key"],
+            "native_session_id": native_session_id,
+            "cwd": "/proj",
+            "records": unknown["input_records"],
+            "next_cursor": {"generation": 1},
+            "diagnostics": [],
+        },
+    )
+    stored = stored_session_id(paths, native_session_id)
+    result = reconcile_archive(config, stored)
+    assert result["turns"] == 0
+    assert result["pending"] >= 1
 
 
 def test_completed_child_without_parent_link_is_pending_not_dropped() -> None:

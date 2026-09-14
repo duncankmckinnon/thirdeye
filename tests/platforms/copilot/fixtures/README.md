@@ -64,7 +64,7 @@ IDs, row revisions, and retained evidence. It does not treat bare transcript
 an exact relationship. Since the observed SQLite rows lack a shared
 assistant-message/provider-call ID, a uniquely consistent mapping is marked
 inferred with evidence; competing candidates stay ambiguous and unresolved rows
-stay pending or conflicting. Database generation/row-ID reuse keeps both
+stay pending or conflicting. Database generation/row-ID reuse quarantines both
 logical identities and emits `usage_row_id_reuse`; incompatible revisions of
 one call are `usage_revision_conflict`.
 

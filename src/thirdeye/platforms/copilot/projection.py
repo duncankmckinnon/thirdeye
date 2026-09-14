@@ -7,7 +7,7 @@ from typing import Any
 
 from .attribution import join_usage
 from .tracing import build_semantics
-from .types import Attribution, Projection, ProjectionDiagnostic, SourceRecord
+from .types import AccountingCandidate, Attribution, Projection, ProjectionDiagnostic, SourceRecord
 from .usage import build_accounting
 
 
@@ -34,7 +34,29 @@ def _find_turn(turns: list[dict[str, Any]], identity: str) -> dict[str, Any] | N
     return None
 
 
-def _accounting_call(attribution: Attribution, row: object) -> dict[str, Any] | None:
+def _copilot_supplemental_export_attributes(
+    candidate: AccountingCandidate | None,
+) -> dict[str, Any]:
+    """Copy native Copilot billing/latency onto export attributes, never as USD."""
+
+    metrics = (candidate or {}).get("supplemental_metrics") or {}
+    attributes: dict[str, Any] = {}
+    if "total_nano_aiu" in metrics:
+        attributes["copilot.billing.nano_aiu"] = metrics["total_nano_aiu"]
+    if "duration_ms" in metrics:
+        attributes["copilot.latency.duration_ms"] = metrics["duration_ms"]
+    if "output_ttft_ms" in metrics:
+        attributes["copilot.latency.output_ttft_ms"] = metrics["output_ttft_ms"]
+    if "time_to_first_token_ms" in metrics:
+        attributes["copilot.latency.time_to_first_token_ms"] = metrics["time_to_first_token_ms"]
+    if "inter_token_latency_ms" in metrics:
+        attributes["copilot.latency.inter_token_latency_ms"] = metrics["inter_token_latency_ms"]
+    return attributes
+
+
+def _accounting_call(
+    attribution: Attribution, row: object, candidate: AccountingCandidate | None
+) -> dict[str, Any] | None:
     if row is None or not hasattr(row, "to_dict"):
         return None
     return {
@@ -48,6 +70,7 @@ def _accounting_call(attribution: Attribution, row: object) -> dict[str, Any] | 
             "usage_source_id": attribution["usage_source_id"],
             "join_kind": attribution["join_kind"],
             "evidence": list(attribution["evidence"]),
+            **_copilot_supplemental_export_attributes(candidate),
         },
     }
 
@@ -62,12 +85,15 @@ def build_projection(
     attributions = join_usage(semantic, accounting)
     turns = deepcopy(semantic["turns"])
     rows = {row.call_id: row for row in accounting["usage_rows"]}
+    candidates = {item["logical_call_id"]: item for item in accounting["candidates"]}
     pending = [*semantic["pending"]]
     diagnostics: list[ProjectionDiagnostic] = [*semantic["diagnostics"], *accounting["diagnostics"]]
 
     for attribution in attributions:
         row = rows.get(attribution["logical_call_id"])
-        accounting_call = _accounting_call(attribution, row)
+        accounting_call = _accounting_call(
+            attribution, row, candidates.get(attribution["logical_call_id"])
+        )
         if attribution["status"] == "matched":
             if attribution["join_kind"] == "inferred":
                 diagnostics.append(
@@ -110,6 +136,7 @@ def build_projection(
             "attributions": attributions,
             "pending": pending,
             "diagnostics": diagnostics,
+            "accounting_candidates": accounting["candidates"],
         },
         {"semantic_state": semantic_state, "accounting_state": accounting_state},
     )

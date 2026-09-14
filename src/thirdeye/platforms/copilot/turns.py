@@ -21,6 +21,7 @@ from .events import (
     record_type,
     source_reference,
     tool_call_id,
+    unknown_source_schema,
 )
 from .types import CallCandidate, PendingItem, ProjectionDiagnostic, SourceRecord
 
@@ -229,6 +230,28 @@ def build_turns(
 
     for record in records:
         if record.get("source_kind") != "transcript":
+            continue
+        if unknown_source_schema(record):
+            payload = record.get("payload")
+            version = payload.get("schema_version") if isinstance(payload, dict) else None
+            pending.append(
+                {
+                    "id": f"pending:unknown-version:{record['source_id']}",
+                    "kind": "missing_source_capability",
+                    "reason": "unknown transcript schema_version",
+                    "source_ids": [record["source_id"]],
+                    "evidence": [f"schema_version:{version}"],
+                }
+            )
+            diagnostics.append(
+                {
+                    "code": "capability_gap",
+                    "severity": "warning",
+                    "message": "unknown transcript schema_version; raw payload retained",
+                    "source_ids": [record["source_id"]],
+                    "details": {"schema_version": version},
+                }
+            )
             continue
         native_type = record_type(record)
         data = record_data(record)

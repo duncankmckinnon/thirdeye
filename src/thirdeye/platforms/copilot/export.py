@@ -34,11 +34,28 @@ from .export_state import (
     mark_turn_error,
     record_placement,
     update_export_state,
+    usage_digest,
 )
 from .types import Projection
 
 _TERMINAL = frozenset({"completed", "interrupted", "errored"})
 _EXPORTABLE_ATTRIBUTIONS = frozenset({"matched", "ambiguous"})
+
+
+def _copilot_supplemental_export_attributes(candidate: dict[str, Any] | None) -> dict[str, Any]:
+    metrics = (candidate or {}).get("supplemental_metrics") or {}
+    attributes: dict[str, Any] = {}
+    if "total_nano_aiu" in metrics:
+        attributes["copilot.billing.nano_aiu"] = metrics["total_nano_aiu"]
+    if "duration_ms" in metrics:
+        attributes["copilot.latency.duration_ms"] = metrics["duration_ms"]
+    if "output_ttft_ms" in metrics:
+        attributes["copilot.latency.output_ttft_ms"] = metrics["output_ttft_ms"]
+    if "time_to_first_token_ms" in metrics:
+        attributes["copilot.latency.time_to_first_token_ms"] = metrics["time_to_first_token_ms"]
+    if "inter_token_latency_ms" in metrics:
+        attributes["copilot.latency.inter_token_latency_ms"] = metrics["inter_token_latency_ms"]
+    return attributes
 
 
 def _directory(config: Config, stored_session_id: str) -> Path:
@@ -233,6 +250,8 @@ def _place(
         existing = state.get("placements", {}).get(accounting_id) or {}
         old_span_id = existing.get("span_id")
         old_job_state: str | None = None
+        digest = usage_digest(usage)
+        usage_changed = existing.get("usage_digest") != digest
         if isinstance(old_span_id, str) and old_span_id and old_span_id != span_id:
             # Relocating to a different span: find out whether the job under
             # the *old* span id is provably inert before deciding it is safe
@@ -241,6 +260,21 @@ def _place(
             # at once it decides on the new destination below.
             status = export_transport.cancel(config.root, old_span_id)
             old_job_state = status.get("state")
+        elif (
+            isinstance(old_span_id, str)
+            and old_span_id == span_id
+            and usage_changed
+            and not delivered
+        ):
+            # Same span, new usage, still undelivered: rewrite the queued
+            # payload. A claimed in-flight job cannot be overwritten.
+            current = export_transport.status(config.root, old_span_id)
+            current_state = (current or {}).get("state")
+            if current_state == "claimed":
+                old_job_state = "claimed"
+            elif current_state in {"queued", "retrying", "failed"}:
+                status = export_transport.cancel(config.root, old_span_id)
+                old_job_state = status.get("state")
         next_state, entry, accepted = record_placement(
             state,
             accounting_id=accounting_id,
@@ -442,7 +476,9 @@ def queue_exports(
             item,
             turn_span_id=_turn_span_id(stored_session_id, owner_id),
         )
-        if sent and _reflect_accounting_job_health(config, stored_session_id, accounting_id, span_id):
+        if sent and _reflect_accounting_job_health(
+            config, stored_session_id, accounting_id, span_id
+        ):
             queued += 1
         elif not sent:
             _error_state(config, stored_session_id, accounting_id, "accounting job was not queued")
@@ -450,6 +486,11 @@ def queue_exports(
     # Usage with no known user-turn owner is intentionally a session accounting
     # job.  It never manufactures a prompt/turn merely to satisfy tracing.
     rows = {row.call_id: row.to_dict() for row in projection["usage_rows"]}
+    candidates = {
+        item["logical_call_id"]: item
+        for item in projection.get("accounting_candidates") or []
+        if isinstance(item, dict) and isinstance(item.get("logical_call_id"), str)
+    }
     attached_ids = set(accounting)
     for attribution in projection["attributions"]:
         accounting_id = attribution["logical_call_id"]
@@ -488,12 +529,15 @@ def queue_exports(
                 "logical_call_id": accounting_id,
                 "usage_source_id": attribution["usage_source_id"],
                 "evidence": list(attribution["evidence"]),
+                **_copilot_supplemental_export_attributes(candidates.get(accounting_id)),
             },
         }
         sent = export_transport.queue_session_accounting(
             config, directory, stored_session_id, meta.cwd, item
         )
-        if sent and _reflect_accounting_job_health(config, stored_session_id, accounting_id, span_id):
+        if sent and _reflect_accounting_job_health(
+            config, stored_session_id, accounting_id, span_id
+        ):
             queued += 1
         elif not sent:
             _error_state(config, stored_session_id, accounting_id, "accounting job was not queued")

@@ -444,9 +444,7 @@ def _seed_revision_sources(
     if logical_id in revision_sources:
         return
     previous = inherited_calls.get(logical_id)
-    revision_sources[logical_id] = (
-        _prior_source_ids(previous) if isinstance(previous, dict) else []
-    )
+    revision_sources[logical_id] = _prior_source_ids(previous) if isinstance(previous, dict) else []
 
 
 def _logical_call_entry(
@@ -555,21 +553,20 @@ def build_accounting(
             revision_sources[logical_id].append(record["source_id"])
         prior_digests[logical_id] = _metrics_digest(payload["row"])
 
-    for key in sorted(row_generations):
-        generations = row_generations[key]
-        if len(generations) > 1:
-            table, primary_key = key.split("\x1f", 1)
-            diagnostics.append(
-                _diagnostic(
-                    "usage_row_id_reuse",
-                    "warning",
-                    "database row ID was reused by a different database generation",
-                    list(row_sources.get(key, [])),
-                    table=table,
-                    primary_key=primary_key,
-                    generations=sorted(generations),
-                )
+    reuse_keys = {key for key, generations in row_generations.items() if len(generations) > 1}
+    for key in sorted(reuse_keys):
+        table, primary_key = key.split("\x1f", 1)
+        diagnostics.append(
+            _diagnostic(
+                "usage_row_id_reuse",
+                "error",
+                "database row ID was reused by a different database generation; quarantined as conflict",
+                list(row_sources.get(key, [])),
+                table=table,
+                primary_key=primary_key,
+                generations=sorted(row_generations[key]),
             )
+        )
 
     candidates: list[AccountingCandidate] = []
     usage_rows: list[UsageRow] = []
@@ -579,6 +576,28 @@ def build_accounting(
         for key, value in inherited_calls.items()
         if isinstance(key, str) and isinstance(value, dict)
     }
+    reused_logical_ids: set[str] = set()
+    for logical_id, call in logical_calls.items():
+        table = call.get("table") if isinstance(call.get("table"), str) else _USAGE_TABLE
+        primary_key = call.get("primary_key")
+        if isinstance(primary_key, str) and _row_key(table, primary_key) in reuse_keys:
+            reused_logical_ids.add(logical_id)
+    for logical_id, (_record, revision, _selected_candidate, _digest) in selected.items():
+        if _row_key(revision["table"], revision["primary_key"]) in reuse_keys:
+            reused_logical_ids.add(logical_id)
+    for logical_id in reused_logical_ids:
+        if logical_id in selected:
+            continue
+        previous = logical_calls.get(logical_id)
+        if not isinstance(previous, dict):
+            continue
+        old_metrics = _metrics_from_call(previous)
+        _add_metrics(accounted, old_metrics, sign=-1)
+        previous_agent = previous.get("agent_id")
+        old_agent = _agent_key(previous_agent if isinstance(previous_agent, str) else None)
+        if old_agent in accounted_by_agent:
+            _add_metrics(accounted_by_agent[old_agent], old_metrics, sign=-1)
+        logical_calls[logical_id] = {**previous, "metrics": {}, "quarantined": True}
     unknown_provider_ids: list[str] = []
     for logical_id, (record, revision, candidate, previous_digest) in selected.items():
         payload = record["payload"]
@@ -594,6 +613,18 @@ def build_accounting(
             if old_agent in accounted_by_agent:
                 _add_metrics(accounted_by_agent[old_agent], old_metrics, sign=-1)
         digest = _metrics_digest(row)
+        if logical_id in reused_logical_ids:
+            candidates.append(candidate)
+            logical_calls[logical_id] = _logical_call_entry(
+                logical_id,
+                revision,
+                record,
+                row,
+                candidate,
+                revision_sources[logical_id],
+                quarantined=True,
+            )
+            continue
         if _row_is_incompatible(row):
             details: dict[str, Any] = {
                 "logical_call_id": logical_id,

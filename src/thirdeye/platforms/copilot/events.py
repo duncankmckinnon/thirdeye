@@ -14,6 +14,7 @@ from __future__ import annotations
 from copy import deepcopy
 from typing import Any
 
+from .constants import SOURCE_SCHEMA_VERSION
 from .types import (
     EventClassification,
     NormalizedEvent,
@@ -135,6 +136,15 @@ def _identity_attributes(record: SourceRecord) -> dict[str, Any]:
     }
 
 
+def unknown_source_schema(record: SourceRecord) -> bool:
+    """Return whether the archived payload names a schema other than V1."""
+
+    payload = record.get("payload")
+    if not isinstance(payload, dict) or "schema_version" not in payload:
+        return False
+    return payload.get("schema_version") != SOURCE_SCHEMA_VERSION
+
+
 def _unknown(record: SourceRecord, native_type: str | None) -> list[NormalizedEvent]:
     attrs: dict[str, Any] = {"raw_payload": deepcopy(record.get("payload"))}
     if native_type is not None:
@@ -149,6 +159,9 @@ def normalize_record(record: SourceRecord) -> list[NormalizedEvent]:
     """Normalize one record while retaining a direct pointer to its evidence."""
     if record.get("source_kind") not in _TRANSCRIPT_OR_HOOK:
         return []
+
+    if unknown_source_schema(record):
+        return _unknown(record, record_type(record))
 
     native_type = record_type(record)
     data = record_data(record)

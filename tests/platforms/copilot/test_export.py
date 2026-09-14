@@ -39,9 +39,7 @@ SOURCE_KEY = "a" * 64
 GENERATION = "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
 OBSERVED_AT = "2026-09-10T17:09:00.000Z"
 TURN_ONE = f"copilot:turn:{SOURCE_KEY}:{NATIVE_SESSION_ID}:interaction-main-1"
-CALL_MATCHED = (
-    f"copilot:call:{SOURCE_KEY}/{NATIVE_SESSION_ID}/a4a17e63-7ba5-422f-8ee9-b495be417328"
-)
+CALL_MATCHED = f"copilot:call:{SOURCE_KEY}/{NATIVE_SESSION_ID}/a4a17e63-7ba5-422f-8ee9-b495be417328"
 ACCOUNTING_MATCHED = (
     f"copilot:usage:{SOURCE_KEY}:assistant_usage_events:"
     f"sha256%3Abbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb:13"
@@ -610,7 +608,9 @@ class TestQueueExports:
                     ]
                 )
             ],
-            usage_rows=[_usage_row(call_id=ACCOUNTING_UNMATCHED, input_tokens=6587, output_tokens=5)],
+            usage_rows=[
+                _usage_row(call_id=ACCOUNTING_UNMATCHED, input_tokens=6587, output_tokens=5)
+            ],
             attributions=[
                 _attribution(
                     logical_call_id=ACCOUNTING_UNMATCHED,
@@ -710,7 +710,9 @@ class TestQueueExports:
                     ]
                 )
             ],
-            usage_rows=[_usage_row(call_id=ACCOUNTING_UNMATCHED, input_tokens=6587, output_tokens=5)],
+            usage_rows=[
+                _usage_row(call_id=ACCOUNTING_UNMATCHED, input_tokens=6587, output_tokens=5)
+            ],
             attributions=[
                 _attribution(
                     logical_call_id=ACCOUNTING_UNMATCHED,
@@ -732,7 +734,9 @@ class TestQueueExports:
                     ]
                 )
             ],
-            usage_rows=[_usage_row(call_id=ACCOUNTING_UNMATCHED, input_tokens=6587, output_tokens=5)],
+            usage_rows=[
+                _usage_row(call_id=ACCOUNTING_UNMATCHED, input_tokens=6587, output_tokens=5)
+            ],
             attributions=[_attribution(logical_call_id=ACCOUNTING_UNMATCHED, call_id=CALL_MATCHED)],
         )
         return ambiguous_projection, matched_projection
@@ -893,7 +897,9 @@ class TestQueueExports:
                     ]
                 )
             ],
-            usage_rows=[_usage_row(call_id=ACCOUNTING_UNMATCHED, input_tokens=6587, output_tokens=5)],
+            usage_rows=[
+                _usage_row(call_id=ACCOUNTING_UNMATCHED, input_tokens=6587, output_tokens=5)
+            ],
             attributions=[
                 _attribution(
                     logical_call_id=ACCOUNTING_UNMATCHED,
@@ -959,7 +965,9 @@ class TestQueueExports:
                     ]
                 )
             ],
-            usage_rows=[_usage_row(call_id=ACCOUNTING_UNMATCHED, input_tokens=6587, output_tokens=5)],
+            usage_rows=[
+                _usage_row(call_id=ACCOUNTING_UNMATCHED, input_tokens=6587, output_tokens=5)
+            ],
             attributions=[
                 _attribution(
                     logical_call_id=ACCOUNTING_UNMATCHED,
@@ -1019,11 +1027,11 @@ class TestQueueExports:
                     ]
                 )
             ],
-            usage_rows=[_usage_row(call_id=ACCOUNTING_UNMATCHED, input_tokens=6587, output_tokens=5)],
+            usage_rows=[
+                _usage_row(call_id=ACCOUNTING_UNMATCHED, input_tokens=6587, output_tokens=5)
+            ],
             attributions=[
-                _attribution(
-                    logical_call_id=ACCOUNTING_UNMATCHED, status="ambiguous", call_id=None
-                )
+                _attribution(logical_call_id=ACCOUNTING_UNMATCHED, status="ambiguous", call_id=None)
             ],
         )
         queue_exports(enabled_config, stored, projection, include_history=True)
@@ -1034,9 +1042,7 @@ class TestQueueExports:
         )
 
         monkeypatch.setattr(export_transport, "queue_turn", lambda *args, **kwargs: True)
-        monkeypatch.setattr(
-            export_transport, "queue_turn_accounting", lambda *args, **kwargs: True
-        )
+        monkeypatch.setattr(export_transport, "queue_turn_accounting", lambda *args, **kwargs: True)
         queue_exports(enabled_config, stored, projection, include_history=True)
 
         state = load_export_state(enabled_config, stored)
@@ -1066,7 +1072,9 @@ class TestQueueExports:
         )
         queued = queue_exports(reloaded, stored, projection, include_history=True)
         assert queued == 1
-        assert json.loads(ledger_path.read_text(encoding="utf-8"))["placements"] == saved["placements"]
+        assert (
+            json.loads(ledger_path.read_text(encoding="utf-8"))["placements"] == saved["placements"]
+        )
 
     def test_non_terminal_turns_are_not_exported(
         self,
@@ -1147,9 +1155,7 @@ class TestQueueExports:
             ],
             usage_rows=[_usage_row(call_id=ACCOUNTING_UNMATCHED)],
             attributions=[
-                _attribution(
-                    logical_call_id=ACCOUNTING_UNMATCHED, status="pending", call_id=None
-                )
+                _attribution(logical_call_id=ACCOUNTING_UNMATCHED, status="pending", call_id=None)
             ],
         )
         queue_exports(enabled_config, stored, open_projection)
@@ -1170,9 +1176,7 @@ class TestQueueExports:
             ],
             usage_rows=[_usage_row(call_id=ACCOUNTING_UNMATCHED)],
             attributions=[
-                _attribution(
-                    logical_call_id=ACCOUNTING_UNMATCHED, status="ambiguous", call_id=None
-                )
+                _attribution(logical_call_id=ACCOUNTING_UNMATCHED, status="ambiguous", call_id=None)
             ],
         )
         queued = queue_exports(enabled_config, stored, resolved_projection)
@@ -1428,11 +1432,11 @@ class TestQueueExports:
                     ]
                 )
             ],
-            usage_rows=[_usage_row(call_id=ACCOUNTING_UNMATCHED, input_tokens=6587, output_tokens=5)],
+            usage_rows=[
+                _usage_row(call_id=ACCOUNTING_UNMATCHED, input_tokens=6587, output_tokens=5)
+            ],
             attributions=[
-                _attribution(
-                    logical_call_id=ACCOUNTING_UNMATCHED, status="ambiguous", call_id=None
-                )
+                _attribution(logical_call_id=ACCOUNTING_UNMATCHED, status="ambiguous", call_id=None)
             ],
         )
         span_id = f"accounting:{stored}:{TURN_ONE}:{ACCOUNTING_UNMATCHED}"
@@ -1446,7 +1450,9 @@ class TestQueueExports:
         )
 
         queued = queue_exports(enabled_config, stored, projection, include_history=True)
-        assert queued == 1  # only the turn job; the permanently-failed accounting job does not count
+        assert (
+            queued == 1
+        )  # only the turn job; the permanently-failed accounting job does not count
         state = load_export_state(enabled_config, stored)
         placement = state["placements"][ACCOUNTING_UNMATCHED]
         assert placement["job_state"] == "failed"
@@ -1580,11 +1586,11 @@ class TestWorkerConfirmedDelivery:
                     ]
                 )
             ],
-            usage_rows=[_usage_row(call_id=ACCOUNTING_UNMATCHED, input_tokens=6587, output_tokens=5)],
+            usage_rows=[
+                _usage_row(call_id=ACCOUNTING_UNMATCHED, input_tokens=6587, output_tokens=5)
+            ],
             attributions=[
-                _attribution(
-                    logical_call_id=ACCOUNTING_UNMATCHED, status="ambiguous", call_id=None
-                )
+                _attribution(logical_call_id=ACCOUNTING_UNMATCHED, status="ambiguous", call_id=None)
             ],
         )
 
@@ -1664,6 +1670,120 @@ class TestWorkerConfirmedDelivery:
         assert placement["destination"] == "chat-span"
         assert placement["emitted"] is True
         assert ACCOUNTING_MATCHED not in state["conflicts"]
+
+    def test_undelivered_same_span_token_correction_rewrites_job_and_delivers_once(
+        self,
+        enabled_config: Config,
+        paths: SourcePaths,
+        wired_instance,
+        exporter,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        stored = _seed_session(enabled_config, paths)
+        delayed: list[Path] = []
+
+        def _hold(job_path: Path) -> None:
+            delayed.append(job_path)
+
+        monkeypatch.setattr(export_transport, "_spawn", _hold)
+        monkeypatch.setattr(otel_export, "_spawn", lambda job_path: None)
+
+        first = _projection(
+            turns=[
+                _main_turn(
+                    accounting_calls=[
+                        _accounting_call(
+                            accounting_id=ACCOUNTING_UNMATCHED,
+                            attribution_status="ambiguous",
+                            call_id=None,
+                            usage=_usage_row(
+                                call_id=ACCOUNTING_UNMATCHED, input_tokens=6587, output_tokens=5
+                            ).to_dict(),
+                        )
+                    ]
+                )
+            ],
+            usage_rows=[
+                _usage_row(call_id=ACCOUNTING_UNMATCHED, input_tokens=6587, output_tokens=5)
+            ],
+            attributions=[
+                _attribution(logical_call_id=ACCOUNTING_UNMATCHED, status="ambiguous", call_id=None)
+            ],
+        )
+        queue_exports(enabled_config, stored, first, include_history=True)
+        span_id = f"accounting:{stored}:{TURN_ONE}:{ACCOUNTING_UNMATCHED}"
+        job_path = export_transport.job_path(enabled_config.root, span_id)
+        assert job_path.exists()
+        first_job = json.loads(job_path.read_text(encoding="utf-8"))
+        assert first_job["usage"]["gen_ai.usage.output_tokens"] == 5
+
+        corrected_usage = _usage_row(
+            call_id=ACCOUNTING_UNMATCHED, input_tokens=6587, output_tokens=999
+        ).to_dict()
+        second = _projection(
+            turns=[
+                _main_turn(
+                    accounting_calls=[
+                        _accounting_call(
+                            accounting_id=ACCOUNTING_UNMATCHED,
+                            attribution_status="ambiguous",
+                            call_id=None,
+                            usage=corrected_usage,
+                        )
+                    ]
+                )
+            ],
+            usage_rows=[
+                _usage_row(call_id=ACCOUNTING_UNMATCHED, input_tokens=6587, output_tokens=999)
+            ],
+            attributions=[
+                _attribution(logical_call_id=ACCOUNTING_UNMATCHED, status="ambiguous", call_id=None)
+            ],
+        )
+        queue_exports(enabled_config, stored, second, include_history=True)
+        rewritten = json.loads(job_path.read_text(encoding="utf-8"))
+        assert rewritten["usage"]["gen_ai.usage.output_tokens"] == 999
+        assert rewritten["state"] == "queued"
+
+        export_transport.main([str(job_path)])
+        accounting_spans = [
+            span for span in exporter.exported_spans_as_dict() if span["name"] == "accounting"
+        ]
+        assert len(accounting_spans) == 1
+        assert accounting_spans[0]["attributes"]["gen_ai.usage.output_tokens"] == 999
+        directory = _directory(enabled_config, stored)
+        assert export_transport.delivery_sent(directory, ACCOUNTING_UNMATCHED) is True
+        state = load_export_state(enabled_config, stored)
+        assert ACCOUNTING_UNMATCHED not in state["conflicts"]
+
+    def test_observed_six_call_queue_exports_labels_native_billing_not_usd(
+        self,
+        enabled_config: Config,
+        wired_instance,
+        exporter,
+        tmp_path: Path,
+    ) -> None:
+        home = tmp_path / "copilot-home"
+        home.mkdir()
+        paths = resolve_sources(home)
+        commit_batch(enabled_config, paths, _batch(paths, _drain_cli_transcript(home)))
+        stored = stored_session_id(paths, NATIVE_SESSION_ID)
+        source_key = _source_key(_drain_cli_transcript(home))
+        records = _drain_cli_transcript(home) + _six_call_records(source_key=source_key)
+        projection, _ = build_projection(records, {})
+
+        queue_exports(enabled_config, stored, projection, include_history=True)
+
+        billed = [
+            span
+            for span in exporter.exported_spans_as_dict()
+            if span["attributes"].get("thirdeye.accounting.billing.kind") == "copilot-native-unit"
+        ]
+        assert billed
+        for span in billed:
+            assert span["attributes"]["thirdeye.accounting.billing.kind"] == "copilot-native-unit"
+            assert "operation.cost" not in span["attributes"]
+            assert span["attributes"]["copilot.billing.nano_aiu"]
 
 
 def _drain_cli_transcript(home: Path) -> list[SourceRecord]:

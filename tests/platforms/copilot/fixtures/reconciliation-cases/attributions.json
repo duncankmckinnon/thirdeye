@@ -30,8 +30,8 @@
     "join_kind": null,
     "evidence": [
       "logical_call_id:copilot:usage:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa:assistant_usage_events:sha256%3Abbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb:14",
-      "turn_index:0",
-      "delayed_row:true"
+      "interaction_id:6d2b89fd-a653-430c-b532-b0936d72eb42",
+      "turn_index:0"
     ]
   },
   "ambiguous": {

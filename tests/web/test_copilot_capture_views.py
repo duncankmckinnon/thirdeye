@@ -16,6 +16,7 @@ from tests.shared.copilot_projection_fixtures import (
     USAGE_MODEL_TWO,
     USAGE_TOKENS_ONE,
     USAGE_TOKENS_TWO,
+    seed_observed_six_call_projection,
     seed_two_main_interaction_projection,
 )
 from thirdeye.config import LogfireSettings
@@ -222,6 +223,25 @@ def test_copilot_session_usage_page_shows_projected_usage_rows(
     assert str(USAGE_TOKENS_ONE) in tbody
     assert str(USAGE_TOKENS_TWO) in tbody
     assert str(USAGE_TOKENS_TWO * 2) not in body
+
+
+def test_copilot_session_usage_page_labels_native_billing_and_latency(
+    client, web_config, tmp_path: Path
+) -> None:
+    stored_id = seed_observed_six_call_projection(web_config, tmp_path)
+
+    usage = client.get(f"/sessions/{stored_id}/usage")
+
+    assert usage.status_code == 200
+    body = usage.text
+    assert "copilot native billing (nano-AIU)" in body
+    assert "duration_ms" in body
+    assert "TTFT (ms)" in body
+    assert "174125000" in body
+    tbody = body.split("<tbody>", 1)[1].split("</tbody>", 1)[0]
+    assert tbody.count("<tr>") == 6
+    assert "operation.cost" not in body
+    assert "$" not in tbody
 
 
 def test_copilot_projected_session_search_tag_and_eval_routes(

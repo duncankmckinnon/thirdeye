@@ -453,15 +453,17 @@ def test_reused_row_id_across_generations_emits_warning():
 
     assert "usage_row_id_reuse" in _diagnostic_codes(projection)
     reuse = next(item for item in projection["diagnostics"] if item["code"] == "usage_row_id_reuse")
+    assert reuse["severity"] == "error"
     assert first["source_id"] in reuse["source_ids"]
     assert second["source_id"] in reuse["source_ids"]
-    call_ids = [row.call_id for row in projection["usage_rows"]]
-    assert len(call_ids) == 2
-    assert call_ids[0] != call_ids[1]
-    assert projection["usage_rows"][0].output_tokens == row_a["output_tokens"]
-    assert projection["usage_rows"][1].output_tokens == 50
-    assert projection["candidates"][0]["usage_source_id"] == first["source_id"]
+    assert projection["usage_rows"] == []
+    assert len(projection["candidates"]) == 2
+    assert {candidate["usage_source_id"] for candidate in projection["candidates"]} == {
+        first["source_id"],
+        second["source_id"],
+    }
     assert len(state["logical_calls"]) == 2
+    assert all(call["quarantined"] is True for call in state["logical_calls"].values())
 
 
 def test_incompatible_metrics_quarantine_logical_call():
@@ -788,14 +790,16 @@ def test_row_id_reuse_is_detected_across_partitions():
         generation="sha256:generation-b",
     )
     _first_projection, state = build_accounting([first], {})
-    projection, _next_state = build_accounting([second], state)
+    projection, next_state = build_accounting([second], state)
 
+    assert len(_first_projection["usage_rows"]) == 1
     assert "usage_row_id_reuse" in _diagnostic_codes(projection)
     reuse = next(item for item in projection["diagnostics"] if item["code"] == "usage_row_id_reuse")
+    assert reuse["severity"] == "error"
     assert first["source_id"] in reuse["source_ids"]
     assert second["source_id"] in reuse["source_ids"]
-    assert len(projection["usage_rows"]) == 1
-    assert projection["usage_rows"][0].output_tokens == 50
+    assert projection["usage_rows"] == []
+    assert all(call["quarantined"] is True for call in next_state["logical_calls"].values())
 
 
 def test_integer_valued_float_row_metrics_do_not_false_mismatch_shutdown():
