@@ -33,6 +33,7 @@ from .export_state import (
     mark_placement_job_status,
     mark_turn_error,
     record_placement,
+    set_pending_unowned_accounting,
     update_export_state,
     usage_digest,
 )
@@ -132,37 +133,40 @@ def _accounting_calls(projection: Projection) -> dict[str, tuple[dict[str, Any],
 
 
 def _historical_accounting_ids(
-    projection: Projection, root_index: dict[str, dict[str, Any]]
+    projection: Projection,
+    root_index: dict[str, dict[str, Any]],
+    *,
+    session_closed: bool,
 ) -> list[str]:
     """Accounting identities that are already part of terminal history.
 
-    An identity owned by a still-open interaction must be excluded from this
-    set (and therefore stay eligible for later export once that interaction
-    completes). An identity with no interaction to gate on at all (an
-    ownerless usage row, or a ``stored_turn_id`` this projection cannot
-    resolve) has no way to become "no longer historical" later, so it keeps
-    the conservative default of being treated as already-seen history --
-    *unless* its attribution is still ``pending``. A pending join has not
-    told us anything about ownership yet: it may still turn out to belong to
-    an interaction that is open right now, or resolve to a confirmed
-    ownerless status later. Locking it into history the moment it happens to
-    be observed with no owner would exclude it forever, since only an
-    explicit ``--export`` ever removes an id from this boundary once set.
+    An identity owned by a still-open interaction stays eligible for later
+    export once that interaction completes. Missing ownership in an open
+    session is likewise provisional and cannot become immutable history merely
+    because transcript reconstruction currently lags the usage row. Once the
+    session is explicitly closed, a non-pending row with no resolved root is
+    settled session history. A pending join remains unresolved in either case.
     """
     owners: dict[str, dict[str, Any] | None] = {}
     for accounting_id, (owner, _item) in _accounting_calls(projection).items():
         owners[accounting_id] = _root_for(root_index, owner.get("turn_id"))
-    pending_unowned: set[str] = set()
+    unresolved: set[str] = set()
     for attribution in projection["attributions"]:
         accounting_id = attribution["logical_call_id"]
         if accounting_id in owners:
             continue
         if attribution["status"] == "pending":
-            pending_unowned.add(accounting_id)
+            unresolved.add(accounting_id)
             continue
-        owners[accounting_id] = _root_for(root_index, attribution["stored_turn_id"])
+        root = _root_for(root_index, attribution["stored_turn_id"])
+        if root is None and not session_closed:
+            unresolved.add(accounting_id)
+            continue
+        owners[accounting_id] = root
     for row in projection["usage_rows"]:
-        if row.call_id in pending_unowned:
+        if row.call_id in unresolved:
+            continue
+        if row.call_id not in owners and not session_closed:
             continue
         owners.setdefault(row.call_id, None)
     return sorted(
@@ -220,6 +224,7 @@ def _eligible_state(
     root_index: dict[str, dict[str, Any]],
     *,
     include_history: bool,
+    session_closed: bool,
 ) -> dict[str, Any]:
     terminal_ids = [str(turn["turn_id"]) for turn in _main_terminal_turns(projection)]
 
@@ -227,7 +232,9 @@ def _eligible_state(
         return initialize_eligibility(
             state,
             terminal_turn_ids=terminal_ids,
-            accounting_ids=_historical_accounting_ids(projection, root_index),
+            accounting_ids=_historical_accounting_ids(
+                projection, root_index, session_closed=session_closed
+            ),
             include_history=include_history,
         )
 
@@ -372,6 +379,27 @@ def _with_deterministic_turn_ids(turn: dict[str, Any], stored_session_id: str) -
     return result
 
 
+def _fallback_accounting_call(
+    attribution: dict[str, Any],
+    usage: dict[str, Any],
+    candidate: dict[str, Any] | None,
+) -> dict[str, Any]:
+    """Serialize accounting whose exact chat placement never became available."""
+    return {
+        "accounting_id": attribution["logical_call_id"],
+        "usage": usage,
+        "attribution_status": attribution["status"],
+        "agent_id": attribution["agent_id"],
+        "call_id": None,
+        "attributes": {
+            "logical_call_id": attribution["logical_call_id"],
+            "usage_source_id": attribution["usage_source_id"],
+            "evidence": list(attribution["evidence"]),
+            **_copilot_supplemental_export_attributes(candidate),
+        },
+    }
+
+
 def queue_exports(
     config: Config,
     stored_session_id: str,
@@ -391,15 +419,29 @@ def queue_exports(
     meta = read_meta(meta_path(directory))
     if meta is None:
         raise ValueError(f"unknown Copilot session: {stored_session_id}")
+    session_closed = meta.status == "closed"
     root_index = _root_owner_index(projection)
     state = _eligible_state(
-        config, stored_session_id, projection, root_index, include_history=include_history
+        config,
+        stored_session_id,
+        projection,
+        root_index,
+        include_history=include_history,
+        session_closed=session_closed,
     )
     if not _configured(config):
         return 0
 
     accounting = _accounting_calls(projection)
+    rows = {row.call_id: row.to_dict() for row in projection["usage_rows"]}
+    candidates = {
+        item["logical_call_id"]: item
+        for item in projection.get("accounting_candidates") or []
+        if isinstance(item, dict) and isinstance(item.get("logical_call_id"), str)
+    }
     placements: dict[str, dict[str, Any]] = {}
+    deferred_ids: set[str] = set()
+    blocked_root_ids: set[str] = set()
     queued = 0
 
     # Place terminal owned accounting first.  This decision happens before a
@@ -420,6 +462,18 @@ def queue_exports(
         if not is_turn_eligible(state, root_id) or not is_accounting_eligible(state, accounting_id):
             continue
         call_id = item.get("call_id")
+        if (
+            item.get("attribution_status") == "matched"
+            and isinstance(call_id, str)
+            and call_id
+            and not any(call.get("call_id") == call_id for call in owner.get("llm_calls") or [])
+        ):
+            if not session_closed:
+                deferred_ids.add(accounting_id)
+                blocked_root_ids.add(root_id)
+                continue
+            item = {**item, "call_id": None}
+            call_id = None
         existing_entry = (state.get("placements") or {}).get(accounting_id) or {}
         turn_sent = otel_export.turn_export_sent(directory, root_id)
         delivered = export_transport.delivery_sent(directory, accounting_id) or (
@@ -483,14 +537,9 @@ def queue_exports(
         elif not sent:
             _error_state(config, stored_session_id, accounting_id, "accounting job was not queued")
 
-    # Usage with no known user-turn owner is intentionally a session accounting
-    # job.  It never manufactures a prompt/turn merely to satisfy tracing.
-    rows = {row.call_id: row.to_dict() for row in projection["usage_rows"]}
-    candidates = {
-        item["logical_call_id"]: item
-        for item in projection.get("accounting_candidates") or []
-        if isinstance(item, dict) and isinstance(item.get("logical_call_id"), str)
-    }
+    # An exportable attribution can temporarily precede reconstruction of its
+    # owner.  Until explicit session completion, absence from ``accounting`` is
+    # incomplete evidence rather than proof of session-level ownership.
     attached_ids = set(accounting)
     for attribution in projection["attributions"]:
         accounting_id = attribution["logical_call_id"]
@@ -504,13 +553,30 @@ def queue_exports(
         usage = rows.get(accounting_id)
         if usage is None:
             continue
-        span_id = _span_id(stored_session_id, None, accounting_id)
+        owner_id = attribution.get("stored_turn_id")
+        root = _root_for(root_index, owner_id)
+        if not session_closed:
+            deferred_ids.add(accounting_id)
+            if root is not None:
+                blocked_root_ids.add(str(root["turn_id"]))
+            continue
+
+        item = _fallback_accounting_call(attribution, usage, candidates.get(accounting_id))
+        if isinstance(owner_id, str) and root is not None and _terminal(root):
+            root_id = str(root["turn_id"])
+            if not is_turn_eligible(state, root_id):
+                continue
+            destination = "turn-accounting-span"
+            span_id = _span_id(stored_session_id, owner_id, accounting_id)
+        else:
+            destination = "session-accounting-span"
+            span_id = _span_id(stored_session_id, None, accounting_id)
         delivered = export_transport.delivery_sent(directory, accounting_id)
         entry, accepted = _place(
             config,
             stored_session_id,
             accounting_id=accounting_id,
-            destination="session-accounting-span",
+            destination=destination,
             span_id=span_id,
             usage=usage,
             delivered=delivered,
@@ -519,22 +585,20 @@ def queue_exports(
             continue
         if entry.get("emitted"):
             continue
-        item = {
-            "accounting_id": accounting_id,
-            "usage": usage,
-            "attribution_status": attribution["status"],
-            "agent_id": attribution["agent_id"],
-            "call_id": None,
-            "attributes": {
-                "logical_call_id": accounting_id,
-                "usage_source_id": attribution["usage_source_id"],
-                "evidence": list(attribution["evidence"]),
-                **_copilot_supplemental_export_attributes(candidates.get(accounting_id)),
-            },
-        }
-        sent = export_transport.queue_session_accounting(
-            config, directory, stored_session_id, meta.cwd, item
-        )
+        if destination == "turn-accounting-span":
+            sent = export_transport.queue_turn_accounting(
+                config,
+                directory,
+                stored_session_id,
+                meta.cwd,
+                owner_id,
+                item,
+                turn_span_id=_turn_span_id(stored_session_id, owner_id),
+            )
+        else:
+            sent = export_transport.queue_session_accounting(
+                config, directory, stored_session_id, meta.cwd, item
+            )
         if sent and _reflect_accounting_job_health(
             config, stored_session_id, accounting_id, span_id
         ):
@@ -542,11 +606,17 @@ def queue_exports(
         elif not sent:
             _error_state(config, stored_session_id, accounting_id, "accounting job was not queued")
 
+    state = update_export_state(
+        config,
+        stored_session_id,
+        lambda current: set_pending_unowned_accounting(current, sorted(deferred_ids)),
+    )
+
     # Generic transport provides a persistent completed-turn claim.  Sending
     # a duplicate local job is harmless there; no network I/O occurs here.
     for turn in _main_terminal_turns(projection):
         turn_id = str(turn["turn_id"])
-        if not is_turn_eligible(state, turn_id):
+        if turn_id in blocked_root_ids or not is_turn_eligible(state, turn_id):
             continue
         assembled = _with_deterministic_turn_ids(
             _turn_with_placed_accounting(turn, placements), stored_session_id
