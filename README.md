@@ -9,13 +9,13 @@
 [![Python](https://img.shields.io/pypi/pyversions/thrdi.svg)](https://pypi.org/project/thrdi/)
 [![License](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 
-Trace every agent session on your machine — Claude Code, Codex, Cursor, GitHub Copilot — into one history you and your agents can manage, search, and evaluate.
+Trace every agent session on your machine — Claude Code, Codex, Cursor, Copilot — into one history you and your agents can manage, search, and evaluate.
 
 ## Install
 
 > **Windows support is experimental.** The test suite runs on Windows in CI, and
 > Claude Code tracing is the verified integration there. The Codex CLI, Cursor,
-> and Copilot CLI installers are implemented but have not been live-certified
+> and Copilot installers are implemented but have not been live-certified
 > against those tools on Windows. Please report Windows problems at the
 > [issue tracker](https://github.com/duncankmckinnon/thirdeye/issues). See
 > [docs/windows.md](docs/windows.md) for the deliberate platform differences.
@@ -84,9 +84,9 @@ thirdeye add --claude        # also: --cursor, --codex, --copilot
 
 To detach: `thirdeye remove --claude` (also `--cursor`, `--codex`, `--copilot`).
 
-## Copilot CLI capture
+## Copilot capture
 
-GitHub Copilot CLI capture keeps a durable, local V1 archive and derives V2
+Copilot capture keeps a durable, local V1 archive and derives V2
 views from that archive. V1 source records are immutable: V2 never rewrites
 them, and it can rebuild its derived turns, usage accounting, and export queue
 after the original Copilot files have gone away.
@@ -133,10 +133,10 @@ with retained completed history included, or later removes those identities
 from an existing boundary. Jobs are dispatched only when remote export is
 configured. `--rebuild` resets only reproducible derived state; it preserves
 the raw archive and the separate delivery ledger. See
-[Copilot CLI capture and reconciliation](docs/copilot-capture.md) for the
+[Copilot capture and reconciliation](docs/copilot-capture.md) for the
 archive schema, attribution rules, correction behavior, and delivery limits.
 
-Passing unit tests is not live certification of Copilot CLI, native VS Code, or
+Passing unit tests is not live certification of Copilot, native VS Code, or
 Copilot cloud integrations.
 
 ## Read your history
