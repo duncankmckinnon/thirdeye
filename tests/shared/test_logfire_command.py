@@ -14,18 +14,10 @@ from thirdeye.logfire_auth import LogfireAuthError
 @pytest.fixture(autouse=True)
 def _home(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     monkeypatch.setenv("THIRDEYE_HOME", str(tmp_path))
-    # `enable` refuses to run without the logfire package; stub availability
-    # so these tests exercise the config-writing logic regardless of whether
-    # the optional extra happens to be installed in the dev environment.
+    # Stub availability so these tests exercise config-writing logic without
+    # configuring a real Logfire client.
     monkeypatch.setattr("thirdeye.commands.logfire_cmd.is_available", lambda: True)
     return tmp_path
-
-
-def test_enable_without_package_installed_fails_clearly(monkeypatch: pytest.MonkeyPatch):
-    monkeypatch.setattr("thirdeye.commands.logfire_cmd.is_available", lambda: False)
-    result = CliRunner().invoke(logfire_group, ["enable"])
-    assert result.exit_code != 0
-    assert "logfire" in result.output.lower()
 
 
 def test_status_disabled_by_default():

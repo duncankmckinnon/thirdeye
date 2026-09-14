@@ -13,14 +13,8 @@ Trace every agent session on your machine — Claude Code, Codex, Cursor, Copilo
 
 ## Install
 
-> **Windows support is experimental.** The test suite runs on Windows in CI, and
-> Claude Code tracing is the verified integration there. The Codex CLI, Cursor,
-> and Copilot installers are implemented but have not been live-certified
-> against those tools on Windows. Please report Windows problems at the
-> [issue tracker](https://github.com/duncankmckinnon/thirdeye/issues). See
-> [docs/windows.md](docs/windows.md) for the deliberate platform differences.
-
-The easiest installation approach is to use [homebrew](https://brew.sh/). This will package all thirdeye extras as a globally available CLI tool. Homebrew is
+The easiest installation approach is to use [homebrew](https://brew.sh/), which
+installs the complete thirdeye CLI. Homebrew is
 macOS / Linux only — on Windows, install with `pipx` or `uv` (below).
 
 ```bash
@@ -30,23 +24,24 @@ brew install duncankmckinnon/tap/thirdeye    # macOS / Linux
 Alternatively, you can get the same result with [pipx](https://pipx.pypa.io/stable/)
 
 ```bash
-pipx install 'thrdi[ui,logfire]' # global install
+pipx install thrdi # global install
 ```
 
-For local installation, you can also use `uv` or `pip` with the optional ui and logfire extras that add the ability to navigate thirdeye as a webpage and export traces via OpenTelemetry to Pydantic Logfire.
+For local installation, use `uv` or `pip`. Every installation includes the
+browser UI and Pydantic Logfire integration.
 
 ```bash
-uv tool install thrdi # or: uv tool install 'thrdi[ui,logfire]'
+uv tool install thrdi
 ```
 
 ```bash
-pip install thrdi # or: pip install 'thrdi[ui,logfire]'
+pip install thrdi
 ```
 
 ## Interactive setup
 
-Configure tracing, bundled agent skills, and optional Pydantic Logfire export in
-one guided flow:
+Configure tracing, bundled agent skills, and Pydantic Logfire export in one
+guided flow:
 
 ```bash
 thirdeye setup
@@ -256,7 +251,7 @@ variables you intend to export to Logfire.
 
 ## Browse in a browser
 
-For a richer experience than the CLI, install the UI extra and launch:
+For a richer experience than the CLI, launch the bundled browser UI:
 
 ```bash
 thirdeye ui      # or: thirdeye serve

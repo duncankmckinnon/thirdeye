@@ -75,29 +75,14 @@ def test_setup_can_skip_agent_and_skill_multiselects(
 ) -> None:
     platforms = {name: _fake_platform(name) for name in ("claude", "codex", "cursor", "copilot")}
     _fake_resolver(monkeypatch, platforms)
-    monkeypatch.setattr("thirdeye.commands.setup.logfire_cmd.is_available", lambda: False)
+    monkeypatch.setattr("thirdeye.commands.setup.logfire_cmd.is_available", lambda: True)
 
-    result = CliRunner().invoke(main, ["setup"], input="none\nnone\n")
+    result = CliRunner().invoke(main, ["setup"], input="none\nnone\nn\n")
 
     assert result.exit_code == 0, result.output
     assert all(not platform.install.called for platform in platforms.values())
     assert "Tracing: no platforms configured" in result.output
     assert "Skills: skipped" in result.output
-    assert "Logfire: extension not installed" in result.output
-
-
-def test_setup_skips_entire_logfire_step_when_extra_is_missing(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    platforms = {name: _fake_platform(name) for name in ("claude", "codex", "cursor", "copilot")}
-    _fake_resolver(monkeypatch, platforms)
-    monkeypatch.setattr("thirdeye.commands.setup.logfire_cmd.is_available", lambda: False)
-
-    result = CliRunner().invoke(main, ["setup"], input="none\nnone\n")
-
-    assert result.exit_code == 0, result.output
-    assert "Pydantic Logfire" not in result.output
-    assert "Enable live Logfire" not in result.output
 
 
 def test_setup_does_not_ask_about_already_configured_agents(

@@ -6,18 +6,13 @@ The server is opt-in and binds loopback only.
 
 ## Install
 
-The UI ships as an optional extra so the default `pip install thrdi` stays
-lean.
+The browser UI ships with thirdeye.
 
 ```bash
-pip install 'thrdi[ui]'
+pip install thrdi
 ```
 
-Using pipx? Inject the deps into the existing thrdi venv:
-
-```bash
-pipx inject thrdi starlette uvicorn jinja2
-```
+Using pipx? Install thirdeye normally: `pipx install thrdi`.
 
 ## Launch
 
@@ -32,13 +27,6 @@ thirdeye ui --no-browser           # don't auto-open the browser
 
 The CLI opens your default browser unless `--no-browser` is passed. Ctrl-C
 stops the server.
-
-If the extra isn't installed, `thirdeye ui` prints a hint and exits with
-status 1:
-
-```
-The 'ui' extra is required. Install it with: pip install 'thrdi[ui]'
-```
 
 ## What you can do
 
@@ -147,8 +135,8 @@ Inside the session tree:
 
 ## Troubleshooting
 
-**`ModuleNotFoundError: starlette`** — the `ui` extra isn't installed. Run
-`pip install 'thrdi[ui]'` (or `pipx inject thrdi starlette uvicorn jinja2`).
+**`ModuleNotFoundError: starlette`** — the installation is incomplete. Reinstall
+thirdeye with `pip install --upgrade --force-reinstall thrdi`.
 
 **`OSError: [Errno 48] Address already in use`** — another process holds the
 port. Pass `--port` with a free port, or stop the other process.

@@ -21,6 +21,17 @@ classifiers = [
 ]
 dependencies = [
   "click>=8.1",
+  "starlette>=0.36",
+  "uvicorn>=0.27",
+  "jinja2>=3.1",
+  "python-multipart>=0.0.20",
+  "logfire[datasets]>=4.25",
+  # Prices a span's token usage into `operation.cost`. Logfire's own
+  # instrumentation computes cost client-side with this same library and the
+  # backend surfaces that attribute; without it the UI falls back to pricing
+  # `gen_ai.usage.input_tokens` at the full input rate, which — since that
+  # count is cache-inclusive — overstates a cache-heavy session ~9x.
+  "genai-prices>=0.1.4",
   "msgpack>=1.0",
   "zstandard>=0.22",
   "pyaml>=23.0",
@@ -105,21 +116,6 @@ dev = [
   "ruff>=0.7",
   "build>=1.2",
   "httpx>=0.27",
-]
-ui = [
-  "starlette>=0.36",
-  "uvicorn>=0.27",
-  "jinja2>=3.1",
-  "python-multipart>=0.0.20",
-]
-logfire = [
-  "logfire[datasets]>=4.25",
-  # Prices a span's token usage into `operation.cost`. Logfire's own
-  # instrumentation computes cost client-side with this same library and the
-  # backend surfaces that attribute; without it the UI falls back to pricing
-  # `gen_ai.usage.input_tokens` at the full input rate, which — since that
-  # count is cache-inclusive — overstates a cache-heavy session ~9x.
-  "genai-prices>=0.1.4",
 ]
 
 [tool.ruff]

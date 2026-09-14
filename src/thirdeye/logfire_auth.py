@@ -41,7 +41,8 @@ def _logfire_client_from_saved_user_token() -> Any:
         from logfire._internal.client import LogfireClient
     except ImportError as exc:
         raise LogfireAuthError(
-            "the `logfire` package is not installed. Install with: pip install 'thrdi[logfire]'"
+            "the bundled Logfire dependencies are unavailable. Reinstall with: "
+            "pip install --upgrade --force-reinstall thrdi"
         ) from exc
     try:
         return LogfireClient.from_url(None)

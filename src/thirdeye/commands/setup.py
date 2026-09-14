@@ -205,7 +205,7 @@ def setup() -> None:
         click.echo("\nPydantic Logfire")
         logfire_status = _configure_logfire()
     else:
-        logfire_status = "extension not installed"
+        logfire_status = "dependencies unavailable"
 
     click.echo("\nSetup complete.")
     if all_configured:

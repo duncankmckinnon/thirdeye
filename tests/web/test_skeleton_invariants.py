@@ -15,7 +15,8 @@ don't directly exercise:
   give Wave 2 a stable import surface).
 * ``cli.py`` registers the ``ui`` and ``serve`` commands on the top-level group.
 * No module outside ``src/thirdeye/web/`` and ``src/thirdeye/commands/ui.py``
-  imports starlette / uvicorn / jinja2 — i.e. the ``ui`` extra stays opt-in.
+  imports starlette / uvicorn / jinja2, keeping web dependencies at the web
+  boundary.
 """
 
 from __future__ import annotations
@@ -280,7 +281,7 @@ def test_serve_and_ui_forward_the_same_options(monkeypatch):
 
 
 def test_no_starlette_import_outside_web_layer():
-    """`ui` extra MUST stay opt-in — only web/ and commands/ui.py may import it."""
+    """Only the web layer and UI command may import web dependencies."""
     src = Path(__file__).resolve().parents[2] / "src" / "thirdeye"
     forbidden = ("starlette", "uvicorn", "jinja2")
     allowed_prefixes = (
