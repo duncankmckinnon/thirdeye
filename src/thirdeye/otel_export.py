@@ -274,9 +274,7 @@ def _advanced_options() -> Any:
     import logfire
 
     kwargs: dict[str, Any] = {"id_generator": _id_generator()}
-    if "emit_configuration_span" in getattr(
-        logfire.AdvancedOptions, "__dataclass_fields__", {}
-    ):
+    if "emit_configuration_span" in getattr(logfire.AdvancedOptions, "__dataclass_fields__", {}):
         kwargs["emit_configuration_span"] = False
     return logfire.AdvancedOptions(**kwargs)
 
