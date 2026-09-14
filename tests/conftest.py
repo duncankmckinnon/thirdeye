@@ -37,6 +37,11 @@ def _never_touch_real_platform_configs(tmp_path: Path, monkeypatch: pytest.Monke
         "thirdeye.platforms.cursor.install.HOOKS_FILE",
         fake_home / ".cursor" / "hooks.json",
     )
+    # Cursor turn recovery reads transcript and chat history separately from
+    # hook configuration. Keep every test hermetic unless it deliberately
+    # supplies synthetic roots.
+    monkeypatch.setenv("THIRDEYE_CURSOR_TRANSCRIPT_ROOTS", str(fake_home / "transcripts"))
+    monkeypatch.setenv("THIRDEYE_CURSOR_CHAT_ROOTS", str(fake_home / "chats"))
 
 
 @pytest.fixture

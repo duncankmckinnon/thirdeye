@@ -52,6 +52,7 @@ class LlmCallSpanDict(TypedDict):
     output_messages: list[dict[str, Any]]
     usage: UsageDict
     tool_calls: list[ToolCallSpanDict]
+    attributes: NotRequired[dict[str, Any]]
 
 
 class OrphanToolCallDict(TypedDict):
