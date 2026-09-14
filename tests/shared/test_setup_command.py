@@ -83,6 +83,8 @@ def test_setup_can_skip_agent_and_skill_multiselects(
     assert all(not platform.install.called for platform in platforms.values())
     assert "Tracing: no platforms configured" in result.output
     assert "Skills: skipped" in result.output
+
+
 def test_setup_does_not_ask_about_already_configured_agents(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
