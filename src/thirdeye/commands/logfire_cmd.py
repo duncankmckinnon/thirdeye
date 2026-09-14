@@ -34,7 +34,8 @@ def logfire_group() -> None:
 def enable(force_auth: bool) -> None:
     if not is_available():
         raise click.ClickException(
-            "the `logfire` package is not installed. Install with: pip install 'thrdi[logfire]'"
+            "the bundled Logfire dependencies are unavailable. Reinstall with: "
+            "pip install --upgrade --force-reinstall thrdi"
         )
     config = Config.load()
     token = config.logfire.token

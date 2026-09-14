@@ -1,7 +1,7 @@
 # Windows support
 
 Windows support is **experimental**. The test suite runs on `windows-latest` in
-CI across Python 3.11 and 3.13, and Claude Code tracing is the verified
+CI on Python 3.12, and Claude Code tracing is the verified
 integration. The Codex CLI, Cursor, and Copilot CLI installers are implemented
 but have not been live-certified against those tools on Windows. Passing Copilot
 unit tests is not live certification of Copilot CLI. Please file Windows issues
@@ -10,9 +10,9 @@ at the [issue tracker](https://github.com/duncankmckinnon/thirdeye/issues).
 Install with `pipx` or `uv` — Homebrew stays macOS/Linux only.
 
 ```bash
-pipx install 'thrdi[ui,logfire]'
+pipx install thrdi
 # or
-uv tool install 'thrdi[ui,logfire]'
+uv tool install thrdi
 ```
 
 ## Deliberate platform differences

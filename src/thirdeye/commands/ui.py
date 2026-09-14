@@ -33,7 +33,8 @@ def _launch(host: str, port: int, no_browser: bool) -> None:
         msg = str(e)
         if "starlette" in msg or "uvicorn" in msg or "jinja2" in msg:
             raise click.ClickException(
-                "The UI requires the 'ui' extra. Install with:\n    pip install 'thrdi[ui]'"
+                "The bundled UI dependencies are unavailable. Reinstall with:\n"
+                "    pip install --upgrade --force-reinstall thrdi"
             ) from e
         raise
 

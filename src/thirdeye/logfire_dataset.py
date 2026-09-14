@@ -46,7 +46,8 @@ def export_sessions(
         from logfire.experimental.api_client import LogfireAPIClient
     except ImportError as exc:
         raise DatasetExportError(
-            "Logfire dataset support is not installed; install with: pip install 'thrdi[logfire]'"
+            "bundled Logfire dataset support is unavailable; reinstall with: "
+            "pip install --upgrade --force-reinstall thrdi"
         ) from exc
 
     try:

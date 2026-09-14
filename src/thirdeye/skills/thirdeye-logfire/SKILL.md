@@ -22,12 +22,11 @@ are all true. Respect `THIRDEYE_HOME`; configuration is persisted in
 
 ## Enable
 
-If the Logfire package is missing, install thirdeye's optional dependency in
-the environment that owns the `thirdeye` executable. Use the installation
-method appropriate to that environment, such as:
+If Logfire dependencies are missing, reinstall thirdeye in the environment
+that owns the `thirdeye` executable:
 
 ```bash
-pip install 'thrdi[logfire]'
+pip install --upgrade --force-reinstall thrdi
 ```
 
 Enabling persists a Logfire project write token (gateway key):
