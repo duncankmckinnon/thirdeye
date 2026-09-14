@@ -35,7 +35,13 @@ class ToolCallSpanDict(TypedDict):
 
 
 class LlmCallSpanDict(TypedDict):
-    """One model call within a turn, plus the tool calls it requested."""
+    """One model call within a turn, plus the tool calls it requested.
+
+    When tokens are carried on :class:`AccountingCallSpanDict`, ``usage`` must
+    stay empty so the generic exporter cannot emit the same tokens twice.
+    Copilot producers always leave this empty and place actual usage on
+    ``TurnSpanDict.accounting_calls``.
+    """
 
     call_id: str
     provider: str
@@ -80,6 +86,100 @@ class InteractionSpanDict(TypedDict):
     start_ts: str
     end_ts: str
     attributes: dict[str, Any]
+
+
+AccountingDestination = Literal["chat-span", "turn-accounting-span", "session-accounting-span"]
+
+
+class AccountingCallSpanDict(TypedDict):
+    """Generic accounting attached to a turn without importing platform types.
+
+    ``usage`` is exactly :meth:`UsageRow.to_dict` output.  ``accounting_id`` is
+    stable across source-row corrections and export retries.
+
+    ``call_id`` is the matching :class:`LlmCallSpanDict` id when tokens export
+    on that chat span; null means a user-turn or agent accounting span.  Set
+    and null are mutually exclusive export locations: never both.  The parent
+    chat span's ``usage`` must stay empty whenever this record is present.
+
+    Deterministic accounting span IDs (generic transport):
+
+    - chat-span: existing chat span id for ``call_id``; no extra span
+    - turn-accounting-span: ``accounting:{session_id}:{turn_id}:{accounting_id}``
+    - session-accounting-span: ``accounting:{session_id}:{accounting_id}``
+    """
+
+    accounting_id: str
+    usage: dict[str, Any]
+    attribution_status: str
+    agent_id: str | None
+    call_id: str | None
+    attributes: dict[str, Any]
+
+
+class SessionAccountingJobDict(TypedDict):
+    """Durable export job when no user turn owns the accounting record."""
+
+    job_id: str
+    kind: Literal["session_accounting"]
+    session_id: str
+    accounting_id: str
+    destination: Literal["session-accounting-span"]
+    attempt: int
+    state: Literal["queued", "claimed", "emitted", "failed"]
+    usage: dict[str, Any]
+    attribution_status: str
+    span_id: str
+    # The durable generic job can retain an agent owner even though there is
+    # intentionally no fabricated user-turn owner.
+    agent_id: NotRequired[str | None]
+    attributes: NotRequired[dict[str, Any]]
+    # Worker envelope fields remain optional so the serializable public job
+    # shape above is usable by placement ledgers without filesystem context.
+    session_dir: NotRequired[str]
+    platform: NotRequired[str]
+    cwd: NotRequired[str]
+    captured_attributes: NotRequired[dict[str, Any]]
+
+
+class TurnAccountingJobDict(TypedDict):
+    """Durable export job for unmatched usage owned by a user turn or agent."""
+
+    job_id: str
+    kind: Literal["turn_accounting"]
+    session_id: str
+    turn_id: str
+    accounting_id: str
+    destination: Literal["turn-accounting-span"]
+    attempt: int
+    state: Literal["queued", "claimed", "emitted", "failed"]
+    usage: dict[str, Any]
+    attribution_status: str
+    agent_id: str | None
+    span_id: str
+    attributes: NotRequired[dict[str, Any]]
+    # Worker envelope fields remain optional so the serializable public job
+    # shape above is usable by placement ledgers without filesystem context.
+    session_dir: NotRequired[str]
+    platform: NotRequired[str]
+    cwd: NotRequired[str]
+    captured_attributes: NotRequired[dict[str, Any]]
+    turn_span_id: NotRequired[str]
+
+
+class AccountingLedgerEntryDict(TypedDict):
+    """Export-eligibility ledger row; lives in a file/lock apart from projection.
+
+    ``emitted`` is remote-delivery success, not "configured" or "queued".
+    Once true for a destination, later local matching cannot emit the same
+    ``accounting_id`` on a different destination.
+    """
+
+    accounting_id: str
+    destination: AccountingDestination
+    span_id: str
+    emitted: bool
+    last_error: str | None
 
 
 TurnStatus = Literal["completed", "interrupted", "errored"]
@@ -129,3 +229,7 @@ class TurnSpanDict(TypedDict):
     attributes: dict[str, Any]
     # Optional: Cursor interactions exported as spans.
     interactions: NotRequired[list[InteractionSpanDict]]
+    # Optional local accounting that may be exported on the owning chat span
+    # (AccountingCallSpanDict.call_id set) or an explicit user-turn/agent
+    # accounting span (call_id null), never both.
+    accounting_calls: NotRequired[list[AccountingCallSpanDict]]

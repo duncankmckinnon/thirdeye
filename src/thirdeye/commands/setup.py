@@ -16,6 +16,7 @@ _PLATFORM_LABELS = {
     "claude": "Claude Code",
     "codex": "Codex CLI",
     "cursor": "Cursor",
+    "copilot": "GitHub Copilot CLI",
 }
 
 _SKILL_TARGET_LABELS = {

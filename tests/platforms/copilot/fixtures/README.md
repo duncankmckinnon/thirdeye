@@ -1,6 +1,6 @@
 # Copilot CLI capture probe
 
-Captured 2026-09-10 on macOS using Copilot CLI 1.0.83, with automatic model selection (resolved to gpt-5.6-luna). These are observed fixtures for adapter design, not an implemented adapter or a regression test suite.
+Captured 2026-09-10 on macOS using Copilot CLI 1.0.83, with automatic model selection (resolved to gpt-5.6-luna). These are observed fixtures for adapter design and archive-replay regression input; they are not live validation of another Copilot runtime, native VS Code, or cloud history.
 
 ## Successful scenario
 
@@ -27,7 +27,7 @@ Sanitization replaces the local home/workspace paths and removes system messages
 - External pre/post tool hooks have no invocation ID in this run. The transcript provides `toolCallId` on requests and executions. Correlate parallel tools using the transcript, not just tool names.
 - `turnId` denotes a model/tool cycle and resets across user requests. Group user interactions using `interactionId` plus agent identity.
 - Subagent events are interleaved in the same transcript and carry top-level `agentId`; `subagent.started` links to the parent task via `data.toolCallId`. Child records also expose `parentToolCallId` where applicable.
-- The child generated its own user-prompt and agent-stop hooks using the parent's session ID and transcript path. There are three prompt hooks and three stop hooks for two top-level user requests. External hook payloads alone cannot reliably distinguish these turns.
+- The child generated its own user-prompt and agent-stop hooks. Those payloads set `sessionId` to the child agent ID (`bf8cb9f3-2097-4db0-a3c8-78a2653b2106`), not the parent session ID. Child pre/post tool hooks do the same. `transcriptPath` on the child's agentStop still points at the parent session's `events.jsonl`. `subagentStart`/`subagentStop` keep the parent session ID and name the child in `agentId`. Sanitization did not rewrite these identifiers; transcript `hook.start` input matches the external recorder. Hook `sessionId` is therefore not a native session ID for capture routing. Child prompt/stop hooks cannot drive a session-ID-only turn state machine. There are three prompt hooks and three stop hooks for two top-level user requests.
 - SessionStart arrived after the first user-prompt hook. Initialization must tolerate that ordering.
 - There are 20 external recorder files but only 18 hook.start/hook.end pairs in the final transcript. Do not assume those two streams have one-to-one coverage.
 - Assistant text and model names are present in assistant.message. Final session.shutdown includes input/output/cache/reasoning usage and per-agent metrics. Availability of per-call usage at Stop time has not been established by this probe.
@@ -49,3 +49,28 @@ Persisted usage checkpoint events contain aggregate billing and cache-frontier d
 The raw transcript also contains two auxiliary model.model_call_success records for gpt-4o-mini session-title generation, with request/response content, usage and latency. These were omitted from the sanitized transcript. Do not treat them as the main-agent model-call history or add their usage to the six-row total without explicitly accounting for auxiliary calls.
 
 The database also has sessions, turns, checkpoints, session_files, session_refs and full-text search tables. Our session has two complete turns but no session_files rows despite four file reads, so the database's discovery/index tables do not replace raw tool execution events. Files beside the transcript include workspace.yaml (identity/repo/title), checkpoints/index.md (empty here), and rewind-file-snapshots/tracking.json (tracking metadata only here).
+
+## V2 replay use
+
+V2 tests construct a V1 archive from this corpus through capture APIs, then
+reconcile that archive. They do not require a generated archive fixture or the
+original Copilot home. The six `assistant_usage_events` rows are the primary
+accounting ledger: checkpoint/shutdown values only validate their totals, and
+the raw `model.*` title-generation records must remain auxiliary.
+
+The reconciler uses source identities, interaction/agent identifiers, tool-call
+IDs, row revisions, and retained evidence. It does not treat bare transcript
+`turnId`, hook timing, tool name, row count, or a nearest timestamp as proof of
+an exact relationship. Since the observed SQLite rows lack a shared
+assistant-message/provider-call ID, a uniquely consistent mapping is marked
+inferred with evidence; competing candidates stay ambiguous and unresolved rows
+stay pending or conflicting. Database generation/row-ID reuse quarantines both
+logical identities and emits `usage_row_id_reuse`; incompatible revisions of
+one call are `usage_revision_conflict`.
+
+`reconciliation-cases/` contains schema-derived synthetic fixtures for
+permission outcomes, compaction, aborts, unknown versions, delayed/revised
+database rows, retries, identical concurrent tools, nested children, and
+uncertain attribution. Permission and compaction cases emit semantic events;
+abort closes a reconstructed turn as `interrupted`. Those cases are synthetic
+regression inputs, not claims about live Copilot behavior.

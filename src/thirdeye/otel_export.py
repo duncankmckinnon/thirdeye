@@ -532,6 +532,19 @@ def _write_job(thirdeye_home: Path, payload: dict[str, Any]) -> Path:
     return job_path
 
 
+def _write_accounting_job(thirdeye_home: Path, payload: dict[str, Any]) -> Path:
+    """Persist one deterministic accounting job without creating duplicates."""
+    jobs_dir = otel_jobs_dir(thirdeye_home)
+    jobs_dir.mkdir(parents=True, exist_ok=True)
+    job_id = str(payload["job_id"])
+    digest = hashlib.sha256(job_id.encode("utf-8")).hexdigest()
+    job_path = jobs_dir / f"accounting-{digest}.json"
+    queued = {**payload, "state": "queued", "attempt": int(payload.get("attempt", 0))}
+    if not _atomic_create(job_path, json.dumps(queued, default=str)):
+        return job_path
+    return job_path
+
+
 def _spawn(job_path: Path) -> None:
     """Hand a job file to a detached ``thirdeye.otel_worker``.
 
@@ -686,6 +699,105 @@ def export_spans(
         log_capture_error(
             thirdeye_home=config.root,
             phase="logfire_spans_export_spawn",
+            error=exc,
+            platform=platform,
+            session_id=session_id,
+        )
+        return False
+
+
+def export_session_accounting(
+    config: Config,
+    session_dir_: Path,
+    session_id: str,
+    platform: str,
+    cwd: str,
+    accounting: dict[str, Any],
+    *,
+    captured_env: dict[str, str] | None = None,
+) -> bool:
+    """Queue accounting that has no owning user turn."""
+    if not config.logfire.enabled or not config.logfire.token:
+        return False
+    try:
+        accounting_id = str(accounting["accounting_id"])
+        logical_span_id = f"accounting:{session_id}:{accounting_id}"
+        job_path = _write_accounting_job(
+            config.root,
+            {
+                "job_id": logical_span_id,
+                "kind": "session_accounting",
+                "session_dir": str(session_dir_),
+                "session_id": session_id,
+                "platform": platform,
+                "cwd": cwd,
+                "captured_attributes": _resolve_captured_attributes(config, captured_env),
+                "accounting_id": accounting_id,
+                "destination": "session-accounting-span",
+                "usage": dict(accounting["usage"]),
+                "attribution_status": str(accounting["attribution_status"]),
+                "agent_id": accounting.get("agent_id"),
+                "attributes": dict(accounting.get("attributes") or {}),
+                "span_id": logical_span_id,
+            },
+        )
+        _spawn(job_path)
+        return True
+    except Exception as exc:
+        log_capture_error(
+            thirdeye_home=config.root,
+            phase="logfire_session_accounting_export_spawn",
+            error=exc,
+            platform=platform,
+            session_id=session_id,
+        )
+        return False
+
+
+def export_turn_accounting(
+    config: Config,
+    session_dir_: Path,
+    session_id: str,
+    platform: str,
+    cwd: str,
+    turn_id: str,
+    accounting: dict[str, Any],
+    *,
+    turn_span_id: str | int | None = None,
+    captured_env: dict[str, str] | None = None,
+) -> bool:
+    """Queue unmatched accounting owned by an already-exported user turn."""
+    if not config.logfire.enabled or not config.logfire.token:
+        return False
+    try:
+        accounting_id = str(accounting["accounting_id"])
+        logical_span_id = f"accounting:{session_id}:{turn_id}:{accounting_id}"
+        payload: dict[str, Any] = {
+            "job_id": logical_span_id,
+            "kind": "turn_accounting",
+            "session_dir": str(session_dir_),
+            "session_id": session_id,
+            "platform": platform,
+            "cwd": cwd,
+            "captured_attributes": _resolve_captured_attributes(config, captured_env),
+            "turn_id": turn_id,
+            "accounting_id": accounting_id,
+            "destination": "turn-accounting-span",
+            "usage": dict(accounting["usage"]),
+            "attribution_status": str(accounting["attribution_status"]),
+            "agent_id": accounting.get("agent_id"),
+            "attributes": dict(accounting.get("attributes") or {}),
+            "span_id": logical_span_id,
+        }
+        if turn_span_id is not None:
+            payload["turn_span_id"] = str(turn_span_id)
+        job_path = _write_accounting_job(config.root, payload)
+        _spawn(job_path)
+        return True
+    except Exception as exc:
+        log_capture_error(
+            thirdeye_home=config.root,
+            phase="logfire_turn_accounting_export_spawn",
             error=exc,
             platform=platform,
             session_id=session_id,
@@ -886,6 +998,136 @@ def _export_subagent_turn_inner(
     claim_path.write_text("sent", encoding="utf-8", newline="\n")
 
 
+def _require_export_instance(config: Config, platform: str):
+    instance = _get_instance(config, platform)
+    if instance is None:
+        raise RuntimeError("logfire instance unavailable for accounting export")
+    return instance
+
+
+def _resolve_session_parent(
+    *,
+    instance: Any,
+    session_dir_: Path,
+    session_id: str,
+    platform: str,
+    cwd: str,
+    fallback_ts: str,
+) -> tuple[Any, tuple[int, int]]:
+    """Return (tracer, (trace_id, root_span_id)), creating the session root if needed."""
+    tracer = instance.config.get_tracer_provider().get_tracer("thirdeye")
+    root_path = otel_state_path(session_dir_)
+    parent, root_lock = _root_or_ownership(root_path)
+    try:
+        if parent is None and root_lock is None:
+            raise RuntimeError("could not resolve or create session root")
+        if parent is None:
+            root_ns = _ts_to_ns(fallback_ts)
+            derived = (
+                trace_id_for_session(platform, session_id),
+                root_span_id_for_session(platform, session_id),
+            )
+            parent, created_root = _create_root_atomic(root_path, *derived)
+            if created_root:
+                root_span = _start_span_with_id(
+                    tracer,
+                    "session",
+                    derived[1],
+                    trace_id=derived[0],
+                    start_time=root_ns,
+                    attributes=_flatten_attrs(
+                        {
+                            **(_captured_attributes.get() or {}),
+                            **_identity_attributes(
+                                session_id=session_id, platform=platform, cwd=cwd
+                            ),
+                        }
+                    ),
+                )
+                root_span.end(end_time=root_ns)
+    finally:
+        if root_lock is not None:
+            fsops.unlink(root_lock, missing_ok=True)
+    if parent is None:
+        raise RuntimeError("could not resolve or create session root")
+    return tracer, parent
+
+
+def _export_session_accounting_inner(
+    *,
+    config: Config,
+    session_dir_: Path,
+    session_id: str,
+    platform: str,
+    cwd: str,
+    accounting: dict[str, Any],
+) -> None:
+    """Emit a session-owned accounting span under the durable session root."""
+    instance = _require_export_instance(config, platform)
+    usage = dict(accounting.get("usage") or {})
+    fallback_ts = _accounting_timestamp(usage, "1970-01-01T00:00:00.000Z")
+    tracer, parent = _resolve_session_parent(
+        instance=instance,
+        session_dir_=session_dir_,
+        session_id=session_id,
+        platform=platform,
+        cwd=cwd,
+        fallback_ts=fallback_ts,
+    )
+    _export_accounting_span(
+        tracer,
+        _parent_context(*parent),
+        accounting,
+        platform=platform,
+        session_id=session_id,
+        cwd=cwd,
+        fallback_ts=fallback_ts,
+    )
+    if instance.force_flush(timeout_millis=_FLUSH_TIMEOUT_MS) is False:
+        raise RuntimeError("session accounting export was not flushed")
+
+
+def _export_turn_accounting_inner(
+    *,
+    config: Config,
+    session_dir_: Path,
+    session_id: str,
+    platform: str,
+    cwd: str,
+    turn_id: str,
+    accounting: dict[str, Any],
+    turn_span_id: str | int | None = None,
+) -> None:
+    """Emit a turn-owned accounting span under existing turn/session context."""
+    instance = _require_export_instance(config, platform)
+    usage = dict(accounting.get("usage") or {})
+    fallback_ts = _accounting_timestamp(usage, "1970-01-01T00:00:00.000Z")
+    tracer, parent = _resolve_session_parent(
+        instance=instance,
+        session_dir_=session_dir_,
+        session_id=session_id,
+        platform=platform,
+        cwd=cwd,
+        fallback_ts=fallback_ts,
+    )
+    if turn_span_id is not None and str(turn_span_id) != "":
+        parent_ctx = _parent_context(parent[0], int(turn_span_id))
+    else:
+        parent_ctx = _parent_context(*parent)
+    _export_accounting_span(
+        tracer,
+        parent_ctx,
+        accounting,
+        platform=platform,
+        session_id=session_id,
+        cwd=cwd,
+        fallback_ts=fallback_ts,
+        turn_id=turn_id,
+    )
+    if instance.force_flush(timeout_millis=_FLUSH_TIMEOUT_MS) is False:
+        raise RuntimeError("turn accounting export was not flushed")
+
+
 @lru_cache(maxsize=128)
 def _repo_name(cwd: str) -> str | None:
     """The name of the git repository `cwd` sits in, or None outside one.
@@ -1046,21 +1288,8 @@ def _cost_attributes(attributes: dict[str, Any]) -> dict[str, Any]:
         return {}
 
 
-def _chat_attributes(
-    call_or_attributes: dict[str, Any],
-    *,
-    session_id: str,
-    platform: str,
-    cwd: str,
-    turn_id: Any = None,
-    turn_span_id: Any = None,
-) -> dict[str, Any]:
-    """Build flattened attributes for a chat span.
-
-    Completed-turn export passes an LLM-call record, while live batch export
-    passes the already-built semantic attributes from its job. Accepting both
-    forms keeps the vocabulary and JSON handling in one place.
-    """
+def _chat_core_attributes(call_or_attributes: dict[str, Any]) -> tuple[dict[str, Any], str | None]:
+    """Return unflattened chat attributes and the provider name they imply."""
     if all(
         key in call_or_attributes
         for key in ("input_messages", "output_messages", "provider", "usage")
@@ -1090,10 +1319,27 @@ def _chat_attributes(
         for source, target in _USAGE_KEYS.items():
             if source in usage:
                 attributes[target] = usage[source]
-    else:
-        attributes = call_or_attributes
-        # Already-built attributes carry the provider under its final name.
-        provider = attributes.get("gen_ai.provider.name")
+        return attributes, provider
+    attributes = dict(call_or_attributes)
+    return attributes, attributes.get("gen_ai.provider.name")
+
+
+def _chat_attributes(
+    call_or_attributes: dict[str, Any],
+    *,
+    session_id: str,
+    platform: str,
+    cwd: str,
+    turn_id: Any = None,
+    turn_span_id: Any = None,
+) -> dict[str, Any]:
+    """Build flattened attributes for a chat span.
+
+    Completed-turn export passes an LLM-call record, while live batch export
+    passes the already-built semantic attributes from its job. Accepting both
+    forms keeps the vocabulary and JSON handling in one place.
+    """
+    attributes, provider = _chat_core_attributes(call_or_attributes)
     return _flatten_attrs(
         _merge_raw(
             attributes,
@@ -1108,6 +1354,89 @@ def _chat_attributes(
             _cost_attributes(attributes),
         )
     )
+
+
+def _has_copilot_native_billing(attributes: dict[str, Any]) -> bool:
+    return any(
+        key.startswith("copilot.billing") or "nano_aiu" in str(key).lower() for key in attributes
+    )
+
+
+def _accounting_attributes_raw(accounting: dict[str, Any]) -> dict[str, Any]:
+    """Unflattened projection of one usage row onto its export span."""
+    usage = dict(accounting.get("usage") or {})
+    attributes = _merge_raw(
+        usage,
+        accounting.get("attributes"),
+        {
+            "thirdeye.accounting.id": str(accounting["accounting_id"]),
+            "thirdeye.accounting.attribution_status": str(accounting["attribution_status"]),
+            "thirdeye.accounting.agent_id": accounting.get("agent_id"),
+            "thirdeye.accounting.usage": usage,
+        },
+    )
+    # Native Copilot billing units are not an estimated USD model price.
+    if _has_copilot_native_billing(attributes):
+        attributes["thirdeye.accounting.billing.kind"] = "copilot-native-unit"
+    return attributes
+
+
+def _accounting_attributes(accounting: dict[str, Any]) -> dict[str, Any]:
+    """Project an immutable usage row onto its one allowed export span."""
+    return _flatten_attrs(_accounting_attributes_raw(accounting))
+
+
+def _accounting_span_id(
+    platform: str, session_id: str, accounting_id: str, turn_id: str | None = None
+) -> int:
+    """Return an OTel-safe deterministic ID for an accounting fallback span."""
+    return chat_span_id(platform, session_id, f"accounting:{turn_id or 'session'}:{accounting_id}")
+
+
+def _accounting_timestamp(usage: dict[str, Any], fallback: str) -> str:
+    value = usage.get("ts")
+    if isinstance(value, str):
+        try:
+            _ts_to_ns(value)
+        except ValueError:
+            pass
+        else:
+            return value
+    return fallback
+
+
+def _export_accounting_span(
+    tracer: Any,
+    parent_ctx: Any,
+    accounting: dict[str, Any],
+    *,
+    platform: str,
+    session_id: str,
+    cwd: str,
+    fallback_ts: str,
+    turn_id: str | None = None,
+) -> None:
+    usage = dict(accounting.get("usage") or {})
+    ts = _accounting_timestamp(usage, fallback_ts)
+    span = _start_span_with_id(
+        tracer,
+        "accounting",
+        _accounting_span_id(platform, session_id, str(accounting["accounting_id"]), turn_id),
+        parent_ctx=parent_ctx,
+        start_time=_ts_to_ns(ts),
+        attributes=_flatten_attrs(
+            _merge_raw(
+                _identity_attributes(
+                    session_id=session_id,
+                    platform=platform,
+                    cwd=cwd,
+                    turn_id=turn_id,
+                ),
+                _accounting_attributes_raw(accounting),
+            )
+        ),
+    )
+    span.end(end_time=_ts_to_ns(ts))
 
 
 def _tool_attributes(
@@ -1335,6 +1664,11 @@ def _export_turn_subtree(
     turn_span.end(end_time=_ts_to_ns(turn["end_ts"]))
     turn_ctx = turn_span.get_span_context()
     turn_parent_ctx = _parent_context(turn_ctx.trace_id, turn_ctx.span_id)
+    accounting_by_call = {
+        str(accounting["call_id"]): accounting
+        for accounting in turn.get("accounting_calls") or []
+        if accounting.get("call_id") is not None
+    }
 
     for interaction in turn.get("interactions") or []:
         kind = interaction["kind"]
@@ -1362,20 +1696,35 @@ def _export_turn_subtree(
 
     for llm_call in turn["llm_calls"]:
         model = llm_call.get("model") or ""
+        core_attrs, provider = _chat_core_attributes(llm_call)
+        raw_call_attrs = _merge_raw(
+            core_attrs,
+            _identity_attributes(
+                session_id=session_id,
+                platform=platform,
+                cwd=cwd,
+                turn_id=turn["turn_id"],
+                turn_span_id=turn.get("turn_span_id"),
+                provider=provider,
+            ),
+        )
+        accounting = accounting_by_call.get(str(llm_call["call_id"]))
+        if accounting is not None:
+            # Actual accounting, rather than the semantic LLM record, owns
+            # the token fields for this chat span. Merge raw then flatten once
+            # so one logfire.json_schema covers chat messages and usage JSON.
+            raw_call_attrs = _merge_raw(raw_call_attrs, _accounting_attributes_raw(accounting))
+        if _has_copilot_native_billing(raw_call_attrs):
+            raw_call_attrs["thirdeye.accounting.billing.kind"] = "copilot-native-unit"
+        else:
+            raw_call_attrs = _merge_raw(raw_call_attrs, _cost_attributes(raw_call_attrs))
         call_span = _start_span_with_id(
             tracer,
             f"chat {model}" if model else "chat",
             chat_span_id(platform, session_id, llm_call["call_id"]),
             parent_ctx=turn_parent_ctx,
             start_time=_ts_to_ns(llm_call["start_ts"]),
-            attributes=_chat_attributes(
-                llm_call,
-                session_id=session_id,
-                platform=platform,
-                cwd=cwd,
-                turn_id=turn["turn_id"],
-                turn_span_id=turn.get("turn_span_id"),
-            ),
+            attributes=_flatten_attrs(raw_call_attrs),
         )
         call_span.end(end_time=_ts_to_ns(llm_call["end_ts"]))
         call_ctx = call_span.get_span_context()
@@ -1401,6 +1750,24 @@ def _export_turn_subtree(
                 ),
             )
             tool_span.end(end_time=_ts_to_ns(tool_call["end_ts"]))
+
+    known_call_ids = {str(call["call_id"]) for call in turn["llm_calls"]}
+    for accounting in turn.get("accounting_calls") or []:
+        call_id = accounting.get("call_id")
+        if call_id is not None and str(call_id) in known_call_ids:
+            continue
+        # Unknown call ids do not prove chat-span ownership. Keep the usage on
+        # a concrete user-turn accounting span instead of inventing a chat.
+        _export_accounting_span(
+            tracer,
+            turn_parent_ctx,
+            accounting,
+            platform=platform,
+            session_id=session_id,
+            cwd=cwd,
+            fallback_ts=turn["end_ts"],
+            turn_id=turn["turn_id"],
+        )
 
     for orphan in turn.get("orphan_tool_calls") or []:
         parent_call_id = orphan["parent_call_id"]

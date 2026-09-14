@@ -37,12 +37,9 @@ jobs:
             python-version: "3.13"
           - os: ubuntu-latest
             python-version: "3.14"
-          # Windows support is experimental: minimum supported version plus a
-          # recent stable, to bound runner cost.
+          # Exercise Windows on the project's primary Python version.
           - os: windows-latest
-            python-version: "3.11"
-          - os: windows-latest
-            python-version: "3.13"
+            python-version: "3.12"
 
     steps:
       - uses: actions/checkout@v5

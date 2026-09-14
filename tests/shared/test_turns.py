@@ -1,5 +1,12 @@
 from __future__ import annotations
 
+from tests.shared.copilot_projection_fixtures import (
+    TURN_ONE_ID,
+    TURN_RECORD_KEYS,
+    TURN_THREE_ID,
+    TURN_TWO_ID,
+    seed_two_main_interaction_projection,
+)
 from thirdeye.config import Config
 from thirdeye.store import Store
 from thirdeye.turns import filter_turns, session_turns
@@ -58,6 +65,44 @@ def test_turn_query_searches_every_session_and_ands_terms_within_turn(tmp_path):
     matches = filter_turns(metas, store, query="apply_patch, logfire")
 
     assert [turn["session_id"] for turn in matches] == ["first-session"]
+
+
+def test_copilot_session_turns_use_projected_main_interactions_not_child_slices(tmp_path):
+    config = Config(root=tmp_path / "thirdeye")
+    store = Store(config)
+    stored_id = seed_two_main_interaction_projection(config, tmp_path)
+    meta = store.get_meta(stored_id)
+
+    turns = session_turns(meta, store)
+
+    assert [turn["turn_id"] for turn in turns] == [TURN_ONE_ID, TURN_TWO_ID]
+    assert TURN_THREE_ID not in [turn["turn_id"] for turn in turns]
+    for turn in turns:
+        assert [key for key in TURN_RECORD_KEYS if key not in turn] == []
+        assert turn["id"] == f"{stored_id}:{turn['turn_id']}"
+        assert turn["session_id"] == stored_id
+        assert turn["platform"] == "copilot"
+        assert turn["cwd"] == "/fixture/workspace"
+        assert turn["start_seq"] is not None
+        assert turn["end_seq"] is not None
+        assert turn["start_ts"]
+        assert turn["end_ts"]
+        assert isinstance(turn["events"], list)
+    assert turns[0]["start_seq"] == 0
+    assert turns[0]["end_seq"] == 2
+    assert turns[1]["start_seq"] == 3
+    assert turns[1]["end_seq"] == 4
+    assert len(turns[0]["events"]) == 3
+    assert len(turns[1]["events"]) == 2
+    assert (
+        "alpha.txt" in turns[0]["events"][0]["data"]["source_record"]["payload"]["data"]["content"]
+    )
+    assert (
+        "final sum" in turns[1]["events"][0]["data"]["source_record"]["payload"]["data"]["content"]
+    )
+    assert filter_turns([meta], store, query="alpha.txt") == [turns[0]]
+    assert filter_turns([meta], store, query="final sum") == [turns[1]]
+    assert filter_turns([meta], store, query="alpha.txt,final sum") == []
 
 
 def test_turn_query_terms_cannot_match_across_different_turns(tmp_path):

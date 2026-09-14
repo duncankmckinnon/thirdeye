@@ -9,14 +9,14 @@
 [![Python](https://img.shields.io/pypi/pyversions/thrdi.svg)](https://pypi.org/project/thrdi/)
 [![License](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 
-Trace every agent session on your machine — Claude Code, Codex, Cursor — into one history you and your agents can manage, search, and evaluate.
+Trace every agent session on your machine — Claude Code, Codex, Cursor, GitHub Copilot CLI — into one history you and your agents can manage, search, and evaluate.
 
 ## Install
 
 > **Windows support is experimental.** The test suite runs on Windows in CI, and
-> Claude Code tracing is the verified integration there. The Codex CLI and Cursor
-> installers are implemented but have not been verified against those tools on
-> Windows. Please report Windows problems at the
+> Claude Code tracing is the verified integration there. The Codex CLI, Cursor,
+> and Copilot CLI installers are implemented but have not been live-certified
+> against those tools on Windows. Please report Windows problems at the
 > [issue tracker](https://github.com/duncankmckinnon/thirdeye/issues). See
 > [docs/windows.md](docs/windows.md) for the deliberate platform differences.
 
@@ -79,10 +79,65 @@ rerun `thirdeye skills add --force` to refresh them. See
 ## Enable tracing
 
 ```bash
-thirdeye add --claude        # also: --cursor, --codex
+thirdeye add --claude        # also: --cursor, --codex, --copilot
 ```
 
-To detach: `thirdeye remove --claude`.
+To detach: `thirdeye remove --claude` (also `--cursor`, `--codex`, `--copilot`).
+
+## Copilot CLI capture
+
+GitHub Copilot CLI capture keeps a durable, local V1 archive and derives V2
+views from that archive. V1 source records are immutable: V2 never rewrites
+them, and it can rebuild its derived turns, usage accounting, and export queue
+after the original Copilot files have gone away.
+
+```bash
+thirdeye add --copilot
+thirdeye copilot status --source-home "$COPILOT_HOME"
+thirdeye copilot sync --source-home "$COPILOT_HOME"
+thirdeye copilot reconcile
+thirdeye copilot reconcile --session-id <stored-session-id> --rebuild
+thirdeye copilot watch --source-home "$COPILOT_HOME" --interval 1
+thirdeye remove --copilot
+```
+
+`--source-home` is optional. Resolution is `--source-home`, then `COPILOT_HOME`,
+then `~/.copilot`. Capture reads only that home's `session-state/**/events.jsonl`,
+`workspace.yaml`, and `session-store.db` (`sessions`, `turns`,
+`assistant_usage_events`). It does not read credentials, token-bearing config,
+or other Copilot files.
+
+`thirdeye add --copilot` writes user-level hooks at
+`$COPILOT_HOME/hooks/thirdeye.json` (default `~/.copilot/hooks/thirdeye.json`).
+The 1.0.83 live probe used repository hooks; user-level installation is not a
+claim that every Copilot runtime invokes them. `watch` is an explicit foreground
+poller and is not started by add or setup. It can import transcripts and SQLite
+rows even when hooks are absent. `sync` and `status` print recoverable source
+diagnostics (locations and reasons, not prompt bodies).
+
+Normal `sync` and `reconcile` refresh local V2 projections only; they do not
+initialize export eligibility. To mark already-completed retained history as
+export-eligible, opt in explicitly:
+
+```bash
+thirdeye copilot sync --export --source-home "$COPILOT_HOME"
+thirdeye copilot reconcile --export
+```
+
+Watch and hook follow-up activate live-style export without that history
+opt-in. Their first activation records a durable eligibility boundary even if
+remote export is not presently configured: interactions already complete stay
+local-only, while interactions still open at activation may be queued later if
+they complete and remote export is configured. `--export` instead activates
+with retained completed history included, or later removes those identities
+from an existing boundary. Jobs are dispatched only when remote export is
+configured. `--rebuild` resets only reproducible derived state; it preserves
+the raw archive and the separate delivery ledger. See
+[Copilot CLI capture and reconciliation](docs/copilot-capture.md) for the
+archive schema, attribution rules, correction behavior, and delivery limits.
+
+Passing unit tests is not live certification of Copilot CLI, native VS Code, or
+Copilot cloud integrations.
 
 ## Read your history
 

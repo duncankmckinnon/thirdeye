@@ -1,0 +1,17 @@
+{
+  "label": "synthetic",
+  "native_session_id": "session-a",
+  "note": "Two distinct SHA-256 source keys that share a 16-character display prefix. stored_session_id would emit the same copilot-<prefix>-<native> value for both. Detecting the collision requires comparing the full source_key retained in session metadata on reuse; validating that one SourcePaths object is internally consistent is not sufficient.",
+  "homes": [
+    {
+      "home": "/synthetic/copilot-home-a",
+      "source_key": "aaaaaaaaaaaaaaaa111111111111111111111111111111111111111111111111"
+    },
+    {
+      "home": "/synthetic/copilot-home-b",
+      "source_key": "aaaaaaaaaaaaaaaa222222222222222222222222222222222222222222222222"
+    }
+  ],
+  "retained_metadata_source_key": "aaaaaaaaaaaaaaaa111111111111111111111111111111111111111111111111",
+  "colliding_stored_session_id": "copilot-aaaaaaaaaaaaaaaa-session-a"
+}

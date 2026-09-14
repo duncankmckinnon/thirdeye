@@ -1,0 +1,62 @@
+{
+  "pending": {
+    "open_interaction": {
+      "id": "pending:copilot:turn:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa:5a7e8e11-4a6b-49ff-a33e-95d411c4cdd6:6d2b89fd-a653-430c-b532-b0936d72eb42",
+      "kind": "open_interaction",
+      "reason": "user interaction has no assistant.turn_end",
+      "source_ids": [
+        "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/5a7e8e11-4a6b-49ff-a33e-95d411c4cdd6/f07404d0-af52-4260-89fb-358a10e86034"
+      ],
+      "evidence": [
+        "interaction_id:6d2b89fd-a653-430c-b532-b0936d72eb42"
+      ]
+    },
+    "missing_source_capability": {
+      "id": "pending:capability:hooks",
+      "kind": "missing_source_capability",
+      "reason": "archive has no hook observations; watch must still derive from transcript",
+      "source_ids": [],
+      "evidence": [
+        "capability:hooks=absent"
+      ]
+    }
+  },
+  "diagnostics": {
+    "usage_revision_conflict": {
+      "code": "usage_revision_conflict",
+      "severity": "error",
+      "message": "incompatible metrics for one logical call; quarantined",
+      "source_ids": [
+        "copilot-db:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa:5a7e8e11-4a6b-49ff-a33e-95d411c4cdd6:assistant_usage_events:13:sha256:68bf2ca8903d9bdfe15a9d61144ba8b9b0e352678680e4490f2259bd2f468f47",
+        "copilot-db:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa:5a7e8e11-4a6b-49ff-a33e-95d411c4cdd6:assistant_usage_events:13:sha256:bc82d51eaf6061d225d88e973fdaa5549ad7177a50376de381a3a33aadacfd13"
+      ],
+      "details": {
+        "logical_call_id": "copilot:usage:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa:assistant_usage_events:sha256%3Abbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb:13"
+      }
+    },
+    "shutdown_total_mismatch": {
+      "code": "shutdown_total_mismatch",
+      "severity": "warning",
+      "message": "per-call totals do not equal session.shutdown usage",
+      "source_ids": [
+        "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/5a7e8e11-4a6b-49ff-a33e-95d411c4cdd6/9dbdd079-e22a-4bd0-87e2-17fa2b246d23"
+      ],
+      "details": {
+        "expected_input_tokens": 35396,
+        "accounted_input_tokens": 0
+      }
+    },
+    "auxiliary_excluded_from_main": {
+      "code": "auxiliary_excluded_from_main",
+      "severity": "info",
+      "message": "title-generation model.* record classified auxiliary",
+      "source_ids": [
+        "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/5a7e8e11-4a6b-49ff-a33e-95d411c4cdd6/synthetic-title-1"
+      ],
+      "details": {
+        "classification": "title_generation",
+        "model": "gpt-4o-mini"
+      }
+    }
+  }
+}

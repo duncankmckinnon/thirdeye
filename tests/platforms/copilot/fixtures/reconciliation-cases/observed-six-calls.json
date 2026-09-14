@@ -1,0 +1,239 @@
+{
+  "source_fixture": "../assistant-usage-events.json",
+  "source_key": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+  "source_key_is_placeholder": true,
+  "database_generation": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+  "database_generation_is_placeholder": true,
+  "table": "assistant_usage_events",
+  "shutdown_totals": {
+    "source": "../usage.json",
+    "input_tokens": 35396,
+    "output_tokens": 328,
+    "reasoning_tokens": 55,
+    "cache_read_tokens": 23948,
+    "cache_write_tokens": 11430,
+    "total_nano_aiu": 373366000
+  },
+  "calls": [
+    {
+      "row_id": 13,
+      "logical_call_id": "copilot:usage:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa:assistant_usage_events:sha256%3Abbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb:13",
+      "usage_source_id": "copilot-db:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa:5a7e8e11-4a6b-49ff-a33e-95d411c4cdd6:assistant_usage_events:13:sha256:68bf2ca8903d9bdfe15a9d61144ba8b9b0e352678680e4490f2259bd2f468f47",
+      "turn_index": 0,
+      "agent_id": null,
+      "parent_tool_call_id": null,
+      "initiator": "user",
+      "model": "gpt-5.6-luna",
+      "finish_reason": "tool_calls",
+      "expected_call_id": "copilot:call:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/5a7e8e11-4a6b-49ff-a33e-95d411c4cdd6/a4a17e63-7ba5-422f-8ee9-b495be417328",
+      "expected_stored_turn_id": "copilot:turn:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa:5a7e8e11-4a6b-49ff-a33e-95d411c4cdd6:6d2b89fd-a653-430c-b532-b0936d72eb42",
+      "interaction_id": "6d2b89fd-a653-430c-b532-b0936d72eb42"
+    },
+    {
+      "row_id": 14,
+      "logical_call_id": "copilot:usage:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa:assistant_usage_events:sha256%3Abbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb:14",
+      "usage_source_id": "copilot-db:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa:5a7e8e11-4a6b-49ff-a33e-95d411c4cdd6:assistant_usage_events:14:sha256:20cb0f98d6130c8d0e139391cfc8e245d1d0ac96d41469c4da60f26e6d9e0a26",
+      "turn_index": 0,
+      "agent_id": null,
+      "parent_tool_call_id": null,
+      "initiator": "agent",
+      "model": "gpt-5.6-luna",
+      "finish_reason": "stop",
+      "expected_call_id": "copilot:call:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/5a7e8e11-4a6b-49ff-a33e-95d411c4cdd6/33cc6465-29e1-4a04-8bdb-00241474b4d2",
+      "expected_stored_turn_id": "copilot:turn:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa:5a7e8e11-4a6b-49ff-a33e-95d411c4cdd6:6d2b89fd-a653-430c-b532-b0936d72eb42",
+      "interaction_id": "6d2b89fd-a653-430c-b532-b0936d72eb42"
+    },
+    {
+      "row_id": 15,
+      "logical_call_id": "copilot:usage:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa:assistant_usage_events:sha256%3Abbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb:15",
+      "usage_source_id": "copilot-db:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa:5a7e8e11-4a6b-49ff-a33e-95d411c4cdd6:assistant_usage_events:15:sha256:c78b2b2ed28b8641c996bf9c84a05812d5a108776ffe091a54378f9ff79162d8",
+      "turn_index": 1,
+      "agent_id": null,
+      "parent_tool_call_id": null,
+      "initiator": "user",
+      "model": "gpt-5.6-luna",
+      "finish_reason": "tool_calls",
+      "expected_call_id": "copilot:call:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/5a7e8e11-4a6b-49ff-a33e-95d411c4cdd6/2c2e4ab8-f283-4837-957d-da992ba55e65",
+      "expected_stored_turn_id": "copilot:turn:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa:5a7e8e11-4a6b-49ff-a33e-95d411c4cdd6:793d3703-6f4a-4814-8877-34a7325848ce",
+      "interaction_id": "793d3703-6f4a-4814-8877-34a7325848ce"
+    },
+    {
+      "row_id": 16,
+      "logical_call_id": "copilot:usage:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa:assistant_usage_events:sha256%3Abbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb:16",
+      "usage_source_id": "copilot-db:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa:5a7e8e11-4a6b-49ff-a33e-95d411c4cdd6:assistant_usage_events:16:sha256:be2e28cbe7e6071667598eb2156481465762532a6652196b7735a46ef412c67c",
+      "turn_index": 1,
+      "agent_id": "bf8cb9f3-2097-4db0-a3c8-78a2653b2106",
+      "parent_tool_call_id": "call_qx4FH5DADTeT1qVLb37HNpBk",
+      "initiator": "sub-agent",
+      "model": "gpt-5.6-luna",
+      "finish_reason": "tool_calls",
+      "expected_call_id": "copilot:call:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/5a7e8e11-4a6b-49ff-a33e-95d411c4cdd6/df600539-fdd4-4de2-bd42-7f7ff2c952ab",
+      "expected_stored_turn_id": "copilot:turn:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa:5a7e8e11-4a6b-49ff-a33e-95d411c4cdd6:793d3703-6f4a-4814-8877-34a7325848ce",
+      "interaction_id": "7c0fa097-c0e2-48da-b2b6-fcfc1ad83a6b"
+    },
+    {
+      "row_id": 17,
+      "logical_call_id": "copilot:usage:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa:assistant_usage_events:sha256%3Abbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb:17",
+      "usage_source_id": "copilot-db:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa:5a7e8e11-4a6b-49ff-a33e-95d411c4cdd6:assistant_usage_events:17:sha256:92ca44e9db1e93336e94649492c5c59945ef4268ca1188f710b77e6e4b148435",
+      "turn_index": 1,
+      "agent_id": "bf8cb9f3-2097-4db0-a3c8-78a2653b2106",
+      "parent_tool_call_id": "call_qx4FH5DADTeT1qVLb37HNpBk",
+      "initiator": "sub-agent",
+      "model": "gpt-5.6-luna",
+      "finish_reason": "stop",
+      "expected_call_id": "copilot:call:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/5a7e8e11-4a6b-49ff-a33e-95d411c4cdd6/450a1f4c-de11-4d37-bf84-08f63d29588f",
+      "expected_stored_turn_id": "copilot:turn:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa:5a7e8e11-4a6b-49ff-a33e-95d411c4cdd6:793d3703-6f4a-4814-8877-34a7325848ce",
+      "interaction_id": "7c0fa097-c0e2-48da-b2b6-fcfc1ad83a6b"
+    },
+    {
+      "row_id": 18,
+      "logical_call_id": "copilot:usage:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa:assistant_usage_events:sha256%3Abbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb:18",
+      "usage_source_id": "copilot-db:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa:5a7e8e11-4a6b-49ff-a33e-95d411c4cdd6:assistant_usage_events:18:sha256:5fb5f685b5495f2fcc1874ad3b563a6750fa35c863af4647ea91225dd3ec907a",
+      "turn_index": 1,
+      "agent_id": null,
+      "parent_tool_call_id": null,
+      "initiator": "agent",
+      "model": "gpt-5.6-luna",
+      "finish_reason": "stop",
+      "expected_call_id": "copilot:call:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/5a7e8e11-4a6b-49ff-a33e-95d411c4cdd6/10001566-2704-4f75-add3-2c044373eaba",
+      "expected_stored_turn_id": "copilot:turn:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa:5a7e8e11-4a6b-49ff-a33e-95d411c4cdd6:793d3703-6f4a-4814-8877-34a7325848ce",
+      "interaction_id": "793d3703-6f4a-4814-8877-34a7325848ce"
+    }
+  ],
+  "expected_attributions": [
+    {
+      "usage_source_id": "copilot-db:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa:5a7e8e11-4a6b-49ff-a33e-95d411c4cdd6:assistant_usage_events:13:sha256:68bf2ca8903d9bdfe15a9d61144ba8b9b0e352678680e4490f2259bd2f468f47",
+      "logical_call_id": "copilot:usage:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa:assistant_usage_events:sha256%3Abbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb:13",
+      "stored_turn_id": "copilot:turn:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa:5a7e8e11-4a6b-49ff-a33e-95d411c4cdd6:6d2b89fd-a653-430c-b532-b0936d72eb42",
+      "agent_id": null,
+      "call_id": "copilot:call:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/5a7e8e11-4a6b-49ff-a33e-95d411c4cdd6/a4a17e63-7ba5-422f-8ee9-b495be417328",
+      "status": "matched",
+      "join_kind": "inferred",
+      "evidence": [
+        "join_kind:inferred",
+        "interaction_id:6d2b89fd-a653-430c-b532-b0936d72eb42",
+        "turn_index:0",
+        "agent_id:None",
+        "parent_tool_call_id:None",
+        "model:gpt-5.6-luna",
+        "finish:tool_calls",
+        "initiator:user",
+        "order:0",
+        "call_id:copilot:call:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/5a7e8e11-4a6b-49ff-a33e-95d411c4cdd6/a4a17e63-7ba5-422f-8ee9-b495be417328"
+      ]
+    },
+    {
+      "usage_source_id": "copilot-db:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa:5a7e8e11-4a6b-49ff-a33e-95d411c4cdd6:assistant_usage_events:14:sha256:20cb0f98d6130c8d0e139391cfc8e245d1d0ac96d41469c4da60f26e6d9e0a26",
+      "logical_call_id": "copilot:usage:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa:assistant_usage_events:sha256%3Abbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb:14",
+      "stored_turn_id": "copilot:turn:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa:5a7e8e11-4a6b-49ff-a33e-95d411c4cdd6:6d2b89fd-a653-430c-b532-b0936d72eb42",
+      "agent_id": null,
+      "call_id": "copilot:call:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/5a7e8e11-4a6b-49ff-a33e-95d411c4cdd6/33cc6465-29e1-4a04-8bdb-00241474b4d2",
+      "status": "matched",
+      "join_kind": "inferred",
+      "evidence": [
+        "join_kind:inferred",
+        "interaction_id:6d2b89fd-a653-430c-b532-b0936d72eb42",
+        "turn_index:0",
+        "agent_id:None",
+        "parent_tool_call_id:None",
+        "model:gpt-5.6-luna",
+        "finish:stop",
+        "initiator:agent",
+        "order:1",
+        "call_id:copilot:call:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/5a7e8e11-4a6b-49ff-a33e-95d411c4cdd6/33cc6465-29e1-4a04-8bdb-00241474b4d2"
+      ]
+    },
+    {
+      "usage_source_id": "copilot-db:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa:5a7e8e11-4a6b-49ff-a33e-95d411c4cdd6:assistant_usage_events:15:sha256:c78b2b2ed28b8641c996bf9c84a05812d5a108776ffe091a54378f9ff79162d8",
+      "logical_call_id": "copilot:usage:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa:assistant_usage_events:sha256%3Abbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb:15",
+      "stored_turn_id": "copilot:turn:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa:5a7e8e11-4a6b-49ff-a33e-95d411c4cdd6:793d3703-6f4a-4814-8877-34a7325848ce",
+      "agent_id": null,
+      "call_id": "copilot:call:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/5a7e8e11-4a6b-49ff-a33e-95d411c4cdd6/2c2e4ab8-f283-4837-957d-da992ba55e65",
+      "status": "matched",
+      "join_kind": "inferred",
+      "evidence": [
+        "join_kind:inferred",
+        "interaction_id:793d3703-6f4a-4814-8877-34a7325848ce",
+        "turn_index:1",
+        "agent_id:None",
+        "parent_tool_call_id:None",
+        "model:gpt-5.6-luna",
+        "finish:tool_calls",
+        "initiator:user",
+        "order:2",
+        "call_id:copilot:call:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/5a7e8e11-4a6b-49ff-a33e-95d411c4cdd6/2c2e4ab8-f283-4837-957d-da992ba55e65"
+      ]
+    },
+    {
+      "usage_source_id": "copilot-db:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa:5a7e8e11-4a6b-49ff-a33e-95d411c4cdd6:assistant_usage_events:16:sha256:be2e28cbe7e6071667598eb2156481465762532a6652196b7735a46ef412c67c",
+      "logical_call_id": "copilot:usage:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa:assistant_usage_events:sha256%3Abbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb:16",
+      "stored_turn_id": "copilot:turn:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa:5a7e8e11-4a6b-49ff-a33e-95d411c4cdd6:793d3703-6f4a-4814-8877-34a7325848ce",
+      "agent_id": "bf8cb9f3-2097-4db0-a3c8-78a2653b2106",
+      "call_id": "copilot:call:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/5a7e8e11-4a6b-49ff-a33e-95d411c4cdd6/df600539-fdd4-4de2-bd42-7f7ff2c952ab",
+      "status": "matched",
+      "join_kind": "inferred",
+      "evidence": [
+        "join_kind:inferred",
+        "interaction_id:7c0fa097-c0e2-48da-b2b6-fcfc1ad83a6b",
+        "turn_index:1",
+        "agent_id:bf8cb9f3-2097-4db0-a3c8-78a2653b2106",
+        "parent_tool_call_id:call_qx4FH5DADTeT1qVLb37HNpBk",
+        "model:gpt-5.6-luna",
+        "finish:tool_calls",
+        "initiator:sub-agent",
+        "order:3",
+        "call_id:copilot:call:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/5a7e8e11-4a6b-49ff-a33e-95d411c4cdd6/df600539-fdd4-4de2-bd42-7f7ff2c952ab"
+      ]
+    },
+    {
+      "usage_source_id": "copilot-db:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa:5a7e8e11-4a6b-49ff-a33e-95d411c4cdd6:assistant_usage_events:17:sha256:92ca44e9db1e93336e94649492c5c59945ef4268ca1188f710b77e6e4b148435",
+      "logical_call_id": "copilot:usage:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa:assistant_usage_events:sha256%3Abbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb:17",
+      "stored_turn_id": "copilot:turn:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa:5a7e8e11-4a6b-49ff-a33e-95d411c4cdd6:793d3703-6f4a-4814-8877-34a7325848ce",
+      "agent_id": "bf8cb9f3-2097-4db0-a3c8-78a2653b2106",
+      "call_id": "copilot:call:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/5a7e8e11-4a6b-49ff-a33e-95d411c4cdd6/450a1f4c-de11-4d37-bf84-08f63d29588f",
+      "status": "matched",
+      "join_kind": "inferred",
+      "evidence": [
+        "join_kind:inferred",
+        "interaction_id:7c0fa097-c0e2-48da-b2b6-fcfc1ad83a6b",
+        "turn_index:1",
+        "agent_id:bf8cb9f3-2097-4db0-a3c8-78a2653b2106",
+        "parent_tool_call_id:call_qx4FH5DADTeT1qVLb37HNpBk",
+        "model:gpt-5.6-luna",
+        "finish:stop",
+        "initiator:sub-agent",
+        "order:4",
+        "call_id:copilot:call:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/5a7e8e11-4a6b-49ff-a33e-95d411c4cdd6/450a1f4c-de11-4d37-bf84-08f63d29588f"
+      ]
+    },
+    {
+      "usage_source_id": "copilot-db:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa:5a7e8e11-4a6b-49ff-a33e-95d411c4cdd6:assistant_usage_events:18:sha256:5fb5f685b5495f2fcc1874ad3b563a6750fa35c863af4647ea91225dd3ec907a",
+      "logical_call_id": "copilot:usage:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa:assistant_usage_events:sha256%3Abbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb:18",
+      "stored_turn_id": "copilot:turn:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa:5a7e8e11-4a6b-49ff-a33e-95d411c4cdd6:793d3703-6f4a-4814-8877-34a7325848ce",
+      "agent_id": null,
+      "call_id": "copilot:call:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/5a7e8e11-4a6b-49ff-a33e-95d411c4cdd6/10001566-2704-4f75-add3-2c044373eaba",
+      "status": "matched",
+      "join_kind": "inferred",
+      "evidence": [
+        "join_kind:inferred",
+        "interaction_id:793d3703-6f4a-4814-8877-34a7325848ce",
+        "turn_index:1",
+        "agent_id:None",
+        "parent_tool_call_id:None",
+        "model:gpt-5.6-luna",
+        "finish:stop",
+        "initiator:agent",
+        "order:5",
+        "call_id:copilot:call:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/5a7e8e11-4a6b-49ff-a33e-95d411c4cdd6/10001566-2704-4f75-add3-2c044373eaba"
+      ]
+    }
+  ],
+  "invariants": {
+    "call_count": 6,
+    "main_agent_call_count": 4,
+    "child_agent_call_count": 2,
+    "shutdown_usage_is_validation_only": true,
+    "checkpoint_usage_is_additive": false,
+    "auxiliary_model_calls_are_main_usage": false
+  }
+}

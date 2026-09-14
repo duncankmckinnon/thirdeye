@@ -1,0 +1,4 @@
+[
+  {"observation_id":"hook-observation-1","event":"agentStop","payload":{"sessionId":"session-a","stopReason":"end_turn"}},
+  {"observation_id":"hook-observation-2","event":"agentStop","payload":{"sessionId":"session-a","stopReason":"end_turn"}}
+]

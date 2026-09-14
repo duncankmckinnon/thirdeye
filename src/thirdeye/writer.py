@@ -105,8 +105,15 @@ class SessionWriter:
         write_meta(meta_path(session_dir), meta)
         return cls(session_dir, meta)
 
-    def append(self, t: str, data: Any = None) -> int:
-        ts = _utc_iso_ms()
+    def append(self, t: str, data: Any = None, *, ts: str | None = None) -> int:
+        """Append an event, optionally retaining a source-provided timestamp.
+
+        Most producers use the default observation time.  Importers which
+        archive an external, immutable event may supply its already validated
+        source timestamp instead; this deliberately does not change the
+        default writer behaviour for live capture.
+        """
+        ts = ts or _utc_iso_ms()
         with self._locked():
             # Every hook invocation is a fresh process constructing its own
             # SessionWriter, so `self._next_seq` can be stale by the time
