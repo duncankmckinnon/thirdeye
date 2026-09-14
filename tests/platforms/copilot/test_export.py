@@ -11,7 +11,9 @@ import pytest
 
 from thirdeye import otel_export
 from thirdeye.config import Config, LogfireSettings
-from thirdeye.paths import session_dir
+from thirdeye.meta import read_meta, write_meta
+from thirdeye.paths import meta_path, session_dir
+from thirdeye.platforms.copilot import export_state as copilot_export_state
 from thirdeye.platforms.copilot import export_transport
 from thirdeye.platforms.copilot.archive import commit_batch
 from thirdeye.platforms.copilot.constants import PLATFORM_NAME
@@ -99,6 +101,7 @@ def _main_turn(
     turn_id: str = TURN_ONE,
     status: str = "completed",
     accounting_calls: list[dict[str, Any]] | None = None,
+    llm_calls: list[dict[str, Any]] | None = None,
     subagents: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     return {
@@ -108,7 +111,9 @@ def _main_turn(
         "input_message": "hello",
         "output_message": "done",
         "status": status,
-        "llm_calls": [
+        "llm_calls": llm_calls
+        if llm_calls is not None
+        else [
             {
                 "call_id": CALL_MATCHED,
                 "provider": "unknown",
@@ -207,6 +212,15 @@ def _directory(config: Config, stored: str) -> Path:
     return session_dir(config.root, PLATFORM_NAME, stored)
 
 
+def _close_session(config: Config, stored: str) -> None:
+    path = meta_path(_directory(config, stored))
+    meta = read_meta(path)
+    assert meta is not None
+    meta.status = "closed"
+    meta.ended_at = "2026-09-10T17:09:01.000Z"
+    write_meta(path, meta)
+
+
 @pytest.fixture
 def export_calls(monkeypatch: pytest.MonkeyPatch) -> dict[str, list[Any]]:
     calls: dict[str, list[Any]] = {
@@ -234,6 +248,39 @@ def export_calls(monkeypatch: pytest.MonkeyPatch) -> dict[str, list[Any]]:
 
 
 class TestExportState:
+    def test_pending_unowned_accounting_defaults_on_legacy_state(
+        self, config: Config, paths: SourcePaths
+    ) -> None:
+        stored = _seed_session(config, paths)
+        export_state_path(_directory(config, stored)).write_text(
+            json.dumps({"schema_version": 1, "activated": True}),
+            encoding="utf-8",
+        )
+
+        state = load_export_state(config, stored)
+
+        assert state["pending_unowned_accounting"] == []
+
+    def test_pending_unowned_accounting_normalizes_and_replaces(
+        self, config: Config, paths: SourcePaths
+    ) -> None:
+        stored = _seed_session(config, paths)
+        saved = update_export_state(
+            config,
+            stored,
+            lambda state: {
+                **state,
+                "pending_unowned_accounting": ["usage-b", "usage-a", "usage-a", None],
+            },
+        )
+        saved["placements"]["usage-a"] = {"destination": "chat-span"}
+
+        updated = copilot_export_state.set_pending_unowned_accounting(saved, ["usage-c"])
+
+        assert saved["pending_unowned_accounting"] == ["usage-a", "usage-b"]
+        assert updated["pending_unowned_accounting"] == ["usage-c"]
+        assert updated["placements"] == saved["placements"]
+
     def test_initialize_eligibility_first_activation_excludes_terminal_history(self) -> None:
         state = initialize_eligibility(
             empty_export_state(),
@@ -648,12 +695,134 @@ class TestQueueExports:
                 )
             ],
         )
+        _close_session(enabled_config, stored)
         queued = queue_exports(enabled_config, stored, projection, include_history=True)
         assert queued == 2
         assert len(export_calls["session_accounting"]) == 1
         assert export_calls["session_accounting"][0]["accounting_id"] == ACCOUNTING_UNMATCHED
         state = load_export_state(enabled_config, stored)
         assert state["placements"][ACCOUNTING_UNMATCHED]["destination"] == "session-accounting-span"
+
+    def test_ownership_barrier_defers_until_matched_call_reconstructs(
+        self,
+        enabled_config: Config,
+        paths: SourcePaths,
+        export_calls: dict[str, list[Any]],
+    ) -> None:
+        stored = _seed_session(enabled_config, paths)
+        queue_exports(enabled_config, stored, _projection())
+        incomplete = _projection(
+            turns=[_main_turn(llm_calls=[])],
+            usage_rows=[_usage_row()],
+            attributions=[
+                _attribution(
+                    logical_call_id=ACCOUNTING_MATCHED,
+                    call_id=CALL_MATCHED,
+                )
+            ],
+        )
+
+        first_queued = queue_exports(enabled_config, stored, incomplete)
+
+        first_state = load_export_state(enabled_config, stored)
+        assert first_queued == 0
+        assert export_calls["turn"] == []
+        assert export_calls["turn_accounting"] == []
+        assert export_calls["session_accounting"] == []
+        assert ACCOUNTING_MATCHED not in first_state["placements"]
+        assert first_state["pending_unowned_accounting"] == [ACCOUNTING_MATCHED]
+
+        complete = _projection(
+            turns=[_main_turn(accounting_calls=[_accounting_call()])],
+            usage_rows=[_usage_row()],
+            attributions=[
+                _attribution(
+                    logical_call_id=ACCOUNTING_MATCHED,
+                    call_id=CALL_MATCHED,
+                )
+            ],
+        )
+
+        second_queued = queue_exports(enabled_config, stored, complete)
+
+        second_state = load_export_state(enabled_config, stored)
+        assert second_queued == 1
+        assert len(export_calls["turn"]) == 1
+        assert export_calls["turn"][0]["accounting_calls"][0]["accounting_id"] == (
+            ACCOUNTING_MATCHED
+        )
+        assert second_state["placements"][ACCOUNTING_MATCHED]["destination"] == "chat-span"
+        assert second_state["pending_unowned_accounting"] == []
+        assert ACCOUNTING_MATCHED not in second_state["conflicts"]
+
+    def test_open_ownerless_accounting_defers_until_session_closes(
+        self,
+        enabled_config: Config,
+        paths: SourcePaths,
+        export_calls: dict[str, list[Any]],
+    ) -> None:
+        stored = _seed_session(enabled_config, paths)
+        usage = _usage_row(call_id=ACCOUNTING_UNMATCHED)
+        projection = _projection(
+            usage_rows=[usage],
+            attributions=[
+                _attribution(
+                    logical_call_id=ACCOUNTING_UNMATCHED,
+                    status="ambiguous",
+                    stored_turn_id=None,
+                    call_id=None,
+                )
+            ],
+        )
+
+        open_queued = queue_exports(enabled_config, stored, projection)
+
+        open_state = load_export_state(enabled_config, stored)
+        assert open_queued == 0
+        assert export_calls["session_accounting"] == []
+        assert ACCOUNTING_UNMATCHED not in open_state["excluded_accounting_ids"]
+        assert open_state["pending_unowned_accounting"] == [ACCOUNTING_UNMATCHED]
+
+        _close_session(enabled_config, stored)
+        closed_queued = queue_exports(enabled_config, stored, projection)
+
+        closed_state = load_export_state(enabled_config, stored)
+        assert closed_queued == 1
+        assert len(export_calls["session_accounting"]) == 1
+        assert closed_state["placements"][ACCOUNTING_UNMATCHED]["destination"] == (
+            "session-accounting-span"
+        )
+        assert closed_state["pending_unowned_accounting"] == []
+
+    def test_closed_session_flushes_incomplete_owned_accounting_under_turn(
+        self,
+        enabled_config: Config,
+        paths: SourcePaths,
+        export_calls: dict[str, list[Any]],
+    ) -> None:
+        stored = _seed_session(enabled_config, paths)
+        queue_exports(enabled_config, stored, _projection())
+        _close_session(enabled_config, stored)
+        incomplete = _projection(
+            turns=[_main_turn(llm_calls=[])],
+            usage_rows=[_usage_row()],
+            attributions=[
+                _attribution(
+                    logical_call_id=ACCOUNTING_MATCHED,
+                    call_id=CALL_MATCHED,
+                )
+            ],
+        )
+
+        queued = queue_exports(enabled_config, stored, incomplete)
+
+        state = load_export_state(enabled_config, stored)
+        assert queued == 2
+        assert len(export_calls["turn"]) == 1
+        assert len(export_calls["turn_accounting"]) == 1
+        assert export_calls["session_accounting"] == []
+        assert state["placements"][ACCOUNTING_MATCHED]["destination"] == "turn-accounting-span"
+        assert state["pending_unowned_accounting"] == []
 
     def test_pending_and_conflicting_attributions_are_not_exported(
         self,
