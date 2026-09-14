@@ -60,34 +60,38 @@ thirdeye remove --cursor
 thirdeye remove --copilot
 ```
 
-## Copilot V1
+## GitHub Copilot capture
 
-GitHub Copilot capture is a V1 immutable raw archive of recordings from the
-selected Copilot home. V2 (reconstructed turns, usage accounting, and OTel
-export) is out of scope. V1 does not export Copilot content.
+GitHub Copilot capture is archive-first and durable: thirdeye keeps the immutable
+V1 raw archive from the selected Copilot home and derives V2 projections from it
+for reconstructed turns, usage accounting, and export eligibility. The raw
+archive is preserved even if the original Copilot files are later removed, and
+reconciliation can rebuild the derived state from that retained source.
 
 ```bash
 thirdeye add --copilot
 thirdeye copilot status --source-home "$COPILOT_HOME"
 thirdeye copilot sync --source-home "$COPILOT_HOME"
+thirdeye copilot reconcile
 thirdeye copilot watch --source-home "$COPILOT_HOME" --interval 1
 thirdeye remove --copilot
 ```
 
 `--source-home` is optional. Resolution is `--source-home`, then `COPILOT_HOME`,
-then `~/.copilot`. V1 reads only that home's `session-state/**/events.jsonl`,
+then `~/.copilot`. Capture reads only that home's `session-state/**/events.jsonl`,
 `workspace.yaml`, and `session-store.db` (`sessions`, `turns`,
 `assistant_usage_events`). It does not read credentials, token-bearing config,
 or other Copilot files.
 
 `thirdeye add --copilot` writes user-level hooks at
 `$COPILOT_HOME/hooks/thirdeye.json` (default `~/.copilot/hooks/thirdeye.json`).
-The 1.0.83 live probe used repository hooks; V1 does not. `watch` is an explicit
-foreground poller and is not started by add or setup. Captured content has the
-same local sensitivity as other thirdeye sessions and is not exported in V1.
-`sync` and `status` print recoverable source diagnostics (locations and reasons,
-not prompt bodies). Passing the Copilot unit tests is not live certification of
-Copilot.
+The 1.0.83 live probe used repository hooks; user-level installation is not a
+claim that every Copilot runtime invokes them. `watch` is an explicit
+foreground poller and is not started by add or setup. `sync` and `status` print
+recoverable source diagnostics (locations and reasons, not prompt bodies).
+Normal `sync` and `reconcile` refresh local derived state only; export eligibility
+is opt-in via `thirdeye copilot sync --export` or `thirdeye copilot reconcile --export`.
+Passing the Copilot unit tests is not live certification of Copilot.
 
 ## Verify tracing is live
 

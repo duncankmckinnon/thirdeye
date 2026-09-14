@@ -179,6 +179,7 @@ def _call_candidate(
     assistant_message_id: str | None = None,
     start_ts: str = TS_CYCLE_0,
     end_ts: str = "2026-09-10T17:08:24.593Z",
+    native_turn_id: str | None = None,
 ) -> CallCandidate:
     candidate: CallCandidate = {
         "call_id": call_id,
@@ -186,6 +187,7 @@ def _call_candidate(
         "interaction_id": interaction_id,
         "agent_id": agent_id,
         "parent_tool_call_id": parent_tool_call_id,
+        "native_turn_id": native_turn_id,
         "model": model,
         "source_ids": [call_id.rsplit("/", 1)[-1]],
         "source_references": [],
@@ -445,21 +447,62 @@ def test_ambiguous_when_multiple_calls_fit_same_evidence():
         ]
     )
     attributions = join_usage(semantic, accounting)
-    assert attributions[0]["status"] == "ambiguous"
-    assert attributions[0]["call_id"] is None
-    assert f"call_id:{CALL_A}" in attributions[0]["evidence"]
-    assert f"call_id:{CALL_B}" in attributions[0]["evidence"]
+    assert attributions[0]["status"] == "matched"
+    assert attributions[0]["call_id"] == CALL_A
 
 
-def test_pending_when_turn_index_has_no_main_interaction():
+def test_session_ordered_rows_attach_each_tool_cycle_to_its_chat_call():
+    third = _call_candidate(
+        call_id=f"copilot:call:{SOURCE_KEY}/{NATIVE_SESSION_ID}/third",
+        tool_call_ids=["tool-c"],
+        start_ts="2026-09-10T17:08:26.000Z",
+    )
+    semantic = _semantic(
+        calls=[
+            _call_candidate(call_id=CALL_A, tool_call_ids=["tool-a"]),
+            _call_candidate(call_id=CALL_B, tool_call_ids=["tool-b"], start_ts=TS_CYCLE_1),
+            third,
+        ]
+    )
+    accounting = _accounting(
+        candidates=[
+            _accounting_candidate(row_id=13, finish_reason="tool_calls", initiator=None),
+            _accounting_candidate(row_id=14, finish_reason="tool_calls", initiator=None),
+            _accounting_candidate(row_id=15, finish_reason="tool_calls", initiator=None),
+        ]
+    )
+
+    assert [item["call_id"] for item in join_usage(semantic, accounting)] == [
+        CALL_A,
+        CALL_B,
+        third["call_id"],
+    ]
+
+
+def test_session_ordered_join_ignores_input_list_order():
+    calls = [
+        _call_candidate(call_id=CALL_A, tool_call_ids=["tool-a"]),
+        _call_candidate(call_id=CALL_B, tool_call_ids=["tool-b"], start_ts=TS_CYCLE_1),
+    ]
+    rows = [
+        _accounting_candidate(row_id=13, finish_reason="tool_calls", initiator=None),
+        _accounting_candidate(row_id=14, finish_reason="tool_calls", initiator=None),
+    ]
+    attributions = join_usage(
+        _semantic(calls=list(reversed(calls))), _accounting(candidates=list(reversed(rows)))
+    )
+    by_row = {item["logical_call_id"].rsplit(":", 1)[-1]: item["call_id"] for item in attributions}
+
+    assert by_row == {"13": CALL_A, "14": CALL_B}
+
+
+def test_session_ordered_join_does_not_depend_on_the_database_turn_index():
     semantic = _semantic(calls=[_call_candidate(call_id=CALL_A, tool_call_ids=["tool-a"])])
     accounting = _accounting(candidates=[_accounting_candidate(row_id=13, turn_index=99)])
     attributions = join_usage(semantic, accounting)
-    assert attributions[0]["status"] == "pending"
-    assert attributions[0]["stored_turn_id"] is None
-    assert attributions[0]["call_id"] is None
-    assert "turn_index:99" in attributions[0]["evidence"]
-    assert "delayed_row:true" not in attributions[0]["evidence"]
+    assert attributions[0]["status"] == "matched"
+    assert attributions[0]["stored_turn_id"] == TURN_ONE
+    assert attributions[0]["call_id"] == CALL_A
 
 
 def test_late_row_case_stays_pending_until_semantics_catch_up():
@@ -831,7 +874,7 @@ def test_accounting_rows_persist_when_attribution_is_ambiguous():
     )
     ambiguous, _ = build_projection([user, first_msg, first_end, second_msg, second_end, usage], {})
     matched, _ = build_projection([user, first_msg, first_end, usage], {})
-    assert ambiguous["attributions"][0]["status"] == "ambiguous"
+    assert ambiguous["attributions"][0]["status"] == "matched"
     assert matched["attributions"][0]["status"] == "matched"
     assert len(ambiguous["usage_rows"]) == len(matched["usage_rows"]) == 1
     assert _metric_totals(ambiguous["usage_rows"]) == _metric_totals(matched["usage_rows"])

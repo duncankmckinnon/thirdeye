@@ -32,6 +32,7 @@ _PUBLIC_CANDIDATE_KEYS = (
     "interaction_id",
     "agent_id",
     "parent_tool_call_id",
+    "native_turn_id",
     "model",
     "source_ids",
     "source_references",
