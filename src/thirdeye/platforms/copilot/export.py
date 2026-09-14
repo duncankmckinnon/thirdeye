@@ -24,13 +24,10 @@ from thirdeye.span_ids import chat_span_id
 from . import export_transport
 from .constants import PLATFORM_NAME
 from .export_state import (
-    clear_placement_error,
     clear_turn_error,
     initialize_eligibility,
     is_accounting_eligible,
     is_turn_eligible,
-    mark_placement_error,
-    mark_placement_job_status,
     mark_turn_error,
     record_placement,
     set_pending_unowned_accounting,
@@ -40,23 +37,6 @@ from .export_state import (
 from .types import Projection
 
 _TERMINAL = frozenset({"completed", "interrupted", "errored"})
-_EXPORTABLE_ATTRIBUTIONS = frozenset({"matched", "ambiguous"})
-
-
-def _copilot_supplemental_export_attributes(candidate: dict[str, Any] | None) -> dict[str, Any]:
-    metrics = (candidate or {}).get("supplemental_metrics") or {}
-    attributes: dict[str, Any] = {}
-    if "total_nano_aiu" in metrics:
-        attributes["copilot.billing.nano_aiu"] = metrics["total_nano_aiu"]
-    if "duration_ms" in metrics:
-        attributes["copilot.latency.duration_ms"] = metrics["duration_ms"]
-    if "output_ttft_ms" in metrics:
-        attributes["copilot.latency.output_ttft_ms"] = metrics["output_ttft_ms"]
-    if "time_to_first_token_ms" in metrics:
-        attributes["copilot.latency.time_to_first_token_ms"] = metrics["time_to_first_token_ms"]
-    if "inter_token_latency_ms" in metrics:
-        attributes["copilot.latency.inter_token_latency_ms"] = metrics["inter_token_latency_ms"]
-    return attributes
 
 
 def _directory(config: Config, stored_session_id: str) -> Path:
@@ -155,6 +135,9 @@ def _historical_accounting_ids(
         accounting_id = attribution["logical_call_id"]
         if accounting_id in owners:
             continue
+        if attribution["status"] == "matched":
+            unresolved.add(accounting_id)
+            continue
         if attribution["status"] == "pending":
             unresolved.add(accounting_id)
             continue
@@ -174,12 +157,6 @@ def _historical_accounting_ids(
     )
 
 
-def _span_id(session_id: str, turn_id: str | None, accounting_id: str) -> str:
-    if turn_id is None:
-        return f"accounting:{session_id}:{accounting_id}"
-    return f"accounting:{session_id}:{turn_id}:{accounting_id}"
-
-
 def _turn_span_id(stored_session_id: str, turn_id: str) -> str:
     """Return the OTel-safe deterministic span id for a source-derived turn."""
     return str(chat_span_id(PLATFORM_NAME, stored_session_id, f"turn:{turn_id}"))
@@ -189,23 +166,9 @@ def _configured(config: Config) -> bool:
     return config.logfire.enabled and bool(config.logfire.token)
 
 
-def _error_state(config: Config, stored_session_id: str, accounting_id: str, message: str) -> None:
-    def update(state: dict[str, Any]) -> dict[str, Any]:
-        return mark_placement_error(state, accounting_id, message)
-
-    update_export_state(config, stored_session_id, update)
-
-
 def _turn_error_state(config: Config, stored_session_id: str, turn_id: str, message: str) -> None:
     def update(state: dict[str, Any]) -> dict[str, Any]:
         return mark_turn_error(state, turn_id, message)
-
-    update_export_state(config, stored_session_id, update)
-
-
-def _clear_error_state(config: Config, stored_session_id: str, accounting_id: str) -> None:
-    def update(state: dict[str, Any]) -> dict[str, Any]:
-        return clear_placement_error(state, accounting_id)
 
     update_export_state(config, stored_session_id, update)
 
@@ -299,47 +262,6 @@ def _place(
     return captured.get("entry"), bool(captured.get("accepted"))
 
 
-def _reflect_accounting_job_health(
-    config: Config, stored_session_id: str, accounting_id: str, span_id: str
-) -> bool:
-    """Fold the deterministic accounting job's own on-disk state into the
-    ledger's error tracking after a local write+dispatch reported success.
-
-    A local write succeeding only means the job file exists and a worker was
-    spawned -- it says nothing about whether that worker (this call, or an
-    earlier one that already ran and gave up) ever actually delivered it.
-    Without this check, a job that exhausted its retries and is stuck in a
-    permanent ``"failed"`` state on disk would be silently reported as
-    healthy and have any earlier ``last_error`` cleared on every subsequent
-    reconciliation, even though the generic transport will never retry it
-    again on its own (see ``otel_worker._claim_job``).
-
-    Returns whether this counts as a successful queue for this pass.
-    """
-    status = export_transport.status(config.root, span_id)
-    if status is None:
-        if export_transport.delivery_sent(_directory(config, stored_session_id), accounting_id):
-            status = {"state": "emitted", "attempt": None, "last_error": None}
-        else:
-            _clear_error_state(config, stored_session_id, accounting_id)
-            return True
-
-    if status.get("state") == "failed" and not status.get("last_error"):
-        status = {
-            **status,
-            "last_error": (
-                f"accounting job permanently failed after {status.get('attempt')} attempts"
-            ),
-        }
-
-    update_export_state(
-        config,
-        stored_session_id,
-        lambda state: mark_placement_job_status(state, accounting_id, status),
-    )
-    return status.get("state") != "failed"
-
-
 def _turn_with_placed_accounting(
     turn: dict[str, Any], placements: dict[str, dict[str, Any]]
 ) -> dict[str, Any]:
@@ -379,27 +301,6 @@ def _with_deterministic_turn_ids(turn: dict[str, Any], stored_session_id: str) -
     return result
 
 
-def _fallback_accounting_call(
-    attribution: dict[str, Any],
-    usage: dict[str, Any],
-    candidate: dict[str, Any] | None,
-) -> dict[str, Any]:
-    """Serialize accounting whose exact chat placement never became available."""
-    return {
-        "accounting_id": attribution["logical_call_id"],
-        "usage": usage,
-        "attribution_status": attribution["status"],
-        "agent_id": attribution["agent_id"],
-        "call_id": None,
-        "attributes": {
-            "logical_call_id": attribution["logical_call_id"],
-            "usage_source_id": attribution["usage_source_id"],
-            "evidence": list(attribution["evidence"]),
-            **_copilot_supplemental_export_attributes(candidate),
-        },
-    }
-
-
 def queue_exports(
     config: Config,
     stored_session_id: str,
@@ -433,20 +334,14 @@ def queue_exports(
         return 0
 
     accounting = _accounting_calls(projection)
-    rows = {row.call_id: row.to_dict() for row in projection["usage_rows"]}
-    candidates = {
-        item["logical_call_id"]: item
-        for item in projection.get("accounting_candidates") or []
-        if isinstance(item, dict) and isinstance(item.get("logical_call_id"), str)
-    }
     placements: dict[str, dict[str, Any]] = {}
     deferred_ids: set[str] = set()
     blocked_root_ids: set[str] = set()
     queued = 0
 
-    # Place terminal owned accounting first.  This decision happens before a
-    # whole-turn job is assembled, so a future local match cannot move a
-    # fallback charge onto a chat span.
+    # Place terminal accounting only when its owning chat call is present.
+    # Copilot can publish a matched usage row before transcript reconstruction
+    # exposes that call, including briefly after an interaction's sessionEnd.
     for accounting_id, (owner, item) in accounting.items():
         owner_id = owner.get("turn_id")
         root = _root_for(root_index, owner_id)
@@ -455,7 +350,7 @@ def queue_exports(
             not isinstance(owner_id, str)
             or root is None
             or not _terminal(root)
-            or item.get("attribution_status") not in _EXPORTABLE_ATTRIBUTIONS
+            or item.get("attribution_status") != "matched"
         ):
             continue
         root_id = str(root["turn_id"])
@@ -463,45 +358,29 @@ def queue_exports(
             continue
         call_id = item.get("call_id")
         if (
-            item.get("attribution_status") == "matched"
-            and isinstance(call_id, str)
-            and call_id
-            and not any(call.get("call_id") == call_id for call in owner.get("llm_calls") or [])
+            not isinstance(call_id, str)
+            or not call_id
+            or not any(call.get("call_id") == call_id for call in owner.get("llm_calls") or [])
         ):
-            if not session_closed:
-                deferred_ids.add(accounting_id)
-                blocked_root_ids.add(root_id)
-                continue
-            item = {**item, "call_id": None}
-            call_id = None
+            deferred_ids.add(accounting_id)
+            blocked_root_ids.add(root_id)
+            continue
         existing_entry = (state.get("placements") or {}).get(accounting_id) or {}
         turn_sent = otel_export.turn_export_sent(directory, root_id)
         delivered = export_transport.delivery_sent(directory, accounting_id) or (
             turn_sent and existing_entry.get("destination") == "chat-span"
         )
-        # A chat span already flushed to Logfire is immutable history: usage
-        # that resolves to "matched" only *after* that flush can no longer
-        # land on it and must use the turn-owned fallback span instead. But
-        # if *this* identity was itself the one embedded on that chat span
-        # (confirmed via the durable delivery claim plus the ledger's own
-        # record of where it landed), the turn having been sent is exactly
-        # what delivered it there -- re-deriving "unavailable" from that same
-        # fact would misread an already-settled placement as a conflicting
-        # correction.
+        # A chat span already flushed to Logfire is immutable. Usage matched
+        # only after that flush is omitted because Copilot does not emit
+        # synthetic accounting spans. An existing chat placement remains
+        # valid because the turn delivery is what confirmed it.
         chat_available = not turn_sent or (
             delivered and existing_entry.get("destination") == "chat-span"
         )
-        if (
-            chat_available
-            and item.get("attribution_status") == "matched"
-            and isinstance(call_id, str)
-            and call_id
-        ):
-            destination = "chat-span"
-            span_id = str(call_id)
-        else:
-            destination = "turn-accounting-span"
-            span_id = _span_id(stored_session_id, owner_id, accounting_id)
+        if not chat_available:
+            continue
+        destination = "chat-span"
+        span_id = str(call_id)
         entry, accepted = _place(
             config,
             stored_session_id,
@@ -519,92 +398,26 @@ def queue_exports(
             # Confirmed delivered, whether just now or on an earlier pass.
             # Never recreate an accounting job after that point.
             continue
-        if destination != "turn-accounting-span" or entry is None:
-            continue
-        sent = export_transport.queue_turn_accounting(
-            config,
-            directory,
-            stored_session_id,
-            meta.cwd,
-            owner_id,
-            item,
-            turn_span_id=_turn_span_id(stored_session_id, owner_id),
-        )
-        if sent and _reflect_accounting_job_health(
-            config, stored_session_id, accounting_id, span_id
-        ):
-            queued += 1
-        elif not sent:
-            _error_state(config, stored_session_id, accounting_id, "accounting job was not queued")
 
-    # An exportable attribution can temporarily precede reconstruction of its
-    # owner.  Until explicit session completion, absence from ``accounting`` is
-    # incomplete evidence rather than proof of session-level ownership.
+    # A matched attribution can precede reconstruction of its owning call.
+    # Keep it local until it can ride inside the normal turn export. Ambiguous
+    # accounting is intentionally omitted rather than emitted on a synthetic
+    # fallback span.
     attached_ids = set(accounting)
     for attribution in projection["attributions"]:
         accounting_id = attribution["logical_call_id"]
-        if attribution["status"] not in _EXPORTABLE_ATTRIBUTIONS:
-            # Pending attribution is intentionally local-only until later
-            # archive evidence resolves it.  A conflicting join is likewise
-            # quarantined rather than guessed into an accounting span.
+        if attribution["status"] != "matched":
             continue
         if accounting_id in attached_ids or not is_accounting_eligible(state, accounting_id):
             continue
-        usage = rows.get(accounting_id)
-        if usage is None:
+        call_id = attribution.get("call_id")
+        if not isinstance(call_id, str) or not call_id:
             continue
         owner_id = attribution.get("stored_turn_id")
         root = _root_for(root_index, owner_id)
-        if not session_closed:
-            deferred_ids.add(accounting_id)
-            if root is not None:
-                blocked_root_ids.add(str(root["turn_id"]))
-            continue
-
-        item = _fallback_accounting_call(attribution, usage, candidates.get(accounting_id))
-        if isinstance(owner_id, str) and root is not None and _terminal(root):
-            root_id = str(root["turn_id"])
-            if not is_turn_eligible(state, root_id):
-                continue
-            destination = "turn-accounting-span"
-            span_id = _span_id(stored_session_id, owner_id, accounting_id)
-        else:
-            destination = "session-accounting-span"
-            span_id = _span_id(stored_session_id, None, accounting_id)
-        delivered = export_transport.delivery_sent(directory, accounting_id)
-        entry, accepted = _place(
-            config,
-            stored_session_id,
-            accounting_id=accounting_id,
-            destination=destination,
-            span_id=span_id,
-            usage=usage,
-            delivered=delivered,
-        )
-        if not accepted or entry is None:
-            continue
-        if entry.get("emitted"):
-            continue
-        if destination == "turn-accounting-span":
-            sent = export_transport.queue_turn_accounting(
-                config,
-                directory,
-                stored_session_id,
-                meta.cwd,
-                owner_id,
-                item,
-                turn_span_id=_turn_span_id(stored_session_id, owner_id),
-            )
-        else:
-            sent = export_transport.queue_session_accounting(
-                config, directory, stored_session_id, meta.cwd, item
-            )
-        if sent and _reflect_accounting_job_health(
-            config, stored_session_id, accounting_id, span_id
-        ):
-            queued += 1
-        elif not sent:
-            _error_state(config, stored_session_id, accounting_id, "accounting job was not queued")
+        deferred_ids.add(accounting_id)
+        if root is not None:
+            blocked_root_ids.add(str(root["turn_id"]))
 
     state = update_export_state(
         config,
