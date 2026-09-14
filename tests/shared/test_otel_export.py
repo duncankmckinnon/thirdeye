@@ -279,6 +279,32 @@ class TestBackgroundNoiseSuppression:
         assert configured_with["scrubbing"].callback is otel_export._scrub_callback
 
 
+class TestConfigurationSpanSuppressed:
+    """Each export is a short-lived worker that calls `logfire.configure()`.
+
+    `LOGFIRE_EMIT_CONFIGURATION_SPAN` (soon the SDK default) would then emit a
+    `Logfire configured` span on every hook. `_get_instance` must opt out so
+    the Agents page is not flooded, and so configure() still draws no ids.
+    """
+
+    def test_get_instance_opts_out_even_when_env_requests_the_span(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ):
+        import logfire
+
+        monkeypatch.setenv("LOGFIRE_EMIT_CONFIGURATION_SPAN", "1")
+        configured_with: dict[str, Any] = {}
+
+        def _configure(**kwargs):
+            configured_with.update(kwargs)
+            return object()
+
+        monkeypatch.setattr(logfire, "configure", _configure)
+        config = Config(root=tmp_path, logfire=LogfireSettings(enabled=True, token="bad-token"))
+        otel_export._get_instance(config, "claude")
+        assert configured_with["advanced"].emit_configuration_span is False
+
+
 class TestPreallocatedIdGenerator:
     """Span ids for this tree are derived rather than minted, so that a span
     emitted while a turn is still running can name a parent that hasn't been
@@ -333,28 +359,29 @@ class TestPreallocatedIdGenerator:
         assert len(trace_ids) == 5
         assert all(0 < value < 2**128 for value in trace_ids)
 
-    def test_configure_draws_no_ids(self, exporter):
+    def test_configure_draws_no_ids(self, exporter, monkeypatch: pytest.MonkeyPatch):
         """A canary on a third-party assumption the whole scheme rests on.
 
         Slots are set immediately before a `start_span` call, so anything else
         drawing an id in between would steal one and silently misparent a
         span. `logfire.configure` is the one thing that runs between our own
-        spans without us asking; today it draws nothing (its configuration
-        span defaults off), but a future release emitting one at configure
-        time would break parenting in a way no other test here would notice.
+        spans without us asking; with `LOGFIRE_EMIT_CONFIGURATION_SPAN` it
+        would emit a span unless `_advanced_options` opts out.
         """
         import logfire
 
+        monkeypatch.setenv("LOGFIRE_EMIT_CONFIGURATION_SPAN", "1")
         probe = otel_export._build_id_generator()
         drawn: list[str] = []
         probe.generate_span_id = lambda: drawn.append("span") or 1
         probe.generate_trace_id = lambda: drawn.append("trace") or 1
+        otel_export._state["id_generator"] = probe
 
         logfire.configure(
             send_to_logfire=False,
             console=False,
             additional_span_processors=[SimpleSpanProcessor(exporter)],
-            advanced=logfire.AdvancedOptions(id_generator=probe),
+            advanced=otel_export._advanced_options(),
         )
         assert drawn == []
 
