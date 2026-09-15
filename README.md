@@ -17,8 +17,9 @@ into one history you and your agents can manage, search, and evaluate.
 Thirdeye persists each session as a durable, append-only local event history.
 Prompts, responses, tool calls, subagents, usage, and session metadata remain
 available after the original agent process exits, giving both people and agents
-a consistent record to inspect. Remote export is optional; the local history
-remains the source of truth.
+a consistent record to inspect. Connect thirdeye to Pydantic Logfire to make
+full use of that tracing data: explore complete execution trees, investigate
+individual turns, and analyze behavior across sessions.
 
 Visit [third3y3.com](https://third3y3.com) for guides and the full command reference.
 
@@ -63,11 +64,15 @@ You can rerun setup whenever you add an agent or change your Logfire configurati
 
 ## Logfire
 
-When enabled during setup, thirdeye mirrors captured sessions to
-[Pydantic Logfire](https://logfire.pydantic.dev) as OpenTelemetry traces. A
-session becomes a trace containing agent turns, model calls, tool executions,
-subagents, and available token usage. Export happens outside the agent hook so
-network latency does not interrupt the agent session.
+[Pydantic Logfire](https://logfire.pydantic.dev) is where thirdeye's captured
+data becomes a full observability experience. Once connected during setup, each
+session appears as an OpenTelemetry trace containing agent turns, model calls,
+tool executions, subagents, and available token usage and attributed costs.
+Use Logfire to navigate the complete execution flow, query across sessions,
+compare agent behavior, and investigate where time and tokens were spent.
+
+Export happens outside the agent hook, so network latency does not interrupt
+the agent session.
 
 See [third3y3.com](https://third3y3.com) for Logfire configuration and export details.
 
