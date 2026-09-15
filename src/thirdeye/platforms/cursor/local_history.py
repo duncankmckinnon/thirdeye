@@ -25,8 +25,10 @@ class CursorLocalTurn:
 
 
 def _safe_session_id(session_id: str) -> bool:
-    return bool(session_id) and session_id not in {".", ".."} and not any(
-        separator and separator in session_id for separator in (os.sep, os.altsep)
+    return (
+        bool(session_id)
+        and session_id not in {".", ".."}
+        and not any(separator and separator in session_id for separator in (os.sep, os.altsep))
     )
 
 
@@ -91,10 +93,18 @@ def _transcript_turn(session_id: str) -> tuple[str, str, int]:
             if role != "user":
                 continue
             output_text = next(
-                (text for next_role, text in reversed(messages[index + 1 :]) if next_role == "assistant"),
+                (
+                    text
+                    for next_role, text in reversed(messages[index + 1 :])
+                    if next_role == "assistant"
+                ),
                 "",
             )
-            return input_text, output_text, sum(1 for message_role, _ in messages if message_role == "user")
+            return (
+                input_text,
+                output_text,
+                sum(1 for message_role, _ in messages if message_role == "user"),
+            )
     return "", "", 0
 
 
@@ -114,7 +124,9 @@ def _request_ids(path: Path) -> list[str]:
     for (blob,) in rows:
         if not isinstance(blob, (bytes, bytearray, str)):
             continue
-        text = blob.decode("utf-8", errors="ignore") if isinstance(blob, (bytes, bytearray)) else blob
+        text = (
+            blob.decode("utf-8", errors="ignore") if isinstance(blob, (bytes, bytearray)) else blob
+        )
         user_at = text.find('"role":"user"')
         if user_at < 0:
             user_at = text.find('"role": "user"')
@@ -145,4 +157,6 @@ def local_turn(session_id: str) -> CursorLocalTurn:
     if not _safe_session_id(session_id):
         return CursorLocalTurn()
     input_text, output_text, user_count = _transcript_turn(session_id)
-    return CursorLocalTurn(input_text, output_text, _request_id(session_id, expected_count=user_count))
+    return CursorLocalTurn(
+        input_text, output_text, _request_id(session_id, expected_count=user_count)
+    )

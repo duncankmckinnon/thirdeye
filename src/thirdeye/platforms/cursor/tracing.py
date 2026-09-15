@@ -829,7 +829,11 @@ def build_turn(
         ),
         default=0,
     )
-    recovered = local_turn(session_id) if (not prompt or not response) and stop_seq == latest_stop_seq else None
+    recovered = (
+        local_turn(session_id)
+        if (not prompt or not response) and stop_seq == latest_stop_seq
+        else None
+    )
     if not prompt and recovered:
         prompt = recovered.input_text
     if not response and recovered:
