@@ -985,19 +985,29 @@ def build_session_turn(
     if not llm_calls:
         return None
     recovered = local_turn(session_id)
-    if recovered.input_text and not any(call["input_messages"] for call in llm_calls):
-        llm_calls[0]["input_messages"] = [
-            {"role": "user", "parts": [{"type": "text", "content": recovered.input_text}]}
+    hook_prompt = next(
+        (
+            _text(_data(event), "prompt", "input", "text")
+            for event in reversed(events)
+            if event.get("t") == "user_message" and _text(_data(event), "prompt", "input", "text")
+        ),
+        "",
+    )
+    prompt = hook_prompt or recovered.input_text
+    target_call = llm_calls[-1]
+    if prompt and not target_call["input_messages"]:
+        target_call["input_messages"] = [
+            {"role": "user", "parts": [{"type": "text", "content": prompt}]}
         ]
     has_text_output = any(
         part.get("type") == "text"
-        for call in llm_calls
-        for message in call["output_messages"]
+        for message in target_call["output_messages"]
         for part in message.get("parts", [])
         if isinstance(part, dict)
     )
+    recovered_output_added = False
     if recovered.output_text and not has_text_output:
-        output_messages = llm_calls[-1]["output_messages"]
+        output_messages = target_call["output_messages"]
         if output_messages:
             output_messages[-1].setdefault("parts", []).append(
                 {"type": "text", "content": recovered.output_text}
@@ -1009,8 +1019,9 @@ def build_session_turn(
                     "parts": [{"type": "text", "content": recovered.output_text}],
                 }
             )
+        recovered_output_added = True
     if recovered.request_id:
-        llm_calls[0]["attributes"] = {"cursor.request_id": recovered.request_id}
+        target_call["attributes"] = {"cursor.request_id": recovered.request_id}
     hook_output = next(
         (
             _text(_data(event), "text", "response", "output")
@@ -1025,8 +1036,8 @@ def build_session_turn(
         "turn_span_id": str(turn_span_id(_PLATFORM, session_id, int(start_event.get("seq") or 0))),
         "start_ts": str(start_event.get("ts") or ""),
         "end_ts": str(stop_event.get("ts") or start_event.get("ts") or ""),
-        "input_message": recovered.input_text,
-        "output_message": hook_output or recovered.output_text,
+        "input_message": prompt,
+        "output_message": recovered.output_text if recovered_output_added else hook_output,
         "status": _status(_data(stop_event)),
         "llm_calls": llm_calls,
         "permission_requests": [],
