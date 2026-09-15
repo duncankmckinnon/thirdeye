@@ -221,9 +221,10 @@ def _build_id_generator() -> Any:
 
     Worker processes are single-threaded and every span here is started
     synchronously, so "the next id drawn" is unambiguous. `logfire.configure`
-    itself draws zero ids, so no internal span can consume a pending slot —
-    a third-party assumption that `TestPreallocatedIdGenerator` keeps a canary
-    on, because a regression in it would misparent spans invisibly.
+    can emit a `Logfire configured` span (env `LOGFIRE_EMIT_CONFIGURATION_SPAN`,
+    soon the SDK default) that would draw an id — `_advanced_options` opts
+    that out, and `TestPreallocatedIdGenerator` keeps a canary on, because a
+    regression would misparent spans invisibly.
 
     The class is defined inside this function because its base class lives in
     ``opentelemetry``, present only with the optional ``logfire`` extra;
@@ -255,6 +256,27 @@ def _id_generator() -> Any:
     if _state["id_generator"] is None:
         _state["id_generator"] = _build_id_generator()
     return _state["id_generator"]
+
+
+def _advanced_options() -> Any:
+    """SDK options for this process's one `logfire.configure` call.
+
+    Each export worker is short-lived (one job, then exit). A `Logfire
+    configured` span on every `configure()` would flood the project with
+    one-off traces — once per hook, once per live-span batch. Opt out even
+    when `LOGFIRE_EMIT_CONFIGURATION_SPAN` is set or becomes the SDK default.
+    That also keeps `configure()` from drawing ids that would steal a pending
+    slot from `_start_span_with_id`.
+
+    The field shipped in logfire 4.33; older extras still allowed by our
+    lower bound omit it, so pass it only when the dataclass knows the name.
+    """
+    import logfire
+
+    kwargs: dict[str, Any] = {"id_generator": _id_generator()}
+    if "emit_configuration_span" in getattr(logfire.AdvancedOptions, "__dataclass_fields__", {}):
+        kwargs["emit_configuration_span"] = False
+    return logfire.AdvancedOptions(**kwargs)
 
 
 _captured_attributes: ContextVar[dict[str, Any] | None] = ContextVar(
@@ -336,7 +358,7 @@ def _get_instance(config: Config, platform: str):
             # OTLP wire format for free; the one thing it doesn't give us is
             # ids of our own choosing, and this injects those through its
             # normal path rather than around it.
-            advanced=logfire.AdvancedOptions(id_generator=_id_generator()),
+            advanced=_advanced_options(),
         )
     except Exception as exc:
         log_capture_error(thirdeye_home=config.root, phase="logfire_configure", error=exc)
