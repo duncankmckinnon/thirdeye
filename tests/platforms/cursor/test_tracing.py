@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import json
+import sqlite3
+from contextlib import closing
 from datetime import datetime
 from pathlib import Path
 
@@ -10,6 +12,7 @@ from thirdeye.config import Config, LogfireSettings
 from thirdeye.paths import session_dir
 from thirdeye.platforms.cursor.interactions import canonical_interactions
 from thirdeye.platforms.cursor.live_spans import emit_live_interactions
+from thirdeye.platforms.cursor.local_history import local_turn
 from thirdeye.platforms.cursor.subagents import cursor_subagent_generation_id
 from thirdeye.platforms.cursor.tracing import (
     build_turn,
@@ -148,6 +151,98 @@ def test_build_turn_uses_cursor_scoped_turn_id(tmp_path: Path):
 
     assert turn is not None
     assert turn["turn_span_id"] == str(turn_span_id("cursor", sid, turn_seq))
+
+
+def test_build_turn_enriches_missing_cli_content_and_request_id_from_cursor_files(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    """Local Cursor data supplements incomplete CLI hooks without replacing them."""
+    sid, generation = "cli-session", "cli-generation"
+    transcript_root = tmp_path / "agent-transcripts"
+    transcript_path = transcript_root / sid / f"{sid}.jsonl"
+    transcript_path.parent.mkdir(parents=True)
+    transcript_path.write_text(
+        "\n".join(
+            json.dumps(record)
+            for record in (
+                {"role": "user", "message": {"content": [{"type": "text", "text": "CLI prompt"}]}},
+                {
+                    "role": "assistant",
+                    "message": {"content": [{"type": "text", "text": "CLI response"}]},
+                },
+                {"type": "turn_ended"},
+            )
+        ),
+        encoding="utf-8",
+    )
+    chat_root = tmp_path / "chats"
+    db_path = chat_root / "workspace" / sid / "store.db"
+    db_path.parent.mkdir(parents=True)
+    with closing(sqlite3.connect(db_path)) as connection:
+        connection.execute("CREATE TABLE blobs (data BLOB NOT NULL)")
+        connection.execute(
+            "INSERT INTO blobs VALUES (?)",
+            (
+                b'prefix {"role":"user","providerOptions":{"cursor":{"requestId":"req-cli-1"}}} suffix',
+            ),
+        )
+        connection.commit()
+    monkeypatch.setenv("THIRDEYE_CURSOR_TRANSCRIPT_ROOTS", str(transcript_root))
+    monkeypatch.setenv("THIRDEYE_CURSOR_CHAT_ROOTS", str(chat_root))
+
+    store = Store(Config(root=tmp_path))
+    _append(store, sid, "user_message", {"generation_id": generation, "prompt": "hook prompt"})
+    stop_seq = _append(store, sid, "turn_stop", {"generation_id": generation, "model": "gpt-5"})
+
+    turn = build_turn(
+        session_dir_=session_dir(tmp_path, "cursor", sid),
+        session_id=sid,
+        generation_id=generation,
+        stop_seq=stop_seq,
+    )
+
+    assert turn is not None
+    assert turn["input_message"] == "hook prompt"
+    assert turn["output_message"] == "CLI response"
+    call = turn["llm_calls"][0]
+    assert call["input_messages"] == [
+        {"role": "user", "parts": [{"type": "text", "content": "hook prompt"}]}
+    ]
+    assert call["output_messages"] == [
+        {"role": "assistant", "parts": [{"type": "text", "content": "CLI response"}]}
+    ]
+    assert call["attributes"]["cursor.request_id"] == "req-cli-1"
+    assert call["usage"] == {}
+
+
+def test_build_turn_does_not_recover_local_data_for_a_historical_stop(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    sid = "cli-historical-session"
+    store = Store(Config(root=tmp_path))
+    _append(store, sid, "user_message", {"generation_id": "old", "prompt": "old prompt"})
+    old_stop_seq = _append(store, sid, "turn_stop", {"generation_id": "old", "model": "gpt-5"})
+    _append(store, sid, "user_message", {"generation_id": "new", "prompt": "new prompt"})
+    _append(store, sid, "turn_stop", {"generation_id": "new", "model": "gpt-5"})
+
+    def _unexpected_recovery(_: str):
+        pytest.fail("historical turn must not consult local Cursor history")
+
+    monkeypatch.setattr("thirdeye.platforms.cursor.tracing.local_turn", _unexpected_recovery)
+    turn = build_turn(
+        session_dir_=session_dir(tmp_path, "cursor", sid),
+        session_id=sid,
+        generation_id="old",
+        stop_seq=old_stop_seq,
+    )
+
+    assert turn is not None
+    assert turn["output_message"] == ""
+
+
+@pytest.mark.parametrize("session_id", ("../escape", "/absolute", "nested/session", ".", ".."))
+def test_local_turn_rejects_path_like_session_ids(session_id: str):
+    assert local_turn(session_id).input_text == ""
 
 
 def test_build_turn_ignores_other_generations(tmp_path: Path):

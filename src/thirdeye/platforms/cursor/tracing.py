@@ -18,6 +18,7 @@ from thirdeye.platforms.cursor.interactions import (
     interaction_messages,
     session_interactions,
 )
+from thirdeye.platforms.cursor.local_history import local_turn
 from thirdeye.platforms.cursor.subagents import (
     CursorSubagentWindow,
     events_for_subagent,
@@ -821,6 +822,26 @@ def build_turn(
         if response
         else []
     )
+    latest_stop_seq = max(
+        (
+            int(event.get("seq") or 0)
+            for event in SessionReader(session_dir_).iter_events(types={"turn_stop"})
+        ),
+        default=0,
+    )
+    recovered = (
+        local_turn(session_id)
+        if (not prompt or not response) and stop_seq == latest_stop_seq
+        else None
+    )
+    if not prompt and recovered:
+        prompt = recovered.input_text
+    if not response and recovered:
+        response = recovered.output_text
+    if not input_msgs and prompt and recovered:
+        input_msgs = [{"role": "user", "parts": [{"type": "text", "content": prompt}]}]
+    if not output_msgs and response and recovered:
+        output_msgs = [{"role": "assistant", "parts": [{"type": "text", "content": response}]}]
 
     # Recovery records cover the active generation only; input_messages use full session history.
     turn_span_id_str = str(turn_span_id(_PLATFORM, session_id, turn_seq))
@@ -874,6 +895,11 @@ def build_turn(
                 "output_messages": output_msgs,
                 "usage": usage,
                 "tool_calls": tools,
+                "attributes": (
+                    {"cursor.request_id": recovered.request_id}
+                    if recovered and recovered.request_id
+                    else {}
+                ),
             }
         )
     subagents = _subagents_in_turn(

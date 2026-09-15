@@ -1699,6 +1699,7 @@ def _export_turn_subtree(
         core_attrs, provider = _chat_core_attributes(llm_call)
         raw_call_attrs = _merge_raw(
             core_attrs,
+            llm_call.get("attributes"),
             _identity_attributes(
                 session_id=session_id,
                 platform=platform,
