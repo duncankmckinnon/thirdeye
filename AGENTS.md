@@ -14,8 +14,9 @@ data and credentials as private.
 - Put platform-neutral filesystem and process behavior in `src/thirdeye/_compat/`.
   Prefer those helpers when process detachment, locking, or filesystem details
   differ across operating systems.
-- Run pre-commit before handing off changes. It checks structured files, merge
-  markers, whitespace, line endings, Ruff linting, and Ruff formatting.
+- Always run pre-commit before handing off changes or opening a pull request.
+  It checks structured files, merge markers, whitespace, line endings, Ruff
+  linting, and Ruff formatting.
 
 ```bash
 uv run pre-commit run --all-files
@@ -81,9 +82,10 @@ uv run pytest -q
 uv run pre-commit run --all-files
 ```
 
-Run `uv run pytest -q` and pre-commit for changes that cross shared storage,
-tracing, CLI, or platform boundaries. For platform work, test the matching
-adapter and add fixtures that represent only synthetic input.
+Always run `uv run pre-commit run --all-files` before a pull request. Also run
+`uv run pytest -q` for changes that cross shared storage, tracing, CLI, or
+platform boundaries. For platform work, test the matching adapter and add
+fixtures that represent only synthetic input.
 
 Tests must be hermetic. Use `tmp_path`, `monkeypatch`, and the protections in
 `tests/conftest.py`; never read or modify real agent configuration, credentials,
