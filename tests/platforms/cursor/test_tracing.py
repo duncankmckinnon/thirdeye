@@ -15,6 +15,7 @@ from thirdeye.platforms.cursor.live_spans import emit_live_interactions
 from thirdeye.platforms.cursor.local_history import local_turn
 from thirdeye.platforms.cursor.subagents import cursor_subagent_generation_id
 from thirdeye.platforms.cursor.tracing import (
+    build_session_turn,
     build_turn,
     resolve_subagent_export,
     tool_calls_for_generation,
@@ -213,6 +214,153 @@ def test_build_turn_enriches_missing_cli_content_and_request_id_from_cursor_file
     ]
     assert call["attributes"]["cursor.request_id"] == "req-cli-1"
     assert call["usage"] == {}
+
+
+def test_build_session_turn_enriches_final_cli_call_with_local_transcript(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    """CLI fallback keeps hook reasoning and supplements its missing exchange."""
+    sid = "cli-session"
+    transcript_root = tmp_path / "agent-transcripts"
+    transcript_path = transcript_root / sid / f"{sid}.jsonl"
+    transcript_path.parent.mkdir(parents=True)
+    transcript_path.write_text(
+        "\n".join(
+            json.dumps(record)
+            for record in (
+                {"role": "user", "message": {"content": [{"type": "text", "text": "CLI prompt"}]}},
+                {
+                    "role": "assistant",
+                    "message": {"content": [{"type": "text", "text": "CLI response"}]},
+                },
+                {"type": "turn_ended"},
+            )
+        ),
+        encoding="utf-8",
+    )
+    chat_root = tmp_path / "chats"
+    db_path = chat_root / "workspace" / sid / "store.db"
+    db_path.parent.mkdir(parents=True)
+    with closing(sqlite3.connect(db_path)) as connection:
+        connection.execute("CREATE TABLE blobs (data BLOB NOT NULL)")
+        connection.execute(
+            "INSERT INTO blobs VALUES (?)",
+            (
+                b'prefix {"role":"user","providerOptions":{"cursor":{"requestId":"req-cli-1"}}} suffix',
+            ),
+        )
+        connection.commit()
+    monkeypatch.setenv("THIRDEYE_CURSOR_TRANSCRIPT_ROOTS", str(transcript_root))
+    monkeypatch.setenv("THIRDEYE_CURSOR_CHAT_ROOTS", str(chat_root))
+
+    store = Store(Config(root=tmp_path))
+    _append(store, sid, "session_start", {})
+    _append(
+        store,
+        sid,
+        "assistant_message",
+        {
+            "generation_id": "cli-intermediate-generation",
+            "text": "Intermediate hook text",
+            "model": "gpt-5",
+        },
+    )
+    _append(
+        store,
+        sid,
+        "assistant_thought",
+        {
+            "generation_id": "cli-final-generation",
+            "text": "CLI reasoning",
+            "model": "gpt-5",
+        },
+    )
+    stop_seq = _append(store, sid, "turn_stop", {})
+
+    turn = build_session_turn(
+        session_dir_=session_dir(tmp_path, "cursor", sid),
+        session_id=sid,
+        stop_seq=stop_seq,
+    )
+
+    assert turn is not None
+    assert turn["input_message"] == "CLI prompt"
+    assert turn["output_message"] == "CLI response"
+    intermediate_call, call = turn["llm_calls"]
+    assert intermediate_call["input_messages"] == []
+    assert intermediate_call["output_messages"] == [
+        {
+            "role": "assistant",
+            "parts": [{"type": "text", "content": "Intermediate hook text"}],
+        }
+    ]
+    assert "attributes" not in intermediate_call
+    assert call["input_messages"] == [
+        {"role": "user", "parts": [{"type": "text", "content": "CLI prompt"}]}
+    ]
+    assert call["output_messages"] == [
+        {
+            "role": "assistant",
+            "parts": [
+                {"type": "reasoning", "content": "CLI reasoning"},
+                {"type": "text", "content": "CLI response"},
+            ],
+        }
+    ]
+    assert call["attributes"]["cursor.request_id"] == "req-cli-1"
+
+
+def test_build_session_turn_prefers_hook_prompt_over_local_transcript(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    """Local CLI history supplements a prompt only when hooks omitted it."""
+    sid, generation = "cli-hook-prompt-session", "cli-generation"
+    transcript_root = tmp_path / "agent-transcripts"
+    transcript_path = transcript_root / sid / f"{sid}.jsonl"
+    transcript_path.parent.mkdir(parents=True)
+    transcript_path.write_text(
+        "\n".join(
+            json.dumps(record)
+            for record in (
+                {
+                    "role": "user",
+                    "message": {"content": [{"type": "text", "text": "local prompt"}]},
+                },
+                {
+                    "role": "assistant",
+                    "message": {"content": [{"type": "text", "text": "local response"}]},
+                },
+            )
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("THIRDEYE_CURSOR_TRANSCRIPT_ROOTS", str(transcript_root))
+    monkeypatch.setenv("THIRDEYE_CURSOR_CHAT_ROOTS", str(tmp_path / "empty-chats"))
+
+    store = Store(Config(root=tmp_path))
+    _append(store, sid, "session_start", {})
+    _append(store, sid, "user_message", {"generation_id": generation, "prompt": "hook prompt"})
+    _append(
+        store,
+        sid,
+        "assistant_thought",
+        {"generation_id": generation, "text": "CLI reasoning", "model": "gpt-5"},
+    )
+    stop_seq = _append(store, sid, "turn_stop", {})
+
+    turn = build_session_turn(
+        session_dir_=session_dir(tmp_path, "cursor", sid),
+        session_id=sid,
+        stop_seq=stop_seq,
+    )
+
+    assert turn is not None
+    assert turn["input_message"] == "hook prompt"
+    assert turn["output_message"] == "local response"
+    call = turn["llm_calls"][0]
+    assert call["input_messages"] == [
+        {"role": "user", "parts": [{"type": "text", "content": "hook prompt"}]}
+    ]
 
 
 def test_build_turn_does_not_recover_local_data_for_a_historical_stop(
