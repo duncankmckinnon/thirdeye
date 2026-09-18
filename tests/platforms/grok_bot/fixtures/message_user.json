@@ -1,0 +1,14 @@
+{
+  "kind": "message",
+  "id": "entry_user_1",
+  "role": "user",
+  "content": "Add grok_bot tracing",
+  "isStreaming": false,
+  "timestampMs": 1789678950000,
+  "clientNonce": "nonce-1",
+  "fromAgent": {
+    "id": "user",
+    "kind": "user"
+  },
+  "requestId": "req-abc-1"
+}

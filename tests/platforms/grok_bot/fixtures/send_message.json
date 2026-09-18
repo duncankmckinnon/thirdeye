@@ -1,0 +1,14 @@
+{
+  "kind": "send-message",
+  "id": "entry_send_1",
+  "message": {
+    "type": "text",
+    "content": "ping Implementer"
+  },
+  "timestampMs": 1789678960000,
+  "requestId": "req-abc-2",
+  "deliverTo": {
+    "id": "agent-uuid-2",
+    "name": "Implementer"
+  }
+}

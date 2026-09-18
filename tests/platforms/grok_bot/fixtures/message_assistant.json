@@ -1,0 +1,14 @@
+{
+  "kind": "message",
+  "id": "entry_asst_1",
+  "role": "assistant",
+  "content": "Looks good \u2014 proceeding.",
+  "isStreaming": false,
+  "timestampMs": 1789678955358,
+  "toAgent": {
+    "id": "agent-uuid-1",
+    "name": "Orchestrator",
+    "kind": "agent"
+  },
+  "requestId": "req-abc-1"
+}

@@ -1,0 +1,9 @@
+{
+  "kind": "tool-call",
+  "id": "tool_shell_1",
+  "name": "Shell",
+  "status": "done",
+  "summary": "run pytest",
+  "timestampMs": 1789678953000,
+  "requestId": "req-abc-1"
+}

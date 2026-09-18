@@ -1,0 +1,10 @@
+{
+  "kind": "event",
+  "id": "entry_event_1",
+  "event": {
+    "type": "status",
+    "name": "thinking"
+  },
+  "timestampMs": 1789678952000,
+  "requestId": "req-abc-1"
+}
