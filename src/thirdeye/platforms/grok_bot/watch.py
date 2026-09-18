@@ -8,6 +8,8 @@ Install arms the kick; ``on_store_mutation`` (aliases) runs a short sync via
 from __future__ import annotations
 
 import json
+import threading
+import time
 from pathlib import Path
 from typing import Any
 
@@ -428,4 +430,159 @@ def on_action_indicator(
         cwd=cwd,
         **kwargs,
     )
+
+
+# ---------------------------------------------------------------------------
+# Real FS/mtime observer (Wave 4 RC) — armed by install, stopped by uninstall.
+# Short-lived / idle-capable; not a boot/pidfile daemon SoT.
+# ---------------------------------------------------------------------------
+
+_OBSERVERS: dict[int, "_StoreMtimeObserver"] = {}
+_OBSERVERS_LOCK = threading.Lock()
+
+
+def _file_stamp(path: Path) -> tuple[int, int] | None:
+    try:
+        st = path.stat()
+    except OSError:
+        return None
+    if not path.is_file():
+        return None
+    return (st.st_size, st.st_mtime_ns)
+
+
+class _StoreMtimeObserver:
+    """Poll agents/*/store.db (+ WAL) mtime; on change run on_store_mutation."""
+
+    def __init__(self, platform: Any, agents_root: Path, *, interval: float = 0.05) -> None:
+        self._platform = platform
+        self._agents_root = Path(agents_root)
+        self._interval = interval
+        self._stop = threading.Event()
+        self._stamps: dict[str, tuple[int, int] | None] = {}
+        self._thread = threading.Thread(
+            target=self._loop,
+            name="thirdeye-grok-bot-store-observer",
+            daemon=True,
+        )
+
+    def start(self) -> None:
+        self._thread.start()
+
+    def stop(self, *, join_timeout: float = 2.0) -> None:
+        self._stop.set()
+        if self._thread.is_alive():
+            self._thread.join(timeout=join_timeout)
+
+    def _loop(self) -> None:
+        while not self._stop.is_set():
+            try:
+                if not is_store_kick_enabled(self._platform):
+                    break
+                self._scan_once()
+            except Exception:
+                # Fail-open: never raise into the agent process.
+                pass
+            if self._stop.wait(self._interval):
+                break
+
+    def _iter_store_paths(self) -> list[Path]:
+        root = self._agents_root
+        out: list[Path] = []
+        try:
+            if not root.is_dir():
+                return out
+            for child in root.iterdir():
+                try:
+                    if not child.is_dir():
+                        continue
+                except OSError:
+                    continue
+                db = child / "store.db"
+                out.append(db)
+                # WAL changes count as activity even if DB mtime lags.
+                out.append(Path(str(db) + "-wal"))
+        except OSError:
+            return out
+        return out
+
+    def _scan_once(self) -> None:
+        seen_keys: set[str] = set()
+        changed_dbs: set[Path] = set()
+        for path in self._iter_store_paths():
+            key = str(path)
+            seen_keys.add(key)
+            stamp = _file_stamp(path)
+            prev = self._stamps.get(key, object())
+            if stamp != prev:
+                self._stamps[key] = stamp
+                # Map WAL path back to store.db
+                db = path if path.name == "store.db" else path.parent / "store.db"
+                if stamp is not None or path.name == "store.db":
+                    if db.exists() or path.name == "store.db":
+                        changed_dbs.add(db)
+        # Drop stamps for vanished paths
+        for key in list(self._stamps):
+            if key not in seen_keys:
+                del self._stamps[key]
+        for db in changed_dbs:
+            if not db.exists():
+                continue
+            agent_id = db.parent.name
+            try:
+                on_store_mutation(
+                    self._platform,
+                    store_path=db,
+                    agents_root=self._agents_root,
+                    conversation_id=agent_id,
+                    agent_id=agent_id,
+                    agent_name="",
+                    cwd=str(self._agents_root.parent),
+                )
+            except Exception:
+                continue
+
+
+def start_store_observer(
+    platform: Any,
+    *,
+    agents_root: Path | str,
+    interval: float = 0.05,
+) -> _StoreMtimeObserver:
+    """Arm a box-level mtime observer for ``agents/*/store.db``."""
+    root = Path(agents_root)
+    key = id(platform)
+    with _OBSERVERS_LOCK:
+        old = _OBSERVERS.pop(key, None)
+        if old is not None:
+            old.stop()
+        obs = _StoreMtimeObserver(platform, root, interval=interval)
+        _OBSERVERS[key] = obs
+        obs.start()
+        return obs
+
+
+def stop_store_observer(platform: Any = None) -> None:
+    """Disarm observer for ``platform`` (or all if platform is None)."""
+    with _OBSERVERS_LOCK:
+        if platform is None:
+            items = list(_OBSERVERS.items())
+            _OBSERVERS.clear()
+        else:
+            key = id(platform)
+            obs = _OBSERVERS.pop(key, None)
+            items = [(key, obs)] if obs is not None else []
+    for _key, obs in items:
+        if obs is not None:
+            obs.stop()
+
+
+def is_store_observer_running(platform: Any = None) -> bool:
+    with _OBSERVERS_LOCK:
+        if platform is None:
+            return any(
+                obs._thread.is_alive() for obs in _OBSERVERS.values()  # noqa: SLF001
+            )
+        obs = _OBSERVERS.get(id(platform))
+        return bool(obs is not None and obs._thread.is_alive())  # noqa: SLF001
 
