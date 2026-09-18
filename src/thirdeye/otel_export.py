@@ -111,7 +111,7 @@ _FLUSH_TIMEOUT_MS = 2000
 # internal key differs from the name their CLI is known by need an entry; any
 # other platform is used verbatim. Deliberately separate from `thirdeye.platform`
 # and from the configured service name, which both stay the internal key.
-_AGENT_NAMES = {"claude": "claude-code", "cursor": "cursor"}
+_AGENT_NAMES = {"claude": "claude-code", "cursor": "cursor", "grok_bot": "grok-bot"}
 
 # Where a turn's model hides when the turn records no individual model calls to
 # read it off. A subagent invocation reconstructed from a start/stop hook pair

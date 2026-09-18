@@ -6,7 +6,7 @@ from typing import Any
 
 from thirdeye.platforms.copilot.constants import CLI_HOOK_EVENT_ALIASES
 
-_KNOWN_PLATFORMS = frozenset({"claude", "codex", "cursor", "copilot"})
+_KNOWN_PLATFORMS = frozenset({"claude", "codex", "cursor", "copilot", "grok_bot"})
 _CURSOR_MARKERS = ("cursor_version", "composer_mode")
 # Copilot CLI natively emits camelCase hook names.  Those names are not Cursor
 # evidence when the expected platform is Copilot; Cursor-only camelCase events

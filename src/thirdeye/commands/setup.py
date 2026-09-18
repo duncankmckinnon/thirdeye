@@ -17,6 +17,7 @@ _PLATFORM_LABELS = {
     "codex": "Codex CLI",
     "cursor": "Cursor",
     "copilot": "GitHub Copilot CLI",
+    "grok_bot": "Grok Bot",
 }
 
 _SKILL_TARGET_LABELS = {
@@ -79,6 +80,11 @@ def _install_tracing(platform_name: str, platform: Platform | None = None) -> bo
             platform = add_commands._resolve_platform(platform_name, force=True)
     platform.install()
     click.echo(f"  Installed tracing for {platform.display_name}")
+    # Q4: Cursor setup path always co-installs grok_bot.
+    if platform_name == "cursor":
+        grok = add_commands._resolve_platform("grok_bot")
+        grok.install()
+        click.echo(f"  Installed tracing for {grok.display_name}")
     return True
 
 

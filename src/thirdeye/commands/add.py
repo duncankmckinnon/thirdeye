@@ -11,12 +11,14 @@ from thirdeye.platforms.claude.install import ClaudePlatform
 from thirdeye.platforms.codex.install import CodexPlatform
 from thirdeye.platforms.copilot.install import CopilotPlatform
 from thirdeye.platforms.cursor.install import CursorPlatform
+from thirdeye.platforms.grok_bot.install import GrokBotPlatform
 
 PLATFORMS: dict[str, type[Platform]] = {
     "claude": ClaudePlatform,
     "codex": CodexPlatform,
     "cursor": CursorPlatform,
     "copilot": CopilotPlatform,
+    "grok_bot": GrokBotPlatform,
 }
 
 # Config files that may still reference console scripts for platforms this
@@ -29,6 +31,9 @@ ORPHAN_CONFIG_PATHS: tuple[Path, ...] = (Path.home() / ".gemini" / "settings.jso
 def _platform_options(fn):
     fn = click.option(
         "--copilot", "platform_flag", flag_value="copilot", help="GitHub Copilot CLI."
+    )(fn)
+    fn = click.option(
+        "--grok-bot", "platform_flag", flag_value="grok_bot", help="Grok Bot."
     )(fn)
     fn = click.option("--cursor", "platform_flag", flag_value="cursor", help="Cursor.")(fn)
     fn = click.option("--codex", "platform_flag", flag_value="codex", help="Codex CLI.")(fn)
@@ -111,6 +116,11 @@ def add(platform_flag: str | None, list_platforms: bool, force: bool) -> None:
     platform = _resolve_platform(platform_flag, force=force)
     platform.install()
     click.echo(f"Installed tracing for {platform.display_name}")
+    # Q4: Cursor install always co-installs grok_bot (separate platform, not hooks.json).
+    if platform_flag == "cursor":
+        grok = _resolve_platform("grok_bot")
+        grok.install()
+        click.echo(f"Installed tracing for {grok.display_name}")
 
 
 @click.command(help="Remove tracing hooks for an agentic platform.")
