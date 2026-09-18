@@ -545,3 +545,222 @@ class TestDocsPassiveHappyPath:
             ), (
                 "docs still present poll_and_export without demoting it from the happy path"
             )
+
+
+
+# ---------------------------------------------------------------------------
+# Wave 4 RC — real observer (Reviewer Blocking @ 6e45804)
+# Mutation must trigger export WITHOUT test calling kick/tick/poll APIs.
+# ---------------------------------------------------------------------------
+
+
+def _wait_until(predicate, *, timeout: float = 3.0, interval: float = 0.05) -> bool:
+    import time
+
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        if predicate():
+            return True
+        time.sleep(interval)
+    return False
+
+
+class TestRealStoreObserver:
+    """Install must arm a real FS observer over agents/*/store.db."""
+
+    def test_install_reacts_to_store_mutation_without_test_invoking_kick(
+        self, tmp_path: Path, monkeypatch
+    ):
+        """Writing store.db under the watched root must export without API calls."""
+        from thirdeye import otel_export
+        from thirdeye.platforms.grok_bot.install import GrokBotPlatform
+
+        agents_root = tmp_path / "agent-data" / "agents"
+        agents_root.mkdir(parents=True)
+        state = tmp_path / "grok_state"
+
+        # Prefer install(agents_root=...) or env; Implementer may choose either.
+        monkeypatch.setenv("THIRDEYE_GROK_BOT_AGENTS_ROOT", str(agents_root))
+        try:
+            platform = GrokBotPlatform(state_dir=state, agents_root=agents_root)
+        except TypeError:
+            platform = GrokBotPlatform(state_dir=state)
+
+        captured: list = []
+
+        def fake_export_turn(config, session_dir, session_id, platform_name, cwd, turn, **kw):
+            captured.append({"platform": platform_name, "turn": turn})
+
+        monkeypatch.setattr(otel_export, "export_turn", fake_export_turn)
+
+        platform.install()
+        assert platform.is_installed()
+
+        # Real mutation — do NOT call on_store_mutation / tick / run_once / poll_and_export.
+        db = _write_store(
+            agents_root / AGENT_UUID / "store.db",
+            [
+                (1, "u1", _load("message_user.json")),
+                (2, "a1", _load("message_assistant.json")),
+            ],
+        )
+        db.touch()
+
+        assert _wait_until(lambda: len(captured) >= 1, timeout=4.0), (
+            "install must arm a real observer (mtime/inotify/FSEvents or short-lived kick "
+            "process) so store.db mutation exports without the test calling "
+            "on_store_mutation / tick / run_once / poll_and_export"
+        )
+        assert captured[0]["platform"] == PLATFORM
+        assert captured[0]["turn"] != {}
+
+    def test_uninstall_stops_observer_so_later_mutation_does_not_export(
+        self, tmp_path: Path, monkeypatch
+    ):
+        from thirdeye import otel_export
+        from thirdeye.platforms.grok_bot.install import GrokBotPlatform
+
+        agents_root = tmp_path / "agent-data" / "agents"
+        agents_root.mkdir(parents=True)
+        monkeypatch.setenv("THIRDEYE_GROK_BOT_AGENTS_ROOT", str(agents_root))
+        try:
+            platform = GrokBotPlatform(
+                state_dir=tmp_path / "grok_state", agents_root=agents_root
+            )
+        except TypeError:
+            platform = GrokBotPlatform(state_dir=tmp_path / "grok_state")
+
+        captured: list = []
+        monkeypatch.setattr(
+            otel_export,
+            "export_turn",
+            lambda *a, **k: captured.append(a) or None,
+        )
+
+        platform.install()
+        db = _write_store(
+            agents_root / AGENT_UUID / "store.db",
+            [
+                (1, "u1", _load("message_user.json")),
+                (2, "a1", _load("message_assistant.json")),
+            ],
+        )
+        assert _wait_until(lambda: len(captured) >= 1, timeout=4.0), (
+            "observer must fire at least once before uninstall (same contract as prior test)"
+        )
+        before = len(captured)
+
+        platform.uninstall()
+        assert not platform.is_installed()
+
+        _append_entry(
+            db,
+            3,
+            "u2",
+            {
+                **_load("message_user.json"),
+                "id": "entry_user_2",
+                "requestId": "req-after-uninstall",
+                "content": "should not export",
+            },
+        )
+        _append_entry(
+            db,
+            4,
+            "a2",
+            {
+                **_load("message_assistant.json"),
+                "id": "entry_asst_2",
+                "requestId": "req-after-uninstall",
+                "content": "nope",
+            },
+        )
+        db.touch()
+
+        # Give any stale observer time; must not grow.
+        import time
+
+        time.sleep(1.0)
+        assert len(captured) == before, (
+            "uninstall must stop the observer — later store mutations must not export"
+        )
+
+    def test_remove_cursor_stops_observer_reaction(
+        self, tmp_path: Path, monkeypatch
+    ):
+        from thirdeye.cli import main
+        from thirdeye.commands import add as add_commands
+        from thirdeye import otel_export
+        from thirdeye.platforms.cursor.install import CursorPlatform
+        from thirdeye.platforms.grok_bot.install import GrokBotPlatform
+
+        agents_root = tmp_path / "agent-data" / "agents"
+        agents_root.mkdir(parents=True)
+        monkeypatch.setenv("THIRDEYE_GROK_BOT_AGENTS_ROOT", str(agents_root))
+        hooks = tmp_path / "hooks.json"
+        monkeypatch.setattr(
+            "thirdeye.platforms.cursor.install.shutil.which",
+            lambda _name: None,
+        )
+        try:
+            grok = GrokBotPlatform(
+                state_dir=tmp_path / "grok_state", agents_root=agents_root
+            )
+        except TypeError:
+            grok = GrokBotPlatform(state_dir=tmp_path / "grok_state")
+        cursor = CursorPlatform(hooks_file=hooks)
+
+        captured: list = []
+        monkeypatch.setattr(
+            otel_export,
+            "export_turn",
+            lambda *a, **k: captured.append(a) or None,
+        )
+
+        def resolve(flag: str, force: bool = False):
+            if flag == "cursor":
+                return cursor
+            if flag == PLATFORM:
+                return grok
+            return add_commands.PLATFORMS[flag]()
+
+        monkeypatch.setattr(add_commands, "_resolve_platform", resolve)
+
+        cursor.install()
+        grok.install()
+        db = _write_store(
+            agents_root / AGENT_UUID / "store.db",
+            [
+                (1, "u1", _load("message_user.json")),
+                (2, "a1", _load("message_assistant.json")),
+            ],
+        )
+        assert _wait_until(lambda: len(captured) >= 1, timeout=4.0)
+        before = len(captured)
+
+        runner = CliRunner()
+        result = runner.invoke(main, ["remove", "--cursor"], catch_exceptions=False)
+        assert result.exit_code == 0, result.output
+
+        _append_entry(
+            db,
+            3,
+            "u3",
+            {
+                **_load("message_user.json"),
+                "id": "u3",
+                "requestId": "req-post-remove",
+                "content": "after remove",
+            },
+        )
+        db.touch()
+        import time
+
+        time.sleep(1.0)
+        assert len(captured) == before, (
+            "remove --cursor must co-stop the grok observer"
+        )
+        # Still no hooks.json grok pollution.
+        if hooks.exists():
+            assert "grok_bot" not in hooks.read_text(encoding="utf-8").lower()
+
