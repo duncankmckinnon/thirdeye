@@ -11,7 +11,7 @@
 [![Python](https://img.shields.io/pypi/pyversions/thrdi.svg)](https://pypi.org/project/thrdi/)
 [![License](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 
-Trace every agent session on your machine — Claude Code, Codex, Cursor, Copilot —
+Trace every agent session on your machine — Claude Code, Codex, Cursor, Copilot, Grok Bot —
 into one history you and your agents can manage, search, and evaluate.
 
 Thirdeye persists each session as a durable, append-only local event history.
