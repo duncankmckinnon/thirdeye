@@ -314,6 +314,7 @@ class TestUninstallDisablesKick:
         assert _kick_enabled(platform)
         platform.uninstall()
         assert not _kick_enabled(platform)
+        assert not platform.is_installed(), "uninstall must clear enablement marker"
 
     def test_remove_grok_bot_cli_disables_kick(self, tmp_path: Path, monkeypatch):
         from thirdeye.cli import main
@@ -463,3 +464,84 @@ class TestKickFailOpenAndWatermark:
         db.touch()
         _invoke_store_kick(platform, store_path=db, agents_root=agents_root)
         assert len(captured) > first
+
+
+class TestKickMissingPathAndPlatformAttrs:
+    def test_kick_on_missing_store_fail_open(self, tmp_path: Path, monkeypatch):
+        from thirdeye import otel_export
+
+        platform = _platform(tmp_path)
+        platform.install()
+        agents_root = tmp_path / "agents"
+        agents_root.mkdir(parents=True)
+        missing = agents_root / AGENT_UUID / "store.db"
+
+        exported: list = []
+        monkeypatch.setattr(
+            otel_export, "export_turn", lambda *a, **k: exported.append((a, k))
+        )
+        _invoke_store_kick(platform, store_path=missing, agents_root=agents_root)
+        assert exported == []
+
+    def test_kick_export_sets_thirdeye_platform_grok_bot(
+        self, tmp_path: Path, monkeypatch
+    ):
+        from thirdeye import otel_export
+
+        platform = _platform(tmp_path)
+        platform.install()
+        agents_root = tmp_path / "agents"
+        db = _write_store(
+            agents_root / AGENT_UUID / "store.db",
+            [
+                (1, "u1", _load("message_user.json")),
+                (2, "a1", _load("message_assistant.json")),
+            ],
+        )
+        captured: list = []
+
+        def fake_export_turn(config, session_dir, session_id, platform_name, cwd, turn, **kw):
+            captured.append({"platform": platform_name, "turn": turn})
+
+        monkeypatch.setattr(otel_export, "export_turn", fake_export_turn)
+        _invoke_store_kick(platform, store_path=db, agents_root=agents_root)
+        assert captured
+        for item in captured:
+            assert item["platform"] == PLATFORM
+            attrs = (item["turn"] or {}).get("attributes") or {}
+            assert (
+                attrs.get("thirdeye.platform") == PLATFORM
+                or attrs.get("platform") == PLATFORM
+            ), "exported turn must carry thirdeye.platform=grok_bot"
+
+
+class TestDocsPassiveHappyPath:
+    def test_docs_happy_path_is_not_manual_poll_and_export(self):
+        """Docs must not present poll_and_export as the primary happy path."""
+        doc = Path(__file__).resolve().parents[3] / "docs" / "grok-bot.md"
+        assert doc.is_file(), f"missing {doc}"
+        text = doc.read_text(encoding="utf-8")
+        # Happy-path section should describe kick/passive install, not lead with
+        # "call poll_and_export yourself".
+        lower = text.lower()
+        assert "passive" in lower or "kick" in lower or "store" in lower
+        # If poll_and_export appears, it must be demoted (advanced / optional).
+        if "poll_and_export" in text:
+            # Rough structure check: first occurrence should not be under a
+            # primary "how to run" framing that contradicts install-once.
+            idx = text.index("poll_and_export")
+            window = text[max(0, idx - 400) : idx + 200].lower()
+            assert any(
+                marker in window
+                for marker in (
+                    "advanced",
+                    "optional",
+                    "manual",
+                    "not required",
+                    "do **not** need",
+                    "do not need",
+                    "library",
+                )
+            ), (
+                "docs still present poll_and_export without demoting it from the happy path"
+            )
