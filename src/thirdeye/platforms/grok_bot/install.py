@@ -19,6 +19,7 @@ from thirdeye.platforms.grok_bot.constants import (
 KICK_ENABLED = "kick.enabled"
 WATCHER_ENABLED = "watcher.enabled"
 OBSERVER_PID = "observer.pid"
+SUPERVISOR_PID = "supervisor.pid"
 AGENTS_ROOT_ENV = "THIRDEYE_GROK_BOT_AGENTS_ROOT"
 DEFAULT_AGENTS_ROOT = Path.home() / "agent-data" / "agents"
 
@@ -58,6 +59,10 @@ class GrokBotPlatform(Platform):
     def _pid_file(self) -> Path:
         return self._state_dir / OBSERVER_PID
 
+    @property
+    def _supervisor_pid_file(self) -> Path:
+        return self._state_dir / SUPERVISOR_PID
+
     def _resolve_agents_root(self) -> Path | None:
         if self._agents_root is not None:
             return self._agents_root
@@ -75,6 +80,7 @@ class GrokBotPlatform(Platform):
             sys.executable,
             "-m",
             "thirdeye.platforms.grok_bot.observer_worker",
+            "--supervise",
             "--state-dir",
             str(self._state_dir),
             "--agents-root",
@@ -114,17 +120,17 @@ class GrokBotPlatform(Platform):
         except OSError:
             pass
 
-    def _stop_detached_observer(self) -> None:
+    def _kill_pidfile(self, path: Path) -> None:
         from thirdeye._compat import proc
 
         pid: int | None = None
-        if self._pid_file.is_file():
+        if path.is_file():
             try:
-                pid = int(self._pid_file.read_text(encoding="utf-8").strip())
+                pid = int(path.read_text(encoding="utf-8").strip())
             except (OSError, ValueError):
                 pid = None
             try:
-                self._pid_file.unlink()
+                path.unlink()
             except OSError:
                 pass
         if pid is None or not proc.pid_alive(pid):
@@ -141,6 +147,11 @@ class GrokBotPlatform(Platform):
             os.kill(pid, 9)
         except OSError:
             pass
+
+    def _stop_detached_observer(self) -> None:
+        # Supervisor first (owns re-arm), then any leftover worker.
+        self._kill_pidfile(self._supervisor_pid_file)
+        self._kill_pidfile(self._pid_file)
 
     def _in_pytest_process(self) -> bool:
         # Same-process reds monkeypatch export_turn; a detached sibling would
