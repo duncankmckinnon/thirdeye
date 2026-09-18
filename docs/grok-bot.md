@@ -25,18 +25,28 @@ You can also install Grok Bot alone:
 thirdeye add --grok-bot
 ```
 
-Install **only** writes an enablement marker under
-`$THIRDEYE_HOME/platforms/grok_bot/` (default `~/.thirdeye/platforms/grok_bot/`).
-It does **not** add entries to `~/.cursor/hooks.json`, and it does **not**
-start a poller, daemon, or any continuous capture process.
+Install writes an enablement marker under
+`$THIRDEYE_HOME/platforms/grok_bot/` (default `~/.thirdeye/platforms/grok_bot/`)
+and **enables the passive watcher** so new local store rows export automatically.
+It does **not** add entries to `~/.cursor/hooks.json`.
 
 Enable Logfire export if you have not already (`thirdeye logfire enable`).
 Grok Bot spans use the same write token and project as other platforms.
 
-## Running capture (required for live tracing)
+## Passive tracing (passive)
 
-Live tracing starts only when something on the Grok Bot computer calls the
-Python entrypoint (there is no `thirdeye` CLI subcommand for this yet):
+After install (or Cursor co-install), thirdeye **enables a box-side passive
+watcher**. New rows in agent `store.db` `transcript_entries` are polled,
+built into `TurnSpanDict`s, and handed to `thirdeye.otel_export.export_turn`
+(detached, fail-open) with a **seq watermark** so re-polls do not duplicate
+spans. You do **not** need to call a library function for the happy path.
+
+Uninstall (`thirdeye remove --grok-bot`, and `remove --cursor` co-stop) disables
+the watcher and clears its state.
+
+### Advanced: manual one-shot poll
+
+For debugging only, you can drive a single cycle without the watcher:
 
 ```python
 from pathlib import Path
@@ -46,16 +56,12 @@ poll_and_export(
     Path("/home/box/agent-data/agents/<agentUuid>/store.db"),  # example path
     conversation_id="<conversation-id>",
     agent_id="<agentUuid>",
-    agent_name="Orchestrator",  # profile display name
+    agent_name="Orchestrator",
     cwd="/home/box",
 )
 ```
 
-Aliases: `sync_store` and `poll_store` call the same function. Schedule or loop
-that call on each box (for example from a box-local watcher or cron). Each
-successful cycle builds `TurnSpanDict`s and hands them to
-`thirdeye.otel_export.export_turn` (detached, fail-open). Install alone never
-invokes this path.
+Prefer the install-enabled watcher for continuous tracing.
 
 ## Capture path
 

@@ -129,3 +129,8 @@ def remove(platform_flag: str | None) -> None:
     platform = _resolve_platform(platform_flag)
     platform.uninstall()
     click.echo(f"Removed tracing for {platform.display_name}")
+    # Q8: remove --cursor also stops the grok_bot passive watcher (matches co-install).
+    if platform_flag == "cursor":
+        grok = _resolve_platform("grok_bot")
+        grok.uninstall()
+        click.echo(f"Removed tracing for {grok.display_name}")
