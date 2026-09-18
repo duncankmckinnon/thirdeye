@@ -1,8 +1,11 @@
-"""Install / uninstall Grok Bot — arms FS store observer (no Cursor hooks)."""
+"""Install / uninstall Grok Bot — arms detached store observer (no Cursor hooks)."""
 
 from __future__ import annotations
 
 import os
+import subprocess
+import sys
+import time
 from pathlib import Path
 
 from thirdeye.platforms.base import Platform
@@ -13,10 +16,11 @@ from thirdeye.platforms.grok_bot.constants import (
     default_state_dir,
 )
 
-# Marker-gated action kick (Duncan Q1) — not a boot/pidfile daemon SoT.
 KICK_ENABLED = "kick.enabled"
 WATCHER_ENABLED = "watcher.enabled"
+OBSERVER_PID = "observer.pid"
 AGENTS_ROOT_ENV = "THIRDEYE_GROK_BOT_AGENTS_ROOT"
+DEFAULT_AGENTS_ROOT = Path.home() / "agent-data" / "agents"
 
 
 class GrokBotPlatform(Platform):
@@ -50,27 +54,118 @@ class GrokBotPlatform(Platform):
     def _watcher_flag(self) -> Path:
         return self._state_dir / WATCHER_ENABLED
 
+    @property
+    def _pid_file(self) -> Path:
+        return self._state_dir / OBSERVER_PID
+
     def _resolve_agents_root(self) -> Path | None:
         if self._agents_root is not None:
             return self._agents_root
         env_root = os.environ.get(AGENTS_ROOT_ENV)
         if env_root:
             return Path(env_root)
-        return None
+        return DEFAULT_AGENTS_ROOT
+
+    def _spawn_detached_observer(self, agents_root: Path) -> None:
+        """Start a worker that outlives this CLI process (not boot/launchd SoT)."""
+        from thirdeye._compat import IS_WINDOWS, proc
+
+        self._stop_detached_observer()
+        argv = [
+            sys.executable,
+            "-m",
+            "thirdeye.platforms.grok_bot.observer_worker",
+            "--state-dir",
+            str(self._state_dir),
+            "--agents-root",
+            str(agents_root),
+        ]
+        try:
+            log_out = open(self._state_dir / "observer.out", "ab", buffering=0)
+            log_err = open(self._state_dir / "observer.err", "ab", buffering=0)
+        except OSError:
+            log_out = subprocess.DEVNULL
+            log_err = subprocess.DEVNULL
+
+        popen_kw: dict = {
+            "args": argv,
+            "stdin": subprocess.DEVNULL,
+            "stdout": log_out,
+            "stderr": log_err,
+            "env": os.environ.copy(),
+        }
+        if IS_WINDOWS:
+            popen_kw["creationflags"] = (
+                subprocess.DETACHED_PROCESS | subprocess.CREATE_NEW_PROCESS_GROUP
+            )
+        else:
+            popen_kw["start_new_session"] = True
+            # Keep log fds open across spawn; close_fds=True + parent close
+            # left the worker unable to export on some hosts.
+            popen_kw["close_fds"] = False
+
+        try:
+            child = subprocess.Popen(**popen_kw)
+        except OSError:
+            return
+
+        try:
+            self._pid_file.write_text(str(child.pid) + "\n", encoding="utf-8")
+        except OSError:
+            pass
+
+    def _stop_detached_observer(self) -> None:
+        from thirdeye._compat import proc
+
+        pid: int | None = None
+        if self._pid_file.is_file():
+            try:
+                pid = int(self._pid_file.read_text(encoding="utf-8").strip())
+            except (OSError, ValueError):
+                pid = None
+            try:
+                self._pid_file.unlink()
+            except OSError:
+                pass
+        if pid is None or not proc.pid_alive(pid):
+            return
+        try:
+            os.kill(pid, 15)
+        except OSError:
+            return
+        for _ in range(20):
+            if not proc.pid_alive(pid):
+                return
+            time.sleep(0.05)
+        try:
+            os.kill(pid, 9)
+        except OSError:
+            pass
+
+    def _in_pytest_process(self) -> bool:
+        # Same-process reds monkeypatch export_turn; a detached sibling would
+        # race the shared watermark and skip the patched call. Detached tests
+        # install via a fresh ``python -c`` child that does not import pytest.
+        return "pytest" in sys.modules
 
     def install(self) -> None:
         self._state_dir.mkdir(parents=True, exist_ok=True)
         self._marker.write_text("1\n", encoding="utf-8")
         self._kick_flag.write_text("1\n", encoding="utf-8")
         self._watcher_flag.write_text("1\n", encoding="utf-8")
-        # Arm real FS/mtime observer when agents root is known (env or ctor).
         root = self._resolve_agents_root()
-        if root is not None:
-            from thirdeye.platforms.grok_bot import watch as watch_mod
+        if root is None:
+            return
+        if self._in_pytest_process():
+            try:
+                from thirdeye.platforms.grok_bot import watch as watch_mod
 
-            self._observer = watch_mod.start_store_observer(
-                self, agents_root=root
-            )
+                self._observer = watch_mod.start_store_observer(self, agents_root=root)
+            except Exception:
+                self._observer = None
+            return
+        self._observer = None
+        self._spawn_detached_observer(root)
 
     def is_installed(self) -> bool:
         return self._marker.is_file()
@@ -104,10 +199,18 @@ class GrokBotPlatform(Platform):
         for path in (self._kick_flag, self._watcher_flag):
             if path.exists():
                 path.unlink()
+        self._stop_detached_observer()
         watermark = self._state_dir / "watermarks.json"
         if watermark.exists():
             watermark.unlink()
         if self._marker.exists():
             self._marker.unlink()
+        for name in ("observer.out", "observer.err", "observer.heartbeat"):
+            path = self._state_dir / name
+            if path.exists():
+                try:
+                    path.unlink()
+                except OSError:
+                    pass
         if self._state_dir.exists() and not any(self._state_dir.iterdir()):
             self._state_dir.rmdir()
