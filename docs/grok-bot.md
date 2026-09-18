@@ -25,19 +25,45 @@ You can also install Grok Bot alone:
 thirdeye add --grok-bot
 ```
 
-Install records an enablement marker under
+Install **only** writes an enablement marker under
 `$THIRDEYE_HOME/platforms/grok_bot/` (default `~/.thirdeye/platforms/grok_bot/`).
-It does **not** add entries to `~/.cursor/hooks.json`.
+It does **not** add entries to `~/.cursor/hooks.json`, and it does **not**
+start a poller, daemon, or any continuous capture process.
 
 Enable Logfire export if you have not already (`thirdeye logfire enable`).
 Grok Bot spans use the same write token and project as other platforms.
 
+## Running capture (required for live tracing)
+
+Live tracing starts only when something on the Grok Bot computer calls the
+Python entrypoint (there is no `thirdeye` CLI subcommand for this yet):
+
+```python
+from pathlib import Path
+from thirdeye.platforms.grok_bot.capture import poll_and_export
+
+poll_and_export(
+    Path("/home/box/agent-data/agents/<agentUuid>/store.db"),  # example path
+    conversation_id="<conversation-id>",
+    agent_id="<agentUuid>",
+    agent_name="Orchestrator",  # profile display name
+    cwd="/home/box",
+)
+```
+
+Aliases: `sync_store` and `poll_store` call the same function. Schedule or loop
+that call on each box (for example from a box-local watcher or cron). Each
+successful cycle builds `TurnSpanDict`s and hands them to
+`thirdeye.otel_export.export_turn` (detached, fail-open). Install alone never
+invokes this path.
+
 ## Capture path
 
-On each Grok Bot computer, thirdeye polls the local agent store:
+When `poll_and_export` runs, it reads the local agent store. A typical layout
+on a Grok Bot computer looks like:
 
 ```text
-/home/box/agent-data/agents/<agentUuid>/store.db
+/home/box/agent-data/agents/<agentUuid>/store.db   # example; use the box's real agent-data root
   → transcript_entries(seq, id, entry)
 ```
 
@@ -51,8 +77,8 @@ Mapped entry kinds (Wave 2):
 | `tool-call` | **Deferred** — outline rows are skipped until full tool body mapping lands |
 
 Entries that share a `requestId` become one `TurnSpanDict`. Completed turns are
-handed to `thirdeye.otel_export.export_turn` (detached, fail-open). Empty or
-missing turns are never exported as `{}`.
+passed only to `thirdeye.otel_export.export_turn` (detached, fail-open) — never
+an empty `{}` payload.
 
 ### Fail-open behavior
 
