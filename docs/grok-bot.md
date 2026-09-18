@@ -95,73 +95,56 @@ span attributes.
 ## Logfire MCP: query examples for alignment
 
 Orchestrator (and other agents) can use Logfire MCP `query_run` against the
-`records` table to find Grok Bot sessions and reconstruct trajectories for
-instruction / brief improvements. There is no first-class "get transcript"
-tool — filter on the attributes above. `query_run` windows are typically on
-the order of ~14 days.
+`records` table (DataFusion SQL) to find Grok Bot sessions and reconstruct
+trajectories for instruction / brief improvements. There is no first-class
+"get transcript" tool — filter on the attributes above. `query_run` windows
+are typically ≤14 days. After a hit, `project_logfire_link(trace_id=…)` opens
+the trace for human review.
 
-### 1. Recent Grok Bot agent turns
+### 1. Recent Grok Bot sessions by agent
 
 ```sql
-SELECT
-  start_timestamp,
-  span_name,
-  attributes->>'gen_ai.conversation.id' AS conversation_id,
-  attributes->>'gen_ai.agent.name' AS agent_name,
-  attributes->>'thirdeye.grok_bot.agent_id' AS agent_id,
-  attributes->>'thirdeye.grok_bot.request_id' AS request_id
+SELECT start_timestamp, trace_id,
+       attributes->>'gen_ai.conversation.id' AS conversation_id,
+       attributes->>'gen_ai.agent.name' AS agent_name,
+       attributes->>'thirdeye.platform' AS platform
 FROM records
 WHERE attributes->>'thirdeye.platform' = 'grok_bot'
-  AND span_name = 'invoke_agent'
 ORDER BY start_timestamp DESC
-LIMIT 50
+LIMIT 50;
 ```
 
-### 2. One conversation’s turn tree (trajectory)
-
-Replace the conversation id:
+### 2. One conversation trajectory (alignment loop)
 
 ```sql
-SELECT
-  start_timestamp,
-  span_name,
-  parent_span_id,
-  span_id,
-  attributes->>'gen_ai.agent.name' AS agent_name,
-  attributes->>'thirdeye.grok_bot.request_id' AS request_id,
-  attributes->>'gen_ai.input.messages' AS input_messages,
-  attributes->>'gen_ai.output.messages' AS output_messages
+SELECT start_timestamp, span_name, duration,
+       attributes->>'gen_ai.operation.name' AS op,
+       attributes->>'gen_ai.conversation.id' AS conversation_id
 FROM records
 WHERE attributes->>'thirdeye.platform' = 'grok_bot'
   AND attributes->>'gen_ai.conversation.id' = '<conversation-id>'
-ORDER BY start_timestamp ASC
-LIMIT 500
+ORDER BY start_timestamp;
 ```
 
-Use this shape to walk session → `invoke_agent` → chat/tool children for a
-single bot conversation before rewriting that agent’s brief.
+Walk session → `invoke_agent` → chat/tool children before rewriting that
+agent’s brief. Tool-call bodies are still unmapped in capture.
 
-### 3. Filter by agent (multi-bot)
+### 3. Multi-bot filter by agent id/name
 
 ```sql
-SELECT
-  start_timestamp,
-  attributes->>'gen_ai.conversation.id' AS conversation_id,
-  attributes->>'gen_ai.agent.name' AS agent_name,
-  attributes->>'thirdeye.grok_bot.agent_id' AS agent_id,
-  span_name
+SELECT attributes->>'gen_ai.agent.name' AS agent_name,
+       attributes->>'gen_ai.conversation.id' AS conversation_id,
+       count(*) AS spans
 FROM records
 WHERE attributes->>'thirdeye.platform' = 'grok_bot'
-  AND (
-    attributes->>'gen_ai.agent.name' = 'Orchestrator'
-    OR attributes->>'thirdeye.grok_bot.agent_id' = '<agent-uuid>'
-  )
-ORDER BY start_timestamp DESC
-LIMIT 100
+  AND (attributes->>'gen_ai.agent.name' = '<agent-name>'
+       OR attributes->>'thirdeye.grok_bot.agent_id' = '<agent-uuid>')
+GROUP BY 1, 2
+ORDER BY spans DESC;
 ```
 
-Keep bots distinct: always key on agent id (and conversation id), not a single
-shared agent name for the whole fleet.
+Keep bots distinct: key on agent id and conversation id, not one shared name
+for the whole fleet.
 
 ## Related
 
