@@ -1,28 +1,27 @@
-"""RED tests — Wave 4 passive Grok Bot capture (install once → auto export).
+"""RED tests — Wave 4 RETARGET: store-mutation kick → export (Duncan Q1).
 
-Must FAIL until Implementer lands passive watcher wiring. Duncan contract:
-after ``thirdeye add --grok-bot`` / ``--cursor`` co-install, turns upload to
-Logfire automatically — no manual ``poll_and_export`` happy path.
+Duncan lock: passive like Claude/Cursor/Codex/Copilot — **event/action kick**,
+not a boot/pidfile long-lived poll daemon as SoT.
 
-Covers:
-1. Install starts/enables passive watcher (not marker-only).
-2. New ``transcript_entries`` are exported via shared ``otel_export`` through
-   the watcher/install contract (tests do not call ``poll_and_export`` as the
-   user path).
-3. ``remove --grok-bot`` stops watcher; ``remove --cursor`` co-stops it.
-4. Empty/BUSY store → fail-open; never ``export_turn({})``.
-5. Seq watermark → no duplicate exports on re-poll.
-6. No grok entries in Cursor ``hooks.json``.
+Must FAIL until Implementer lands store-mutation kick wiring. Covers:
+1. Install registers/enables **store-mutation kick** (not “daemon running after boot”).
+2. Simulated ``store.db`` append / mtime / WAL change with kick enabled → export
+   via shared ``otel_export`` without the test calling ``poll_and_export`` (or
+   ``tick``) as the user happy path — the **kick** invokes capture.
+3. Uninstall / ``remove --grok-bot`` (and ``remove --cursor`` co-stop) disables kick.
+4. Fail-open empty/BUSY; seq watermark dedupe; no Cursor hooks.json grok entries.
+5. Boot/pidfile-daemon-as-SoT assertions are obsolete (not required here).
 
-Expected surface (names may alias; behavior locked):
-``GrokBotPlatform.install/uninstall``, ``is_watcher_running`` (or equivalent),
-and ``thirdeye.platforms.grok_bot.watch`` (``tick`` / ``run_once``).
+Expected surface (aliases OK; behavior locked):
+``register_store_kick`` / ``on_store_mutation`` / ``notify_store_change`` (or
+equivalent) enabled by install; disabled by uninstall.
 """
 
 from __future__ import annotations
 
 import json
 import sqlite3
+import time
 from pathlib import Path
 from typing import Any
 
@@ -30,8 +29,8 @@ import pytest
 from click.testing import CliRunner
 
 PLATFORM = "grok_bot"
-AGENT_UUID = "agent-uuid-passive-1"
-CONVERSATION_ID = "conv-passive-1"
+AGENT_UUID = "agent-uuid-kick-1"
+CONVERSATION_ID = "conv-kick-1"
 FIXTURES = Path(__file__).parent / "fixtures"
 
 
@@ -45,6 +44,7 @@ def _write_store(path: Path, entries: list[tuple[int, str, dict[str, Any]]]) -> 
         path.unlink()
     conn = sqlite3.connect(path)
     try:
+        conn.execute("PRAGMA journal_mode=WAL")
         conn.execute(
             "CREATE TABLE transcript_entries ("
             "seq INTEGER PRIMARY KEY, id TEXT UNIQUE, entry TEXT NOT NULL)"
@@ -70,92 +70,141 @@ def _append_entry(path: Path, seq: int, entry_id: str, body: dict[str, Any]) -> 
         conn.commit()
     finally:
         conn.close()
+    # Ensure mtime/WAL identity change is observable.
+    path.touch()
 
 
-def _platform(tmp_path: Path, **kwargs: Any):
+def _platform(tmp_path: Path):
     from thirdeye.platforms.grok_bot.install import GrokBotPlatform
 
-    return GrokBotPlatform(state_dir=tmp_path / "grok_state", **kwargs)
+    return GrokBotPlatform(state_dir=tmp_path / "grok_state")
 
 
-def _watcher_running(platform: Any) -> bool:
-    for name in ("is_watcher_running", "is_passive_running", "is_running"):
+def _kick_enabled(platform: Any) -> bool:
+    """True when install registered store-mutation kick (not boot-daemon SoT)."""
+    for name in (
+        "is_store_kick_enabled",
+        "is_kick_enabled",
+        "is_action_indicator_enabled",
+        "is_mutation_kick_enabled",
+    ):
         fn = getattr(platform, name, None)
         if callable(fn):
             return bool(fn())
-    # Module-level helpers
     try:
         from thirdeye.platforms.grok_bot import watch as watch_mod
     except ImportError:
         return False
-    for name in ("is_running", "is_watcher_running", "status"):
+    for name in (
+        "is_store_kick_enabled",
+        "is_kick_enabled",
+        "kick_enabled",
+        "is_action_indicator_enabled",
+    ):
         fn = getattr(watch_mod, name, None)
         if callable(fn):
-            result = fn(platform) if name != "status" else fn()
-            if isinstance(result, dict):
-                return bool(result.get("running") or result.get("enabled"))
-            return bool(result)
+            try:
+                return bool(fn(platform))
+            except TypeError:
+                return bool(fn())
+    # Explicit kick registration handle.
+    for name in ("store_kick", "mutation_kick", "action_indicator"):
+        if getattr(platform, name, None) is not None:
+            return True
+        try:
+            from thirdeye.platforms.grok_bot import watch as watch_mod
+
+            if getattr(watch_mod, name, None) is not None:
+                return True
+        except ImportError:
+            pass
     return False
 
 
-def _tick_watcher(platform: Any, *, agents_root: Path, **kwargs: Any) -> Any:
-    """Advance the passive loop once (test harness — not the user happy path)."""
+def _invoke_store_kick(
+    platform: Any,
+    *,
+    store_path: Path,
+    agents_root: Path,
+    **kwargs: Any,
+) -> Any:
+    """Fire the store-mutation / action-indicator path (not user poll_and_export)."""
     try:
         from thirdeye.platforms.grok_bot import watch as watch_mod
     except ImportError as exc:
         pytest.fail(f"thirdeye.platforms.grok_bot.watch missing: {exc}")
 
-    for name in ("tick", "run_once", "poll_once", "sync_once"):
-        fn = getattr(watch_mod, name, None)
+    for name in (
+        "on_store_mutation",
+        "notify_store_change",
+        "handle_store_kick",
+        "on_action_indicator",
+        "kick_from_store_change",
+    ):
+        fn = getattr(watch_mod, name, None) or getattr(platform, name, None)
         if callable(fn):
             try:
                 return fn(
                     platform,
+                    store_path=store_path,
                     agents_root=agents_root,
                     conversation_id=CONVERSATION_ID,
+                    agent_id=AGENT_UUID,
+                    agent_name="Orchestrator",
+                    cwd=str(agents_root.parent),
                     **kwargs,
                 )
             except TypeError:
                 try:
-                    return fn(agents_root=agents_root, conversation_id=CONVERSATION_ID, **kwargs)
+                    return fn(
+                        store_path=store_path,
+                        agents_root=agents_root,
+                        conversation_id=CONVERSATION_ID,
+                        agent_id=AGENT_UUID,
+                        agent_name="Orchestrator",
+                        cwd=str(agents_root.parent),
+                        **kwargs,
+                    )
                 except TypeError:
-                    return fn()
+                    return fn(store_path)
+
     pytest.fail(
-        "watch module must expose tick/run_once/poll_once for the passive loop"
+        "watch/install must expose store-mutation kick "
+        "(on_store_mutation / notify_store_change / handle_store_kick) — "
+        "tick/run_once alone is not the Duncan Q1 happy path"
     )
 
 
 # ---------------------------------------------------------------------------
-# 1 + 6: install enables passive watcher; no Cursor hooks.json
+# 1: install enables store-mutation kick (not boot daemon SoT)
 # ---------------------------------------------------------------------------
 
 
-class TestInstallStartsPassiveWatcher:
-    def test_install_enables_watcher_not_marker_only(self, tmp_path: Path):
+class TestInstallRegistersStoreKick:
+    def test_install_enables_store_mutation_kick_not_boot_daemon(self, tmp_path: Path):
         platform = _platform(tmp_path)
-        assert not _watcher_running(platform)
+        assert not _kick_enabled(platform)
         platform.install()
         assert platform.is_installed()
-        assert _watcher_running(platform), (
-            "install must start/enable passive watcher — marker-only is insufficient"
+        assert _kick_enabled(platform), (
+            "install must register/enable store-mutation kick "
+            "(watcher.enabled flag alone / boot pidfile daemon is not enough)"
         )
 
-    def test_add_grok_bot_cli_starts_watcher(self, tmp_path: Path, monkeypatch):
+    def test_add_grok_bot_cli_enables_kick(self, tmp_path: Path, monkeypatch):
         from thirdeye.cli import main
         from thirdeye.commands import add as add_commands
         from thirdeye.platforms.grok_bot.install import GrokBotPlatform
 
-        state = tmp_path / "grok_state"
-        platform = GrokBotPlatform(state_dir=state)
+        platform = GrokBotPlatform(state_dir=tmp_path / "grok_state")
         monkeypatch.setitem(add_commands.PLATFORMS, PLATFORM, lambda **_kw: platform)
 
         runner = CliRunner()
         result = runner.invoke(main, ["add", "--grok-bot"], catch_exceptions=False)
         assert result.exit_code == 0, result.output
-        assert platform.is_installed()
-        assert _watcher_running(platform)
+        assert _kick_enabled(platform)
 
-    def test_add_cursor_co_install_starts_grok_watcher(
+    def test_add_cursor_co_install_enables_kick_without_hooks_json(
         self, tmp_path: Path, monkeypatch
     ):
         from thirdeye.cli import main
@@ -183,83 +232,90 @@ class TestInstallStartsPassiveWatcher:
         runner = CliRunner()
         result = runner.invoke(main, ["add", "--cursor"], catch_exceptions=False)
         assert result.exit_code == 0, result.output
-        assert grok.is_installed()
-        assert _watcher_running(grok)
-        # 6: still not Cursor hooks.json
+        assert _kick_enabled(grok)
         data = json.loads(hooks.read_text(encoding="utf-8")) if hooks.exists() else {}
         blob = json.dumps(data).lower()
         assert "grok_bot" not in blob
-        assert "grok-bot" not in blob or "thirdeye-cursor" in blob
 
 
 # ---------------------------------------------------------------------------
-# 2: passive path exports new entries without user calling poll_and_export
+# 2: store mutation kick → otel_export (no user poll_and_export / tick)
 # ---------------------------------------------------------------------------
 
 
-class TestPassiveExportWithoutManualPoll:
-    def test_watcher_exports_new_entries_via_otel_export(
+class TestStoreMutationKickExports:
+    def test_store_append_kick_exports_via_otel_without_manual_poll(
         self, tmp_path: Path, monkeypatch
     ):
         from thirdeye import otel_export
 
         platform = _platform(tmp_path)
         platform.install()
-        assert _watcher_running(platform)
+        assert _kick_enabled(platform)
 
         agents_root = tmp_path / "agent-data" / "agents"
-        db = _write_store(
-            agents_root / AGENT_UUID / "store.db",
-            [
-                (1, "u1", _load("message_user.json")),
-                (2, "a1", _load("message_assistant.json")),
-            ],
-        )
+        db = _write_store(agents_root / AGENT_UUID / "store.db", [])
 
         captured: list[dict[str, Any]] = []
 
         def fake_export_turn(config, session_dir, session_id, platform_name, cwd, turn, **kw):
             captured.append(
-                {
-                    "session_id": session_id,
-                    "platform": platform_name,
-                    "turn": turn,
-                }
+                {"session_id": session_id, "platform": platform_name, "turn": turn}
             )
 
         monkeypatch.setattr(otel_export, "export_turn", fake_export_turn)
 
-        # Critical: do NOT call capture.poll_and_export here — drive watcher tick.
-        _tick_watcher(
-            platform,
-            agents_root=agents_root,
-            agent_id=AGENT_UUID,
-            agent_name="Orchestrator",
-            cwd=str(tmp_path),
-            store_path=db,
-        )
+        # Simulate bot activity: new transcript rows + observable store change.
+        _append_entry(db, 1, "u1", _load("message_user.json"))
+        _append_entry(db, 2, "a1", _load("message_assistant.json"))
+        time.sleep(0.01)
+        db.touch()
 
-        assert captured, "passive watcher must export via otel_export without manual poll"
+        # Must NOT call capture.poll_and_export or watch.tick as the user path.
+        _invoke_store_kick(platform, store_path=db, agents_root=agents_root)
+
+        assert captured, (
+            "store-mutation kick must export via otel_export without manual poll_and_export"
+        )
         for item in captured:
             assert item["platform"] == PLATFORM
             assert item["turn"] != {}
             assert item["turn"].get("input_message") or item["turn"].get("output_message")
 
+    def test_kick_path_is_not_tick_alias_documentation_only(self, tmp_path: Path):
+        """Retarget: a dedicated kick entrypoint must exist (tick alone is interim)."""
+        try:
+            from thirdeye.platforms.grok_bot import watch as watch_mod
+        except ImportError as exc:
+            pytest.fail(f"watch module missing: {exc}")
+
+        kick_names = (
+            "on_store_mutation",
+            "notify_store_change",
+            "handle_store_kick",
+            "on_action_indicator",
+            "kick_from_store_change",
+        )
+        assert any(callable(getattr(watch_mod, n, None)) for n in kick_names), (
+            "need an explicit store-mutation/action kick API; "
+            "tick/run_once alone does not satisfy Duncan Q1"
+        )
+
 
 # ---------------------------------------------------------------------------
-# 3: uninstall / remove --cursor stops watcher
+# 3: uninstall / remove disables kick
 # ---------------------------------------------------------------------------
 
 
-class TestUninstallStopsWatcher:
-    def test_uninstall_stops_watcher(self, tmp_path: Path):
+class TestUninstallDisablesKick:
+    def test_uninstall_disables_store_kick(self, tmp_path: Path):
         platform = _platform(tmp_path)
         platform.install()
-        assert _watcher_running(platform)
+        assert _kick_enabled(platform)
         platform.uninstall()
-        assert not _watcher_running(platform), "uninstall must stop the passive watcher"
+        assert not _kick_enabled(platform)
 
-    def test_remove_grok_bot_cli_stops_watcher(self, tmp_path: Path, monkeypatch):
+    def test_remove_grok_bot_cli_disables_kick(self, tmp_path: Path, monkeypatch):
         from thirdeye.cli import main
         from thirdeye.commands import add as add_commands
         from thirdeye.platforms.grok_bot.install import GrokBotPlatform
@@ -271,10 +327,9 @@ class TestUninstallStopsWatcher:
         runner = CliRunner()
         result = runner.invoke(main, ["remove", "--grok-bot"], catch_exceptions=False)
         assert result.exit_code == 0, result.output
-        assert not _watcher_running(platform)
+        assert not _kick_enabled(platform)
 
-    def test_remove_cursor_co_stops_grok_watcher(self, tmp_path: Path, monkeypatch):
-        """Q8 default: remove --cursor also stops the grok_bot watcher."""
+    def test_remove_cursor_co_disables_grok_kick(self, tmp_path: Path, monkeypatch):
         from thirdeye.cli import main
         from thirdeye.commands import add as add_commands
         from thirdeye.platforms.cursor.install import CursorPlatform
@@ -289,7 +344,7 @@ class TestUninstallStopsWatcher:
         grok = GrokBotPlatform(state_dir=tmp_path / "grok_state")
         cursor.install()
         grok.install()
-        assert _watcher_running(grok)
+        assert _kick_enabled(grok)
 
         def resolve(flag: str, force: bool = False):
             if flag == "cursor":
@@ -303,49 +358,40 @@ class TestUninstallStopsWatcher:
         runner = CliRunner()
         result = runner.invoke(main, ["remove", "--cursor"], catch_exceptions=False)
         assert result.exit_code == 0, result.output
-        assert not _watcher_running(grok), (
-            "remove --cursor must co-stop the grok_bot passive watcher"
+        assert not _kick_enabled(grok), (
+            "remove --cursor must co-disable grok_bot store-mutation kick"
         )
 
 
 # ---------------------------------------------------------------------------
-# 4: fail-open
+# 4: fail-open + watermark via kick path
 # ---------------------------------------------------------------------------
 
 
-class TestPassiveFailOpen:
-    def test_empty_store_tick_does_not_export_or_raise(
-        self, tmp_path: Path, monkeypatch
-    ):
+class TestKickFailOpenAndWatermark:
+    def test_kick_on_empty_store_fail_open(self, tmp_path: Path, monkeypatch):
         from thirdeye import otel_export
 
         platform = _platform(tmp_path)
         platform.install()
         agents_root = tmp_path / "agents"
-        _write_store(agents_root / AGENT_UUID / "store.db", [])
+        db = _write_store(agents_root / AGENT_UUID / "store.db", [])
 
         exported: list[Any] = []
         monkeypatch.setattr(
-            otel_export,
-            "export_turn",
-            lambda *a, **k: exported.append((a, k)),
+            otel_export, "export_turn", lambda *a, **k: exported.append((a, k))
         )
 
-        _tick_watcher(
-            platform,
-            agents_root=agents_root,
-            agent_id=AGENT_UUID,
-            agent_name="Orchestrator",
-            cwd=str(tmp_path),
-        )
+        _invoke_store_kick(platform, store_path=db, agents_root=agents_root)
         assert exported == []
 
-    def test_busy_store_tick_fail_open(self, tmp_path: Path, monkeypatch):
+    def test_kick_on_busy_store_fail_open(self, tmp_path: Path, monkeypatch):
         platform = _platform(tmp_path)
         platform.install()
         agents_root = tmp_path / "agents"
-        (agents_root / AGENT_UUID).mkdir(parents=True)
-        (agents_root / AGENT_UUID / "store.db").write_text("not-a-db", encoding="utf-8")
+        db = agents_root / AGENT_UUID / "store.db"
+        db.parent.mkdir(parents=True)
+        db.write_text("not-a-db", encoding="utf-8")
 
         real_connect = sqlite3.connect
 
@@ -354,26 +400,15 @@ class TestPassiveFailOpen:
 
         monkeypatch.setattr(sqlite3, "connect", busy_connect)
         try:
-            _tick_watcher(
-                platform,
-                agents_root=agents_root,
-                agent_id=AGENT_UUID,
-                agent_name="Orchestrator",
-                cwd=str(tmp_path),
-            )
+            _invoke_store_kick(platform, store_path=db, agents_root=agents_root)
         except sqlite3.OperationalError:
-            pytest.fail("passive tick must fail-open on BUSY — do not raise")
+            pytest.fail("store-mutation kick must fail-open on BUSY")
         finally:
             monkeypatch.setattr(sqlite3, "connect", real_connect)
 
-
-# ---------------------------------------------------------------------------
-# 5: seq watermark / no duplicate exports
-# ---------------------------------------------------------------------------
-
-
-class TestSeqWatermark:
-    def test_repoll_does_not_reexport_same_seq(self, tmp_path: Path, monkeypatch):
+    def test_kick_watermark_prevents_duplicate_export(
+        self, tmp_path: Path, monkeypatch
+    ):
         from thirdeye import otel_export
 
         platform = _platform(tmp_path)
@@ -395,30 +430,14 @@ class TestSeqWatermark:
 
         monkeypatch.setattr(otel_export, "export_turn", fake_export_turn)
 
-        _tick_watcher(
-            platform,
-            agents_root=agents_root,
-            agent_id=AGENT_UUID,
-            agent_name="Orchestrator",
-            cwd=str(tmp_path),
-            store_path=db,
-        )
+        _invoke_store_kick(platform, store_path=db, agents_root=agents_root)
         first = len(captured)
         assert first >= 1
 
-        _tick_watcher(
-            platform,
-            agents_root=agents_root,
-            agent_id=AGENT_UUID,
-            agent_name="Orchestrator",
-            cwd=str(tmp_path),
-            store_path=db,
-        )
-        assert len(captured) == first, (
-            "seq watermark must prevent duplicate exports on re-poll"
-        )
+        # Same store identity / no new seq — kick again must not re-export.
+        _invoke_store_kick(platform, store_path=db, agents_root=agents_root)
+        assert len(captured) == first, "watermark must prevent duplicate exports"
 
-        # New seq still exports.
         _append_entry(
             db,
             3,
@@ -441,12 +460,6 @@ class TestSeqWatermark:
                 "content": "ok",
             },
         )
-        _tick_watcher(
-            platform,
-            agents_root=agents_root,
-            agent_id=AGENT_UUID,
-            agent_name="Orchestrator",
-            cwd=str(tmp_path),
-            store_path=db,
-        )
+        db.touch()
+        _invoke_store_kick(platform, store_path=db, agents_root=agents_root)
         assert len(captured) > first
