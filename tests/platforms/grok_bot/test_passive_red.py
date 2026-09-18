@@ -942,3 +942,255 @@ sys.exit(0)
             "for box-side observer arming"
         )
 
+
+# ---------------------------------------------------------------------------
+# Wave 4 Blocking — idle-exit → next-mutation re-arm (Orchestrator / Research)
+# Approve at 0a342a5 covers install→CLI-exit survival only. Idle-exit of the
+# detached worker must not leave later store.db mutations silent until a manual
+# respawn: the next mutation must re-arm/spawn export while kick stays armed.
+# ---------------------------------------------------------------------------
+
+
+class TestIdleExitRearmsOnNextMutation:
+    """Worker may idle-exit; next store.db mutation must re-arm without manual kick."""
+
+    def test_idle_exit_seconds_env_is_honored(self):
+        """Tests (and ops) need a short idle; worker must read the env override."""
+        from thirdeye.platforms.grok_bot import observer_worker as ow
+
+        src = Path(ow.__file__).read_text(encoding="utf-8")
+        assert "THIRDEYE_GROK_BOT_IDLE_EXIT_SECONDS" in src or hasattr(
+            ow, "IDLE_EXIT_ENV"
+        ), (
+            "observer_worker must honor THIRDEYE_GROK_BOT_IDLE_EXIT_SECONDS "
+            "(default ~3600) so idle-exit can be verified without waiting an hour"
+        )
+
+    def test_after_worker_idle_exit_later_mutation_still_exports(self, tmp_path: Path):
+        import os
+        import signal
+        import subprocess
+        import sys
+        import time
+
+        from thirdeye._compat import proc
+        from thirdeye.paths import otel_jobs_dir
+
+        thirdeye_home = tmp_path / "thirdeye"
+        agents_root = tmp_path / "agent-data" / "agents"
+        agents_root.mkdir(parents=True)
+        thirdeye_home.mkdir(parents=True)
+        state_dir = thirdeye_home / "platforms" / "grok_bot"
+
+        env = {
+            **dict(os.environ),
+            "THIRDEYE_HOME": str(thirdeye_home),
+            "THIRDEYE_GROK_BOT_AGENTS_ROOT": str(agents_root),
+            # Prefer true idle-exit when Implementer wires the env.
+            "THIRDEYE_GROK_BOT_IDLE_EXIT_SECONDS": "0.4",
+        }
+        proc_install = subprocess.run(
+            [sys.executable, "-c", _INSTALLER_SCRIPT],
+            cwd=str(Path(__file__).resolve().parents[3]),
+            env=env,
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+        assert proc_install.returncode == 0, proc_install.stdout + proc_install.stderr
+
+        kick_flag = state_dir / "kick.enabled"
+        pid_file = state_dir / "observer.pid"
+        assert kick_flag.is_file(), "install must leave kick.enabled armed"
+
+        jobs = otel_jobs_dir(thirdeye_home)
+        # Seed one export so the worker is known-alive, then let it idle-exit
+        # (or SIGTERM if short idle env is not wired yet — kick must stay armed).
+        db = _write_store(
+            agents_root / AGENT_UUID / "store.db",
+            [
+                (1, "u1", _load("message_user.json")),
+                (2, "a1", _load("message_assistant.json")),
+            ],
+        )
+        assert _wait_until(
+            lambda: jobs.exists() and any(jobs.glob("*.json")), timeout=6.0
+        ), "detached worker never exported initial mutation"
+
+        def _worker_dead() -> bool:
+            if not pid_file.is_file():
+                return True
+            try:
+                pid = int(pid_file.read_text(encoding="utf-8").strip())
+            except (OSError, ValueError):
+                return True
+            return not proc.pid_alive(pid)
+
+        # Wait for idle-exit under short timeout; if still alive, SIGTERM only
+        # the worker (do NOT uninstall / clear kick) to simulate idle-exit.
+        if not _wait_until(_worker_dead, timeout=3.0):
+            try:
+                pid = int(pid_file.read_text(encoding="utf-8").strip())
+            except (OSError, ValueError) as exc:
+                pytest.fail(f"observer.pid unreadable while worker still alive: {exc}")
+            try:
+                os.kill(pid, signal.SIGTERM)
+            except OSError as exc:
+                pytest.fail(f"failed to SIGTERM observer pid {pid}: {exc}")
+            assert _wait_until(_worker_dead, timeout=3.0), (
+                "could not stop detached worker to simulate idle-exit"
+            )
+            # Leave pidfile stale or clear — re-arm must not depend on a live pid.
+            try:
+                pid_file.unlink(missing_ok=True)
+            except TypeError:
+                if pid_file.exists():
+                    pid_file.unlink()
+            except OSError:
+                pass
+
+        assert kick_flag.is_file(), (
+            "kick.enabled must remain after idle-exit — uninstall is a different path"
+        )
+        before = set(jobs.glob("*.json")) if jobs.exists() else set()
+
+        # Later mutation — no install / kick / poll calls from this test.
+        _append_entry(
+            db,
+            3,
+            "u2",
+            {
+                **_load("message_user.json"),
+                "id": "u2",
+                "requestId": "post-idle-rearm",
+                "content": "must export after idle-exit re-arm",
+            },
+        )
+        _append_entry(
+            db,
+            4,
+            "a2",
+            {
+                **_load("message_assistant.json"),
+                "id": "a2",
+                "requestId": "post-idle-rearm",
+                "content": "assistant after idle-exit",
+            },
+        )
+        db.touch()
+
+        def new_jobs() -> bool:
+            if not jobs.exists():
+                return False
+            return len(set(jobs.glob("*.json")) - before) >= 1
+
+        assert _wait_until(new_jobs, timeout=8.0), (
+            "after observer idle-exit (kick still armed), the next store.db mutation "
+            "must re-arm/spawn export without a manual kick — silent-until-respawn "
+            "breaks the passive maintain contract"
+        )
+
+    def test_uninstall_after_idle_exit_still_blocks_rearm(self, tmp_path: Path):
+        import os
+        import signal
+        import subprocess
+        import sys
+        import time
+
+        from thirdeye._compat import proc
+        from thirdeye.paths import otel_jobs_dir
+
+        thirdeye_home = tmp_path / "thirdeye"
+        agents_root = tmp_path / "agent-data" / "agents"
+        agents_root.mkdir(parents=True)
+        thirdeye_home.mkdir(parents=True)
+        state_dir = thirdeye_home / "platforms" / "grok_bot"
+
+        env = {
+            **dict(os.environ),
+            "THIRDEYE_HOME": str(thirdeye_home),
+            "THIRDEYE_GROK_BOT_AGENTS_ROOT": str(agents_root),
+            "THIRDEYE_GROK_BOT_IDLE_EXIT_SECONDS": "0.4",
+        }
+        proc_install = subprocess.run(
+            [sys.executable, "-c", _INSTALLER_SCRIPT],
+            cwd=str(Path(__file__).resolve().parents[3]),
+            env=env,
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+        assert proc_install.returncode == 0, proc_install.stderr
+
+        jobs = otel_jobs_dir(thirdeye_home)
+        pid_file = state_dir / "observer.pid"
+        db = _write_store(
+            agents_root / AGENT_UUID / "store.db",
+            [
+                (1, "u1", _load("message_user.json")),
+                (2, "a1", _load("message_assistant.json")),
+            ],
+        )
+        assert _wait_until(
+            lambda: jobs.exists() and any(jobs.glob("*.json")), timeout=6.0
+        ), "detached worker never exported initial mutation"
+
+        def _worker_dead() -> bool:
+            if not pid_file.is_file():
+                return True
+            try:
+                pid = int(pid_file.read_text(encoding="utf-8").strip())
+            except (OSError, ValueError):
+                return True
+            return not proc.pid_alive(pid)
+
+        if not _wait_until(_worker_dead, timeout=3.0):
+            pid = int(pid_file.read_text(encoding="utf-8").strip())
+            try:
+                os.kill(pid, signal.SIGTERM)
+            except OSError:
+                pass
+            assert _wait_until(_worker_dead, timeout=3.0)
+
+        uninstall = r"""
+import os, sys
+from pathlib import Path
+from thirdeye.platforms.grok_bot.install import GrokBotPlatform
+state = Path(os.environ["THIRDEYE_HOME"]) / "platforms" / "grok_bot"
+agents = Path(os.environ["THIRDEYE_GROK_BOT_AGENTS_ROOT"])
+try:
+    p = GrokBotPlatform(state_dir=state, agents_root=agents)
+except TypeError:
+    p = GrokBotPlatform(state_dir=state)
+p.uninstall()
+sys.exit(0)
+"""
+        proc2 = subprocess.run(
+            [sys.executable, "-c", uninstall],
+            cwd=str(Path(__file__).resolve().parents[3]),
+            env=env,
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+        assert proc2.returncode == 0, proc2.stderr
+        before = set(jobs.glob("*.json")) if jobs.exists() else set()
+
+        _append_entry(
+            db,
+            3,
+            "u2",
+            {
+                **_load("message_user.json"),
+                "id": "u2",
+                "requestId": "post-uninstall-idle",
+                "content": "must not export",
+            },
+        )
+        db.touch()
+        time.sleep(1.5)
+        after = set(jobs.glob("*.json")) if jobs.exists() else set()
+        assert after == before, (
+            "uninstall after idle-exit must disarm re-arm — later mutations must not export"
+        )
+
