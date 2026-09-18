@@ -764,3 +764,181 @@ class TestRealStoreObserver:
         if hooks.exists():
             assert "grok_bot" not in hooks.read_text(encoding="utf-8").lower()
 
+
+
+# ---------------------------------------------------------------------------
+# Wave 4 RC² — detached worker survives install-process exit (Reviewer @ ac662fc)
+# ---------------------------------------------------------------------------
+
+
+_INSTALLER_SCRIPT = r"""
+import os
+import sys
+from pathlib import Path
+
+state = Path(os.environ["THIRDEYE_HOME"])
+agents = Path(os.environ["THIRDEYE_GROK_BOT_AGENTS_ROOT"])
+state.mkdir(parents=True, exist_ok=True)
+agents.mkdir(parents=True, exist_ok=True)
+
+from thirdeye.config import Config, LogfireSettings
+from thirdeye.platforms.grok_bot.install import GrokBotPlatform
+
+Config(root=state).write_logfire_settings(LogfireSettings(enabled=True, token="test-token"))
+try:
+    platform = GrokBotPlatform(state_dir=state / "platforms" / "grok_bot", agents_root=agents)
+except TypeError:
+    platform = GrokBotPlatform(state_dir=state / "platforms" / "grok_bot")
+platform.install()
+sys.exit(0)
+"""
+
+
+class TestDetachedObserverSurvivesInstallerExit:
+    """In-process daemon threads die with the CLI; install must leave a detached worker."""
+
+    def test_mutation_after_installer_exit_still_exports(self, tmp_path: Path):
+        import subprocess
+        import sys
+        import time
+
+        thirdeye_home = tmp_path / "thirdeye"
+        agents_root = tmp_path / "agent-data" / "agents"
+        agents_root.mkdir(parents=True)
+        thirdeye_home.mkdir(parents=True)
+
+        env = {
+            **dict(**{k: v for k, v in __import__("os").environ.items()}),
+            "THIRDEYE_HOME": str(thirdeye_home),
+            "THIRDEYE_GROK_BOT_AGENTS_ROOT": str(agents_root),
+        }
+        # Ensure package import works in child.
+        proc = subprocess.run(
+            [sys.executable, "-c", _INSTALLER_SCRIPT],
+            cwd=str(Path(__file__).resolve().parents[3]),
+            env=env,
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+        assert proc.returncode == 0, proc.stdout + proc.stderr
+
+        from thirdeye.paths import otel_jobs_dir
+
+        jobs = otel_jobs_dir(thirdeye_home)
+        before = set(jobs.glob("*.json")) if jobs.exists() else set()
+
+        # Mutate after installer process is gone — no kick/tick calls from this test.
+        db = _write_store(
+            agents_root / AGENT_UUID / "store.db",
+            [
+                (1, "u1", _load("message_user.json")),
+                (2, "a1", _load("message_assistant.json")),
+            ],
+        )
+        db.touch()
+
+        def new_jobs() -> bool:
+            if not jobs.exists():
+                return False
+            return len(set(jobs.glob("*.json")) - before) >= 1
+
+        assert _wait_until(new_jobs, timeout=6.0), (
+            "after install process exits, a detached path-watch worker must still "
+            "export on store.db mutation (in-process daemon thread is insufficient)"
+        )
+
+    def test_uninstall_via_subprocess_stops_detached_worker(self, tmp_path: Path):
+        import subprocess
+        import sys
+        import time
+
+        thirdeye_home = tmp_path / "thirdeye"
+        agents_root = tmp_path / "agent-data" / "agents"
+        agents_root.mkdir(parents=True)
+        thirdeye_home.mkdir(parents=True)
+        env = {
+            **dict(**{k: v for k, v in __import__("os").environ.items()}),
+            "THIRDEYE_HOME": str(thirdeye_home),
+            "THIRDEYE_GROK_BOT_AGENTS_ROOT": str(agents_root),
+        }
+        proc = subprocess.run(
+            [sys.executable, "-c", _INSTALLER_SCRIPT],
+            cwd=str(Path(__file__).resolve().parents[3]),
+            env=env,
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+        assert proc.returncode == 0, proc.stderr
+
+        from thirdeye.paths import otel_jobs_dir
+
+        jobs = otel_jobs_dir(thirdeye_home)
+        # Seed one export so we know the worker was alive.
+        db = _write_store(
+            agents_root / AGENT_UUID / "store.db",
+            [
+                (1, "u1", _load("message_user.json")),
+                (2, "a1", _load("message_assistant.json")),
+            ],
+        )
+        assert _wait_until(
+            lambda: jobs.exists() and any(jobs.glob("*.json")), timeout=6.0
+        ), "detached worker never exported initial mutation"
+        before = set(jobs.glob("*.json"))
+
+        uninstall = r"""
+import os, sys
+from pathlib import Path
+from thirdeye.platforms.grok_bot.install import GrokBotPlatform
+state = Path(os.environ["THIRDEYE_HOME"]) / "platforms" / "grok_bot"
+agents = Path(os.environ["THIRDEYE_GROK_BOT_AGENTS_ROOT"])
+try:
+    p = GrokBotPlatform(state_dir=state, agents_root=agents)
+except TypeError:
+    p = GrokBotPlatform(state_dir=state)
+p.uninstall()
+sys.exit(0)
+"""
+        proc2 = subprocess.run(
+            [sys.executable, "-c", uninstall],
+            cwd=str(Path(__file__).resolve().parents[3]),
+            env=env,
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+        assert proc2.returncode == 0, proc2.stderr
+
+        _append_entry(
+            db,
+            3,
+            "u2",
+            {
+                **_load("message_user.json"),
+                "id": "u2",
+                "requestId": "post-uninstall",
+                "content": "should not export",
+            },
+        )
+        db.touch()
+        time.sleep(1.5)
+        after = set(jobs.glob("*.json")) if jobs.exists() else set()
+        assert after == before, (
+            "uninstall must stop the detached worker — later mutations must not export"
+        )
+
+    def test_default_agents_root_env_documented_or_honored(self, tmp_path: Path):
+        """Optional: THIRDEYE_GROK_BOT_AGENTS_ROOT is the box agents root knob."""
+        from thirdeye.platforms.grok_bot import install as install_mod
+
+        assert hasattr(install_mod, "AGENTS_ROOT_ENV") or hasattr(
+            install_mod, "DEFAULT_AGENTS_ROOT"
+        ) or "THIRDEYE_GROK_BOT_AGENTS_ROOT" in Path(
+            install_mod.__file__
+        ).read_text(encoding="utf-8"), (
+            "install module should name AGENTS_ROOT_ENV / default agents root "
+            "for box-side observer arming"
+        )
+
