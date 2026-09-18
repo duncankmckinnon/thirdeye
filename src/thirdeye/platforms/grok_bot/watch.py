@@ -1,7 +1,8 @@
-"""Passive Grok Bot watcher — install-enabled stamp/poll → otel_export.
+"""Grok Bot store-mutation kick — install-armed, idle-exiting → otel_export.
 
-User happy path: ``thirdeye add --grok-bot`` (or Cursor co-install) enables the
-watcher. Tests drive one cycle via ``tick`` / ``run_once``.
+Duncan Q1: action indicator is ``store.db`` mutation, not a boot/pidfile daemon.
+Install arms the kick; ``on_store_mutation`` (aliases) runs a short sync via
+``tick`` then returns. ``tick``/``run_once`` remain library helpers.
 """
 
 from __future__ import annotations
@@ -17,19 +18,64 @@ from thirdeye.platforms.grok_bot.constants import PLATFORM_NAME
 _WATERMARK_FILE = "watermarks.json"
 
 
-def is_watcher_running(platform: Any = None) -> bool:
-    if platform is not None and hasattr(platform, "is_watcher_running"):
-        return bool(platform.is_watcher_running())
+def _kick_flag_set(platform: Any = None) -> bool:
+    if platform is not None:
+        for name in (
+            "is_store_kick_enabled",
+            "is_kick_enabled",
+            "is_mutation_kick_enabled",
+            "is_action_indicator_enabled",
+        ):
+            fn = getattr(platform, name, None)
+            if callable(fn):
+                try:
+                    return bool(fn())
+                except TypeError:
+                    continue
+        # Fall back to flag files under state dir.
+        root = getattr(platform, "_state_dir", None)
+        if root is not None:
+            from pathlib import Path as _P
+
+            r = _P(root)
+            if (r / "kick.enabled").is_file() or (r / "watcher.enabled").is_file():
+                return True
     return False
 
 
+def is_store_kick_enabled(platform: Any = None) -> bool:
+    return _kick_flag_set(platform)
+
+
+def is_kick_enabled(platform: Any = None) -> bool:
+    return is_store_kick_enabled(platform)
+
+
+def kick_enabled(platform: Any = None) -> bool:
+    return is_store_kick_enabled(platform)
+
+
+def is_action_indicator_enabled(platform: Any = None) -> bool:
+    return is_store_kick_enabled(platform)
+
+
+def is_watcher_running(platform: Any = None) -> bool:
+    """Interim alias for kick-enabled (not boot-daemon SoT)."""
+    if platform is not None and hasattr(platform, "is_watcher_running"):
+        try:
+            return bool(platform.is_watcher_running())
+        except TypeError:
+            pass
+    return is_store_kick_enabled(platform)
+
+
 def is_running(platform: Any = None) -> bool:
-    return is_watcher_running(platform)
+    return is_store_kick_enabled(platform)
 
 
 def status(platform: Any = None) -> dict[str, Any]:
-    running = is_watcher_running(platform)
-    return {"running": running, "enabled": running}
+    enabled = is_store_kick_enabled(platform)
+    return {"running": enabled, "enabled": enabled, "kick": enabled}
 
 
 def _state_dir(platform: Any) -> Path | None:
@@ -260,3 +306,126 @@ def poll_once(
         store_path=store_path,
         **kwargs,
     )
+
+
+def on_store_mutation(
+    platform: Any = None,
+    *,
+    store_path: Path | str | None = None,
+    agents_root: Path | str | None = None,
+    conversation_id: str = "",
+    agent_id: str = "",
+    agent_name: str = "",
+    cwd: str = "",
+    **kwargs: Any,
+) -> dict[str, Any]:
+    """Action-indicator entry: store.db mutation → short sync → idle-exit.
+
+    Marker-gated: if kick is not enabled, no-op (fail-open). Reuses ``tick``
+    for watermarked export via shared ``otel_export``.
+    """
+    if platform is not None and not is_store_kick_enabled(platform):
+        return {"exported": 0, "skipped": True, "reason": "kick_disabled"}
+    return tick(
+        platform,
+        agents_root=agents_root,
+        conversation_id=conversation_id,
+        agent_id=agent_id,
+        agent_name=agent_name,
+        cwd=cwd,
+        store_path=store_path,
+        **kwargs,
+    )
+
+
+def notify_store_change(
+    platform: Any = None,
+    *,
+    store_path: Path | str | None = None,
+    agents_root: Path | str | None = None,
+    conversation_id: str = "",
+    agent_id: str = "",
+    agent_name: str = "",
+    cwd: str = "",
+    **kwargs: Any,
+) -> dict[str, Any]:
+    return on_store_mutation(
+        platform,
+        store_path=store_path,
+        agents_root=agents_root,
+        conversation_id=conversation_id,
+        agent_id=agent_id,
+        agent_name=agent_name,
+        cwd=cwd,
+        **kwargs,
+    )
+
+
+def handle_store_kick(
+    platform: Any = None,
+    *,
+    store_path: Path | str | None = None,
+    agents_root: Path | str | None = None,
+    conversation_id: str = "",
+    agent_id: str = "",
+    agent_name: str = "",
+    cwd: str = "",
+    **kwargs: Any,
+) -> dict[str, Any]:
+    return on_store_mutation(
+        platform,
+        store_path=store_path,
+        agents_root=agents_root,
+        conversation_id=conversation_id,
+        agent_id=agent_id,
+        agent_name=agent_name,
+        cwd=cwd,
+        **kwargs,
+    )
+
+
+def kick_from_store_change(
+    platform: Any = None,
+    *,
+    store_path: Path | str | None = None,
+    agents_root: Path | str | None = None,
+    conversation_id: str = "",
+    agent_id: str = "",
+    agent_name: str = "",
+    cwd: str = "",
+    **kwargs: Any,
+) -> dict[str, Any]:
+    return on_store_mutation(
+        platform,
+        store_path=store_path,
+        agents_root=agents_root,
+        conversation_id=conversation_id,
+        agent_id=agent_id,
+        agent_name=agent_name,
+        cwd=cwd,
+        **kwargs,
+    )
+
+
+def on_action_indicator(
+    platform: Any = None,
+    *,
+    store_path: Path | str | None = None,
+    agents_root: Path | str | None = None,
+    conversation_id: str = "",
+    agent_id: str = "",
+    agent_name: str = "",
+    cwd: str = "",
+    **kwargs: Any,
+) -> dict[str, Any]:
+    return on_store_mutation(
+        platform,
+        store_path=store_path,
+        agents_root=agents_root,
+        conversation_id=conversation_id,
+        agent_id=agent_id,
+        agent_name=agent_name,
+        cwd=cwd,
+        **kwargs,
+    )
+

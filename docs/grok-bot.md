@@ -27,26 +27,29 @@ thirdeye add --grok-bot
 
 Install writes an enablement marker under
 `$THIRDEYE_HOME/platforms/grok_bot/` (default `~/.thirdeye/platforms/grok_bot/`)
-and **enables the passive watcher** so new local store rows export automatically.
-It does **not** add entries to `~/.cursor/hooks.json`.
+and **arms a store-mutation kick** (marker-gated, idle-exiting) so local
+`store.db` activity exports automatically. It does **not** add entries to
+`~/.cursor/hooks.json`, and it is **not** a boot/pidfile long-lived daemon.
 
 Enable Logfire export if you have not already (`thirdeye logfire enable`).
 Grok Bot spans use the same write token and project as other platforms.
 
-## Passive tracing (passive)
+## Passive tracing (store-mutation kick)
 
-After install (or Cursor co-install), thirdeye **enables a box-side passive
-watcher**. New rows in agent `store.db` `transcript_entries` are polled,
-built into `TurnSpanDict`s, and handed to `thirdeye.otel_export.export_turn`
-(detached, fail-open) with a **seq watermark** so re-polls do not duplicate
-spans. You do **not** need to call a library function for the happy path.
+After install (or Cursor co-install on the box), thirdeye **arms a box-level
+store-mutation kick**. When an agent `store.db` under the agent-data root
+changes (new `transcript_entries`), a short sync builds `TurnSpanDict`s and
+hands them to `thirdeye.otel_export.export_turn` (detached, fail-open) with a
+**seq watermark** so re-kicks do not duplicate spans. The kick is
+**idle-exiting** — not a boot-managed daemon. You do **not** need to call a
+library function for the happy path.
 
-Uninstall (`thirdeye remove --grok-bot`, and `remove --cursor` co-stop) disables
-the watcher and clears its state.
+Uninstall (`thirdeye remove --grok-bot`, and `remove --cursor` co-stop) disarms
+the kick and clears its state.
 
-### Advanced: manual one-shot poll
+### Advanced: manual one-shot poll (optional / not required)
 
-For debugging only, you can drive a single cycle without the watcher:
+For debugging only, you can drive a single library cycle without the kick:
 
 ```python
 from pathlib import Path
@@ -61,7 +64,7 @@ poll_and_export(
 )
 ```
 
-Prefer the install-enabled watcher for continuous tracing.
+Prefer the install-armed store-mutation kick for passive tracing.
 
 ## Capture path
 
