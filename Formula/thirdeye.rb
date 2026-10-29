@@ -46,8 +46,8 @@ class Thirdeye < Formula
   # below, so this pins the prebuilt wheel instead. Unlike pydantic-core it's
   # pure Python, so one universal wheel covers every arch.
   resource "genai-prices" do
-    url "https://files.pythonhosted.org/packages/e6/54/911961e926a4c4ea30bf1fa0bf9d8ffc5c9ac5ed6a3f77b3d9e0ab5bb9a5/genai_prices-0.1.4-py3-none-any.whl"
-    sha256 "1d1b01cc7ab1adfa17c3a1121f4c13990bd0a4377640ecd37ebfde5836768240"
+    url "https://files.pythonhosted.org/packages/41/5a/b6b7d55148d367d07bcd3efdf24e3086ad199ea5109d0c335a872dfaac95/genai_prices-0.1.13-py3-none-any.whl"
+    sha256 "6d2b40760a2f7f5e207bac9b98de0af80e60c58ead497872a5331a7cee610477"
   end
 
   resource "googleapis-common-protos" do

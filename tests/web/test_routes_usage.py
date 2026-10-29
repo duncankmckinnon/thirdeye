@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from datetime import datetime, timedelta
 from pathlib import Path
 
 import pytest
@@ -92,15 +93,27 @@ def test_global_platform_filter_includes_copilot(client):
     assert ">gemini<" not in body
 
 
-def test_global_usage_platform_filter_shows_copilot_rows(client, web_config, tmp_path):
+def test_global_usage_platform_filter_shows_copilot_rows(client, web_config, tmp_path, monkeypatch):
     from tests.shared.copilot_projection_fixtures import (
         USAGE_TOKENS_ONE,
         USAGE_TOKENS_TWO,
         seed_two_main_interaction_projection,
     )
 
+    # Mock capture time to match the archived fixture; derive the query
+    # window from that same value so the real clock cannot affect the test.
+    captured_at = "2026-09-10T17:08:22.203Z"
+    monkeypatch.setattr("thirdeye.writer._utc_iso_ms", lambda: captured_at)
+    day = datetime.fromisoformat(captured_at.replace("Z", "+00:00")).date()
     seed_two_main_interaction_projection(web_config, tmp_path)
-    r = client.get("/usage?platform=copilot&since=2026-09-01&until=2026-09-30")
+    r = client.get(
+        "/usage",
+        params={
+            "platform": "copilot",
+            "since": day.isoformat(),
+            "until": (day + timedelta(days=1)).isoformat(),
+        },
+    )
     assert r.status_code == 200
     assert 'value="copilot"' in r.text
     assert "selected>copilot<" in r.text.replace("\n", "")
