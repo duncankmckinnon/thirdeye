@@ -845,6 +845,33 @@ class TestExportSpansBatch:
         # Priced without the cache discount this call reads as ~$1.21.
         assert attributes["gen_ai.usage.input_tokens"] == 238321
 
+    @pytest.mark.parametrize(
+        ("provider", "model"),
+        [
+            ("openai", "gpt-6.1-sol"),
+            ("openai", "gpt-6-sol"),
+            ("openai", "gpt-6-astra"),
+            ("openai", "gpt-6-luna"),
+            ("anthropic", "claude-haiku-5-5"),
+        ],
+    )
+    def test_chat_span_prices_current_models(
+        self, tmp_path: Path, enabled_config: Config, wired_instance, exporter, provider, model
+    ):
+        """genai-prices 0.1.4 had none of these, so their spans shipped with no
+        `operation.cost` and dropped out of every cost panel. Guards the floor.
+        """
+        pytest.importorskip("genai_prices")
+
+        call = _llm_call(
+            provider=provider, model=model, usage={"input_tokens": 1000, "output_tokens": 100}
+        )
+        attributes = otel_export._chat_attributes(
+            call, session_id="s1", platform="codex", cwd="/proj"
+        )
+
+        assert attributes["operation.cost"] > 0
+
     def test_chat_attributes_survive_an_unpriceable_model(
         self, tmp_path: Path, enabled_config: Config, wired_instance, exporter
     ):
