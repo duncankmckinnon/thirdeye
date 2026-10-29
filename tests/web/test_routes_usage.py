@@ -1,11 +1,13 @@
 from __future__ import annotations
 
+from datetime import datetime, timedelta
 from pathlib import Path
 
 import pytest
 
-from thirdeye.meta import SessionMeta, write_meta
+from thirdeye.meta import SessionMeta, read_meta, write_meta
 from thirdeye.paths import meta_path, session_dir
+from thirdeye.usage.read import iter_calls
 from thirdeye.usage.store import UsageStore
 from thirdeye.usage.types import UsageRow
 
@@ -99,8 +101,21 @@ def test_global_usage_platform_filter_shows_copilot_rows(client, web_config, tmp
         seed_two_main_interaction_projection,
     )
 
-    seed_two_main_interaction_projection(web_config, tmp_path)
-    r = client.get("/usage?platform=copilot&since=2026-09-01&until=2026-09-30")
+    sid = seed_two_main_interaction_projection(web_config, tmp_path)
+    sd = session_dir(web_config.root, "copilot", sid)
+    meta = read_meta(meta_path(sd))
+    assert meta is not None
+    # Cover both the archived usage and the session's capture time.
+    timestamps = [meta.started_at, *(row.ts for row in iter_calls(sd))]
+    days = [datetime.fromisoformat(ts.replace("Z", "+00:00")).date() for ts in timestamps]
+    r = client.get(
+        "/usage",
+        params={
+            "platform": "copilot",
+            "since": min(days).isoformat(),
+            "until": (max(days) + timedelta(days=1)).isoformat(),
+        },
+    )
     assert r.status_code == 200
     assert 'value="copilot"' in r.text
     assert "selected>copilot<" in r.text.replace("\n", "")
