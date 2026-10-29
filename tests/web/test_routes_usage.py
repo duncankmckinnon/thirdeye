@@ -5,9 +5,8 @@ from pathlib import Path
 
 import pytest
 
-from thirdeye.meta import SessionMeta, read_meta, write_meta
+from thirdeye.meta import SessionMeta, write_meta
 from thirdeye.paths import meta_path, session_dir
-from thirdeye.usage.read import iter_calls
 from thirdeye.usage.store import UsageStore
 from thirdeye.usage.types import UsageRow
 
@@ -94,26 +93,25 @@ def test_global_platform_filter_includes_copilot(client):
     assert ">gemini<" not in body
 
 
-def test_global_usage_platform_filter_shows_copilot_rows(client, web_config, tmp_path):
+def test_global_usage_platform_filter_shows_copilot_rows(client, web_config, tmp_path, monkeypatch):
     from tests.shared.copilot_projection_fixtures import (
         USAGE_TOKENS_ONE,
         USAGE_TOKENS_TWO,
         seed_two_main_interaction_projection,
     )
 
-    sid = seed_two_main_interaction_projection(web_config, tmp_path)
-    sd = session_dir(web_config.root, "copilot", sid)
-    meta = read_meta(meta_path(sd))
-    assert meta is not None
-    # Cover both the archived usage and the session's capture time.
-    timestamps = [meta.started_at, *(row.ts for row in iter_calls(sd))]
-    days = [datetime.fromisoformat(ts.replace("Z", "+00:00")).date() for ts in timestamps]
+    # Mock capture time to match the archived fixture; derive the query
+    # window from that same value so the real clock cannot affect the test.
+    captured_at = "2026-09-10T17:08:22.203Z"
+    monkeypatch.setattr("thirdeye.writer._utc_iso_ms", lambda: captured_at)
+    day = datetime.fromisoformat(captured_at.replace("Z", "+00:00")).date()
+    seed_two_main_interaction_projection(web_config, tmp_path)
     r = client.get(
         "/usage",
         params={
             "platform": "copilot",
-            "since": min(days).isoformat(),
-            "until": (max(days) + timedelta(days=1)).isoformat(),
+            "since": day.isoformat(),
+            "until": (day + timedelta(days=1)).isoformat(),
         },
     )
     assert r.status_code == 200
