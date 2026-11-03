@@ -140,6 +140,13 @@ def _reap(
                 _write_locked(fd, replacement)
                 return
             if replacement is not None:
+                # Hook delivery can repeat for the same stable prompt. Keep
+                # its original identity/timing rather than fabricating an
+                # interrupted turn followed by a fresh marker.
+                if replacement.get("prompt_id") and replacement["prompt_id"] == marker.get(
+                    "prompt_id"
+                ):
+                    return
                 old_seq = marker.get("turn_seq")
                 new_seq = replacement.get("turn_seq")
                 if isinstance(old_seq, int) and isinstance(new_seq, int) and old_seq > new_seq:

@@ -12,10 +12,66 @@ adapts this dict's shape into a full ``TurnSpanDict``.
 
 from __future__ import annotations
 
-import json
+from collections import Counter
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
+
+from thirdeye.platforms.codex.rollout import iter_frames
+
+
+def _message_text(payload: dict[str, Any]) -> str:
+    return "\n".join(
+        str(block.get("text") or block.get("content"))
+        for block in payload.get("content") or []
+        if isinstance(block, dict) and (block.get("text") or block.get("content"))
+    )
+
+
+def _normalize_messages(frames: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Use response items when available, otherwise modern message events.
+
+    Called on one turn only. Matching counts preserve repeated messages while
+    suppressing the duplicate item_completed representation, even when a token
+    report separates the two records. Other item kinds retain their raw shape.
+    """
+    responses = Counter(
+        (p.get("role"), p.get("phase"), _message_text(p))
+        for f in frames
+        if f.get("type") == "response_item"
+        and isinstance(p := f.get("payload"), dict)
+        and p.get("type") == "message"
+    )
+    result = []
+    seen_ids = set()
+    for frame in frames:
+        p = frame.get("payload")
+        if not isinstance(p, dict):
+            continue
+        item = p.get("item")
+        if (
+            frame.get("type") == "event_msg"
+            and p.get("type") == "item_completed"
+            and isinstance(item, dict)
+            and item.get("type") in {"AgentMessage", "UserMessage"}
+        ):
+            item_id = item.get("id")
+            if item_id and item_id in seen_ids:
+                continue
+            if item_id:
+                seen_ids.add(item_id)
+            message = {
+                **item,
+                "type": "message",
+                "role": "assistant" if item["type"] == "AgentMessage" else "user",
+            }
+            key = (message["role"], message.get("phase"), _message_text(message))
+            if responses[key]:
+                responses[key] -= 1
+                continue
+            frame = {**frame, "type": "response_item", "payload": message}
+        result.append(frame)
+    return result
 
 
 def _iso_ms(value: datetime) -> str:
@@ -136,15 +192,28 @@ def extract_turn_codex(rollout_path: str, turn_id: str) -> dict[str, Any] | None
     pending: dict[str, dict[str, Any]] = {}
 
     try:
-        lines = path.read_text(encoding="utf-8").splitlines()
+        frames = [frame for _, frame in iter_frames(path, 0)]
     except OSError:
         return None
 
-    for line in lines:
-        try:
-            frame = json.loads(line)
-        except (json.JSONDecodeError, TypeError):
+    # Select the turn before normalizing overlapping message representations.
+    selected = []
+    selecting = False
+    for frame in frames:
+        p = frame.get("payload")
+        if not isinstance(p, dict):
             continue
+        if frame.get("type") == "turn_context" or (
+            frame.get("type") == "event_msg" and p.get("type") == "task_started"
+        ):
+            identity = p.get("turn_id")
+            if selecting and identity and identity != turn_id:
+                break
+            selecting = selecting or identity == turn_id
+        if selecting:
+            selected.append(frame)
+
+    for frame in _normalize_messages(selected):
         outer = frame.get("type")
         payload = frame.get("payload") if isinstance(frame.get("payload"), dict) else {}
         subtype = payload.get("type")
@@ -192,15 +261,16 @@ def extract_turn_codex(rollout_path: str, turn_id: str) -> dict[str, Any] | None
             call_start_ts = call_start_ts or ts
             continue
         if outer == "event_msg" and subtype == "agent_message":
-            assistant_output = str(payload.get("message") or assistant_output)
+            text = str(payload.get("message") or "")
+            if payload.get("phase") != "commentary":
+                assistant_output = text or assistant_output
             end_ts = ts or end_ts
             # Newer rollouts also carry a response_item/message for this text.
             # Keep this as a fallback for older schemas without duplicating it.
-            if assistant_output and not any(
-                part.get("type") == "text" and part.get("content") == assistant_output
-                for part in output_parts
+            if text and not any(
+                part.get("type") == "text" and part.get("content") == text for part in output_parts
             ):
-                output_parts.append({"type": "text", "content": assistant_output})
+                output_parts.append({"type": "text", "content": text})
                 last_output_ts = ts or last_output_ts
             continue
         if outer == "event_msg" and subtype == "token_count":
@@ -251,6 +321,8 @@ def extract_turn_codex(rollout_path: str, turn_id: str) -> dict[str, Any] | None
             continue
 
         if outer == "response_item" and subtype == "message" and payload.get("role") == "assistant":
+            if payload.get("phase") == "final_answer":
+                assistant_output = _message_text(payload) or assistant_output
             for block in payload.get("content") or []:
                 if not isinstance(block, dict):
                     continue

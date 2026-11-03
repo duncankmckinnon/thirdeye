@@ -3,11 +3,82 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+import pytest
+
 from thirdeye.platforms.codex.turn import extract_turn_codex
 
 
 def _frame(ts: str, outer: str, payload: dict) -> str:
     return json.dumps({"timestamp": ts, "type": outer, "payload": payload})
+
+
+@pytest.mark.parametrize("source", ["response_item", "item_completed", "both"])
+def test_modern_final_message_reaches_turn_and_chat_without_duplicates(tmp_path, source):
+    frames = [_frame("2026-01-01T00:00:00Z", "turn_context", {"turn_id": "t1"})]
+    for phase, text in [("commentary", "checking"), ("final_answer", "answer")]:
+        if source in {"item_completed", "both"}:
+            frames.append(
+                _frame(
+                    "2026-01-01T00:00:01Z",
+                    "event_msg",
+                    {
+                        "type": "item_completed",
+                        "turn_id": "t1",
+                        "item": {
+                            "type": "AgentMessage",
+                            "id": phase,
+                            "phase": phase,
+                            "content": [{"type": "Text", "text": text}],
+                        },
+                    },
+                )
+            )
+        if source in {"response_item", "both"}:
+            frames.append(
+                _frame(
+                    "2026-01-01T00:00:02Z",
+                    "response_item",
+                    {
+                        "type": "message",
+                        "role": "assistant",
+                        "phase": phase,
+                        "content": [{"type": "output_text", "text": text}],
+                    },
+                )
+            )
+    frames.append(
+        _frame("2026-01-01T00:00:03Z", "event_msg", {"type": "task_complete", "turn_id": "t1"})
+    )
+    path = tmp_path / "rollout.jsonl"
+    path.write_text("\n".join(frames) + "\n")
+    turn = extract_turn_codex(str(path), "t1")
+    assert turn["assistant_output"] == "answer"
+    assert [
+        p["content"] for c in turn["calls"] for m in c["output_messages"] for p in m["parts"]
+    ] == ["checking", "answer"]
+
+
+def test_commentary_is_not_a_final_answer(tmp_path):
+    path = tmp_path / "rollout.jsonl"
+    path.write_text(
+        "\n".join(
+            [
+                _frame("2026-01-01T00:00:00Z", "turn_context", {"turn_id": "t1"}),
+                _frame(
+                    "2026-01-01T00:00:01Z",
+                    "event_msg",
+                    {"type": "agent_message", "phase": "commentary", "message": "working"},
+                ),
+                _frame(
+                    "2026-01-01T00:00:02Z", "event_msg", {"type": "turn_aborted", "turn_id": "t1"}
+                ),
+            ]
+        )
+        + "\n"
+    )
+    turn = extract_turn_codex(str(path), "t1")
+    assert turn["assistant_output"] == ""
+    assert turn["status"] == "interrupted"
 
 
 def test_extracts_exact_turn_deduplicates_usage_and_pairs_tools(tmp_path: Path) -> None:

@@ -115,6 +115,61 @@ def _tool_call(**overrides: Any) -> dict[str, Any]:
     return defaults
 
 
+def test_codex_child_rollout_exports_messages_and_chat_under_subagent(
+    tmp_path, enabled_config, wired_instance, exporter, monkeypatch
+):
+    from thirdeye.platforms.codex.tracing import _subagent_turn
+
+    root = tmp_path / "rollouts"
+    root.mkdir()
+    monkeypatch.setattr("thirdeye.platforms.codex.rollout.CODEX_SESSIONS_ROOT", root)
+    frames = [
+        ("01", "session_meta", {"id": "child"}),
+        ("01", "turn_context", {"turn_id": "t1", "model": "gpt-test"}),
+        ("02", "event_msg", {"type": "user_message", "message": "inspect"}),
+        (
+            "03",
+            "response_item",
+            {
+                "type": "message",
+                "role": "assistant",
+                "phase": "final_answer",
+                "content": [{"type": "output_text", "text": "found it"}],
+            },
+        ),
+        ("04", "event_msg", {"type": "task_complete", "turn_id": "t1"}),
+    ]
+    (root / "rollout-test-child.jsonl").write_text(
+        "".join(
+            json.dumps({"timestamp": f"2026-01-01T00:00:{s}Z", "type": kind, "payload": p}) + "\n"
+            for s, kind, p in frames
+        )
+    )
+    child = _subagent_turn(
+        "s1",
+        {"seq": 1, "ts": "2026-01-01T00:00:01Z", "data": {"agent_id": "child"}},
+        {"ts": "2026-01-01T00:00:04Z", "data": {}},
+    )
+    otel_export._export_turn_inner(
+        config=enabled_config,
+        session_dir_=tmp_path / "traces" / "codex" / "s1",
+        session_id="s1",
+        platform="codex",
+        cwd="/proj",
+        turn=_turn(subagents=[child]),
+    )
+    spans = exporter.exported_spans_as_dict()
+    assert len(spans) == 4
+    parent, subagent, chat = spans[1:]
+    assert subagent["parent"]["span_id"] == parent["context"]["span_id"]
+    assert chat["parent"]["span_id"] == subagent["context"]["span_id"]
+    for span in (subagent, chat):
+        assert (
+            json.loads(span["attributes"]["gen_ai.output.messages"])[0]["parts"][0]["content"]
+            == "found it"
+        )
+
+
 def _interaction(**overrides: Any) -> dict[str, Any]:
     defaults: dict[str, Any] = dict(
         interaction_id="int_1",
