@@ -19,6 +19,8 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
+from thirdeye.platforms.codex.rollout import iter_frames, resolve_rollout
+from thirdeye.platforms.codex.turn import extract_turn_codex
 from thirdeye.reader import SessionReader
 from thirdeye.tracing.model import PermissionRequestSpanDict, TurnSpanDict
 
@@ -75,7 +77,7 @@ def _subagent_turn(session_id: str, start: dict[str, Any], stop: dict[str, Any])
         for k, v in {**start_data, **stop_data}.items()
         if k not in {"prompt", "description", "message", "output"}
     }
-    return {
+    result: TurnSpanDict = {
         "turn_id": f"subagent:{session_id}:{start.get('seq')}",
         "start_ts": str(start.get("ts") or ""),
         "end_ts": str(stop.get("ts") or ""),
@@ -87,6 +89,49 @@ def _subagent_turn(session_id: str, start: dict[str, Any], stop: dict[str, Any])
         "subagents": [],
         "attributes": attributes,
     }
+    _backfill_subagent(result, _subagent_id(start))
+    return result
+
+
+def _backfill_subagent(turn: TurnSpanDict, child_id: str | None) -> None:
+    """Supplement lifecycle hooks with terminal child turns in this invocation.
+
+    Resolve only a validated child identity, never a path supplied by a hook.
+    Missing, partial, or unreadable rollouts leave the lifecycle span intact.
+    Do not recurse through the child's hooks: its own export owns those events.
+    """
+    if not child_id:
+        return
+    try:
+        path = resolve_rollout(child_id)
+        if path is None:
+            return
+        ids = []
+        for _, frame in iter_frames(path, 0):
+            payload = frame.get("payload")
+            if not isinstance(payload, dict) or frame.get("type") != "event_msg":
+                continue
+            child_turn_id = payload.get("turn_id")
+            if payload.get("type") in {"task_complete", "turn_aborted"} and child_turn_id:
+                if child_turn_id not in ids:
+                    ids.append(child_turn_id)
+        children = []
+        for child_turn_id in ids:
+            child = extract_turn_codex(str(path), str(child_turn_id))
+            if child and all(
+                _in_range(child[key], turn["start_ts"], turn["end_ts"])
+                for key in ("start_ts", "end_ts")
+            ):
+                children.append(child)
+        children.sort(key=lambda child: _parse_ts(child["start_ts"]))
+        if not children:
+            return
+        turn["input_message"] = turn["input_message"] or children[0]["user_prompt"]
+        turn["output_message"] = turn["output_message"] or children[-1]["assistant_output"]
+        turn["llm_calls"] = [call for child in children for call in child["calls"]]
+        turn["status"] = children[-1]["status"]
+    except (OSError, ValueError):
+        return
 
 
 def _subagent_id(event: dict[str, Any]) -> str | None:

@@ -127,6 +127,84 @@ def _set_next_timestamps(monkeypatch: pytest.MonkeyPatch, timestamps: list[str])
 
 
 class TestBuildTurnFromLocalStore:
+    @pytest.mark.parametrize("hook_output", ["", "hook result"])
+    @pytest.mark.parametrize("terminal", ["task_complete", "turn_aborted"])
+    def test_subagent_backfills_child_rollout(self, monkeypatch, env, hook_output, terminal):
+        child = env / "codex_sessions" / "rollout-child-A.jsonl"
+        frames = [
+            ("00", "session_meta", {"id": "A"}),
+            ("02", "turn_context", {"turn_id": "child-turn", "model": "gpt-test"}),
+            ("03", "event_msg", {"type": "user_message", "message": "child task"}),
+            ("06", "event_msg", {"type": "agent_message", "message": "child result"}),
+            ("07", "event_msg", {"type": terminal, "turn_id": "child-turn"}),
+        ]
+        child.write_text(
+            "".join(
+                json.dumps({"timestamp": f"2026-01-01T00:00:{s}Z", "type": t, "payload": p}) + "\n"
+                for s, t, p in frames
+            )
+        )
+        store = Store(Config(root=env))
+        _set_next_timestamps(monkeypatch, ["2026-01-01T00:00:02Z", "2026-01-01T00:00:08Z"])
+        for kind, data in [
+            ("subagent_start", {"agent_id": "A"}),
+            ("subagent_message", {"agent_id": "A", "message": hook_output}),
+        ]:
+            seq = store.append_event(session_id="s1", platform="codex", cwd="/p", t=kind, data=data)
+        turn = build_turn(
+            session_dir_=session_dir(env, "codex", "s1"),
+            session_id="s1",
+            seq=seq + 1,
+            turn=_bare_turn(),
+        )
+        sub = turn["subagents"][0]
+        assert sub["input_message"] == "child task"
+        assert sub["output_message"] == (hook_output or "child result")
+        assert sub["llm_calls"][0]["model"] == "gpt-test"
+        assert sub["start_ts"] == "2026-01-01T00:00:02Z"
+        assert sub["end_ts"] == "2026-01-01T00:00:08Z"
+        assert sub["status"] == ("interrupted" if terminal == "turn_aborted" else "completed")
+
+    @pytest.mark.parametrize("mode", ["missing", "malformed", "partial", "outside"])
+    def test_subagent_rollout_fallback_is_conservative(self, monkeypatch, env, mode):
+        from thirdeye.platforms.codex.tracing import _subagent_turn
+
+        child = env / "codex_sessions" / "rollout-child-A.jsonl"
+        if mode != "missing":
+            frames = [
+                {
+                    "timestamp": "2026-01-02T00:00:00Z",
+                    "type": "turn_context",
+                    "payload": {"turn_id": "t1"},
+                },
+                {
+                    "timestamp": "2026-01-02T00:00:01Z",
+                    "type": "event_msg",
+                    "payload": {"type": "agent_message", "message": "unrelated"},
+                },
+                {
+                    "timestamp": "2026-01-02T00:00:02Z",
+                    "type": "event_msg",
+                    "payload": {"type": "task_complete", "turn_id": "t1"},
+                },
+            ]
+            text = "\n".join(json.dumps(f) for f in frames) + "\n"
+            child.write_text(
+                "not json\n" if mode == "malformed" else text[:-5] if mode == "partial" else text
+            )
+        result = _subagent_turn(
+            "s1",
+            {
+                "seq": 1,
+                "ts": "2026-01-01T00:00:00Z",
+                "data": {"agent_id": "A", "prompt": "hook task"},
+            },
+            {"ts": "2026-01-01T00:00:10Z", "data": {}},
+        )
+        assert result["input_message"] == "hook task"
+        assert result["output_message"] == ""
+        assert result["llm_calls"] == []
+
     def test_permission_request_inside_window_is_included(
         self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
     ):
@@ -605,6 +683,22 @@ class TestLockedMarkerBoundedRetry:
 
 
 class TestHooksJsonMarkerWiring:
+    def test_repeated_prompt_id_does_not_interrupt_or_replace_its_marker(self, monkeypatch, env):
+        from thirdeye.platforms.codex import hooks_json
+        from thirdeye.platforms.codex.interrupt_marker import _marker_path
+
+        calls = []
+        monkeypatch.setattr("thirdeye.otel_export.export_turn", lambda *a, **k: calls.append(a))
+        payload = {"session_id": "s1", "cwd": "/p", "prompt": "go", "prompt_id": "p1"}
+        _stdin(monkeypatch, payload)
+        hooks_json.user_prompt_submit()
+        path = _marker_path(session_dir(env, "codex", "s1"))
+        original = path.read_text()
+        _stdin(monkeypatch, payload)
+        hooks_json.user_prompt_submit()
+        assert calls == []
+        assert path.read_text() == original
+
     def test_prompt_id_distinguishes_active_from_interrupted_turn(self, monkeypatch, env: Path):
         from thirdeye.platforms.codex import hooks_json
 

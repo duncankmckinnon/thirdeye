@@ -32,9 +32,13 @@ class UsageReport:
 
 
 def _row_day(ts_str: str) -> str:
+    return _row_timestamp(ts_str).date().isoformat()
+
+
+def _row_timestamp(ts_str: str) -> datetime:
     if ts_str.endswith("Z"):
         ts_str = ts_str[:-1] + "+00:00"
-    return datetime.fromisoformat(ts_str).astimezone(UTC).date().isoformat()
+    return datetime.fromisoformat(ts_str).astimezone(UTC)
 
 
 def aggregate_by_day(
@@ -54,10 +58,17 @@ def aggregate_by_day(
         lambda: {"events": 0, "input": 0, "output": 0, "sessions": set()}
     )
     store = Store(config)
-    for meta in store.list_sessions(platform=platform, since=since, until=until):
+    # Imported sessions can be captured long after their model calls. Session
+    # metadata cannot safely exclude usage; apply bounds to each call instead.
+    for meta in store.list_sessions(platform=platform):
         sd = _session_dir(config.root, meta.platform, meta.session_id)
         for row in iter_calls(sd):
-            day = _row_day(row.ts)
+            timestamp = _row_timestamp(row.ts)
+            if since is not None and timestamp < since:
+                continue
+            if until is not None and timestamp > until:
+                continue
+            day = timestamp.date().isoformat()
             b = sums[day]
             b["events"] = int(b["events"]) + 1
             b["input"] = int(b["input"]) + row.input_tokens
@@ -72,8 +83,10 @@ def aggregate_by_day(
             min_day = date.fromisoformat(min(sums.keys()))
             max_day = date.fromisoformat(max(sums.keys()))
         else:
-            assert since is not None and until is not None
-            min_day, max_day = since.date(), until.date()
+            anchor = since or until
+            assert anchor is not None
+            min_day = (since or anchor).date()
+            max_day = (until or anchor).date()
         if since is not None:
             min_day = min(min_day, since.date())
         if until is not None:
