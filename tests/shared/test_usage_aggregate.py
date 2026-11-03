@@ -204,6 +204,46 @@ def test_since_until_bounds_control_range(config: Config) -> None:
     assert "2026-05-01" not in days
 
 
+def test_imported_usage_filters_row_time_not_session_capture_time(config: Config) -> None:
+    sd = _make_session(
+        config.root,
+        sid="imported",
+        platform="copilot",
+        started_at="2026-11-01T00:00:00Z",
+    )
+    UsageStore(sd).append(
+        [
+            _row(sid="imported", platform="copilot", seq=i, ts=ts)
+            for i, ts in enumerate(
+                [
+                    "2026-09-01T23:00:00Z",  # before the window
+                    "2026-09-02T01:00:00Z",  # inside
+                    "2026-09-02T03:00:00+02:00",  # inside, same UTC time
+                    "2026-09-02T02:00:01Z",  # after the window
+                ]
+            )
+        ]
+    )
+    report = aggregate_by_day(
+        config,
+        platform="copilot",
+        since=datetime(2026, 9, 2, 0, tzinfo=UTC),
+        until=datetime(2026, 9, 2, 2, tzinfo=UTC),
+    )
+    assert report.totals.input_tokens == 200
+    assert report.totals.output_tokens == 20
+    assert report.totals.events == 2
+    assert report.totals.sessions == 1
+    assert [b.day for b in report.buckets] == ["2026-09-02"]
+
+
+@pytest.mark.parametrize("bound", ["since", "until"])
+def test_empty_report_with_one_time_bound(config: Config, bound: str) -> None:
+    report = aggregate_by_day(config, **{bound: datetime(2026, 9, 1, tzinfo=UTC)})
+    assert report.totals.events == 0
+    assert [b.day for b in report.buckets] == ["2026-09-01"]
+
+
 def test_z_suffixed_timestamp_buckets_to_utc_day(config: Config) -> None:
     sd = _make_session(
         config.root,
