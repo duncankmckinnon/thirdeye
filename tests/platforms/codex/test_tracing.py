@@ -165,6 +165,53 @@ class TestBuildTurnFromLocalStore:
         assert sub["end_ts"] == "2026-01-01T00:00:08Z"
         assert sub["status"] == ("interrupted" if terminal == "turn_aborted" else "completed")
 
+    def test_subagent_backfills_child_turn_that_starts_before_the_start_hook(
+        self, monkeypatch, env
+    ):
+        """The child's own ``task_started.started_at`` is whole unix seconds and
+        lands before the SubagentStart hook is recorded (about 2s apart in
+        Logfire 2026-11-04). Requiring the child turn to sit wholly inside the
+        hook window rejected every child, leaving the span with no output or
+        calls."""
+        child = env / "codex_sessions" / "rollout-child-A.jsonl"
+        frames = [
+            ("00.500", "session_meta", {"id": "A"}),
+            ("01.900", "turn_context", {"turn_id": "child-turn", "model": "gpt-test"}),
+            (
+                "01.950",
+                "event_msg",
+                {"type": "task_started", "turn_id": "child-turn", "started_at": 1767225601},
+            ),
+            ("06.000", "event_msg", {"type": "agent_message", "message": "child result"}),
+            (
+                "07.500",
+                "event_msg",
+                {"type": "task_complete", "turn_id": "child-turn", "completed_at": 1767225607},
+            ),
+        ]
+        child.write_text(
+            "".join(
+                json.dumps({"timestamp": f"2026-01-01T00:00:{s}Z", "type": t, "payload": p}) + "\n"
+                for s, t, p in frames
+            )
+        )
+        store = Store(Config(root=env))
+        _set_next_timestamps(monkeypatch, ["2026-01-01T00:00:02.219Z", "2026-01-01T00:00:08.000Z"])
+        for kind, data in [
+            ("subagent_start", {"agent_id": "A"}),
+            ("subagent_message", {"agent_id": "A"}),
+        ]:
+            seq = store.append_event(session_id="s1", platform="codex", cwd="/p", t=kind, data=data)
+        turn = build_turn(
+            session_dir_=session_dir(env, "codex", "s1"),
+            session_id="s1",
+            seq=seq + 1,
+            turn=_bare_turn(),
+        )
+        sub = turn["subagents"][0]
+        assert sub["output_message"] == "child result"
+        assert sub["llm_calls"][0]["model"] == "gpt-test"
+
     @pytest.mark.parametrize("mode", ["missing", "malformed", "partial", "outside"])
     def test_subagent_rollout_fallback_is_conservative(self, monkeypatch, env, mode):
         from thirdeye.platforms.codex.tracing import _subagent_turn
@@ -321,6 +368,41 @@ class TestBuildTurnFromLocalStore:
         assert [sub["input_message"] for sub in turn["subagents"]] == ["task A", "task B"]
         assert [sub["output_message"] for sub in turn["subagents"]] == ["result A", "result B"]
         assert [sub["attributes"]["agent_id"] for sub in turn["subagents"]] == ["A", "B"]
+
+    def test_subagent_stop_last_assistant_message_is_the_output(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ):
+        """Codex's SubagentStop payload carries the child's reply as
+        ``last_assistant_message`` (seen in Logfire 2026-11-04). Without reading
+        it, the subagent span had no output messages and the reply leaked into
+        its raw attributes instead."""
+        store = Store(Config(root=tmp_path))
+        _set_next_timestamps(monkeypatch, ["2026-01-01T00:00:02.000Z", "2026-01-01T00:00:06.000Z"])
+        store.append_event(
+            session_id="s1",
+            platform="codex",
+            cwd="/p",
+            t="subagent_start",
+            data={"agent_id": "A", "hook_event_name": "SubagentStart"},
+        )
+        seq = store.append_event(
+            session_id="s1",
+            platform="codex",
+            cwd="/p",
+            t="subagent_message",
+            data={
+                "agent_id": "A",
+                "hook_event_name": "SubagentStop",
+                "last_assistant_message": "Wrote result.json",
+            },
+        )
+        sd = session_dir(tmp_path, "codex", "s1")
+
+        turn = build_turn(session_dir_=sd, session_id="s1", seq=seq + 1, turn=_bare_turn())
+
+        (sub,) = turn["subagents"]
+        assert sub["output_message"] == "Wrote result.json"
+        assert "last_assistant_message" not in sub["attributes"]
 
     def test_subagent_pair_outside_window_is_excluded(
         self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path

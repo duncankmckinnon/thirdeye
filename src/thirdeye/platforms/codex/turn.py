@@ -108,6 +108,25 @@ _SYNTHETIC_USER_TAGS = (
     "<in-app-browser-context",
 )
 
+
+def _strip_synthetic_prefix(text: str) -> str:
+    """Drop leading synthetic blocks, keeping any prompt the user typed after them.
+
+    The Codex app prepends ``<in-app-browser-context>`` to the typed prompt in
+    the same message, so a synthetic opening tag does not make the whole
+    message synthetic. An unclosed block is treated as entirely synthetic.
+    """
+    text = text.strip()
+    while text.startswith(_SYNTHETIC_USER_TAGS):
+        tag = text[1:].split(">", 1)[0].split(None, 1)[0]
+        close = f"</{tag}>"
+        end = text.find(close)
+        if end == -1:
+            return ""
+        text = text[end + len(close) :].strip()
+    return text
+
+
 # Renames a Codex rollout usage block's own key names onto UsageDict's, per
 # thirdeye.tracing.model.UsageDict.
 _USAGE_RENAME = {
@@ -312,8 +331,8 @@ def extract_turn_codex(rollout_path: str, turn_id: str) -> dict[str, Any] | None
                 for block in payload.get("content") or []
                 if isinstance(block, dict) and (block.get("text") or block.get("content"))
             ]
-            joined = "\n".join(texts).strip()
-            if joined and not joined.startswith(_SYNTHETIC_USER_TAGS):
+            joined = _strip_synthetic_prefix("\n".join(texts))
+            if joined:
                 user_prompt = joined
                 if not input_parts:
                     input_parts.append({"type": "text", "content": joined})

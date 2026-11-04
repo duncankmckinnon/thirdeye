@@ -641,6 +641,57 @@ def test_response_item_user_message_skips_synthetic_environment_context(tmp_path
     assert turn["user_prompt"] == "fix the bug"
 
 
+def test_response_item_user_message_keeps_prompt_after_leading_synthetic_block(
+    tmp_path: Path,
+) -> None:
+    """With the Codex app's in-app browser open, the ambient
+    ``<in-app-browser-context>`` block is prepended to the typed prompt inside
+    the *same* user message (seen in Logfire 2026-11-04). Treating the whole
+    message as synthetic dropped the real prompt, so the turn span had no input.
+    """
+    ambient = (
+        '\n<in-app-browser-context source="ambient-ui-state">\n'
+        "This block is automatically supplied ambient UI state, not part of the user's request.\n"
+        "- Current URL: https://logfire-us.pydantic.dev/duncan/agent-tracing\n"
+        "</in-app-browser-context>\n\n"
+    )
+    path = tmp_path / "rollout.jsonl"
+    path.write_text(
+        "\n".join(
+            [
+                _frame("2026-01-01T00:00:00Z", "turn_context", {"turn_id": "t1", "model": "gpt-5"}),
+                _frame(
+                    "2026-01-01T00:00:01Z", "event_msg", {"type": "task_started", "turn_id": "t1"}
+                ),
+                _frame(
+                    "2026-01-01T00:00:02Z",
+                    "response_item",
+                    {
+                        "type": "message",
+                        "role": "user",
+                        "content": [
+                            {
+                                "type": "input_text",
+                                "text": ambient + "## My request:\nWhy did the baseline work?\n",
+                            }
+                        ],
+                    },
+                ),
+                _frame(
+                    "2026-01-01T00:00:03Z",
+                    "event_msg",
+                    {"type": "task_complete", "turn_id": "t1", "last_agent_message": "done"},
+                ),
+            ]
+        )
+        + "\n"
+    )
+
+    turn = extract_turn_codex(str(path), "t1")
+    assert turn is not None
+    assert turn["user_prompt"] == "## My request:\nWhy did the baseline work?"
+
+
 def test_turn_aborted_real_payload_shape_marks_interrupted(tmp_path: Path) -> None:
     """The synthetic ``turn_aborted`` frame above only carries ``turn_id``.
     A genuine frame pulled from a real Codex rollout on this machine
