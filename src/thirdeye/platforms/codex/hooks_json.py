@@ -197,6 +197,7 @@ def user_prompt_submit() -> None:
         prompt=str(payload.get("prompt") or ""),
         prompt_id=payload.get("prompt_id"),
         turn_seq=seq,
+        codex_turn_id=payload.get("turn_id"),
     )
     try:
         prompt = payload.get("prompt") or ""

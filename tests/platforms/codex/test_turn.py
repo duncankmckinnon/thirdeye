@@ -692,6 +692,60 @@ def test_response_item_user_message_keeps_prompt_after_leading_synthetic_block(
     assert turn["user_prompt"] == "## My request:\nWhy did the baseline work?"
 
 
+def test_injected_agents_md_message_is_not_the_first_call_input(tmp_path: Path) -> None:
+    """Codex 0.166 injects AGENTS.md as its own ``role: "user"`` message before
+    the real prompt. As the first non-synthetic user text it became the first
+    model call's input, so the chat span showed the instructions instead of
+    the prompt (seen in Logfire 2026-11-04)."""
+    agents_md = "# AGENTS.md instructions\n\n<INSTRUCTIONS>\nAlways use rtk.\n</INSTRUCTIONS>"
+    path = tmp_path / "rollout.jsonl"
+    path.write_text(
+        "\n".join(
+            [
+                _frame(
+                    "2026-01-01T00:00:00Z", "event_msg", {"type": "task_started", "turn_id": "t1"}
+                ),
+                _frame(
+                    "2026-01-01T00:00:01Z",
+                    "response_item",
+                    {
+                        "type": "message",
+                        "role": "user",
+                        "content": [{"type": "input_text", "text": agents_md}],
+                    },
+                ),
+                _frame("2026-01-01T00:00:02Z", "turn_context", {"turn_id": "t1", "model": "gpt-5"}),
+                _frame(
+                    "2026-01-01T00:00:03Z",
+                    "response_item",
+                    {
+                        "type": "message",
+                        "role": "user",
+                        "content": [{"type": "input_text", "text": "fix the bug"}],
+                    },
+                ),
+                _frame(
+                    "2026-01-01T00:00:04Z",
+                    "event_msg",
+                    {"type": "agent_message", "message": "done"},
+                ),
+                _frame(
+                    "2026-01-01T00:00:05Z",
+                    "event_msg",
+                    {"type": "task_complete", "turn_id": "t1", "last_agent_message": "done"},
+                ),
+            ]
+        )
+        + "\n"
+    )
+
+    turn = extract_turn_codex(str(path), "t1")
+    assert turn is not None
+    assert turn["calls"][0]["input_messages"][0]["parts"] == [
+        {"type": "text", "content": "fix the bug"}
+    ]
+
+
 def test_turn_aborted_real_payload_shape_marks_interrupted(tmp_path: Path) -> None:
     """The synthetic ``turn_aborted`` frame above only carries ``turn_id``.
     A genuine frame pulled from a real Codex rollout on this machine

@@ -108,6 +108,9 @@ _SYNTHETIC_USER_TAGS = (
     "<in-app-browser-context",
 )
 
+# AGENTS.md arrives as an untagged heading over an <INSTRUCTIONS> block.
+_AGENTS_MD_PREFIX = "# AGENTS.md instructions"
+
 
 def _strip_synthetic_prefix(text: str) -> str:
     """Drop leading synthetic blocks, keeping any prompt the user typed after them.
@@ -117,9 +120,11 @@ def _strip_synthetic_prefix(text: str) -> str:
     message synthetic. An unclosed block is treated as entirely synthetic.
     """
     text = text.strip()
-    while text.startswith(_SYNTHETIC_USER_TAGS):
-        tag = text[1:].split(">", 1)[0].split(None, 1)[0]
-        close = f"</{tag}>"
+    while text.startswith((*_SYNTHETIC_USER_TAGS, _AGENTS_MD_PREFIX)):
+        if text.startswith(_AGENTS_MD_PREFIX):
+            close = "</INSTRUCTIONS>"
+        else:
+            close = "</" + text[1:].split(">", 1)[0].split(None, 1)[0] + ">"
         end = text.find(close)
         if end == -1:
             return ""

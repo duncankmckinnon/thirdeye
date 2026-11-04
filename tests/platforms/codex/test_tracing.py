@@ -861,6 +861,58 @@ class TestHooksJsonMarkerWiring:
         assert len(calls) == 1
         assert calls[0][5]["status"] == "interrupted"
 
+    def test_prompt_for_the_same_codex_turn_keeps_the_open_marker(self, monkeypatch, env: Path):
+        """Codex sends its own ``turn_id`` on UserPromptSubmit. Another prompt
+        hook for that same turn -- a follow-up typed mid-turn, or one event run
+        by two installed hook commands -- is not a new turn, so it must not
+        close the running turn as interrupted. In Logfire (2026-11-04) each
+        such prompt added an input-only "interrupted" turn beside the real one.
+        """
+        from thirdeye.platforms.codex import hooks_json
+        from thirdeye.platforms.codex.interrupt_marker import _marker_path
+
+        calls: list[Any] = []
+        monkeypatch.setattr("thirdeye.otel_export.export_turn", lambda *a, **k: calls.append(a))
+        _stdin(monkeypatch, {"session_id": "s1", "cwd": "/p", "prompt": "go", "turn_id": "T1"})
+        hooks_json.user_prompt_submit()
+        path = _marker_path(session_dir(env, "codex", "s1"))
+        original = path.read_text()
+
+        _stdin(monkeypatch, {"session_id": "s1", "cwd": "/p", "prompt": "also", "turn_id": "T1"})
+        hooks_json.user_prompt_submit()
+
+        assert calls == []
+        assert path.read_text() == original
+
+    def test_session_end_does_not_interrupt_a_turn_the_rollout_completed(
+        self, monkeypatch, env: Path
+    ):
+        """``codex exec`` delivers SessionEnd before the notify that exports
+        the completed turn, so the open marker must not also be exported as an
+        interrupted turn when the rollout already records its completion."""
+        from thirdeye.platforms.codex import hooks_json
+
+        calls: list[Any] = []
+        monkeypatch.setattr("thirdeye.otel_export.export_turn", lambda *a, **k: calls.append(a))
+        rollout = env / "codex_sessions" / "rollout-2026-01-01T00-00-00-s1.jsonl"
+        rollout.write_text(
+            json.dumps(
+                {
+                    "timestamp": "2026-01-01T00:00:05.000Z",
+                    "type": "event_msg",
+                    "payload": {"type": "task_complete", "turn_id": "T1"},
+                }
+            )
+            + "\n"
+        )
+        _stdin(monkeypatch, {"session_id": "s1", "cwd": "/p", "prompt": "go", "turn_id": "T1"})
+        hooks_json.user_prompt_submit()
+
+        _stdin(monkeypatch, {"session_id": "s1", "cwd": "/p"})
+        hooks_json.session_end()
+
+        assert calls == []
+
 
 class TestMidTurnHooksReapAbandonedMarker:
     """subagent_start/subagent_stop/permission_request/pre_compact/post_compact/
