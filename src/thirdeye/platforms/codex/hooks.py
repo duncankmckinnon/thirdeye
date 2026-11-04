@@ -89,7 +89,7 @@ def session_start() -> None:
 def notify() -> None:
     from thirdeye.platforms.codex.events import capture_events_codex
     from thirdeye.platforms.codex.interrupt_marker import clear_marker_not_after
-    from thirdeye.platforms.codex.rollout import resolve_rollout
+    from thirdeye.platforms.codex.rollout import is_spawned_subagent, resolve_rollout
     from thirdeye.platforms.codex.tracing import build_turn
     from thirdeye.platforms.codex.turn import extract_turn_codex
     from thirdeye.platforms.codex.usage import capture_usage_codex
@@ -140,7 +140,9 @@ def notify() -> None:
         offset = int(state.get("rollout_offset", 0))
 
         turn = extract_turn_codex(rollout_path, turn_id)
-        if turn is not None:
+        # A spawned subagent's turns are exported nested under its parent's
+        # SubagentStop span (tracing._backfill_subagent), not as a session.
+        if turn is not None and not is_spawned_subagent(Path(rollout_path)):
             from thirdeye.otel_export import export_turn
             from thirdeye.platforms.codex.captured_env import resolve_captured_env
 

@@ -4,7 +4,14 @@ import json
 import shutil
 from pathlib import Path
 
-from thirdeye.platforms.codex.rollout import end_offset, iter_frames, resolve_rollout
+import pytest
+
+from thirdeye.platforms.codex.rollout import (
+    end_offset,
+    is_spawned_subagent,
+    iter_frames,
+    resolve_rollout,
+)
 
 FIXTURE = Path(__file__).parent / "fixtures" / "rollout.jsonl"
 EXPECTED = Path(__file__).parent / "fixtures" / "rollout.expected.json"
@@ -211,3 +218,20 @@ def test_overlong_session_id_rejected(tmp_path: Path) -> None:
     root = tmp_path / "sessions"
     _make_tree(root)
     assert resolve_rollout("a" * 129, root) is None
+
+
+@pytest.mark.parametrize(
+    ("source", "expected"),
+    [
+        ({"subagent": {"thread_spawn": {"parent_thread_id": "p", "depth": 1}}}, True),
+        ({"subagent": {"other": "guardian"}}, False),
+        ("vscode", False),
+        (None, False),
+    ],
+)
+def test_is_spawned_subagent_reads_session_meta_source(tmp_path: Path, source, expected) -> None:
+    path = tmp_path / "rollout.jsonl"
+    path.write_text(
+        json.dumps({"type": "session_meta", "payload": {"id": "s1", "source": source}}) + "\n"
+    )
+    assert is_spawned_subagent(path) is expected
