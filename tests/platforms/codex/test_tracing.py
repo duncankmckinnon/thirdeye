@@ -550,6 +550,42 @@ class TestNotifyExportsTurn:
         hooks.notify()
         assert calls == []
 
+    def test_spawned_subagent_thread_is_not_exported_as_its_own_session(
+        self, monkeypatch, env: Path
+    ):
+        """A spawned subagent's own thread gets a notify too. The parent's
+        export already nests that execution under its SubagentStop span
+        (backfilled from this same rollout), so exporting it again added a
+        duplicate root session in Logfire (2026-11-04). It is still captured
+        locally."""
+        from thirdeye.platforms.codex import hooks
+        from thirdeye.reader import SessionReader
+
+        calls: list[Any] = []
+        monkeypatch.setattr("thirdeye.otel_export.export_turn", lambda *a, **k: calls.append(a))
+        rollout = _plant_rollout(env)
+        lines = rollout.read_text().splitlines(keepends=True)
+        meta = json.loads(lines[0])
+        meta["payload"]["source"] = {
+            "subagent": {"thread_spawn": {"parent_thread_id": "parent-thread", "depth": 1}}
+        }
+        lines[0] = json.dumps(meta) + "\n"
+        rollout.write_text("".join(lines))
+        _argv(
+            monkeypatch,
+            {
+                "type": "agent-turn-complete",
+                "thread-id": FIXTURE_SID,
+                "turn-id": FIXTURE_TURN_ID,
+                "cwd": "/proj/codex",
+            },
+        )
+        hooks.notify()
+
+        assert calls == []
+        sd = session_dir(env, "codex", FIXTURE_SID)
+        assert len(list(SessionReader(sd).iter_events(types={"agent_turn"}))) == 1
+
 
 # -- interrupt_marker: fallback for a turn that never gets a notify call ------
 

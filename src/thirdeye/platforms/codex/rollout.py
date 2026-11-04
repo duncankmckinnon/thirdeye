@@ -71,6 +71,26 @@ def _session_meta_matches(path: Path, session_id: str) -> bool:
     return True
 
 
+def is_spawned_subagent(path: Path) -> bool:
+    """Whether path's first session_meta frame marks a thread another agent spawned.
+
+    Codex records ``source: {"subagent": {"thread_spawn": {...}}}`` for a
+    ``spawn_agent`` child. Other subagent kinds (such as the approval guardian)
+    have no parent span to nest under, so they do not match.
+    """
+    try:
+        for _, frame in iter_frames(path, 0):
+            if frame.get("type") != "session_meta":
+                continue
+            payload = frame.get("payload")
+            source = payload.get("source") if isinstance(payload, dict) else None
+            subagent = source.get("subagent") if isinstance(source, dict) else None
+            return isinstance(subagent, dict) and isinstance(subagent.get("thread_spawn"), dict)
+    except OSError:
+        return False
+    return False
+
+
 def iter_frames(path: Path, offset: int) -> Iterator[tuple[int, dict]]:
     """Yield (line_start_offset, frame) for each parseable JSON line from offset.
 
