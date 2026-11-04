@@ -106,6 +106,7 @@ _SYNTHETIC_USER_TAGS = (
     "<recommended_plugins>",
     "<task-notification>",
     "<in-app-browser-context",
+    "<external_codex_apps_open_page>",
 )
 
 # AGENTS.md arrives as an untagged heading over an <INSTRUCTIONS> block.
@@ -328,6 +329,25 @@ def extract_turn_codex(rollout_path: str, turn_id: str) -> dict[str, Any] | None
                     next_input_parts = []
                     call_start_ts = ts
                     last_output_ts = ""
+            continue
+
+        if outer == "response_item" and subtype == "agent_message":
+            # Inter-agent messages: a subagent's task arrives this way, as a
+            # readable header plus an encrypted payload. It is the turn's input
+            # only when nothing the user typed started the turn.
+            if not user_prompt:
+                joined = "\n".join(
+                    "[encrypted]"
+                    if block.get("type") == "encrypted_content"
+                    else str(block.get("text") or "").strip()
+                    for block in payload.get("content") or []
+                    if isinstance(block, dict)
+                ).strip()
+                if joined:
+                    user_prompt = joined
+                    if not input_parts:
+                        input_parts.append({"type": "text", "content": joined})
+                    call_start_ts = call_start_ts or ts
             continue
 
         if outer == "response_item" and subtype == "message" and payload.get("role") == "user":
