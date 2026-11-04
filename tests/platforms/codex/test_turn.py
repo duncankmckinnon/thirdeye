@@ -641,6 +641,206 @@ def test_response_item_user_message_skips_synthetic_environment_context(tmp_path
     assert turn["user_prompt"] == "fix the bug"
 
 
+def test_response_item_user_message_keeps_prompt_after_leading_synthetic_block(
+    tmp_path: Path,
+) -> None:
+    """With the Codex app's in-app browser open, the ambient
+    ``<in-app-browser-context>`` block is prepended to the typed prompt inside
+    the *same* user message (seen in Logfire 2026-11-04). Treating the whole
+    message as synthetic dropped the real prompt, so the turn span had no input.
+    """
+    ambient = (
+        '\n<in-app-browser-context source="ambient-ui-state">\n'
+        "This block is automatically supplied ambient UI state, not part of the user's request.\n"
+        "- Current URL: https://logfire-us.pydantic.dev/duncan/agent-tracing\n"
+        "</in-app-browser-context>\n\n"
+    )
+    path = tmp_path / "rollout.jsonl"
+    path.write_text(
+        "\n".join(
+            [
+                _frame("2026-01-01T00:00:00Z", "turn_context", {"turn_id": "t1", "model": "gpt-5"}),
+                _frame(
+                    "2026-01-01T00:00:01Z", "event_msg", {"type": "task_started", "turn_id": "t1"}
+                ),
+                _frame(
+                    "2026-01-01T00:00:02Z",
+                    "response_item",
+                    {
+                        "type": "message",
+                        "role": "user",
+                        "content": [
+                            {
+                                "type": "input_text",
+                                "text": ambient + "## My request:\nWhy did the baseline work?\n",
+                            }
+                        ],
+                    },
+                ),
+                _frame(
+                    "2026-01-01T00:00:03Z",
+                    "event_msg",
+                    {"type": "task_complete", "turn_id": "t1", "last_agent_message": "done"},
+                ),
+            ]
+        )
+        + "\n"
+    )
+
+    turn = extract_turn_codex(str(path), "t1")
+    assert turn is not None
+    assert turn["user_prompt"] == "## My request:\nWhy did the baseline work?"
+
+
+def test_injected_agents_md_message_is_not_the_first_call_input(tmp_path: Path) -> None:
+    """Codex 0.166 injects AGENTS.md as its own ``role: "user"`` message before
+    the real prompt. As the first non-synthetic user text it became the first
+    model call's input, so the chat span showed the instructions instead of
+    the prompt (seen in Logfire 2026-11-04)."""
+    agents_md = "# AGENTS.md instructions\n\n<INSTRUCTIONS>\nAlways use rtk.\n</INSTRUCTIONS>"
+    path = tmp_path / "rollout.jsonl"
+    path.write_text(
+        "\n".join(
+            [
+                _frame(
+                    "2026-01-01T00:00:00Z", "event_msg", {"type": "task_started", "turn_id": "t1"}
+                ),
+                _frame(
+                    "2026-01-01T00:00:01Z",
+                    "response_item",
+                    {
+                        "type": "message",
+                        "role": "user",
+                        "content": [{"type": "input_text", "text": agents_md}],
+                    },
+                ),
+                _frame("2026-01-01T00:00:02Z", "turn_context", {"turn_id": "t1", "model": "gpt-5"}),
+                _frame(
+                    "2026-01-01T00:00:03Z",
+                    "response_item",
+                    {
+                        "type": "message",
+                        "role": "user",
+                        "content": [{"type": "input_text", "text": "fix the bug"}],
+                    },
+                ),
+                _frame(
+                    "2026-01-01T00:00:04Z",
+                    "event_msg",
+                    {"type": "agent_message", "message": "done"},
+                ),
+                _frame(
+                    "2026-01-01T00:00:05Z",
+                    "event_msg",
+                    {"type": "task_complete", "turn_id": "t1", "last_agent_message": "done"},
+                ),
+            ]
+        )
+        + "\n"
+    )
+
+    turn = extract_turn_codex(str(path), "t1")
+    assert turn is not None
+    assert turn["calls"][0]["input_messages"][0]["parts"] == [
+        {"type": "text", "content": "fix the bug"}
+    ]
+
+
+def _agent_message(ts: str, header: str, payload_block: dict) -> str:
+    return _frame(
+        ts,
+        "response_item",
+        {
+            "type": "agent_message",
+            "author": "/root",
+            "recipient": "/root/child",
+            "content": [{"type": "input_text", "text": header}, payload_block],
+        },
+    )
+
+
+def test_subagent_task_agent_message_is_the_turn_input(tmp_path: Path) -> None:
+    """Codex 0.166 hands a spawned subagent its task as a
+    ``response_item/agent_message``: a readable header plus an encrypted
+    payload (checked against a local rollout 2026-11-04). With no user message
+    in the turn, the subagent's turn and first call had no input at all."""
+    header = "Message Type: NEW_TASK\nTask name: /root/child\nSender: /root\nPayload:\n"
+    path = tmp_path / "rollout.jsonl"
+    path.write_text(
+        "\n".join(
+            [
+                _frame(
+                    "2026-01-01T00:00:00Z", "event_msg", {"type": "task_started", "turn_id": "t1"}
+                ),
+                _frame("2026-01-01T00:00:01Z", "turn_context", {"turn_id": "t1", "model": "gpt-5"}),
+                _agent_message(
+                    "2026-01-01T00:00:02Z",
+                    header,
+                    {"type": "encrypted_content", "encrypted_content": "gAAAA"},
+                ),
+                _frame(
+                    "2026-01-01T00:00:03Z",
+                    "event_msg",
+                    {"type": "agent_message", "message": "pong"},
+                ),
+                _frame(
+                    "2026-01-01T00:00:04Z",
+                    "event_msg",
+                    {"type": "task_complete", "turn_id": "t1", "last_agent_message": "pong"},
+                ),
+            ]
+        )
+        + "\n"
+    )
+
+    turn = extract_turn_codex(str(path), "t1")
+    assert turn is not None
+    expected = (
+        "Message Type: NEW_TASK\nTask name: /root/child\nSender: /root\nPayload:\n[encrypted]"
+    )
+    assert turn["user_prompt"] == expected
+    assert turn["calls"][0]["input_messages"][0]["parts"] == [{"type": "text", "content": expected}]
+
+
+def test_agent_message_mid_turn_does_not_replace_the_user_prompt(tmp_path: Path) -> None:
+    """A child's FINAL_ANSWER reaches the parent as an agent_message mid-turn;
+    it is not what the user asked."""
+    path = tmp_path / "rollout.jsonl"
+    path.write_text(
+        "\n".join(
+            [
+                _frame(
+                    "2026-01-01T00:00:00Z", "event_msg", {"type": "task_started", "turn_id": "t1"}
+                ),
+                _frame(
+                    "2026-01-01T00:00:01Z",
+                    "response_item",
+                    {
+                        "type": "message",
+                        "role": "user",
+                        "content": [{"type": "input_text", "text": "delegate this"}],
+                    },
+                ),
+                _agent_message(
+                    "2026-01-01T00:00:02Z",
+                    "Message Type: FINAL_ANSWER\nTask name: /root\nSender: /root/child\nPayload:\n",
+                    {"type": "input_text", "text": "pong"},
+                ),
+                _frame(
+                    "2026-01-01T00:00:03Z",
+                    "event_msg",
+                    {"type": "task_complete", "turn_id": "t1", "last_agent_message": "done"},
+                ),
+            ]
+        )
+        + "\n"
+    )
+
+    turn = extract_turn_codex(str(path), "t1")
+    assert turn is not None
+    assert turn["user_prompt"] == "delegate this"
+
+
 def test_turn_aborted_real_payload_shape_marks_interrupted(tmp_path: Path) -> None:
     """The synthetic ``turn_aborted`` frame above only carries ``turn_id``.
     A genuine frame pulled from a real Codex rollout on this machine
@@ -737,3 +937,52 @@ def test_turn_context_model_reaches_the_exported_agent_name(tmp_path: Path) -> N
     assert {call["model"] for call in turn["calls"]} == {"gpt-5.6"}
     # `calls` is what the tracing layer hands the exporter as `llm_calls`.
     assert _agent_name("codex", _turn_model({"llm_calls": turn["calls"]})) == "codex[gpt-5.6]"
+
+
+def test_external_apps_open_page_state_is_not_the_prompt(tmp_path: Path) -> None:
+    """The Codex app reports its open page as a ``role: "user"`` message after
+    the prompt; one became a turn's whole input in Logfire (2026-11-04)."""
+    path = tmp_path / "rollout.jsonl"
+    path.write_text(
+        "\n".join(
+            [
+                _frame(
+                    "2026-01-01T00:00:00Z", "event_msg", {"type": "task_started", "turn_id": "t1"}
+                ),
+                _frame(
+                    "2026-01-01T00:00:01Z",
+                    "response_item",
+                    {
+                        "type": "message",
+                        "role": "user",
+                        "content": [{"type": "input_text", "text": "approve the scope"}],
+                    },
+                ),
+                _frame(
+                    "2026-01-01T00:00:02Z",
+                    "response_item",
+                    {
+                        "type": "message",
+                        "role": "user",
+                        "content": [
+                            {
+                                "type": "input_text",
+                                "text": '<external_codex_apps_open_page>{"page_id":null}'
+                                "</external_codex_apps_open_page>",
+                            }
+                        ],
+                    },
+                ),
+                _frame(
+                    "2026-01-01T00:00:03Z",
+                    "event_msg",
+                    {"type": "task_complete", "turn_id": "t1", "last_agent_message": "ok"},
+                ),
+            ]
+        )
+        + "\n"
+    )
+
+    turn = extract_turn_codex(str(path), "t1")
+    assert turn is not None
+    assert turn["user_prompt"] == "approve the scope"

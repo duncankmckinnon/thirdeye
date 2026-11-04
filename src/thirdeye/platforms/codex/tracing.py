@@ -36,6 +36,15 @@ def _in_range(ts: str, start_ts: str, end_ts: str) -> bool:
         return False
 
 
+def _overlaps(start_ts: str, end_ts: str, window_start: str, window_end: str) -> bool:
+    try:
+        return _parse_ts(start_ts) <= _parse_ts(window_end) and _parse_ts(end_ts) >= _parse_ts(
+            window_start
+        )
+    except ValueError:
+        return False
+
+
 def _turn_seq_lower_bound(session_dir_: Path, upto_seq: int) -> int:
     lo = 0
     for event in SessionReader(session_dir_).iter_events(
@@ -71,11 +80,16 @@ def _subagent_turn(session_id: str, start: dict[str, Any], stop: dict[str, Any])
     start_data = start.get("data") or {}
     stop_data = stop.get("data") or {}
     input_message = start_data.get("prompt") or start_data.get("description") or ""
-    output_message = stop_data.get("message") or stop_data.get("output") or ""
+    output_message = (
+        stop_data.get("message")
+        or stop_data.get("output")
+        or stop_data.get("last_assistant_message")
+        or ""
+    )
     attributes = {
         k: v
         for k, v in {**start_data, **stop_data}.items()
-        if k not in {"prompt", "description", "message", "output"}
+        if k not in {"prompt", "description", "message", "output", "last_assistant_message"}
     }
     result: TurnSpanDict = {
         "turn_id": f"subagent:{session_id}:{start.get('seq')}",
@@ -118,9 +132,10 @@ def _backfill_subagent(turn: TurnSpanDict, child_id: str | None) -> None:
         children = []
         for child_turn_id in ids:
             child = extract_turn_codex(str(path), str(child_turn_id))
-            if child and all(
-                _in_range(child[key], turn["start_ts"], turn["end_ts"])
-                for key in ("start_ts", "end_ts")
+            # Overlap, not containment: the child's whole-second started_at
+            # precedes the SubagentStart hook's own timestamp.
+            if child and _overlaps(
+                child["start_ts"], child["end_ts"], turn["start_ts"], turn["end_ts"]
             ):
                 children.append(child)
         children.sort(key=lambda child: _parse_ts(child["start_ts"]))

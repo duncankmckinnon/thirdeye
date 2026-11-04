@@ -12,6 +12,7 @@ from typing import TYPE_CHECKING, Any
 
 from thirdeye._compat.locking import LockMode, locked_fd
 from thirdeye.ids import new_ulid
+from thirdeye.platforms.codex.rollout import iter_frames, resolve_rollout
 from thirdeye.tracing.model import TurnSpanDict
 from thirdeye.usage.errlog import log_capture_error
 from thirdeye.writer import utc_iso_ms
@@ -115,6 +116,23 @@ def clear_marker_not_after(session_dir_: Path, *, not_after_ts: str) -> None:
         pass
 
 
+def _rollout_completed(session_id: str, codex_turn_id: str) -> bool:
+    """Whether the session's rollout records ``task_complete`` for this turn."""
+    try:
+        path = resolve_rollout(session_id)
+        if path is None:
+            return False
+        return any(
+            frame.get("type") == "event_msg"
+            and isinstance(payload := frame.get("payload"), dict)
+            and payload.get("type") == "task_complete"
+            and payload.get("turn_id") == codex_turn_id
+            for _, frame in iter_frames(path, 0)
+        )
+    except OSError:
+        return False
+
+
 def _reap(
     config: Config,
     session_dir_: Path,
@@ -126,6 +144,7 @@ def _reap(
     replacement: dict[str, Any] | None = None,
 ) -> None:
     turn: TurnSpanDict | None = None
+    codex_turn_id = None
     try:
         with _locked_marker(session_dir_) as fd:
             os.lseek(fd, 0, os.SEEK_SET)
@@ -140,11 +159,13 @@ def _reap(
                 _write_locked(fd, replacement)
                 return
             if replacement is not None:
-                # Hook delivery can repeat for the same stable prompt. Keep
+                # Hook delivery can repeat for the same stable prompt, and a
+                # follow-up typed mid-turn joins the running Codex turn. Keep
                 # its original identity/timing rather than fabricating an
                 # interrupted turn followed by a fresh marker.
-                if replacement.get("prompt_id") and replacement["prompt_id"] == marker.get(
-                    "prompt_id"
+                if any(
+                    replacement.get(key) and replacement[key] == marker.get(key)
+                    for key in ("prompt_id", "codex_turn_id")
                 ):
                     return
                 old_seq = marker.get("turn_seq")
@@ -167,6 +188,7 @@ def _reap(
                 return
             if not different_prompt and age < min_age_seconds:
                 return
+            codex_turn_id = marker.get("codex_turn_id")
             turn = {
                 "turn_id": str(turn_id),
                 "start_ts": str(start_ts),
@@ -184,6 +206,9 @@ def _reap(
         return
 
     if turn is None:
+        return
+    # notify exports a completed turn; SessionEnd can arrive before it.
+    if codex_turn_id and _rollout_completed(session_id, str(codex_turn_id)):
         return
     try:
         from thirdeye.otel_export import export_turn
@@ -243,6 +268,7 @@ def replace_open_turn(
     prompt: str,
     prompt_id: str | None,
     turn_seq: int,
+    codex_turn_id: str | None = None,
 ) -> None:
     replacement = {
         "turn_id": new_ulid(),
@@ -250,6 +276,7 @@ def replace_open_turn(
         "input_message": prompt,
         "prompt_id": prompt_id,
         "turn_seq": turn_seq,
+        "codex_turn_id": codex_turn_id,
     }
     _reap(
         config,

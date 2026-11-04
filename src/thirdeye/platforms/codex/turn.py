@@ -106,7 +106,32 @@ _SYNTHETIC_USER_TAGS = (
     "<recommended_plugins>",
     "<task-notification>",
     "<in-app-browser-context",
+    "<external_codex_apps_open_page>",
 )
+
+# AGENTS.md arrives as an untagged heading over an <INSTRUCTIONS> block.
+_AGENTS_MD_PREFIX = "# AGENTS.md instructions"
+
+
+def _strip_synthetic_prefix(text: str) -> str:
+    """Drop leading synthetic blocks, keeping any prompt the user typed after them.
+
+    The Codex app prepends ``<in-app-browser-context>`` to the typed prompt in
+    the same message, so a synthetic opening tag does not make the whole
+    message synthetic. An unclosed block is treated as entirely synthetic.
+    """
+    text = text.strip()
+    while text.startswith((*_SYNTHETIC_USER_TAGS, _AGENTS_MD_PREFIX)):
+        if text.startswith(_AGENTS_MD_PREFIX):
+            close = "</INSTRUCTIONS>"
+        else:
+            close = "</" + text[1:].split(">", 1)[0].split(None, 1)[0] + ">"
+        end = text.find(close)
+        if end == -1:
+            return ""
+        text = text[end + len(close) :].strip()
+    return text
+
 
 # Renames a Codex rollout usage block's own key names onto UsageDict's, per
 # thirdeye.tracing.model.UsageDict.
@@ -306,14 +331,33 @@ def extract_turn_codex(rollout_path: str, turn_id: str) -> dict[str, Any] | None
                     last_output_ts = ""
             continue
 
+        if outer == "response_item" and subtype == "agent_message":
+            # Inter-agent messages: a subagent's task arrives this way, as a
+            # readable header plus an encrypted payload. It is the turn's input
+            # only when nothing the user typed started the turn.
+            if not user_prompt:
+                joined = "\n".join(
+                    "[encrypted]"
+                    if block.get("type") == "encrypted_content"
+                    else str(block.get("text") or "").strip()
+                    for block in payload.get("content") or []
+                    if isinstance(block, dict)
+                ).strip()
+                if joined:
+                    user_prompt = joined
+                    if not input_parts:
+                        input_parts.append({"type": "text", "content": joined})
+                    call_start_ts = call_start_ts or ts
+            continue
+
         if outer == "response_item" and subtype == "message" and payload.get("role") == "user":
             texts = [
                 str(block.get("text") or block.get("content"))
                 for block in payload.get("content") or []
                 if isinstance(block, dict) and (block.get("text") or block.get("content"))
             ]
-            joined = "\n".join(texts).strip()
-            if joined and not joined.startswith(_SYNTHETIC_USER_TAGS):
+            joined = _strip_synthetic_prefix("\n".join(texts))
+            if joined:
                 user_prompt = joined
                 if not input_parts:
                     input_parts.append({"type": "text", "content": joined})
