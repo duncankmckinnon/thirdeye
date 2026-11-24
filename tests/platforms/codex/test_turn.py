@@ -986,3 +986,102 @@ def test_external_apps_open_page_state_is_not_the_prompt(tmp_path: Path) -> None
     turn = extract_turn_codex(str(path), "t1")
     assert turn is not None
     assert turn["user_prompt"] == "approve the scope"
+
+
+def test_failed_tool_calls_carry_their_error_message(tmp_path: Path) -> None:
+    """Codex records no success flag on tool output, so failure is read from
+    the two result shapes that state it: a code-mode script whose output
+    opens with "Script failed", and an MCP result that is `Err` or whose
+    `Ok` body sets `isError`.
+    """
+
+    def _exec(call_id: str, ts: str, header: str, *texts: str) -> list[str]:
+        return [
+            _frame(
+                ts,
+                "response_item",
+                {"type": "custom_tool_call", "name": "exec", "call_id": call_id, "input": "x"},
+            ),
+            _frame(
+                ts,
+                "response_item",
+                {
+                    "type": "custom_tool_call_output",
+                    "call_id": call_id,
+                    "output": [
+                        {"type": "input_text", "text": header},
+                        *({"type": "input_text", "text": text} for text in texts),
+                    ],
+                },
+            ),
+        ]
+
+    def _mcp(call_id: str, ts: str, result: dict) -> str:
+        return _frame(
+            ts,
+            "event_msg",
+            {
+                "type": "mcp_tool_call_end",
+                "call_id": call_id,
+                "invocation": {"server": "gh", "tool": "fetch", "arguments": {}},
+                "duration": {"secs": 0, "nanos": 0},
+                "result": result,
+            },
+        )
+
+    path = tmp_path / "rollout.jsonl"
+    path.write_text(
+        "\n".join(
+            [
+                _frame("2026-01-01T00:00:00Z", "turn_context", {"turn_id": "t1", "model": "gpt-5"}),
+                *_exec(
+                    "ok",
+                    "2026-01-01T00:00:01Z",
+                    "Script completed\nWall time 0.1 seconds\nOutput:\n",
+                    '{"exit_code":1,"output":""}',
+                ),
+                *_exec(
+                    "bad",
+                    "2026-01-01T00:00:02Z",
+                    "Script failed\nWall time 0.0 seconds\nOutput:\n",
+                    "Script error:\napply_patch verification failed: invalid patch",
+                ),
+                _mcp(
+                    "mcp_ok",
+                    "2026-01-01T00:00:03Z",
+                    {"Ok": {"content": [{"type": "text", "text": "fine"}], "isError": False}},
+                ),
+                _mcp(
+                    "mcp_is_error",
+                    "2026-01-01T00:00:04Z",
+                    {
+                        "Ok": {
+                            "content": [{"type": "text", "text": "GitHub API error 404"}],
+                            "isError": True,
+                        }
+                    },
+                ),
+                _mcp("mcp_err", "2026-01-01T00:00:05Z", {"Err": "tool call timed out"}),
+                _frame(
+                    "2026-01-01T00:00:06Z", "event_msg", {"type": "task_complete", "turn_id": "t1"}
+                ),
+            ]
+        )
+        + "\n"
+    )
+    turn = extract_turn_codex(str(path), "t1")
+    assert turn is not None
+    errors = {
+        tool["tool_call_id"]: tool.get("error")
+        for call in turn["calls"]
+        for tool in call["tool_calls"]
+    }
+    assert errors == {
+        # A nested command's non-zero exit is the script's to handle, not a
+        # failed call: `grep` with no match exits 1.
+        "ok": None,
+        "bad": "apply_patch verification failed: invalid patch",
+        "mcp_ok": None,
+        "mcp_is_error": "GitHub API error 404",
+        "mcp_err": "tool call timed out",
+    }

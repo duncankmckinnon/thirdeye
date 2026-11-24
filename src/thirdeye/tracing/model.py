@@ -32,6 +32,10 @@ class ToolCallSpanDict(TypedDict):
     start_ts: str
     end_ts: str
     attributes: dict[str, Any]
+    # Set only when the call failed: the harness's error message, which the
+    # exporter turns into the span's ERROR status. Adapters decide what
+    # counts as a failure; the exporter never inspects tool results.
+    error: NotRequired[str]
 
 
 class LlmCallSpanDict(TypedDict):

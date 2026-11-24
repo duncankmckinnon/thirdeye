@@ -137,7 +137,7 @@ def _tool_span(
     turn_seq: int,
     tool_call: ToolCallSpanDict,
 ) -> dict[str, Any]:
-    return {
+    span: dict[str, Any] = {
         "name": f"tool: {tool_call['name']}",
         "tool_name": tool_call["name"],
         "tool_call_id": tool_use_id,
@@ -149,6 +149,9 @@ def _tool_span(
         "end_ts": tool_call["end_ts"],
         "attributes": tool_call["attributes"],
     }
+    if tool_call.get("error"):
+        span["error"] = tool_call["error"]
+    return span
 
 
 def _emit_live_spans(

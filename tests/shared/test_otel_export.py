@@ -276,6 +276,94 @@ class TestScrubbingDisabled:
         assert "logfire.scrubbed" not in span["attributes"]
 
 
+class TestToolErrorStatus:
+    """A tool call the adapter marks as failed (`error` on the tool call)
+    exports with OTel status ERROR, so Logfire files it at error level
+    instead of info. Calls without `error` keep an unset status.
+    """
+
+    @staticmethod
+    def _tool_spans(exporter) -> dict[str, Any]:
+        return {
+            span.attributes["gen_ai.tool.call.id"]: span
+            for span in exporter.exported_spans
+            if span.name.startswith("tool:")
+        }
+
+    def test_turn_export_marks_failed_tool_calls(
+        self, tmp_path: Path, enabled_config: Config, wired_instance, exporter
+    ):
+        from opentelemetry.trace import StatusCode
+
+        otel_export._export_turn_inner(
+            config=enabled_config,
+            session_dir_=tmp_path / "traces" / "claude" / "s1",
+            session_id="s1",
+            platform="claude",
+            cwd="/proj",
+            turn=_turn(
+                llm_calls=[
+                    _llm_call(
+                        tool_calls=[
+                            _tool_call(tool_call_id="tu_ok"),
+                            _tool_call(tool_call_id="tu_bad", error="Exit code 1\nno such file"),
+                        ]
+                    )
+                ],
+                orphan_tool_calls=[
+                    {
+                        "parent_call_id": "call_0",
+                        "tool_call": _tool_call(tool_call_id="tu_orphan", error="denied"),
+                    }
+                ],
+            ),
+        )
+
+        spans = self._tool_spans(exporter)
+        assert spans["tu_ok"].status.status_code is StatusCode.UNSET
+        assert spans["tu_bad"].status.status_code is StatusCode.ERROR
+        assert spans["tu_bad"].status.description == "Exit code 1\nno such file"
+        assert spans["tu_bad"].attributes["logfire.level_num"] == 17
+        assert spans["tu_orphan"].status.status_code is StatusCode.ERROR
+        assert spans["tu_orphan"].status.description == "denied"
+
+    def test_live_span_batch_marks_failed_tool_calls(
+        self, tmp_path: Path, enabled_config: Config, wired_instance, exporter
+    ):
+        from opentelemetry.trace import StatusCode
+
+        def _live_tool(tool_call_id: str, span_id: int, **extra: Any) -> dict[str, Any]:
+            return {
+                "name": "tool: Bash",
+                "tool_name": "Bash",
+                "tool_call_id": tool_call_id,
+                "span_id": str(span_id),
+                "parent_span_id": str(0x123456789ABCDEF0),
+                "start_ts": "2026-01-01T00:00:01.000Z",
+                "end_ts": "2026-01-01T00:00:02.000Z",
+                "attributes": {"command": "ls"},
+                **extra,
+            }
+
+        otel_export._export_spans_batch(
+            config=enabled_config,
+            session_dir_=tmp_path / "traces" / "claude" / "s1",
+            session_id="s1",
+            platform="claude",
+            cwd="/proj",
+            trace_id=str(0xABCDEF),
+            spans=[
+                _live_tool("tu_ok", 0x1001),
+                _live_tool("tu_bad", 0x1002, error="Exit code 2"),
+            ],
+        )
+
+        spans = self._tool_spans(exporter)
+        assert spans["tu_ok"].status.status_code is StatusCode.UNSET
+        assert spans["tu_bad"].status.status_code is StatusCode.ERROR
+        assert spans["tu_bad"].status.description == "Exit code 2"
+
+
 class TestBackgroundNoiseSuppression:
     """Logfire's token-check runs in a background thread and warns straight to
     stderr on a bad/unreachable token; that thread can outlive our own call

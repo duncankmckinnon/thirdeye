@@ -1312,3 +1312,44 @@ class TestStopNormalCompletion:
         _stdin(monkeypatch, {"session_id": sid, "cwd": "/p", "response": "done"})
         hooks.stop()
         assert exported == []
+
+
+class TestToolCallFailure:
+    """Claude Code reports a failed tool call through PostToolUseFailure,
+    whose payload carries `error` instead of `tool_response`. The paired
+    tool call surfaces that message as `error` so the exporter can mark the
+    span failed.
+    """
+
+    @staticmethod
+    def _events(result_data: dict) -> list[dict]:
+        return [
+            {
+                "t": "tool_call",
+                "ts": "2026-01-01T00:00:01.000Z",
+                "data": {"tool_name": "Bash", "tool_use_id": "tu_1", "tool_input": {}},
+            },
+            {
+                "t": "tool_result",
+                "ts": "2026-01-01T00:00:02.000Z",
+                "data": {"tool_use_id": "tu_1", **result_data},
+            },
+        ]
+
+    def test_failure_payload_sets_error(self):
+        [pair] = tracing._pair_tool_calls(
+            self._events(
+                {
+                    "hook_event_name": "PostToolUseFailure",
+                    "error": "Exit code 1",
+                    "is_interrupt": False,
+                }
+            )
+        )
+        assert pair["error"] == "Exit code 1"
+
+    def test_success_payload_has_no_error(self):
+        [pair] = tracing._pair_tool_calls(
+            self._events({"hook_event_name": "PostToolUse", "tool_response": {"stdout": "ok"}})
+        )
+        assert "error" not in pair
