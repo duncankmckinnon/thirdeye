@@ -480,6 +480,30 @@ class TestBuildTurnFromLocalStore:
         assert turn["llm_calls"] == [{"call_id": "t1:0"}]
         assert turn["attributes"] == {}
 
+    def test_interrupted_turn_without_final_answer_uses_last_assistant_text(
+        self, tmp_path: Path
+    ) -> None:
+        sd = session_dir(tmp_path, "codex", "s1")
+        call = {
+            "call_id": "t1:0",
+            "output_messages": [
+                {
+                    "role": "assistant",
+                    "parts": [
+                        {"type": "text", "content": "checking the logs"},
+                        {"type": "tool_call", "id": "c1", "name": "exec", "arguments": ""},
+                    ],
+                }
+            ],
+        }
+        turn = build_turn(
+            session_dir_=sd,
+            session_id="s1",
+            seq=1,
+            turn=_bare_turn(status="interrupted", assistant_output="", calls=[call]),
+        )
+        assert turn["output_message"] == "checking the logs"
+
 
 # -- notify(): wiring to export_turn -------------------------------------------
 
@@ -948,6 +972,62 @@ class TestHooksJsonMarkerWiring:
         hooks_json.session_end()
 
         assert calls == []
+
+    def test_interrupted_turn_export_carries_its_rollout_calls_and_output(
+        self, monkeypatch, env: Path
+    ):
+        """An interrupted Codex turn never reaches ``notify``, so the marker
+        fallback is its only export. When the rollout holds the aborted turn,
+        its model calls, last assistant text and abort time go out with it
+        instead of an empty turn.
+        """
+        from thirdeye.platforms.codex import hooks_json
+
+        calls: list[Any] = []
+        monkeypatch.setattr("thirdeye.otel_export.export_turn", lambda *a, **k: calls.append(a))
+        frames = [
+            ("2026-01-01T00:00:01.000Z", "turn_context", {"turn_id": "T1", "model": "gpt-5"}),
+            (
+                "2026-01-01T00:00:02.000Z",
+                "response_item",
+                {
+                    "type": "message",
+                    "role": "assistant",
+                    "phase": "commentary",
+                    "content": [{"type": "output_text", "text": "checking the logs"}],
+                },
+            ),
+            (
+                "2026-01-01T00:00:03.000Z",
+                "response_item",
+                {"type": "function_call", "name": "exec", "call_id": "c1", "arguments": "{}"},
+            ),
+            (
+                "2026-01-01T00:00:04.000Z",
+                "event_msg",
+                {"type": "turn_aborted", "turn_id": "T1", "reason": "interrupted"},
+            ),
+        ]
+        rollout = env / "codex_sessions" / "rollout-2026-01-01T00-00-00-s1.jsonl"
+        rollout.write_text(
+            "".join(
+                json.dumps({"timestamp": ts, "type": kind, "payload": payload}) + "\n"
+                for ts, kind, payload in frames
+            )
+        )
+        _stdin(monkeypatch, {"session_id": "s1", "cwd": "/p", "prompt": "go", "turn_id": "T1"})
+        hooks_json.user_prompt_submit()
+
+        _stdin(monkeypatch, {"session_id": "s1", "cwd": "/p"})
+        hooks_json.session_end()
+
+        [(_config, _sd, _sid, _platform, _cwd, turn)] = calls
+        assert turn["status"] == "interrupted"
+        assert turn["input_message"] == "go"
+        assert turn["output_message"] == "checking the logs"
+        assert turn["end_ts"] == "2026-01-01T00:00:04.000Z"
+        [llm_call] = turn["llm_calls"]
+        assert [tool["name"] for tool in llm_call["tool_calls"]] == ["exec"]
 
 
 class TestMidTurnHooksReapAbandonedMarker:

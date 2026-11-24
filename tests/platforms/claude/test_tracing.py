@@ -1353,3 +1353,85 @@ class TestToolCallFailure:
             self._events({"hook_event_name": "PostToolUse", "tool_response": {"stdout": "ok"}})
         )
         assert "error" not in pair
+
+
+class TestOutputFallback:
+    """A turn's output falls back to the last assistant text it produced
+    when the harness supplies none: Claude Code sends an empty
+    `last_assistant_message` for most subagents, and an interrupted turn has
+    no final response at all.
+    """
+
+    def test_subagent_without_last_assistant_message_uses_its_transcript(self, tmp_path: Path):
+        transcript = tmp_path / "agent.jsonl"
+        transcript.write_text(
+            "\n".join(
+                [
+                    _user_frame("explore code"),
+                    _assistant_frame("sub_1", [{"type": "text", "text": "found stuff"}]),
+                ]
+            )
+            + "\n"
+        )
+        turn = tracing._build_subagent_turn(
+            {"seq": 3, "ts": "2026-01-01T00:00:00.000Z", "data": {"agent_id": "a1"}},
+            {
+                "seq": 9,
+                "ts": "2026-01-01T00:00:05.000Z",
+                "data": {"agent_transcript": str(transcript), "last_assistant_message": ""},
+            },
+            [],
+            [],
+            None,
+            session_id="s1",
+        )
+        assert turn["output_message"] == "found stuff"
+
+    def test_interrupted_turn_uses_last_text_including_calls_committed_live(
+        self, monkeypatch, env: Path, tmp_path: Path
+    ):
+        """Live spans already exported the call holding the text, so the
+        Stop-time parse (which starts past it) never sees it. The fallback
+        reads the transcript from the turn's start instead.
+        """
+        exported = []
+        monkeypatch.setattr(
+            "thirdeye.otel_export.export_turn",
+            lambda config, sd, sid, platform, cwd, turn: exported.append(turn),
+        )
+        sid = "interrupted-output"
+        transcript = tmp_path / "transcript.jsonl"
+        transcript.write_text("")
+        _stdin(
+            monkeypatch,
+            {"session_id": sid, "cwd": "/p", "prompt": "go", "transcript_path": str(transcript)},
+        )
+        hooks.user_prompt_submit()
+        sd = session_dir(env, "claude", sid)
+        marker = hooks._read_open_turn(sd)
+        with transcript.open("a") as file:
+            file.write(
+                _assistant_frame(
+                    "msg_1",
+                    [
+                        {"type": "text", "text": "Let me look at the logs."},
+                        {"type": "tool_use", "id": "tu_1", "name": "Bash", "input": {}},
+                    ],
+                )
+                + "\n"
+            )
+        assert hooks._advance_turn_cursor(
+            sd,
+            expected_turn_seq=marker["turn_seq"],
+            offset=transcript.stat().st_size,
+            last_frame_ts="2026-01-01T00:00:00.000Z",
+            newly_committed_call_ids=["msg_1"],
+        )
+
+        _stdin(monkeypatch, {"session_id": sid, "cwd": "/p"})
+        hooks.session_end()
+
+        [turn] = exported
+        assert turn["status"] == "interrupted"
+        assert turn["llm_calls"] == []
+        assert turn["output_message"] == "Let me look at the logs."

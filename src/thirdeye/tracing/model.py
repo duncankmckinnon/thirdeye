@@ -238,3 +238,18 @@ class TurnSpanDict(TypedDict):
     # (AccountingCallSpanDict.call_id set) or an explicit user-turn/agent
     # accounting span (call_id null), never both.
     accounting_calls: NotRequired[list[AccountingCallSpanDict]]
+
+
+def last_assistant_text(llm_calls: list[LlmCallSpanDict]) -> str:
+    """The last non-empty assistant text part across ``llm_calls``, or ``""``.
+
+    A turn's output when the harness supplies none: a subagent whose stop
+    event omits its final message, or an interrupted turn, whose last words
+    are whatever it said before it stopped.
+    """
+    for call in reversed(llm_calls):
+        for message in reversed(call.get("output_messages") or []):
+            for part in reversed(message.get("parts", [])):
+                if part.get("type") == "text" and part.get("content"):
+                    return str(part["content"])
+    return ""

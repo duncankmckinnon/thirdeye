@@ -22,7 +22,7 @@ from typing import Any
 from thirdeye.platforms.codex.rollout import iter_frames, resolve_rollout
 from thirdeye.platforms.codex.turn import extract_turn_codex
 from thirdeye.reader import SessionReader
-from thirdeye.tracing.model import PermissionRequestSpanDict, TurnSpanDict
+from thirdeye.tracing.model import PermissionRequestSpanDict, TurnSpanDict, last_assistant_text
 
 
 def _parse_ts(ts: str) -> datetime:
@@ -222,7 +222,9 @@ def build_turn(
         "start_ts": start_ts,
         "end_ts": end_ts,
         "input_message": turn["user_prompt"],
-        "output_message": turn["assistant_output"],
+        # An interrupted turn has no final answer; its output is the last
+        # thing the agent said, and `status` records that it never finished.
+        "output_message": turn["assistant_output"] or last_assistant_text(turn["calls"]),
         "status": turn["status"],
         "llm_calls": turn["calls"],
         "permission_requests": _permission_requests_in_range(
