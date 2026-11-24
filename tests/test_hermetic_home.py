@@ -31,7 +31,8 @@ def test_no_thirdeye_setting_leaks_in_from_the_shell():
         key
         for key in os.environ
         if key.startswith("THIRDEYE_")
-        and key not in {"THIRDEYE_HOME", "THIRDEYE_CURSOR_TRANSCRIPT_ROOTS", "THIRDEYE_CURSOR_CHAT_ROOTS"}
+        and key
+        not in {"THIRDEYE_HOME", "THIRDEYE_CURSOR_TRANSCRIPT_ROOTS", "THIRDEYE_CURSOR_CHAT_ROOTS"}
     }
     assert leaked == set()
     assert "COPILOT_HOME" not in os.environ
