@@ -431,6 +431,25 @@ class TestTurnUsageTotals:
         assert not any(k.startswith("gen_ai.aggregated_usage.") for k in turn_span["attributes"])
 
 
+def test_codex_chat_spans_name_their_turn_span(
+    tmp_path: Path, enabled_config: Config, wired_instance, exporter
+):
+    span_id = turn_span_id("codex", "s1", "t1")
+    otel_export._export_turn_inner(
+        config=enabled_config,
+        session_dir_=tmp_path / "traces" / "codex" / "s1",
+        session_id="s1",
+        platform="codex",
+        cwd="/proj",
+        turn=_turn(turn_id="t1", turn_span_id=str(span_id), llm_calls=[_llm_call()]),
+    )
+    spans = exporter.exported_spans_as_dict()
+    turn_span = next(s for s in spans if s["name"] == "invoke_agent")
+    chat = next(s for s in spans if s["name"].startswith("chat"))
+    assert turn_span["context"]["span_id"] == span_id
+    assert chat["attributes"]["thirdeye.turn.span_id"] == str(span_id)
+
+
 class TestBackgroundNoiseSuppression:
     """Logfire's token-check runs in a background thread and warns straight to
     stderr on a bad/unreachable token; that thread can outlive our own call

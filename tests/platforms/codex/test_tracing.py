@@ -531,6 +531,49 @@ class TestTurnUsage:
         }
 
 
+class TestTurnSpanIds:
+    """Codex turns get deterministic span ids, as Claude's do, so their chat
+    spans can name their turn in `thirdeye.turn.span_id`."""
+
+    def test_top_level_and_subagent_turns_have_derived_span_ids(self, env: Path) -> None:
+        from thirdeye.span_ids import turn_span_id
+
+        store = Store(Config(root=env))
+        start = store.append_event(
+            session_id="s1", platform="codex", cwd="/p", t="subagent_start", data={"agent_id": "a"}
+        )
+        stop = store.append_event(
+            session_id="s1",
+            platform="codex",
+            cwd="/p",
+            t="subagent_message",
+            data={"agent_id": "a"},
+        )
+        turn = build_turn(
+            session_dir_=session_dir(env, "codex", "s1"),
+            session_id="s1",
+            seq=stop + 1,
+            turn=_bare_turn(start_ts="2000-01-01T00:00:00.000Z", end_ts="2100-01-01T00:00:00.000Z"),
+        )
+        assert turn["turn_span_id"] == str(turn_span_id("codex", "s1", "t1"))
+        [subagent] = turn["subagents"]
+        assert subagent["turn_span_id"] == str(turn_span_id("codex", "s1", f"subagent:s1:{start}"))
+
+    def test_interrupted_fallback_turn_has_a_derived_span_id(self, monkeypatch, env: Path):
+        from thirdeye.platforms.codex import hooks_json
+        from thirdeye.span_ids import turn_span_id
+
+        calls: list[Any] = []
+        monkeypatch.setattr("thirdeye.otel_export.export_turn", lambda *a, **k: calls.append(a))
+        _stdin(monkeypatch, {"session_id": "s1", "cwd": "/p", "prompt": "go"})
+        hooks_json.user_prompt_submit()
+        _stdin(monkeypatch, {"session_id": "s1", "cwd": "/p"})
+        hooks_json.session_end()
+
+        [(*_, turn)] = calls
+        assert turn["turn_span_id"] == str(turn_span_id("codex", "s1", turn["turn_id"]))
+
+
 class TestHookFieldsOnSpans:
     """Codex hook payloads share Claude Code's field names; they reach spans
     under span vocabulary rather than as raw hook keys."""

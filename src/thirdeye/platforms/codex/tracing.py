@@ -23,12 +23,15 @@ from thirdeye.platforms.codex.rollout import iter_frames, resolve_rollout
 from thirdeye.platforms.codex.turn import extract_turn_codex
 from thirdeye.platforms.hook_fields import hook_span_attributes
 from thirdeye.reader import SessionReader
+from thirdeye.span_ids import turn_span_id
 from thirdeye.tracing.model import (
     PermissionRequestSpanDict,
     TurnSpanDict,
     last_assistant_text,
     total_usage,
 )
+
+_PLATFORM = "codex"
 
 
 def _parse_ts(ts: str) -> datetime:
@@ -99,8 +102,10 @@ def _subagent_turn(session_id: str, start: dict[str, Any], stop: dict[str, Any])
             if k not in {"prompt", "description", "message", "output", "last_assistant_message"}
         }
     )
+    turn_id = f"subagent:{session_id}:{start.get('seq')}"
     result: TurnSpanDict = {
-        "turn_id": f"subagent:{session_id}:{start.get('seq')}",
+        "turn_id": turn_id,
+        "turn_span_id": str(turn_span_id(_PLATFORM, session_id, turn_id)),
         "start_ts": str(start.get("ts") or ""),
         "end_ts": str(stop.get("ts") or ""),
         "input_message": str(input_message),
@@ -230,6 +235,9 @@ def build_turn(
     seq_lo = _turn_seq_lower_bound(session_dir_, seq)
     built: TurnSpanDict = {
         "turn_id": turn["turn_id"],
+        # Keyed by Codex's own turn id, so every export of one turn derives
+        # the same span and its chat spans can name it.
+        "turn_span_id": str(turn_span_id(_PLATFORM, session_id, turn["turn_id"])),
         "start_ts": start_ts,
         "end_ts": end_ts,
         "input_message": turn["user_prompt"],
