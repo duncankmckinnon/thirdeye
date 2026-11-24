@@ -73,15 +73,18 @@ def _pair_tool_calls(events: list[dict[str, Any]]) -> list[ToolCallSpanDict]:
             if call_ev is None:
                 continue
             call_data = call_ev.get("data") or {}
-            pairs.append(
-                {
-                    "tool_call_id": tu_id,
-                    "name": str(call_data.get("tool_name") or ""),
-                    "start_ts": str(call_ev.get("ts") or ""),
-                    "end_ts": str(ev.get("ts") or ""),
-                    "attributes": {**call_data, **data},
-                }
-            )
+            pair: ToolCallSpanDict = {
+                "tool_call_id": tu_id,
+                "name": str(call_data.get("tool_name") or ""),
+                "start_ts": str(call_ev.get("ts") or ""),
+                "end_ts": str(ev.get("ts") or ""),
+                "attributes": {**call_data, **data},
+            }
+            # PostToolUseFailure delivers the failure as `error` in place of
+            # a `tool_response`; PostToolUse never sets it.
+            if data.get("error"):
+                pair["error"] = str(data["error"])
+            pairs.append(pair)
     return pairs
 
 

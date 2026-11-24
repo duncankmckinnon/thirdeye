@@ -12,6 +12,7 @@ adapts this dict's shape into a full ``TurnSpanDict``.
 
 from __future__ import annotations
 
+import json
 from collections import Counter
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -152,17 +153,53 @@ def _usage_dict(raw: dict[str, Any]) -> dict[str, int]:
     }
 
 
+def _texts(items: Any) -> list[str]:
+    if not isinstance(items, list):
+        return []
+    return [str(item.get("text") or "") for item in items if isinstance(item, dict)]
+
+
+def _tool_error(result: Any) -> str | None:
+    """Return the failure message a Codex tool result states, or None.
+
+    Codex writes no success flag beside a tool's output, so this reads only
+    the shapes that state a failure outright: a code-mode script whose output
+    opens with "Script failed", and an MCP result that is ``Err`` or whose
+    ``Ok`` body sets ``isError``. A nested command's non-zero exit inside a
+    completed script is the script's to handle, so it is not a failure here.
+    """
+    texts = _texts(result)
+    if texts and texts[0].startswith("Script failed"):
+        for text in texts[1:]:
+            if text.startswith("Script error:"):
+                return text.removeprefix("Script error:").strip() or "Script failed"
+        return "Script failed"
+    if not isinstance(result, dict):
+        return None
+    if "Err" in result:
+        err = result["Err"]
+        return err if isinstance(err, str) and err else json.dumps(err)
+    ok = result.get("Ok")
+    if isinstance(ok, dict) and ok.get("isError") is True:
+        return "\n".join(text for text in _texts(ok.get("content")) if text) or "MCP tool error"
+    return None
+
+
 def _tool_call_dicts(entries: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    return [
-        {
+    calls = []
+    for entry in entries:
+        call = {
             "tool_call_id": entry["call_id"],
             "name": entry["name"],
             "start_ts": entry["start_ts"],
             "end_ts": entry["end_ts"],
             "attributes": {"arguments": entry["arguments"], "result": entry["result"]},
         }
-        for entry in entries
-    ]
+        error = _tool_error(entry["result"])
+        if error:
+            call["error"] = error
+        calls.append(call)
+    return calls
 
 
 def _llm_call_dict(

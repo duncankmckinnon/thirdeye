@@ -1518,6 +1518,19 @@ def _interaction_attributes(
     )
 
 
+def _end_span(span: Any, end_time: int, error: Any = None) -> None:
+    """End ``span``, first marking it failed when its producer recorded ``error``.
+
+    Logfire files a span whose status is ERROR at error level, so the status
+    alone is what makes a failed tool call stand out from successful ones.
+    """
+    if error:
+        from opentelemetry.trace import Status, StatusCode
+
+        span.set_status(Status(StatusCode.ERROR, str(error)))
+    span.end(end_time=end_time)
+
+
 def _export_spans_batch(
     *,
     config: Config,
@@ -1587,7 +1600,7 @@ def _export_spans_batch(
             start_time=_ts_to_ns(span_data["start_ts"]),
             attributes=attributes,
         )
-        span.end(end_time=_ts_to_ns(span_data["end_ts"]))
+        _end_span(span, _ts_to_ns(span_data["end_ts"]), span_data.get("error"))
 
     if instance.force_flush(timeout_millis=_FLUSH_TIMEOUT_MS) is False:
         raise RuntimeError("span batch was not flushed")
@@ -1749,7 +1762,7 @@ def _export_turn_subtree(
                     tool_call_id=tool_call["tool_call_id"],
                 ),
             )
-            tool_span.end(end_time=_ts_to_ns(tool_call["end_ts"]))
+            _end_span(tool_span, _ts_to_ns(tool_call["end_ts"]), tool_call.get("error"))
 
     known_call_ids = {str(call["call_id"]) for call in turn["llm_calls"]}
     for accounting in turn.get("accounting_calls") or []:
@@ -1793,7 +1806,7 @@ def _export_turn_subtree(
                 tool_call_id=tool_call["tool_call_id"],
             ),
         )
-        orphan_span.end(end_time=_ts_to_ns(tool_call["end_ts"]))
+        _end_span(orphan_span, _ts_to_ns(tool_call["end_ts"]), tool_call.get("error"))
 
     for permission_request in turn["permission_requests"]:
         pr_ts = _ts_to_ns(permission_request["ts"])

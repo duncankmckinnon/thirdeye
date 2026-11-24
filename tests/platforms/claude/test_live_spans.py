@@ -155,6 +155,42 @@ class TestLiveSpanJob:
             "2026-08-22T10:00:02.000Z",
         )
 
+    def test_failed_tool_span_carries_the_failure_message(
+        self, monkeypatch: pytest.MonkeyPatch, config: Config, tmp_path: Path
+    ) -> None:
+        session_id = "failed-tool"
+        transcript = tmp_path / "transcript.jsonl"
+        session_dir_ = _start_turn(monkeypatch, config, transcript, session_id=session_id)
+        _append_frames(
+            transcript,
+            _assistant_frame("msg-request", "2026-08-22T10:00:01.000Z", "tool-1"),
+            _user_tool_results("2026-08-22T10:00:02.000Z", "tool-1"),
+        )
+        store = Store(config)
+        store.append_event(
+            session_id=session_id,
+            platform="claude",
+            cwd="/project",
+            t="tool_call",
+            data={"tool_name": "Read", "tool_use_id": "tool-1", "tool_input": {}},
+        )
+        store.append_event(
+            session_id=session_id,
+            platform="claude",
+            cwd="/project",
+            t="tool_result",
+            data={
+                "hook_event_name": "PostToolUseFailure",
+                "tool_use_id": "tool-1",
+                "error": "File does not exist.",
+            },
+        )
+
+        live_spans.emit_live_spans(config, session_dir_, session_id, "/project", "tool-1")
+
+        _chat, tool = _jobs(config)[0]["spans"]
+        assert tool["error"] == "File does not exist."
+
     def test_each_chat_is_emitted_once_across_two_growing_transcript_hooks(
         self, monkeypatch: pytest.MonkeyPatch, config: Config, tmp_path: Path
     ) -> None:
