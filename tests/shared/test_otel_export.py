@@ -1105,6 +1105,10 @@ class TestExportSpansBatch:
             ("openai", "gpt-6-astra"),
             ("openai", "gpt-6-luna"),
             ("anthropic", "claude-haiku-5-5"),
+            # Unpriced through genai-prices 0.1.13: 119 and 172 chat spans
+            # in agent-tracing over 2026-11-10..23 had no operation.cost.
+            ("anthropic", "claude-fable-5-2"),
+            ("openai", "gpt-6.2-astra"),
         ],
     )
     def test_chat_span_prices_current_models(
