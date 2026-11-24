@@ -1525,3 +1525,85 @@ class TestHookFieldsOnSpans:
             "thirdeye.subagent.id": "a1",
             "thirdeye.subagent.type": "Explore",
         }
+
+
+class TestPermissionDecision:
+    """Claude Code's PermissionRequest payload names the tool and its input
+    but not its tool_use_id. PreToolUse fires just before it with the same
+    tool and input, which links the request to its call; whether that call
+    then ran says the request was approved.
+    """
+
+    @staticmethod
+    def _call(tool_use_id: str, command: str) -> dict:
+        return {
+            "t": "tool_call",
+            "ts": "2026-01-01T00:00:01.000Z",
+            "data": {
+                "tool_name": "Bash",
+                "tool_use_id": tool_use_id,
+                "tool_input": {"command": command},
+            },
+        }
+
+    @staticmethod
+    def _request(command: str) -> dict:
+        return {
+            "t": "permission_request",
+            "ts": "2026-01-01T00:00:02.000Z",
+            "data": {"tool_name": "Bash", "tool_input": {"command": command}},
+        }
+
+    @staticmethod
+    def _result(tool_use_id: str) -> dict:
+        return {
+            "t": "tool_result",
+            "ts": "2026-01-01T00:00:03.000Z",
+            "data": {"tool_use_id": tool_use_id, "tool_response": {"stdout": ""}},
+        }
+
+    def test_request_for_a_call_that_ran_is_linked_and_approved(self):
+        [request] = tracing._pair_permission_events(
+            [
+                self._call("tu_other", "pwd"),
+                self._call("tu_1", "rm -rf build"),
+                self._request("rm -rf build"),
+                self._result("tu_1"),
+            ]
+        )
+        assert request["attributes"]["gen_ai.tool.call.id"] == "tu_1"
+        assert request["attributes"]["thirdeye.permission.decision"] == "approved"
+
+    def test_request_for_a_call_that_never_ran_has_no_decision(self):
+        """A user's rejection in the dialog fires no hook, and neither does
+        an interrupt, so a call that never ran is linked but left undecided."""
+        [request] = tracing._pair_permission_events(
+            [self._call("tu_1", "rm -rf build"), self._request("rm -rf build")]
+        )
+        assert request["attributes"]["gen_ai.tool.call.id"] == "tu_1"
+        assert "thirdeye.permission.decision" not in request["attributes"]
+
+    def test_request_without_a_matching_call_is_not_linked(self):
+        [request] = tracing._pair_permission_events(
+            [self._call("tu_1", "ls"), self._request("rm -rf build"), self._result("tu_1")]
+        )
+        assert "gen_ai.tool.call.id" not in request["attributes"]
+        assert "thirdeye.permission.decision" not in request["attributes"]
+
+    def test_permission_denied_is_a_denial(self):
+        [denied] = tracing._pair_permission_events(
+            [
+                {
+                    "t": "permission_denied",
+                    "ts": "2026-01-01T00:00:02.000Z",
+                    "data": {
+                        "tool_name": "Bash",
+                        "tool_use_id": "tu_1",
+                        "tool_input": {"command": "rm -rf /"},
+                        "reason": "destructive",
+                    },
+                }
+            ]
+        )
+        assert denied["attributes"]["gen_ai.tool.call.id"] == "tu_1"
+        assert denied["attributes"]["thirdeye.permission.decision"] == "denied"

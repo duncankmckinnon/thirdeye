@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
@@ -90,17 +91,52 @@ def _pair_tool_calls(events: list[dict[str, Any]]) -> list[ToolCallSpanDict]:
     return pairs
 
 
+def _tool_call_key(data: dict[str, Any]) -> tuple[str, str]:
+    return (
+        str(data.get("tool_name") or ""),
+        json.dumps(data.get("tool_input"), sort_keys=True, default=str),
+    )
+
+
 def _pair_permission_events(events: list[dict[str, Any]]) -> list[PermissionRequestSpanDict]:
+    """One span record per permission request or denial in ``events``.
+
+    PermissionRequest's payload names the tool and its input but not its
+    tool_use_id. PreToolUse fires just before it with the same tool and
+    input, so the latest such call is the one awaiting permission, and that
+    call later running means the request was approved. A call that never
+    ran stays undecided: a rejection in the dialog fires no hook, and
+    neither does an interrupt.
+    """
+    ran = {
+        tu_id
+        for ev in events
+        if ev.get("t") == "tool_result" and (tu_id := _tool_use_id(ev.get("data")))
+    }
+    awaiting: dict[tuple[str, str], str] = {}
     out: list[PermissionRequestSpanDict] = []
     for ev in events:
-        if ev.get("t") not in {"permission_request", "permission_denied"}:
-            continue
         data = ev.get("data") or {}
+        kind = ev.get("t")
+        if kind == "tool_call":
+            tu_id = _tool_use_id(data)
+            if tu_id:
+                awaiting[_tool_call_key(data)] = tu_id
+            continue
+        if kind not in {"permission_request", "permission_denied"}:
+            continue
+        attributes = hook_span_attributes(data)
+        if kind == "permission_denied":
+            attributes["thirdeye.permission.decision"] = "denied"
+        elif tu_id := awaiting.get(_tool_call_key(data)):
+            attributes["gen_ai.tool.call.id"] = tu_id
+            if tu_id in ran:
+                attributes["thirdeye.permission.decision"] = "approved"
         out.append(
             {
                 "ts": str(ev.get("ts") or ""),
                 "tool_name": str(data.get("tool_name") or ""),
-                "attributes": hook_span_attributes(data),
+                "attributes": attributes,
             }
         )
     return out
