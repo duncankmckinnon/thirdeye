@@ -1,3 +1,4 @@
+import os
 from pathlib import Path
 
 import pytest
@@ -8,10 +9,11 @@ from thirdeye.store import Store
 
 @pytest.fixture(autouse=True)
 def _never_touch_real_platform_configs(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    """Redirect every platform's real home-directory config path (Codex's
-    config.toml and hooks.json, Claude's settings.json, and Cursor's hooks.json) to this test's
-    tmp_path, for every test in the suite — not just ones that remember to
-    pass an explicit path to a Platform constructor.
+    """Redirect every real home-directory path (thirdeye's own config and
+    store, Codex's config.toml, hooks.json and sessions, Claude's
+    settings.json, Cursor's hooks.json and history, Copilot's home) to this
+    test's tmp_path, for every test in the suite — not just ones that
+    remember to pass an explicit path to a Platform constructor.
 
     A CodexPlatform/ClaudePlatform built with no explicit override falls back
     to these module-level constants, so a test that forgets to override one
@@ -23,6 +25,31 @@ def _never_touch_real_platform_configs(tmp_path: Path, monkeypatch: pytest.Monke
     test to remember an override.
     """
     fake_home = tmp_path / "_fake_home"
+    fake_home.mkdir()
+
+    # Nothing from the shell running pytest may steer a test: a developer's
+    # own THIRDEYE_CAPTURE_ENV, THIRDEYE_HOME or COPILOT_HOME would otherwise
+    # change what Config.load() and the adapters read.
+    for key in [key for key in os.environ if key.startswith("THIRDEYE_")]:
+        monkeypatch.delenv(key)
+    monkeypatch.delenv("COPILOT_HOME", raising=False)
+    # Every runtime `Path.home()` lookup, and thirdeye's own default store,
+    # resolve inside the test instead of the developer's real home. Tests that
+    # need a specific THIRDEYE_HOME still set their own over this one.
+    monkeypatch.setenv("HOME", str(fake_home))
+    monkeypatch.setenv("USERPROFILE", str(fake_home))
+    monkeypatch.setenv("THIRDEYE_HOME", str(fake_home / ".thirdeye"))
+    # Paths computed from the real home at import time, before this fixture
+    # could redirect it. `codex.usage` binds its own copy of the sessions root.
+    for module in ("rollout", "usage"):
+        monkeypatch.setattr(
+            f"thirdeye.platforms.codex.{module}.CODEX_SESSIONS_ROOT",
+            fake_home / ".codex" / "sessions",
+        )
+    monkeypatch.setattr(
+        "thirdeye.commands.add.ORPHAN_CONFIG_PATHS",
+        (fake_home / ".gemini" / "settings.json",),
+    )
     monkeypatch.setattr(
         "thirdeye.platforms.codex.install.CODEX_CONFIG_FILE", fake_home / ".codex" / "config.toml"
     )
