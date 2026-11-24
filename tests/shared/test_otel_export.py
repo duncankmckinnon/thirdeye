@@ -364,6 +364,23 @@ class TestToolErrorStatus:
         assert spans["tu_bad"].status.description == "Exit code 2"
 
 
+class TestEmptyToolPayloadKeys:
+    def test_empty_result_is_not_left_as_a_raw_key(self):
+        """Codex records an empty output for fire-and-forget tools such as
+        `send_message`; an empty payload says nothing, so it is not exported
+        as a raw `result` attribute either."""
+        attributes = otel_export._tool_attributes(
+            {"arguments": "{}", "result": ""},
+            session_id="s1",
+            platform="codex",
+            cwd="/proj",
+            tool_name="send_message",
+        )
+        assert attributes["gen_ai.tool.call.arguments"] == "{}"
+        assert "result" not in attributes
+        assert "gen_ai.tool.call.result" not in attributes
+
+
 class TestBackgroundNoiseSuppression:
     """Logfire's token-check runs in a background thread and warns straight to
     stderr on a bad/unreachable token; that thread can outlive our own call

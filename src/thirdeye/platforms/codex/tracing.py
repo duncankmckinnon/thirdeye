@@ -21,6 +21,7 @@ from typing import Any
 
 from thirdeye.platforms.codex.rollout import iter_frames, resolve_rollout
 from thirdeye.platforms.codex.turn import extract_turn_codex
+from thirdeye.platforms.hook_fields import hook_span_attributes
 from thirdeye.reader import SessionReader
 from thirdeye.tracing.model import PermissionRequestSpanDict, TurnSpanDict, last_assistant_text
 
@@ -70,7 +71,7 @@ def _permission_requests_in_range(
             {
                 "ts": ts,
                 "tool_name": str(data.get("tool_name") or ""),
-                "attributes": {k: v for k, v in data.items() if k != "tool_name"},
+                "attributes": hook_span_attributes(data),
             }
         )
     return out
@@ -86,11 +87,13 @@ def _subagent_turn(session_id: str, start: dict[str, Any], stop: dict[str, Any])
         or stop_data.get("last_assistant_message")
         or ""
     )
-    attributes = {
-        k: v
-        for k, v in {**start_data, **stop_data}.items()
-        if k not in {"prompt", "description", "message", "output", "last_assistant_message"}
-    }
+    attributes = hook_span_attributes(
+        {
+            k: v
+            for k, v in {**start_data, **stop_data}.items()
+            if k not in {"prompt", "description", "message", "output", "last_assistant_message"}
+        }
+    )
     result: TurnSpanDict = {
         "turn_id": f"subagent:{session_id}:{start.get('seq')}",
         "start_ts": str(start.get("ts") or ""),

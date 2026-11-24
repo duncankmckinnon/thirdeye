@@ -1438,6 +1438,12 @@ def _export_accounting_span(
     span.end(end_time=_ts_to_ns(ts))
 
 
+# Raw payload keys each platform uses for a tool's arguments and result, in
+# the order `_tool_attributes` tries them.
+_TOOL_ARGUMENT_KEYS = ("tool_input", "arguments", "input", "command")
+_TOOL_RESULT_KEYS = ("tool_response", "tool_result", "result", "output")
+
+
 def _tool_attributes(
     attributes: dict[str, Any],
     *,
@@ -1461,15 +1467,21 @@ def _tool_attributes(
         semantic["gen_ai.tool.call.id"] = tool_call_id
     # Projected payload is moved, not copied: leaving the source key on the
     # span would ship the same (potentially large) body twice.
-    consumed: set[str] = set()
+    # An empty payload says nothing (Codex records "" for fire-and-forget
+    # tools such as send_message), so it isn't left behind as a raw key.
+    consumed: set[str] = {
+        key
+        for key in (*_TOOL_ARGUMENT_KEYS, *_TOOL_RESULT_KEYS)
+        if key in attributes and attributes[key] in (None, "")
+    }
     if "gen_ai.tool.call.arguments" not in attributes:
-        for key in ("tool_input", "arguments", "input", "command"):
+        for key in _TOOL_ARGUMENT_KEYS:
             if key in attributes and attributes[key] not in (None, ""):
                 semantic["gen_ai.tool.call.arguments"] = attributes[key]
                 consumed.add(key)
                 break
     if "gen_ai.tool.call.result" not in attributes:
-        for key in ("tool_response", "tool_result", "result", "output"):
+        for key in _TOOL_RESULT_KEYS:
             if key in attributes and attributes[key] not in (None, ""):
                 semantic["gen_ai.tool.call.result"] = attributes[key]
                 consumed.add(key)

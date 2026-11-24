@@ -1435,3 +1435,93 @@ class TestOutputFallback:
         assert turn["status"] == "interrupted"
         assert turn["llm_calls"] == []
         assert turn["output_message"] == "Let me look at the logs."
+
+
+class TestHookFieldsOnSpans:
+    """Hook payload fields reach spans under span vocabulary: renamed when
+    useful, dropped when plumbing, never as raw hook keys."""
+
+    def test_tool_pair_attributes(self):
+        [pair] = tracing._pair_tool_calls(
+            [
+                {
+                    "t": "tool_call",
+                    "ts": "2026-01-01T00:00:01.000Z",
+                    "data": {
+                        "hook_event_name": "PreToolUse",
+                        "tool_name": "Bash",
+                        "tool_use_id": "tu_1",
+                        "tool_input": {"command": "ls"},
+                        "permission_mode": "default",
+                        "prompt_id": "p1",
+                        "scratchpad_dir": "/tmp/s",
+                    },
+                },
+                {
+                    "t": "tool_result",
+                    "ts": "2026-01-01T00:00:02.000Z",
+                    "data": {
+                        "hook_event_name": "PostToolUse",
+                        "tool_name": "Bash",
+                        "tool_use_id": "tu_1",
+                        "tool_input": {"command": "ls"},
+                        "tool_response": {"stdout": "a"},
+                        "duration_ms": 7,
+                    },
+                },
+            ]
+        )
+        assert pair["attributes"] == {
+            "gen_ai.tool.name": "Bash",
+            "gen_ai.tool.call.id": "tu_1",
+            "gen_ai.tool.call.arguments": {"command": "ls"},
+            "gen_ai.tool.call.result": {"stdout": "a"},
+            "thirdeye.permission_mode": "default",
+            "thirdeye.tool.duration_ms": 7,
+        }
+
+    def test_permission_request_attributes(self):
+        [request] = tracing._pair_permission_events(
+            [
+                {
+                    "t": "permission_request",
+                    "ts": "2026-01-01T00:00:01.000Z",
+                    "data": {
+                        "hook_event_name": "PermissionRequest",
+                        "tool_name": "Write",
+                        "tool_input": {"file_path": "a.py"},
+                        "permission_mode": "default",
+                    },
+                }
+            ]
+        )
+        assert request["tool_name"] == "Write"
+        assert request["attributes"] == {
+            "gen_ai.tool.name": "Write",
+            "gen_ai.tool.call.arguments": {"file_path": "a.py"},
+            "thirdeye.permission_mode": "default",
+        }
+
+    def test_subagent_turn_attributes(self, tmp_path: Path):
+        turn = tracing._build_subagent_turn(
+            {
+                "seq": 3,
+                "ts": "2026-01-01T00:00:00.000Z",
+                "data": {
+                    "hook_event_name": "SubagentStart",
+                    "agent_id": "a1",
+                    "agent_type": "Explore",
+                    "prompt_id": "p1",
+                    "scratchpad_dir": "/tmp/s",
+                },
+            },
+            {"seq": 9, "ts": "2026-01-01T00:00:05.000Z", "data": {}},
+            [],
+            [],
+            None,
+            session_id="s1",
+        )
+        assert turn["attributes"] == {
+            "thirdeye.subagent.id": "a1",
+            "thirdeye.subagent.type": "Explore",
+        }
