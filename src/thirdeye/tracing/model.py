@@ -234,6 +234,11 @@ class TurnSpanDict(TypedDict):
     attributes: dict[str, Any]
     # Optional: Cursor interactions exported as spans.
     interactions: NotRequired[list[InteractionSpanDict]]
+    # Optional: token totals for every model call the turn itself made,
+    # including calls exported live before it ended (which `llm_calls` then
+    # omits) and excluding its subagents, which carry their own. Producers
+    # leave it absent when they can't see the whole turn.
+    usage: NotRequired[UsageDict]
     # Optional local accounting that may be exported on the owning chat span
     # (AccountingCallSpanDict.call_id set) or an explicit user-turn/agent
     # accounting span (call_id null), never both.
@@ -253,3 +258,21 @@ def last_assistant_text(llm_calls: list[LlmCallSpanDict]) -> str:
                 if part.get("type") == "text" and part.get("content"):
                     return str(part["content"])
     return ""
+
+
+def total_usage(llm_calls: list[LlmCallSpanDict]) -> UsageDict:
+    """Sum each reported usage field across ``llm_calls``, one entry per call id.
+
+    A Claude message whose frames straddle a user frame parses as two groups
+    sharing one call id, each repeating the message's usage, so only the last
+    group for an id is counted. Fields no call reported stay absent.
+    """
+    by_call: dict[str, UsageDict] = {}
+    for call in llm_calls:
+        by_call[str(call.get("call_id"))] = call.get("usage") or {}
+    totals: dict[str, int] = {}
+    for usage in by_call.values():
+        for key, value in usage.items():
+            if isinstance(value, int) and not isinstance(value, bool):
+                totals[key] = totals.get(key, 0) + value
+    return totals  # type: ignore[return-value]

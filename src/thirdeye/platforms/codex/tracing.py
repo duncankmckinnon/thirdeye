@@ -23,7 +23,12 @@ from thirdeye.platforms.codex.rollout import iter_frames, resolve_rollout
 from thirdeye.platforms.codex.turn import extract_turn_codex
 from thirdeye.platforms.hook_fields import hook_span_attributes
 from thirdeye.reader import SessionReader
-from thirdeye.tracing.model import PermissionRequestSpanDict, TurnSpanDict, last_assistant_text
+from thirdeye.tracing.model import (
+    PermissionRequestSpanDict,
+    TurnSpanDict,
+    last_assistant_text,
+    total_usage,
+)
 
 
 def _parse_ts(ts: str) -> datetime:
@@ -147,6 +152,9 @@ def _backfill_subagent(turn: TurnSpanDict, child_id: str | None) -> None:
         turn["input_message"] = turn["input_message"] or children[0]["user_prompt"]
         turn["output_message"] = turn["output_message"] or children[-1]["assistant_output"]
         turn["llm_calls"] = [call for child in children for call in child["calls"]]
+        usage = total_usage(turn["llm_calls"])
+        if usage:
+            turn["usage"] = usage
         turn["status"] = children[-1]["status"]
     except (OSError, ValueError):
         return
@@ -220,7 +228,7 @@ def build_turn(
     start_ts = turn["start_ts"]
     end_ts = turn["end_ts"]
     seq_lo = _turn_seq_lower_bound(session_dir_, seq)
-    return {
+    built: TurnSpanDict = {
         "turn_id": turn["turn_id"],
         "start_ts": start_ts,
         "end_ts": end_ts,
@@ -236,3 +244,7 @@ def build_turn(
         "subagents": _subagents_in_range(session_dir_, session_id, seq_lo, seq, start_ts, end_ts),
         "attributes": {},
     }
+    usage = total_usage(turn["calls"])
+    if usage:
+        built["usage"] = usage
+    return built

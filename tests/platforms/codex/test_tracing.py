@@ -508,6 +508,29 @@ class TestBuildTurnFromLocalStore:
         assert turn["output_message"] == "checking the logs"
 
 
+class TestTurnUsage:
+    def test_build_turn_totals_its_calls(self, tmp_path: Path) -> None:
+        turn = build_turn(
+            session_dir_=session_dir(tmp_path, "codex", "s1"),
+            session_id="s1",
+            seq=1,
+            turn=_bare_turn(
+                calls=[
+                    {"call_id": "t1:0", "usage": {"input_tokens": 10, "output_tokens": 2}},
+                    {
+                        "call_id": "t1:1",
+                        "usage": {"input_tokens": 30, "reasoning_output_tokens": 4},
+                    },
+                ]
+            ),
+        )
+        assert turn["usage"] == {
+            "input_tokens": 40,
+            "output_tokens": 2,
+            "reasoning_output_tokens": 4,
+        }
+
+
 class TestHookFieldsOnSpans:
     """Codex hook payloads share Claude Code's field names; they reach spans
     under span vocabulary rather than as raw hook keys."""
@@ -1087,6 +1110,7 @@ class TestHooksJsonMarkerWiring:
         assert turn["end_ts"] == "2026-01-01T00:00:04.000Z"
         [llm_call] = turn["llm_calls"]
         assert [tool["name"] for tool in llm_call["tool_calls"]] == ["exec"]
+        assert "usage" not in turn  # the rollout recorded no token_count
 
 
 class TestMidTurnHooksReapAbandonedMarker:

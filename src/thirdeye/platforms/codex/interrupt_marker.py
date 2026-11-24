@@ -14,7 +14,7 @@ from thirdeye._compat.locking import LockMode, locked_fd
 from thirdeye.ids import new_ulid
 from thirdeye.platforms.codex.rollout import iter_frames, resolve_rollout
 from thirdeye.platforms.codex.turn import extract_turn_codex
-from thirdeye.tracing.model import TurnSpanDict, last_assistant_text
+from thirdeye.tracing.model import TurnSpanDict, last_assistant_text, total_usage
 from thirdeye.usage.errlog import log_capture_error
 from thirdeye.writer import utc_iso_ms
 
@@ -154,6 +154,9 @@ def _fill_from_rollout(turn: TurnSpanDict, session_id: str, codex_turn_id: str) 
     )
     if extracted["end_ts"]:
         turn["end_ts"] = extracted["end_ts"]
+    usage = total_usage(extracted["calls"])
+    if usage:
+        turn["usage"] = usage
 
 
 def _reap(

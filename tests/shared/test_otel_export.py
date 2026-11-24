@@ -381,6 +381,56 @@ class TestEmptyToolPayloadKeys:
         assert "gen_ai.tool.call.result" not in attributes
 
 
+class TestTurnUsageTotals:
+    """A turn's `usage` totals export on its `invoke_agent` span as
+    `gen_ai.aggregated_usage.*`, pydantic-ai's names for a run's cumulative
+    usage, so a backend summing `gen_ai.usage.*` across spans doesn't count
+    the turn's tokens a second time on top of its chat spans."""
+
+    def test_turn_span_carries_aggregated_usage(
+        self, tmp_path: Path, enabled_config: Config, wired_instance, exporter
+    ):
+        otel_export._export_turn_inner(
+            config=enabled_config,
+            session_dir_=tmp_path / "traces" / "claude" / "s1",
+            session_id="s1",
+            platform="claude",
+            cwd="/proj",
+            turn=_turn(
+                llm_calls=[_llm_call()],
+                usage={
+                    "input_tokens": 300,
+                    "output_tokens": 70,
+                    "cache_read_input_tokens": 1000,
+                },
+            ),
+        )
+        turn_span = next(
+            s for s in exporter.exported_spans_as_dict() if s["name"] == "invoke_agent"
+        )
+        attributes = turn_span["attributes"]
+        assert attributes["gen_ai.aggregated_usage.input_tokens"] == 300
+        assert attributes["gen_ai.aggregated_usage.output_tokens"] == 70
+        assert attributes["gen_ai.aggregated_usage.cache_read.input_tokens"] == 1000
+        assert not any(key.startswith("gen_ai.usage.") for key in attributes)
+
+    def test_turn_without_usage_has_no_aggregated_usage(
+        self, tmp_path: Path, enabled_config: Config, wired_instance, exporter
+    ):
+        otel_export._export_turn_inner(
+            config=enabled_config,
+            session_dir_=tmp_path / "traces" / "claude" / "s1",
+            session_id="s1",
+            platform="claude",
+            cwd="/proj",
+            turn=_turn(llm_calls=[_llm_call()]),
+        )
+        turn_span = next(
+            s for s in exporter.exported_spans_as_dict() if s["name"] == "invoke_agent"
+        )
+        assert not any(k.startswith("gen_ai.aggregated_usage.") for k in turn_span["attributes"])
+
+
 class TestBackgroundNoiseSuppression:
     """Logfire's token-check runs in a background thread and warns straight to
     stderr on a bad/unreachable token; that thread can outlive our own call

@@ -1607,3 +1607,89 @@ class TestPermissionDecision:
         )
         assert denied["attributes"]["gen_ai.tool.call.id"] == "tu_1"
         assert denied["attributes"]["thirdeye.permission.decision"] == "denied"
+
+
+class TestTurnUsage:
+    def test_totals_include_calls_already_exported_live(
+        self, monkeypatch, env: Path, tmp_path: Path
+    ):
+        """The Stop-time parse starts past calls live spans committed, so
+        `llm_calls` holds only the rest; the turn total still counts them."""
+        sid = "usage-totals"
+        transcript = tmp_path / "transcript.jsonl"
+        transcript.write_text("")
+        _stdin(
+            monkeypatch,
+            {"session_id": sid, "cwd": "/p", "prompt": "go", "transcript_path": str(transcript)},
+        )
+        hooks.user_prompt_submit()
+        sd = session_dir(env, "claude", sid)
+        marker = hooks._read_open_turn(sd)
+        with transcript.open("a") as file:
+            file.write(
+                _assistant_frame(
+                    "msg_1",
+                    [{"type": "tool_use", "id": "tu_1", "name": "Bash", "input": {}}],
+                    extra_usage={"cache_read_input_tokens": 100},
+                )
+                + "\n"
+            )
+        assert hooks._advance_turn_cursor(
+            sd,
+            expected_turn_seq=marker["turn_seq"],
+            offset=transcript.stat().st_size,
+            last_frame_ts="2026-01-01T00:00:00.000Z",
+            newly_committed_call_ids=["msg_1"],
+        )
+        with transcript.open("a") as file:
+            file.write(_user_frame([{"type": "tool_result", "tool_use_id": "tu_1"}]) + "\n")
+            file.write(
+                _assistant_frame(
+                    "msg_2",
+                    [{"type": "text", "text": "done"}],
+                    input_tokens=20,
+                    output_tokens=7,
+                )
+                + "\n"
+            )
+
+        turn = tracing.build_turn(
+            config=Config.load(),
+            session_dir_=sd,
+            session_id=sid,
+            cwd="/p",
+            stop_seq=marker["turn_seq"] + 1,
+            stop_ts="2026-01-01T00:00:05.000Z",
+            transcript_path=str(transcript),
+            final_response="done",
+        )
+
+        assert [call["call_id"] for call in turn["llm_calls"]] == ["msg_2"]
+        # input_tokens includes cached input, as on the chat spans: 10 + 100 + 20.
+        assert turn["usage"] == {
+            "input_tokens": 130,
+            "output_tokens": 12,
+            "cache_read_input_tokens": 100,
+        }
+
+    def test_subagent_totals_its_own_calls(self, tmp_path: Path):
+        transcript = tmp_path / "agent.jsonl"
+        transcript.write_text(
+            _user_frame("explore")
+            + "\n"
+            + _assistant_frame("sub_1", [{"type": "text", "text": "found"}], input_tokens=40)
+            + "\n"
+        )
+        turn = tracing._build_subagent_turn(
+            {"seq": 3, "ts": "2026-01-01T00:00:00.000Z", "data": {"agent_id": "a1"}},
+            {
+                "seq": 9,
+                "ts": "2026-01-01T00:00:05.000Z",
+                "data": {"agent_transcript": str(transcript)},
+            },
+            [],
+            [],
+            None,
+            session_id="s1",
+        )
+        assert turn["usage"] == {"input_tokens": 40, "output_tokens": 5}

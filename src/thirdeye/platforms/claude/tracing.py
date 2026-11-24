@@ -18,6 +18,7 @@ from thirdeye.tracing.model import (
     TurnSpanDict,
     TurnStatus,
     last_assistant_text,
+    total_usage,
 )
 
 _PLATFORM = "claude"
@@ -259,7 +260,7 @@ def _build_subagent_turn(
     _attach_tool_calls(llm_calls, tool_calls)
     task_input = (task_ev.get("data") or {}).get("tool_input") if task_ev else None
     task_input = task_input if isinstance(task_input, dict) else {}
-    return {
+    turn: TurnSpanDict = {
         "turn_id": str(start_ev.get("seq")),
         "turn_span_id": str(turn_span_id(_PLATFORM, session_id, int(start_ev["seq"]))),
         "start_ts": str(start_ev.get("ts") or ""),
@@ -282,6 +283,10 @@ def _build_subagent_turn(
         "subagents": [],
         "attributes": hook_span_attributes(start_data),
     }
+    usage = total_usage(llm_calls)
+    if usage:
+        turn["usage"] = usage
+    return turn
 
 
 def _already_exported_as_subagent(session_dir_: Path, turn_id: str) -> bool:
@@ -424,7 +429,20 @@ def build_turn(
     permission_requests = _pair_permission_events(top_level_events)
 
     orphan_tool_calls: list[OrphanToolCallDict] = []
+    # Every call the turn made, read from its start rather than from the live
+    # cursor, so it includes calls live spans already committed. It is never
+    # exported itself: it only feeds orphan recovery, the output fallback and
+    # the turn's usage totals below.
+    turn_calls: list[LlmCallSpanDict] = []
     if trusted_cursor:
+        from thirdeye.platforms.claude.hooks import turn_start_offset as _turn_start_offset
+
+        turn_calls = extract_calls_from_transcript(
+            transcript_path or marker.get("transcript_path"),
+            _turn_start_offset(marker),
+            initial_prev_ts=None,
+            incremental=False,
+        ).calls
         parsed_calls = extract_calls_from_transcript(
             transcript_path or marker.get("transcript_path"),
             int(marker["transcript_offset"]),
@@ -471,16 +489,8 @@ def build_turn(
             {tc["tool_call_id"] for tc in tool_calls} - already_attached - committed_tools
         )
         if pending_tool_use_ids:
-            from thirdeye.platforms.claude.hooks import turn_start_offset as _turn_start_offset
-
-            full_calls = extract_calls_from_transcript(
-                transcript_path or marker.get("transcript_path"),
-                _turn_start_offset(marker),
-                initial_prev_ts=None,
-                incremental=False,
-            ).calls
             tool_calls_by_id = {tc["tool_call_id"]: tc for tc in tool_calls}
-            for call in full_calls:
+            for call in turn_calls:
                 if call["call_id"] not in committed:
                     continue  # not one of the groups a live commit orphaned
                 for message in call["output_messages"]:
@@ -506,20 +516,9 @@ def build_turn(
     # Without a final response (always the case for an interrupted or
     # errored turn), the output is the last thing the agent said; `status`
     # is what records that the turn never finished. Live spans may already
-    # have committed the call holding that text, putting it before the
-    # Stop-time cursor, so look again from the turn's start before giving up.
-    output_message = final_response or last_assistant_text(llm_calls)
-    if not output_message and trusted_cursor:
-        from thirdeye.platforms.claude.hooks import turn_start_offset as _turn_start_offset
-
-        output_message = last_assistant_text(
-            extract_calls_from_transcript(
-                transcript_path or marker.get("transcript_path"),
-                _turn_start_offset(marker),
-                initial_prev_ts=None,
-                incremental=False,
-            ).calls
-        )
+    # have committed the call holding that text, so it is read from
+    # `turn_calls`, not `llm_calls`.
+    output_message = final_response or last_assistant_text(turn_calls)
 
     turn: TurnSpanDict = {
         "turn_id": str(turn_seq),
@@ -536,4 +535,7 @@ def build_turn(
     }
     if orphan_tool_calls:
         turn["orphan_tool_calls"] = orphan_tool_calls
+    usage = total_usage(turn_calls)
+    if usage:
+        turn["usage"] = usage
     return turn
