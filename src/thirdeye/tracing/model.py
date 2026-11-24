@@ -36,6 +36,9 @@ class ToolCallSpanDict(TypedDict):
     # exporter turns into the span's ERROR status. Adapters decide what
     # counts as a failure; the exporter never inspects tool results.
     error: NotRequired[str]
+    # Calls this one made while it ran, such as the commands and MCP calls
+    # inside a Codex code-mode script. Exported as tool spans beneath it.
+    children: NotRequired[list[ToolCallSpanDict]]
 
 
 class LlmCallSpanDict(TypedDict):
