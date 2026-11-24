@@ -276,7 +276,7 @@ class TestBuildTurnFromLocalStore:
         pr = turn["permission_requests"][0]
         assert pr["ts"] == "2026-01-01T00:00:05.000Z"
         assert pr["tool_name"] == "Bash"
-        assert pr["attributes"] == {"command": "ls"}
+        assert pr["attributes"] == {"gen_ai.tool.name": "Bash", "thirdeye.hook.command": "ls"}
 
     def test_permission_request_outside_window_is_excluded(
         self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
@@ -367,7 +367,10 @@ class TestBuildTurnFromLocalStore:
 
         assert [sub["input_message"] for sub in turn["subagents"]] == ["task A", "task B"]
         assert [sub["output_message"] for sub in turn["subagents"]] == ["result A", "result B"]
-        assert [sub["attributes"]["agent_id"] for sub in turn["subagents"]] == ["A", "B"]
+        assert [sub["attributes"]["thirdeye.subagent.id"] for sub in turn["subagents"]] == [
+            "A",
+            "B",
+        ]
 
     def test_subagent_stop_last_assistant_message_is_the_output(
         self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
@@ -503,6 +506,62 @@ class TestBuildTurnFromLocalStore:
             turn=_bare_turn(status="interrupted", assistant_output="", calls=[call]),
         )
         assert turn["output_message"] == "checking the logs"
+
+
+class TestHookFieldsOnSpans:
+    """Codex hook payloads share Claude Code's field names; they reach spans
+    under span vocabulary rather than as raw hook keys."""
+
+    def test_subagent_and_permission_attributes(self, env: Path) -> None:
+        sd = session_dir(env, "codex", "s1")
+        store = Store(Config(root=env))
+        common = {
+            "hook_event_name": "x",
+            "model": "gpt-5",
+            "turn_id": "T1",
+            "permission_mode": "default",
+        }
+        store.append_event(
+            session_id="s1",
+            platform="codex",
+            cwd="/p",
+            t="subagent_start",
+            data={**common, "agent_id": "a1", "agent_type": "worker", "prompt": "go"},
+        )
+        store.append_event(
+            session_id="s1",
+            platform="codex",
+            cwd="/p",
+            t="permission_request",
+            data={**common, "tool_name": "exec_command", "tool_input": {"cmd": "ls"}},
+        )
+        store.append_event(
+            session_id="s1",
+            platform="codex",
+            cwd="/p",
+            t="subagent_message",
+            data={**common, "agent_id": "a1", "stop_hook_active": False, "message": "done"},
+        )
+        turn = build_turn(
+            session_dir_=sd,
+            session_id="s1",
+            seq=4,
+            turn=_bare_turn(start_ts="2000-01-01T00:00:00.000Z", end_ts="2100-01-01T00:00:00.000Z"),
+        )
+        [subagent] = turn["subagents"]
+        assert subagent["attributes"] == {
+            "thirdeye.hook.model": "gpt-5",
+            "thirdeye.permission_mode": "default",
+            "thirdeye.subagent.id": "a1",
+            "thirdeye.subagent.type": "worker",
+        }
+        [request] = turn["permission_requests"]
+        assert request["attributes"] == {
+            "gen_ai.tool.name": "exec_command",
+            "gen_ai.tool.call.arguments": {"cmd": "ls"},
+            "thirdeye.hook.model": "gpt-5",
+            "thirdeye.permission_mode": "default",
+        }
 
 
 # -- notify(): wiring to export_turn -------------------------------------------

@@ -6,6 +6,7 @@ from typing import Any
 
 from thirdeye.config import Config
 from thirdeye.platforms.claude.usage import extract_calls_from_transcript
+from thirdeye.platforms.hook_fields import hook_span_attributes
 from thirdeye.reader import SessionReader
 from thirdeye.span_ids import turn_span_id
 from thirdeye.tracing.model import (
@@ -79,7 +80,7 @@ def _pair_tool_calls(events: list[dict[str, Any]]) -> list[ToolCallSpanDict]:
                 "name": str(call_data.get("tool_name") or ""),
                 "start_ts": str(call_ev.get("ts") or ""),
                 "end_ts": str(ev.get("ts") or ""),
-                "attributes": {**call_data, **data},
+                "attributes": hook_span_attributes({**call_data, **data}),
             }
             # PostToolUseFailure delivers the failure as `error` in place of
             # a `tool_response`; PostToolUse never sets it.
@@ -99,7 +100,7 @@ def _pair_permission_events(events: list[dict[str, Any]]) -> list[PermissionRequ
             {
                 "ts": str(ev.get("ts") or ""),
                 "tool_name": str(data.get("tool_name") or ""),
-                "attributes": dict(data),
+                "attributes": hook_span_attributes(data),
             }
         )
     return out
@@ -243,7 +244,7 @@ def _build_subagent_turn(
         "llm_calls": llm_calls,
         "permission_requests": permission_requests,
         "subagents": [],
-        "attributes": {k: v for k, v in start_data.items() if k != "agent_id"},
+        "attributes": hook_span_attributes(start_data),
     }
 
 
