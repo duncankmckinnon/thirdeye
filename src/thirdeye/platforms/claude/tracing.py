@@ -15,6 +15,7 @@ from thirdeye.tracing.model import (
     ToolCallSpanDict,
     TurnSpanDict,
     TurnStatus,
+    last_assistant_text,
 )
 
 _PLATFORM = "claude"
@@ -130,15 +131,6 @@ def _first_input_text(llm_calls: list[LlmCallSpanDict]) -> str:
     return ""
 
 
-def _fallback_output_message(llm_calls: list[LlmCallSpanDict]) -> str:
-    for call in reversed(llm_calls):
-        for message in reversed(call["output_messages"]):
-            for part in reversed(message.get("parts", [])):
-                if part.get("type") == "text" and part.get("content"):
-                    return str(part["content"])
-    return ""
-
-
 def _subagent_windows(events: list[dict[str, Any]]) -> list[dict[str, Any]]:
     starts: dict[str, dict[str, Any]] = {}
     tasks: dict[str, dict[str, Any]] = {}
@@ -240,7 +232,10 @@ def _build_subagent_turn(
         # call that spawned it, which shares no id with SubagentStart/Stop.
         "input_message": _first_input_text(llm_calls)
         or str(task_input.get("prompt") or task_input.get("description") or ""),
-        "output_message": str(stop_data.get("last_assistant_message") or ""),
+        # Claude Code leaves `last_assistant_message` empty for most
+        # subagents; the agent's own transcript still holds what it said.
+        "output_message": str(stop_data.get("last_assistant_message") or "")
+        or last_assistant_text(llm_calls),
         # A subagent only appears here once its own SubagentStop has fired,
         # so it completed by definition; Claude Code has no "interrupted
         # subagent" signal to check instead.
@@ -471,12 +466,23 @@ def build_turn(
         llm_calls = []
         _attach_tool_calls(llm_calls, tool_calls)
 
-    # The interruption catch-all has no real final_response and must not
-    # backfill one from the transcript — an empty output is the correct,
-    # honest signal for a turn that never actually finished.
-    output_message = final_response
-    if status == "completed" and not output_message:
-        output_message = _fallback_output_message(llm_calls)
+    # Without a final response (always the case for an interrupted or
+    # errored turn), the output is the last thing the agent said; `status`
+    # is what records that the turn never finished. Live spans may already
+    # have committed the call holding that text, putting it before the
+    # Stop-time cursor, so look again from the turn's start before giving up.
+    output_message = final_response or last_assistant_text(llm_calls)
+    if not output_message and trusted_cursor:
+        from thirdeye.platforms.claude.hooks import turn_start_offset as _turn_start_offset
+
+        output_message = last_assistant_text(
+            extract_calls_from_transcript(
+                transcript_path or marker.get("transcript_path"),
+                _turn_start_offset(marker),
+                initial_prev_ts=None,
+                incremental=False,
+            ).calls
+        )
 
     turn: TurnSpanDict = {
         "turn_id": str(turn_seq),
