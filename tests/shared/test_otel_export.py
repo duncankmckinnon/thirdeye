@@ -450,6 +450,40 @@ def test_codex_chat_spans_name_their_turn_span(
     assert chat["attributes"]["thirdeye.turn.span_id"] == str(span_id)
 
 
+def test_nested_tool_calls_export_under_their_parent_tool_span(
+    tmp_path: Path, enabled_config: Config, wired_instance, exporter
+):
+    """A tool call's `children` (the calls a Codex code-mode script made)
+    export as tool spans parented to it, with their own failures."""
+    from opentelemetry.trace import StatusCode
+
+    parent = _tool_call(
+        tool_call_id="c1",
+        name="exec",
+        children=[
+            _tool_call(tool_call_id="exec-ok", name="exec_command"),
+            _tool_call(tool_call_id="exec-bad", name="exec_command", error="Exit code 1"),
+        ],
+    )
+    otel_export._export_turn_inner(
+        config=enabled_config,
+        session_dir_=tmp_path / "traces" / "codex" / "s1",
+        session_id="s1",
+        platform="codex",
+        cwd="/proj",
+        turn=_turn(llm_calls=[_llm_call(tool_calls=[parent])]),
+    )
+    spans = {span.context.span_id: span for span in exporter.exported_spans}
+    exec_span = spans[tool_span_id("codex", "s1", "c1")]
+    ok = spans[tool_span_id("codex", "s1", "exec-ok")]
+    bad = spans[tool_span_id("codex", "s1", "exec-bad")]
+    assert ok.parent.span_id == exec_span.context.span_id
+    assert bad.parent.span_id == exec_span.context.span_id
+    assert ok.name == "tool: exec_command"
+    assert ok.attributes["gen_ai.tool.call.id"] == "exec-ok"
+    assert bad.status.status_code is StatusCode.ERROR
+
+
 class TestBackgroundNoiseSuppression:
     """Logfire's token-check runs in a background thread and warns straight to
     stderr on a bad/unreachable token; that thread can outlive our own call
