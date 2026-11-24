@@ -138,6 +138,10 @@ _USAGE_KEYS = {
     "cache_creation_input_tokens": "gen_ai.usage.cache_creation.input_tokens",
     "reasoning_output_tokens": "gen_ai.usage.reasoning.output_tokens",
 }
+_AGGREGATED_USAGE_KEYS = {
+    source: target.replace("gen_ai.usage.", "gen_ai.aggregated_usage.", 1)
+    for source, target in _USAGE_KEYS.items()
+}
 
 
 def is_available() -> bool:
@@ -1657,6 +1661,12 @@ def _export_turn_subtree(
         # never registers as an agent run at all.
         "gen_ai.operation.name": "invoke_agent",
     }
+    # pydantic-ai's names for a run's cumulative usage: a backend summing
+    # `gen_ai.usage.*` across a trace would otherwise count every token twice,
+    # once here and once on the chat span that spent it.
+    for source, value in (turn.get("usage") or {}).items():
+        if source in _AGGREGATED_USAGE_KEYS:
+            turn_attrs[_AGGREGATED_USAGE_KEYS[source]] = value
     if turn["input_message"]:
         turn_attrs["gen_ai.input.messages"] = _message("user", turn["input_message"])
     if turn["output_message"]:

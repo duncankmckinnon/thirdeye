@@ -13,6 +13,7 @@ from thirdeye.tracing.model import (
     TurnStatus,
     UsageDict,
     last_assistant_text,
+    total_usage,
 )
 
 __all__ = [
@@ -28,4 +29,5 @@ __all__ = [
     "TurnStatus",
     "UsageDict",
     "last_assistant_text",
+    "total_usage",
 ]
