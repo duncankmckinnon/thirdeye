@@ -237,53 +237,43 @@ class TestFlattenAttrs:
         assert schema["properties"] == {"a": {"type": "object"}, "c": {"type": "array"}}
 
 
-class TestScrubCallback:
-    """`_scrub_callback` is passed to Logfire's ScrubbingOptions, wired in by
-    `_get_instance` — see its own docstring for why "session" specifically
-    needs an exemption for a coding agent's captured content (routinely full
-    of legitimate uses of the word, unlike the other default patterns).
+class TestScrubbingDisabled:
+    """thirdeye exports a coding agent's own tool calls and messages, which are
+    routinely full of words Logfire's default scrubbing patterns match ("auth"
+    in git's `Author:` lines, "api_key" in a config file being edited), and a
+    match redacts the whole value. `_get_instance` turns scrubbing off so that
+    content reaches Logfire exactly as captured.
     """
 
-    def _match(self, value: str):
-        import re
+    def test_sensitive_looking_content_exports_verbatim(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, exporter
+    ):
+        import logfire
 
-        from logfire import ScrubMatch
-        from logfire._internal.scrubbing import DEFAULT_PATTERNS
+        real_configure = logfire.configure
 
-        pattern = re.compile("|".join(DEFAULT_PATTERNS), re.IGNORECASE | re.DOTALL)
-        m = pattern.search(value)
-        assert m is not None, f"expected {value!r} to trip a default scrubbing pattern"
-        return ScrubMatch(path=("attributes", "text"), value=value, pattern_match=m)
+        def _configure(**kwargs):
+            # Everything `_get_instance` chose, kept off the network.
+            return real_configure(
+                **{
+                    **kwargs,
+                    "token": None,
+                    "send_to_logfire": False,
+                    "additional_span_processors": [SimpleSpanProcessor(exporter)],
+                }
+            )
 
-    def test_session_match_is_let_through(self):
-        value = "this session captured 5 tool calls"
-        assert otel_export._scrub_callback(self._match(value)) == value
+        monkeypatch.setattr(logfire, "configure", _configure)
+        config = Config(root=tmp_path, logfire=LogfireSettings(enabled=True, token="bad-token"))
+        instance = otel_export._get_instance(config, "claude")
 
-    def test_session_match_is_case_insensitive(self):
-        value = "Session started"
-        assert otel_export._scrub_callback(self._match(value)) == value
+        result = "Author: A. Developer\napi_key = abc123\npassword: hunter2"
+        with instance.span("tool", **{"gen_ai.tool.call.result": result}):
+            pass
 
-    def test_password_match_is_still_redacted(self):
-        assert otel_export._scrub_callback(self._match("password: hunter2")) is None
-
-    def test_api_key_match_is_still_redacted(self):
-        assert otel_export._scrub_callback(self._match("my api_key is abc123")) is None
-
-    def test_end_to_end_via_a_real_scrubber(self):
-        """Not just the callback function in isolation — the actual Scrubber
-        Logfire's SDK builds from ScrubbingOptions(callback=...).
-        """
-        from logfire._internal.scrubbing import Scrubber
-
-        scrubber = Scrubber(patterns=None, callback=otel_export._scrub_callback)
-
-        kept, notes = scrubber.scrub_value(("attributes", "text"), "the session ended cleanly")
-        assert kept == "the session ended cleanly"
-        assert notes == []
-
-        redacted, notes = scrubber.scrub_value(("attributes", "text"), "password: hunter2")
-        assert redacted != "password: hunter2"
-        assert notes != []
+        [span] = exporter.exported_spans_as_dict()
+        assert span["attributes"]["gen_ai.tool.call.result"] == result
+        assert "logfire.scrubbed" not in span["attributes"]
 
 
 class TestBackgroundNoiseSuppression:
@@ -331,7 +321,6 @@ class TestBackgroundNoiseSuppression:
         otel_export._get_instance(config, "claude")
         assert calls == [1]
         assert configured_with["advanced"].id_generator is otel_export._state["id_generator"]
-        assert configured_with["scrubbing"].callback is otel_export._scrub_callback
 
 
 class TestConfigurationSpanSuppressed:
@@ -2349,8 +2338,8 @@ class TestSessionRootAttributes:
 
     Test names here deliberately avoid the word "session": pytest builds
     `tmp_path` from the test name, and the fixture's Logfire instance runs
-    default scrubbing (unlike `_get_instance`, which installs the callback
-    that exempts it), so the word would be redacted back out of
+    default scrubbing (unlike `_get_instance`, which turns scrubbing off),
+    so the word would be redacted back out of
     `thirdeye.cwd`.
     """
 

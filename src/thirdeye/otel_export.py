@@ -178,33 +178,6 @@ def _silence_background_noise() -> None:
     logging.getLogger("opentelemetry").setLevel(logging.CRITICAL + 1)
 
 
-def _scrub_callback(match: Any) -> Any:
-    """Let through only Logfire's own `"session"` default scrubbing pattern;
-    every other pattern (password, secret, api key, credential, ...) is left
-    to redact as normal.
-
-    thirdeye's captured content is a coding agent's own tool calls and
-    messages — routinely full of legitimate uses of the word "session" (file
-    paths, transcript discussion, thirdeye's own attribute names) with no
-    sensitivity to it at all, which is why "most of them" (per the user who
-    asked for this) were getting blanked out. `match.pattern_match.group(0)`
-    is the literal substring that triggered the match; comparing it against
-    "session" (case-insensitively, since the pattern is compiled with
-    re.IGNORECASE) is how the docs' own examples distinguish which pattern
-    fired — no other default pattern's match text can equal "session".
-
-    Caveat inherited from Logfire's own scrubbing design, not introduced
-    here: it finds only the *first* (leftmost) match in a value and redacts
-    the value wholesale, so a value containing both "session" and a genuine
-    secret later in the same string — with "session" appearing first — would
-    still be exempted here. That's the same granularity Logfire's own
-    documented callback pattern operates at.
-    """
-    if match.pattern_match.group(0).lower() == "session":
-        return match.value
-    return None
-
-
 def _build_id_generator() -> Any:
     """Build a generator that lets us hand the SDK ids of our own choosing.
 
@@ -353,8 +326,12 @@ def _get_instance(config: Config, platform: str):
             send_to_logfire=True,
             console=False,
             service_name=platform,
-            scrubbing=logfire.ScrubbingOptions(callback=_scrub_callback),
-            # Keeping the SDK is what preserves scrubbing, retries and the
+            # A coding agent's tool calls and messages are full of words the
+            # default patterns match ("auth" in git's `Author:` lines,
+            # "api_key" in a config being edited), and a single match
+            # redacts the whole value, so content goes out as captured.
+            scrubbing=False,
+            # Keeping the SDK is what preserves retries and the
             # OTLP wire format for free; the one thing it doesn't give us is
             # ids of our own choosing, and this injects those through its
             # normal path rather than around it.
