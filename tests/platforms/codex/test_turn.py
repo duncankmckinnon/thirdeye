@@ -1085,3 +1085,173 @@ def test_failed_tool_calls_carry_their_error_message(tmp_path: Path) -> None:
         "mcp_is_error": "GitHub API error 404",
         "mcp_err": "tool call timed out",
     }
+
+
+def test_calls_made_inside_a_code_mode_script_nest_under_it(tmp_path: Path) -> None:
+    """In code mode one `exec` call runs a script that makes the real tool
+    calls. Codex reports each as an `item_completed` while the `exec` is
+    still open; they become that call's children, with their own timing and
+    failures. An item repeating a direct call's own id, or finishing with no
+    call open, is not nested."""
+
+    def _item(ts: str, item: dict, started: int, completed: int) -> str:
+        return _frame(
+            ts,
+            "event_msg",
+            {
+                "type": "item_completed",
+                "turn_id": "t1",
+                "item": item,
+                "started_at_ms": started,
+                "completed_at_ms": completed,
+            },
+        )
+
+    base = 1767225600000  # 2026-01-01T00:00:00Z
+    path = tmp_path / "rollout.jsonl"
+    path.write_text(
+        "\n".join(
+            [
+                _frame("2026-01-01T00:00:00Z", "turn_context", {"turn_id": "t1", "model": "gpt-5"}),
+                _frame(
+                    "2026-01-01T00:00:01Z",
+                    "response_item",
+                    {"type": "custom_tool_call", "name": "exec", "call_id": "c1", "input": "js"},
+                ),
+                _item(
+                    "2026-01-01T00:00:02Z",
+                    {
+                        "type": "CommandExecution",
+                        "id": "exec-ok",
+                        "command": ["/bin/zsh", "-lc", "git status"],
+                        "status": "completed",
+                        "exit_code": 0,
+                        "aggregated_output": "clean\n",
+                    },
+                    base + 1500,
+                    base + 2000,
+                ),
+                _item(
+                    "2026-01-01T00:00:03Z",
+                    {
+                        "type": "CommandExecution",
+                        "id": "exec-bad",
+                        "command": ["/bin/zsh", "-lc", "grep nope f"],
+                        "status": "failed",
+                        "exit_code": 1,
+                        "aggregated_output": "",
+                    },
+                    base + 2500,
+                    base + 3000,
+                ),
+                _item(
+                    "2026-01-01T00:00:04Z",
+                    {
+                        "type": "McpToolCall",
+                        "id": "exec-mcp",
+                        "server": "logfire",
+                        "tool": "query_run",
+                        "arguments": {"query": "SELECT 1"},
+                        "status": "failed",
+                        "result": {
+                            "content": [{"type": "text", "text": "bad SQL"}],
+                            "isError": True,
+                        },
+                    },
+                    base + 3000,
+                    base + 4000,
+                ),
+                _item(
+                    "2026-01-01T00:00:04Z",
+                    {
+                        "type": "FileChange",
+                        "id": "exec-patch",
+                        "changes": {"a.py": {"type": "add"}},
+                        "status": "completed",
+                        "stdout": "Success.",
+                    },
+                    base + 4000,
+                    base + 4000,
+                ),
+                _item(
+                    "2026-01-01T00:00:05Z",
+                    {
+                        "type": "Extension",
+                        "id": "exec-web",
+                        "kind": "web.search",
+                        "query": "https://example.com",
+                        "action": {"type": "openPage", "url": "https://example.com"},
+                        "results": [{"type": "text_result", "domain": "example.com"}],
+                    },
+                    base + 4200,
+                    base + 4900,
+                ),
+                _frame(
+                    "2026-01-01T00:00:05Z",
+                    "response_item",
+                    {
+                        "type": "custom_tool_call_output",
+                        "call_id": "c1",
+                        "output": [{"type": "input_text", "text": "Script completed"}],
+                    },
+                ),
+                _frame(
+                    "2026-01-01T00:00:06Z",
+                    "response_item",
+                    {
+                        "type": "function_call",
+                        "name": "send_message",
+                        "call_id": "c2",
+                        "arguments": "{}",
+                    },
+                ),
+                _item(
+                    "2026-01-01T00:00:06Z",
+                    {"type": "CollabAgentToolCall", "id": "c2", "tool": "send_message"},
+                    base + 6000,
+                    base + 6000,
+                ),
+                _frame(
+                    "2026-01-01T00:00:06Z",
+                    "response_item",
+                    {"type": "function_call_output", "call_id": "c2", "output": ""},
+                ),
+                _item(
+                    "2026-01-01T00:00:07Z",
+                    {"type": "CommandExecution", "id": "exec-late", "status": "completed"},
+                    base + 7000,
+                    base + 7000,
+                ),
+                _frame(
+                    "2026-01-01T00:00:08Z", "event_msg", {"type": "task_complete", "turn_id": "t1"}
+                ),
+            ]
+        )
+        + "\n"
+    )
+    turn = extract_turn_codex(str(path), "t1")
+    assert turn is not None
+    tools = {tool["tool_call_id"]: tool for call in turn["calls"] for tool in call["tool_calls"]}
+    assert set(tools) == {"c1", "c2"}
+    assert "children" not in tools["c2"]
+    children = {child["tool_call_id"]: child for child in tools["c1"]["children"]}
+    assert [child["tool_call_id"] for child in tools["c1"]["children"]] == [
+        "exec-ok",
+        "exec-bad",
+        "exec-mcp",
+        "exec-patch",
+        "exec-web",
+    ]
+    assert children["exec-ok"]["name"] == "exec_command"
+    assert children["exec-ok"]["attributes"] == {"arguments": "git status", "result": "clean\n"}
+    assert (children["exec-ok"]["start_ts"], children["exec-ok"]["end_ts"]) == (
+        "2026-01-01T00:00:01.500Z",
+        "2026-01-01T00:00:02.000Z",
+    )
+    assert "error" not in children["exec-ok"]
+    assert children["exec-bad"]["error"] == "Exit code 1"
+    assert children["exec-mcp"]["name"] == "logfire.query_run"
+    assert children["exec-mcp"]["error"] == "bad SQL"
+    assert children["exec-patch"]["name"] == "apply_patch"
+    assert children["exec-web"]["name"] == "open_page"
+    assert children["exec-web"]["attributes"]["arguments"] == "https://example.com"
