@@ -276,6 +276,214 @@ class TestScrubbingDisabled:
         assert "logfire.scrubbed" not in span["attributes"]
 
 
+class TestToolErrorStatus:
+    """A tool call the adapter marks as failed (`error` on the tool call)
+    exports with OTel status ERROR, so Logfire files it at error level
+    instead of info. Calls without `error` keep an unset status.
+    """
+
+    @staticmethod
+    def _tool_spans(exporter) -> dict[str, Any]:
+        return {
+            span.attributes["gen_ai.tool.call.id"]: span
+            for span in exporter.exported_spans
+            if span.name.startswith("tool:")
+        }
+
+    def test_turn_export_marks_failed_tool_calls(
+        self, tmp_path: Path, enabled_config: Config, wired_instance, exporter
+    ):
+        from opentelemetry.trace import StatusCode
+
+        otel_export._export_turn_inner(
+            config=enabled_config,
+            session_dir_=tmp_path / "traces" / "claude" / "s1",
+            session_id="s1",
+            platform="claude",
+            cwd="/proj",
+            turn=_turn(
+                llm_calls=[
+                    _llm_call(
+                        tool_calls=[
+                            _tool_call(tool_call_id="tu_ok"),
+                            _tool_call(tool_call_id="tu_bad", error="Exit code 1\nno such file"),
+                        ]
+                    )
+                ],
+                orphan_tool_calls=[
+                    {
+                        "parent_call_id": "call_0",
+                        "tool_call": _tool_call(tool_call_id="tu_orphan", error="denied"),
+                    }
+                ],
+            ),
+        )
+
+        spans = self._tool_spans(exporter)
+        assert spans["tu_ok"].status.status_code is StatusCode.UNSET
+        assert spans["tu_bad"].status.status_code is StatusCode.ERROR
+        assert spans["tu_bad"].status.description == "Exit code 1\nno such file"
+        assert spans["tu_bad"].attributes["logfire.level_num"] == 17
+        assert spans["tu_orphan"].status.status_code is StatusCode.ERROR
+        assert spans["tu_orphan"].status.description == "denied"
+
+    def test_live_span_batch_marks_failed_tool_calls(
+        self, tmp_path: Path, enabled_config: Config, wired_instance, exporter
+    ):
+        from opentelemetry.trace import StatusCode
+
+        def _live_tool(tool_call_id: str, span_id: int, **extra: Any) -> dict[str, Any]:
+            return {
+                "name": "tool: Bash",
+                "tool_name": "Bash",
+                "tool_call_id": tool_call_id,
+                "span_id": str(span_id),
+                "parent_span_id": str(0x123456789ABCDEF0),
+                "start_ts": "2026-01-01T00:00:01.000Z",
+                "end_ts": "2026-01-01T00:00:02.000Z",
+                "attributes": {"command": "ls"},
+                **extra,
+            }
+
+        otel_export._export_spans_batch(
+            config=enabled_config,
+            session_dir_=tmp_path / "traces" / "claude" / "s1",
+            session_id="s1",
+            platform="claude",
+            cwd="/proj",
+            trace_id=str(0xABCDEF),
+            spans=[
+                _live_tool("tu_ok", 0x1001),
+                _live_tool("tu_bad", 0x1002, error="Exit code 2"),
+            ],
+        )
+
+        spans = self._tool_spans(exporter)
+        assert spans["tu_ok"].status.status_code is StatusCode.UNSET
+        assert spans["tu_bad"].status.status_code is StatusCode.ERROR
+        assert spans["tu_bad"].status.description == "Exit code 2"
+
+
+class TestEmptyToolPayloadKeys:
+    def test_empty_result_is_not_left_as_a_raw_key(self):
+        """Codex records an empty output for fire-and-forget tools such as
+        `send_message`; an empty payload says nothing, so it is not exported
+        as a raw `result` attribute either."""
+        attributes = otel_export._tool_attributes(
+            {"arguments": "{}", "result": ""},
+            session_id="s1",
+            platform="codex",
+            cwd="/proj",
+            tool_name="send_message",
+        )
+        assert attributes["gen_ai.tool.call.arguments"] == "{}"
+        assert "result" not in attributes
+        assert "gen_ai.tool.call.result" not in attributes
+
+
+class TestTurnUsageTotals:
+    """A turn's `usage` totals export on its `invoke_agent` span as
+    `gen_ai.aggregated_usage.*`, pydantic-ai's names for a run's cumulative
+    usage, so a backend summing `gen_ai.usage.*` across spans doesn't count
+    the turn's tokens a second time on top of its chat spans."""
+
+    def test_turn_span_carries_aggregated_usage(
+        self, tmp_path: Path, enabled_config: Config, wired_instance, exporter
+    ):
+        otel_export._export_turn_inner(
+            config=enabled_config,
+            session_dir_=tmp_path / "traces" / "claude" / "s1",
+            session_id="s1",
+            platform="claude",
+            cwd="/proj",
+            turn=_turn(
+                llm_calls=[_llm_call()],
+                usage={
+                    "input_tokens": 300,
+                    "output_tokens": 70,
+                    "cache_read_input_tokens": 1000,
+                },
+            ),
+        )
+        turn_span = next(
+            s for s in exporter.exported_spans_as_dict() if s["name"] == "invoke_agent"
+        )
+        attributes = turn_span["attributes"]
+        assert attributes["gen_ai.aggregated_usage.input_tokens"] == 300
+        assert attributes["gen_ai.aggregated_usage.output_tokens"] == 70
+        assert attributes["gen_ai.aggregated_usage.cache_read.input_tokens"] == 1000
+        assert not any(key.startswith("gen_ai.usage.") for key in attributes)
+
+    def test_turn_without_usage_has_no_aggregated_usage(
+        self, tmp_path: Path, enabled_config: Config, wired_instance, exporter
+    ):
+        otel_export._export_turn_inner(
+            config=enabled_config,
+            session_dir_=tmp_path / "traces" / "claude" / "s1",
+            session_id="s1",
+            platform="claude",
+            cwd="/proj",
+            turn=_turn(llm_calls=[_llm_call()]),
+        )
+        turn_span = next(
+            s for s in exporter.exported_spans_as_dict() if s["name"] == "invoke_agent"
+        )
+        assert not any(k.startswith("gen_ai.aggregated_usage.") for k in turn_span["attributes"])
+
+
+def test_codex_chat_spans_name_their_turn_span(
+    tmp_path: Path, enabled_config: Config, wired_instance, exporter
+):
+    span_id = turn_span_id("codex", "s1", "t1")
+    otel_export._export_turn_inner(
+        config=enabled_config,
+        session_dir_=tmp_path / "traces" / "codex" / "s1",
+        session_id="s1",
+        platform="codex",
+        cwd="/proj",
+        turn=_turn(turn_id="t1", turn_span_id=str(span_id), llm_calls=[_llm_call()]),
+    )
+    spans = exporter.exported_spans_as_dict()
+    turn_span = next(s for s in spans if s["name"] == "invoke_agent")
+    chat = next(s for s in spans if s["name"].startswith("chat"))
+    assert turn_span["context"]["span_id"] == span_id
+    assert chat["attributes"]["thirdeye.turn.span_id"] == str(span_id)
+
+
+def test_nested_tool_calls_export_under_their_parent_tool_span(
+    tmp_path: Path, enabled_config: Config, wired_instance, exporter
+):
+    """A tool call's `children` (the calls a Codex code-mode script made)
+    export as tool spans parented to it, with their own failures."""
+    from opentelemetry.trace import StatusCode
+
+    parent = _tool_call(
+        tool_call_id="c1",
+        name="exec",
+        children=[
+            _tool_call(tool_call_id="exec-ok", name="exec_command"),
+            _tool_call(tool_call_id="exec-bad", name="exec_command", error="Exit code 1"),
+        ],
+    )
+    otel_export._export_turn_inner(
+        config=enabled_config,
+        session_dir_=tmp_path / "traces" / "codex" / "s1",
+        session_id="s1",
+        platform="codex",
+        cwd="/proj",
+        turn=_turn(llm_calls=[_llm_call(tool_calls=[parent])]),
+    )
+    spans = {span.context.span_id: span for span in exporter.exported_spans}
+    exec_span = spans[tool_span_id("codex", "s1", "c1")]
+    ok = spans[tool_span_id("codex", "s1", "exec-ok")]
+    bad = spans[tool_span_id("codex", "s1", "exec-bad")]
+    assert ok.parent.span_id == exec_span.context.span_id
+    assert bad.parent.span_id == exec_span.context.span_id
+    assert ok.name == "tool: exec_command"
+    assert ok.attributes["gen_ai.tool.call.id"] == "exec-ok"
+    assert bad.status.status_code is StatusCode.ERROR
+
+
 class TestBackgroundNoiseSuppression:
     """Logfire's token-check runs in a background thread and warns straight to
     stderr on a bad/unreachable token; that thread can outlive our own call
@@ -897,6 +1105,10 @@ class TestExportSpansBatch:
             ("openai", "gpt-6-astra"),
             ("openai", "gpt-6-luna"),
             ("anthropic", "claude-haiku-5-5"),
+            # Unpriced through genai-prices 0.1.13: 119 and 172 chat spans
+            # in agent-tracing over 2026-11-10..23 had no operation.cost.
+            ("anthropic", "claude-fable-5-2"),
+            ("openai", "gpt-6.2-astra"),
         ],
     )
     def test_chat_span_prices_current_models(

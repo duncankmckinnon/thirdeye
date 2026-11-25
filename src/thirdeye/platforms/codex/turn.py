@@ -12,6 +12,7 @@ adapts this dict's shape into a full ``TurnSpanDict``.
 
 from __future__ import annotations
 
+import json
 from collections import Counter
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -152,17 +153,126 @@ def _usage_dict(raw: dict[str, Any]) -> dict[str, int]:
     }
 
 
+def _texts(items: Any) -> list[str]:
+    if not isinstance(items, list):
+        return []
+    return [str(item.get("text") or "") for item in items if isinstance(item, dict)]
+
+
+def _tool_error(result: Any) -> str | None:
+    """Return the failure message a Codex tool result states, or None.
+
+    Codex writes no success flag beside a tool's output, so this reads only
+    the shapes that state a failure outright: a code-mode script whose output
+    opens with "Script failed", and an MCP result that is ``Err`` or whose
+    ``Ok`` body sets ``isError``. A nested command's non-zero exit inside a
+    completed script is the script's to handle, so it is not a failure here.
+    """
+    texts = _texts(result)
+    if texts and texts[0].startswith("Script failed"):
+        for text in texts[1:]:
+            if text.startswith("Script error:"):
+                return text.removeprefix("Script error:").strip() or "Script failed"
+        return "Script failed"
+    if not isinstance(result, dict):
+        return None
+    if "Err" in result:
+        err = result["Err"]
+        return err if isinstance(err, str) and err else json.dumps(err)
+    # `mcp_tool_call_end` wraps the MCP result in `Ok`; an `item_completed`
+    # McpToolCall carries it bare.
+    ok = result.get("Ok", result)
+    if isinstance(ok, dict) and ok.get("isError") is True:
+        return "\n".join(text for text in _texts(ok.get("content")) if text) or "MCP tool error"
+    return None
+
+
+def _ms_to_iso(value: Any, fallback: str) -> str:
+    if isinstance(value, (int, float)) and not isinstance(value, bool):
+        return _iso_ms(datetime.fromtimestamp(value / 1000, tz=UTC))
+    return fallback
+
+
+def _shell_command(command: Any) -> Any:
+    # Codex runs each command through the user's shell as [shell, "-lc", cmd].
+    if isinstance(command, list):
+        if len(command) == 3 and command[1] in {"-lc", "-c"}:
+            return command[2]
+        return " ".join(str(part) for part in command)
+    return command
+
+
+_EXTENSION_TOOL_NAMES = {"clock.sleep": "sleep", "image_gen.generation": "image_generation"}
+
+
+def _nested_tool_entry(item: dict[str, Any], payload: dict[str, Any], ts: str) -> dict | None:
+    """The tool entry for one ``item_completed`` item, or None for an item
+    that isn't a tool call (messages, reasoning, compaction, ...)."""
+    kind = item.get("type")
+    failed = item.get("status") == "failed"
+    error: str | None = None
+    if kind == "CommandExecution":
+        name = "exec_command"
+        arguments = _shell_command(item.get("command"))
+        result = item.get("aggregated_output") or ""
+        if failed:
+            error = f"Exit code {item.get('exit_code')}"
+    elif kind == "McpToolCall":
+        name = f"{item.get('server') or 'mcp'}.{item.get('tool') or 'tool'}"
+        arguments = item.get("arguments") or {}
+        result = item.get("result") or ""
+        error = _tool_error(result) or ("MCP tool call failed" if failed else None)
+    elif kind == "FileChange":
+        name = "apply_patch"
+        arguments = item.get("changes") or {}
+        result = item.get("stdout") or ""
+        if failed:
+            error = str(item.get("stderr") or "").strip() or "Patch failed"
+    elif kind == "Extension":
+        extension = str(item.get("kind") or "extension")
+        action = item.get("action") if isinstance(item.get("action"), dict) else {}
+        if extension == "web.search":
+            name = "open_page" if action.get("type") == "openPage" else "web_search"
+        else:
+            name = _EXTENSION_TOOL_NAMES.get(extension, extension)
+        arguments = item.get("query") or action or ""
+        result = item.get("results") or ""
+    elif kind == "ImageView":
+        name = "view_image"
+        arguments = item.get("path") or ""
+        result = ""
+    else:
+        return None
+    entry: dict[str, Any] = {
+        "name": name,
+        "call_id": str(item.get("id") or ""),
+        "arguments": arguments,
+        "result": result,
+        "start_ts": _ms_to_iso(payload.get("started_at_ms"), ts),
+        "end_ts": _ms_to_iso(payload.get("completed_at_ms"), ts),
+    }
+    if error:
+        entry["error"] = error
+    return entry
+
+
 def _tool_call_dicts(entries: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    return [
-        {
+    calls = []
+    for entry in entries:
+        call = {
             "tool_call_id": entry["call_id"],
             "name": entry["name"],
             "start_ts": entry["start_ts"],
             "end_ts": entry["end_ts"],
             "attributes": {"arguments": entry["arguments"], "result": entry["result"]},
         }
-        for entry in entries
-    ]
+        error = entry.get("error") or _tool_error(entry["result"])
+        if error:
+            call["error"] = error
+        if entry.get("children"):
+            call["children"] = _tool_call_dicts(entry["children"])
+        calls.append(call)
+    return calls
 
 
 def _llm_call_dict(
@@ -215,6 +325,8 @@ def extract_turn_codex(rollout_path: str, turn_id: str) -> dict[str, Any] | None
     call_start_ts = ""
     last_output_ts = ""
     pending: dict[str, dict[str, Any]] = {}
+    # Calls whose output hasn't arrived yet, oldest first.
+    open_entries: list[dict[str, Any]] = []
 
     try:
         frames = [frame for _, frame in iter_frames(path, 0)]
@@ -406,6 +518,7 @@ def extract_turn_codex(rollout_path: str, turn_id: str) -> dict[str, Any] | None
                 "end_ts": ts,
             }
             call_tools.append(entry)
+            open_entries.append(entry)
             output_parts.append(
                 {
                     "type": "tool_call",
@@ -471,6 +584,8 @@ def extract_turn_codex(rollout_path: str, turn_id: str) -> dict[str, Any] | None
             call_id = str(payload.get("call_id") or "")
             entry = pending.get(call_id)
             if entry is not None:
+                if entry in open_entries:
+                    open_entries.remove(entry)
                 entry["result"] = payload.get("output", "")
                 entry["end_ts"] = ts or entry["start_ts"]
                 next_input_parts.append(
@@ -480,6 +595,16 @@ def extract_turn_codex(rollout_path: str, turn_id: str) -> dict[str, Any] | None
                         "response": payload.get("output", ""),
                     }
                 )
+            continue
+        if outer == "event_msg" and subtype == "item_completed":
+            # In code mode one `exec` call runs a script that makes the real
+            # tool calls, each reported as an item while the `exec` is open.
+            # A direct call's own item repeats its call id and is skipped; so
+            # is one finishing with no call open, which has nothing to nest in.
+            item = payload.get("item")
+            child = _nested_tool_entry(item, payload, ts) if isinstance(item, dict) else None
+            if child is not None and child["call_id"] not in pending and open_entries:
+                open_entries[-1].setdefault("children", []).append(child)
             continue
         if outer == "event_msg" and subtype == "web_search_end":
             # Self-contained, like mcp_tool_call_end: real Codex rollouts

@@ -1312,3 +1312,384 @@ class TestStopNormalCompletion:
         _stdin(monkeypatch, {"session_id": sid, "cwd": "/p", "response": "done"})
         hooks.stop()
         assert exported == []
+
+
+class TestToolCallFailure:
+    """Claude Code reports a failed tool call through PostToolUseFailure,
+    whose payload carries `error` instead of `tool_response`. The paired
+    tool call surfaces that message as `error` so the exporter can mark the
+    span failed.
+    """
+
+    @staticmethod
+    def _events(result_data: dict) -> list[dict]:
+        return [
+            {
+                "t": "tool_call",
+                "ts": "2026-01-01T00:00:01.000Z",
+                "data": {"tool_name": "Bash", "tool_use_id": "tu_1", "tool_input": {}},
+            },
+            {
+                "t": "tool_result",
+                "ts": "2026-01-01T00:00:02.000Z",
+                "data": {"tool_use_id": "tu_1", **result_data},
+            },
+        ]
+
+    def test_failure_payload_sets_error(self):
+        [pair] = tracing._pair_tool_calls(
+            self._events(
+                {
+                    "hook_event_name": "PostToolUseFailure",
+                    "error": "Exit code 1",
+                    "is_interrupt": False,
+                }
+            )
+        )
+        assert pair["error"] == "Exit code 1"
+
+    def test_success_payload_has_no_error(self):
+        [pair] = tracing._pair_tool_calls(
+            self._events({"hook_event_name": "PostToolUse", "tool_response": {"stdout": "ok"}})
+        )
+        assert "error" not in pair
+
+
+class TestOutputFallback:
+    """A turn's output falls back to the last assistant text it produced
+    when the harness supplies none: Claude Code sends an empty
+    `last_assistant_message` for most subagents, and an interrupted turn has
+    no final response at all.
+    """
+
+    def test_subagent_without_last_assistant_message_uses_its_transcript(self, tmp_path: Path):
+        transcript = tmp_path / "agent.jsonl"
+        transcript.write_text(
+            "\n".join(
+                [
+                    _user_frame("explore code"),
+                    _assistant_frame("sub_1", [{"type": "text", "text": "found stuff"}]),
+                ]
+            )
+            + "\n"
+        )
+        turn = tracing._build_subagent_turn(
+            {"seq": 3, "ts": "2026-01-01T00:00:00.000Z", "data": {"agent_id": "a1"}},
+            {
+                "seq": 9,
+                "ts": "2026-01-01T00:00:05.000Z",
+                "data": {"agent_transcript": str(transcript), "last_assistant_message": ""},
+            },
+            [],
+            [],
+            None,
+            session_id="s1",
+        )
+        assert turn["output_message"] == "found stuff"
+
+    def test_interrupted_turn_uses_last_text_including_calls_committed_live(
+        self, monkeypatch, env: Path, tmp_path: Path
+    ):
+        """Live spans already exported the call holding the text, so the
+        Stop-time parse (which starts past it) never sees it. The fallback
+        reads the transcript from the turn's start instead.
+        """
+        exported = []
+        monkeypatch.setattr(
+            "thirdeye.otel_export.export_turn",
+            lambda config, sd, sid, platform, cwd, turn: exported.append(turn),
+        )
+        sid = "interrupted-output"
+        transcript = tmp_path / "transcript.jsonl"
+        transcript.write_text("")
+        _stdin(
+            monkeypatch,
+            {"session_id": sid, "cwd": "/p", "prompt": "go", "transcript_path": str(transcript)},
+        )
+        hooks.user_prompt_submit()
+        sd = session_dir(env, "claude", sid)
+        marker = hooks._read_open_turn(sd)
+        with transcript.open("a") as file:
+            file.write(
+                _assistant_frame(
+                    "msg_1",
+                    [
+                        {"type": "text", "text": "Let me look at the logs."},
+                        {"type": "tool_use", "id": "tu_1", "name": "Bash", "input": {}},
+                    ],
+                )
+                + "\n"
+            )
+        assert hooks._advance_turn_cursor(
+            sd,
+            expected_turn_seq=marker["turn_seq"],
+            offset=transcript.stat().st_size,
+            last_frame_ts="2026-01-01T00:00:00.000Z",
+            newly_committed_call_ids=["msg_1"],
+        )
+
+        _stdin(monkeypatch, {"session_id": sid, "cwd": "/p"})
+        hooks.session_end()
+
+        [turn] = exported
+        assert turn["status"] == "interrupted"
+        assert turn["llm_calls"] == []
+        assert turn["output_message"] == "Let me look at the logs."
+
+
+class TestHookFieldsOnSpans:
+    """Hook payload fields reach spans under span vocabulary: renamed when
+    useful, dropped when plumbing, never as raw hook keys."""
+
+    def test_tool_pair_attributes(self):
+        [pair] = tracing._pair_tool_calls(
+            [
+                {
+                    "t": "tool_call",
+                    "ts": "2026-01-01T00:00:01.000Z",
+                    "data": {
+                        "hook_event_name": "PreToolUse",
+                        "tool_name": "Bash",
+                        "tool_use_id": "tu_1",
+                        "tool_input": {"command": "ls"},
+                        "permission_mode": "default",
+                        "prompt_id": "p1",
+                        "scratchpad_dir": "/tmp/s",
+                    },
+                },
+                {
+                    "t": "tool_result",
+                    "ts": "2026-01-01T00:00:02.000Z",
+                    "data": {
+                        "hook_event_name": "PostToolUse",
+                        "tool_name": "Bash",
+                        "tool_use_id": "tu_1",
+                        "tool_input": {"command": "ls"},
+                        "tool_response": {"stdout": "a"},
+                        "duration_ms": 7,
+                    },
+                },
+            ]
+        )
+        assert pair["attributes"] == {
+            "gen_ai.tool.name": "Bash",
+            "gen_ai.tool.call.id": "tu_1",
+            "gen_ai.tool.call.arguments": {"command": "ls"},
+            "gen_ai.tool.call.result": {"stdout": "a"},
+            "thirdeye.permission_mode": "default",
+            "thirdeye.tool.duration_ms": 7,
+        }
+
+    def test_permission_request_attributes(self):
+        [request] = tracing._pair_permission_events(
+            [
+                {
+                    "t": "permission_request",
+                    "ts": "2026-01-01T00:00:01.000Z",
+                    "data": {
+                        "hook_event_name": "PermissionRequest",
+                        "tool_name": "Write",
+                        "tool_input": {"file_path": "a.py"},
+                        "permission_mode": "default",
+                    },
+                }
+            ]
+        )
+        assert request["tool_name"] == "Write"
+        assert request["attributes"] == {
+            "gen_ai.tool.name": "Write",
+            "gen_ai.tool.call.arguments": {"file_path": "a.py"},
+            "thirdeye.permission_mode": "default",
+        }
+
+    def test_subagent_turn_attributes(self, tmp_path: Path):
+        turn = tracing._build_subagent_turn(
+            {
+                "seq": 3,
+                "ts": "2026-01-01T00:00:00.000Z",
+                "data": {
+                    "hook_event_name": "SubagentStart",
+                    "agent_id": "a1",
+                    "agent_type": "Explore",
+                    "prompt_id": "p1",
+                    "scratchpad_dir": "/tmp/s",
+                },
+            },
+            {"seq": 9, "ts": "2026-01-01T00:00:05.000Z", "data": {}},
+            [],
+            [],
+            None,
+            session_id="s1",
+        )
+        assert turn["attributes"] == {
+            "thirdeye.subagent.id": "a1",
+            "thirdeye.subagent.type": "Explore",
+        }
+
+
+class TestPermissionDecision:
+    """Claude Code's PermissionRequest payload names the tool and its input
+    but not its tool_use_id. PreToolUse fires just before it with the same
+    tool and input, which links the request to its call; whether that call
+    then ran says the request was approved.
+    """
+
+    @staticmethod
+    def _call(tool_use_id: str, command: str) -> dict:
+        return {
+            "t": "tool_call",
+            "ts": "2026-01-01T00:00:01.000Z",
+            "data": {
+                "tool_name": "Bash",
+                "tool_use_id": tool_use_id,
+                "tool_input": {"command": command},
+            },
+        }
+
+    @staticmethod
+    def _request(command: str) -> dict:
+        return {
+            "t": "permission_request",
+            "ts": "2026-01-01T00:00:02.000Z",
+            "data": {"tool_name": "Bash", "tool_input": {"command": command}},
+        }
+
+    @staticmethod
+    def _result(tool_use_id: str) -> dict:
+        return {
+            "t": "tool_result",
+            "ts": "2026-01-01T00:00:03.000Z",
+            "data": {"tool_use_id": tool_use_id, "tool_response": {"stdout": ""}},
+        }
+
+    def test_request_for_a_call_that_ran_is_linked_and_approved(self):
+        [request] = tracing._pair_permission_events(
+            [
+                self._call("tu_other", "pwd"),
+                self._call("tu_1", "rm -rf build"),
+                self._request("rm -rf build"),
+                self._result("tu_1"),
+            ]
+        )
+        assert request["attributes"]["gen_ai.tool.call.id"] == "tu_1"
+        assert request["attributes"]["thirdeye.permission.decision"] == "approved"
+
+    def test_request_for_a_call_that_never_ran_has_no_decision(self):
+        """A user's rejection in the dialog fires no hook, and neither does
+        an interrupt, so a call that never ran is linked but left undecided."""
+        [request] = tracing._pair_permission_events(
+            [self._call("tu_1", "rm -rf build"), self._request("rm -rf build")]
+        )
+        assert request["attributes"]["gen_ai.tool.call.id"] == "tu_1"
+        assert "thirdeye.permission.decision" not in request["attributes"]
+
+    def test_request_without_a_matching_call_is_not_linked(self):
+        [request] = tracing._pair_permission_events(
+            [self._call("tu_1", "ls"), self._request("rm -rf build"), self._result("tu_1")]
+        )
+        assert "gen_ai.tool.call.id" not in request["attributes"]
+        assert "thirdeye.permission.decision" not in request["attributes"]
+
+    def test_permission_denied_is_a_denial(self):
+        [denied] = tracing._pair_permission_events(
+            [
+                {
+                    "t": "permission_denied",
+                    "ts": "2026-01-01T00:00:02.000Z",
+                    "data": {
+                        "tool_name": "Bash",
+                        "tool_use_id": "tu_1",
+                        "tool_input": {"command": "rm -rf /"},
+                        "reason": "destructive",
+                    },
+                }
+            ]
+        )
+        assert denied["attributes"]["gen_ai.tool.call.id"] == "tu_1"
+        assert denied["attributes"]["thirdeye.permission.decision"] == "denied"
+
+
+class TestTurnUsage:
+    def test_totals_include_calls_already_exported_live(
+        self, monkeypatch, env: Path, tmp_path: Path
+    ):
+        """The Stop-time parse starts past calls live spans committed, so
+        `llm_calls` holds only the rest; the turn total still counts them."""
+        sid = "usage-totals"
+        transcript = tmp_path / "transcript.jsonl"
+        transcript.write_text("")
+        _stdin(
+            monkeypatch,
+            {"session_id": sid, "cwd": "/p", "prompt": "go", "transcript_path": str(transcript)},
+        )
+        hooks.user_prompt_submit()
+        sd = session_dir(env, "claude", sid)
+        marker = hooks._read_open_turn(sd)
+        with transcript.open("a") as file:
+            file.write(
+                _assistant_frame(
+                    "msg_1",
+                    [{"type": "tool_use", "id": "tu_1", "name": "Bash", "input": {}}],
+                    extra_usage={"cache_read_input_tokens": 100},
+                )
+                + "\n"
+            )
+        assert hooks._advance_turn_cursor(
+            sd,
+            expected_turn_seq=marker["turn_seq"],
+            offset=transcript.stat().st_size,
+            last_frame_ts="2026-01-01T00:00:00.000Z",
+            newly_committed_call_ids=["msg_1"],
+        )
+        with transcript.open("a") as file:
+            file.write(_user_frame([{"type": "tool_result", "tool_use_id": "tu_1"}]) + "\n")
+            file.write(
+                _assistant_frame(
+                    "msg_2",
+                    [{"type": "text", "text": "done"}],
+                    input_tokens=20,
+                    output_tokens=7,
+                )
+                + "\n"
+            )
+
+        turn = tracing.build_turn(
+            config=Config.load(),
+            session_dir_=sd,
+            session_id=sid,
+            cwd="/p",
+            stop_seq=marker["turn_seq"] + 1,
+            stop_ts="2026-01-01T00:00:05.000Z",
+            transcript_path=str(transcript),
+            final_response="done",
+        )
+
+        assert [call["call_id"] for call in turn["llm_calls"]] == ["msg_2"]
+        # input_tokens includes cached input, as on the chat spans: 10 + 100 + 20.
+        assert turn["usage"] == {
+            "input_tokens": 130,
+            "output_tokens": 12,
+            "cache_read_input_tokens": 100,
+        }
+
+    def test_subagent_totals_its_own_calls(self, tmp_path: Path):
+        transcript = tmp_path / "agent.jsonl"
+        transcript.write_text(
+            _user_frame("explore")
+            + "\n"
+            + _assistant_frame("sub_1", [{"type": "text", "text": "found"}], input_tokens=40)
+            + "\n"
+        )
+        turn = tracing._build_subagent_turn(
+            {"seq": 3, "ts": "2026-01-01T00:00:00.000Z", "data": {"agent_id": "a1"}},
+            {
+                "seq": 9,
+                "ts": "2026-01-01T00:00:05.000Z",
+                "data": {"agent_transcript": str(transcript)},
+            },
+            [],
+            [],
+            None,
+            session_id="s1",
+        )
+        assert turn["usage"] == {"input_tokens": 40, "output_tokens": 5}
