@@ -1,11 +1,13 @@
 from __future__ import annotations
 
+import json
 from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
 
 from thirdeye.config import Config
 from thirdeye.platforms.claude.usage import extract_calls_from_transcript
+from thirdeye.platforms.hook_fields import hook_span_attributes
 from thirdeye.reader import SessionReader
 from thirdeye.span_ids import turn_span_id
 from thirdeye.tracing.model import (
@@ -15,6 +17,8 @@ from thirdeye.tracing.model import (
     ToolCallSpanDict,
     TurnSpanDict,
     TurnStatus,
+    last_assistant_text,
+    total_usage,
 )
 
 _PLATFORM = "claude"
@@ -78,7 +82,7 @@ def _pair_tool_calls(events: list[dict[str, Any]]) -> list[ToolCallSpanDict]:
                 "name": str(call_data.get("tool_name") or ""),
                 "start_ts": str(call_ev.get("ts") or ""),
                 "end_ts": str(ev.get("ts") or ""),
-                "attributes": {**call_data, **data},
+                "attributes": hook_span_attributes({**call_data, **data}),
             }
             # PostToolUseFailure delivers the failure as `error` in place of
             # a `tool_response`; PostToolUse never sets it.
@@ -88,17 +92,52 @@ def _pair_tool_calls(events: list[dict[str, Any]]) -> list[ToolCallSpanDict]:
     return pairs
 
 
+def _tool_call_key(data: dict[str, Any]) -> tuple[str, str]:
+    return (
+        str(data.get("tool_name") or ""),
+        json.dumps(data.get("tool_input"), sort_keys=True, default=str),
+    )
+
+
 def _pair_permission_events(events: list[dict[str, Any]]) -> list[PermissionRequestSpanDict]:
+    """One span record per permission request or denial in ``events``.
+
+    PermissionRequest's payload names the tool and its input but not its
+    tool_use_id. PreToolUse fires just before it with the same tool and
+    input, so the latest such call is the one awaiting permission, and that
+    call later running means the request was approved. A call that never
+    ran stays undecided: a rejection in the dialog fires no hook, and
+    neither does an interrupt.
+    """
+    ran = {
+        tu_id
+        for ev in events
+        if ev.get("t") == "tool_result" and (tu_id := _tool_use_id(ev.get("data")))
+    }
+    awaiting: dict[tuple[str, str], str] = {}
     out: list[PermissionRequestSpanDict] = []
     for ev in events:
-        if ev.get("t") not in {"permission_request", "permission_denied"}:
-            continue
         data = ev.get("data") or {}
+        kind = ev.get("t")
+        if kind == "tool_call":
+            tu_id = _tool_use_id(data)
+            if tu_id:
+                awaiting[_tool_call_key(data)] = tu_id
+            continue
+        if kind not in {"permission_request", "permission_denied"}:
+            continue
+        attributes = hook_span_attributes(data)
+        if kind == "permission_denied":
+            attributes["thirdeye.permission.decision"] = "denied"
+        elif tu_id := awaiting.get(_tool_call_key(data)):
+            attributes["gen_ai.tool.call.id"] = tu_id
+            if tu_id in ran:
+                attributes["thirdeye.permission.decision"] = "approved"
         out.append(
             {
                 "ts": str(ev.get("ts") or ""),
                 "tool_name": str(data.get("tool_name") or ""),
-                "attributes": dict(data),
+                "attributes": attributes,
             }
         )
     return out
@@ -127,15 +166,6 @@ def _first_input_text(llm_calls: list[LlmCallSpanDict]) -> str:
         for part in message.get("parts", []):
             if part.get("type") == "text" and part.get("content"):
                 return str(part["content"])
-    return ""
-
-
-def _fallback_output_message(llm_calls: list[LlmCallSpanDict]) -> str:
-    for call in reversed(llm_calls):
-        for message in reversed(call["output_messages"]):
-            for part in reversed(message.get("parts", [])):
-                if part.get("type") == "text" and part.get("content"):
-                    return str(part["content"])
     return ""
 
 
@@ -230,7 +260,7 @@ def _build_subagent_turn(
     _attach_tool_calls(llm_calls, tool_calls)
     task_input = (task_ev.get("data") or {}).get("tool_input") if task_ev else None
     task_input = task_input if isinstance(task_input, dict) else {}
-    return {
+    turn: TurnSpanDict = {
         "turn_id": str(start_ev.get("seq")),
         "turn_span_id": str(turn_span_id(_PLATFORM, session_id, int(start_ev["seq"]))),
         "start_ts": str(start_ev.get("ts") or ""),
@@ -240,7 +270,10 @@ def _build_subagent_turn(
         # call that spawned it, which shares no id with SubagentStart/Stop.
         "input_message": _first_input_text(llm_calls)
         or str(task_input.get("prompt") or task_input.get("description") or ""),
-        "output_message": str(stop_data.get("last_assistant_message") or ""),
+        # Claude Code leaves `last_assistant_message` empty for most
+        # subagents; the agent's own transcript still holds what it said.
+        "output_message": str(stop_data.get("last_assistant_message") or "")
+        or last_assistant_text(llm_calls),
         # A subagent only appears here once its own SubagentStop has fired,
         # so it completed by definition; Claude Code has no "interrupted
         # subagent" signal to check instead.
@@ -248,8 +281,12 @@ def _build_subagent_turn(
         "llm_calls": llm_calls,
         "permission_requests": permission_requests,
         "subagents": [],
-        "attributes": {k: v for k, v in start_data.items() if k != "agent_id"},
+        "attributes": hook_span_attributes(start_data),
     }
+    usage = total_usage(llm_calls)
+    if usage:
+        turn["usage"] = usage
+    return turn
 
 
 def _already_exported_as_subagent(session_dir_: Path, turn_id: str) -> bool:
@@ -392,7 +429,20 @@ def build_turn(
     permission_requests = _pair_permission_events(top_level_events)
 
     orphan_tool_calls: list[OrphanToolCallDict] = []
+    # Every call the turn made, read from its start rather than from the live
+    # cursor, so it includes calls live spans already committed. It is never
+    # exported itself: it only feeds orphan recovery, the output fallback and
+    # the turn's usage totals below.
+    turn_calls: list[LlmCallSpanDict] = []
     if trusted_cursor:
+        from thirdeye.platforms.claude.hooks import turn_start_offset as _turn_start_offset
+
+        turn_calls = extract_calls_from_transcript(
+            transcript_path or marker.get("transcript_path"),
+            _turn_start_offset(marker),
+            initial_prev_ts=None,
+            incremental=False,
+        ).calls
         parsed_calls = extract_calls_from_transcript(
             transcript_path or marker.get("transcript_path"),
             int(marker["transcript_offset"]),
@@ -439,16 +489,8 @@ def build_turn(
             {tc["tool_call_id"] for tc in tool_calls} - already_attached - committed_tools
         )
         if pending_tool_use_ids:
-            from thirdeye.platforms.claude.hooks import turn_start_offset as _turn_start_offset
-
-            full_calls = extract_calls_from_transcript(
-                transcript_path or marker.get("transcript_path"),
-                _turn_start_offset(marker),
-                initial_prev_ts=None,
-                incremental=False,
-            ).calls
             tool_calls_by_id = {tc["tool_call_id"]: tc for tc in tool_calls}
-            for call in full_calls:
+            for call in turn_calls:
                 if call["call_id"] not in committed:
                     continue  # not one of the groups a live commit orphaned
                 for message in call["output_messages"]:
@@ -471,12 +513,12 @@ def build_turn(
         llm_calls = []
         _attach_tool_calls(llm_calls, tool_calls)
 
-    # The interruption catch-all has no real final_response and must not
-    # backfill one from the transcript — an empty output is the correct,
-    # honest signal for a turn that never actually finished.
-    output_message = final_response
-    if status == "completed" and not output_message:
-        output_message = _fallback_output_message(llm_calls)
+    # Without a final response (always the case for an interrupted or
+    # errored turn), the output is the last thing the agent said; `status`
+    # is what records that the turn never finished. Live spans may already
+    # have committed the call holding that text, so it is read from
+    # `turn_calls`, not `llm_calls`.
+    output_message = final_response or last_assistant_text(turn_calls)
 
     turn: TurnSpanDict = {
         "turn_id": str(turn_seq),
@@ -493,4 +535,7 @@ def build_turn(
     }
     if orphan_tool_calls:
         turn["orphan_tool_calls"] = orphan_tool_calls
+    usage = total_usage(turn_calls)
+    if usage:
+        turn["usage"] = usage
     return turn

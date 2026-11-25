@@ -13,7 +13,9 @@ from typing import TYPE_CHECKING, Any
 from thirdeye._compat.locking import LockMode, locked_fd
 from thirdeye.ids import new_ulid
 from thirdeye.platforms.codex.rollout import iter_frames, resolve_rollout
-from thirdeye.tracing.model import TurnSpanDict
+from thirdeye.platforms.codex.turn import extract_turn_codex
+from thirdeye.span_ids import turn_span_id
+from thirdeye.tracing.model import TurnSpanDict, last_assistant_text, total_usage
 from thirdeye.usage.errlog import log_capture_error
 from thirdeye.writer import utc_iso_ms
 
@@ -133,6 +135,31 @@ def _rollout_completed(session_id: str, codex_turn_id: str) -> bool:
         return False
 
 
+def _fill_from_rollout(turn: TurnSpanDict, session_id: str, codex_turn_id: str) -> None:
+    """Fill an interrupted turn with what its rollout recorded before the abort.
+
+    This fallback is an interrupted turn's only export, so without the
+    rollout it would carry the prompt alone: no model or tool calls, no
+    output, and the time it was reaped rather than when it stopped.
+    """
+    try:
+        path = resolve_rollout(session_id)
+        extracted = extract_turn_codex(str(path), codex_turn_id) if path else None
+    except (OSError, ValueError):
+        return
+    if not extracted:
+        return
+    turn["llm_calls"] = extracted["calls"]
+    turn["output_message"] = extracted["assistant_output"] or last_assistant_text(
+        extracted["calls"]
+    )
+    if extracted["end_ts"]:
+        turn["end_ts"] = extracted["end_ts"]
+    usage = total_usage(extracted["calls"])
+    if usage:
+        turn["usage"] = usage
+
+
 def _reap(
     config: Config,
     session_dir_: Path,
@@ -191,6 +218,7 @@ def _reap(
             codex_turn_id = marker.get("codex_turn_id")
             turn = {
                 "turn_id": str(turn_id),
+                "turn_span_id": str(turn_span_id(_PLATFORM, session_id, str(turn_id))),
                 "start_ts": str(start_ts),
                 "end_ts": utc_iso_ms(),
                 "input_message": str(marker.get("input_message") or ""),
@@ -207,9 +235,11 @@ def _reap(
 
     if turn is None:
         return
-    # notify exports a completed turn; SessionEnd can arrive before it.
-    if codex_turn_id and _rollout_completed(session_id, str(codex_turn_id)):
-        return
+    if codex_turn_id:
+        # notify exports a completed turn; SessionEnd can arrive before it.
+        if _rollout_completed(session_id, str(codex_turn_id)):
+            return
+        _fill_from_rollout(turn, session_id, str(codex_turn_id))
     try:
         from thirdeye.otel_export import export_turn
         from thirdeye.platforms.codex.captured_env import resolve_captured_env

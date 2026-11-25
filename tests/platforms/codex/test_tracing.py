@@ -276,7 +276,7 @@ class TestBuildTurnFromLocalStore:
         pr = turn["permission_requests"][0]
         assert pr["ts"] == "2026-01-01T00:00:05.000Z"
         assert pr["tool_name"] == "Bash"
-        assert pr["attributes"] == {"command": "ls"}
+        assert pr["attributes"] == {"gen_ai.tool.name": "Bash", "thirdeye.hook.command": "ls"}
 
     def test_permission_request_outside_window_is_excluded(
         self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
@@ -367,7 +367,10 @@ class TestBuildTurnFromLocalStore:
 
         assert [sub["input_message"] for sub in turn["subagents"]] == ["task A", "task B"]
         assert [sub["output_message"] for sub in turn["subagents"]] == ["result A", "result B"]
-        assert [sub["attributes"]["agent_id"] for sub in turn["subagents"]] == ["A", "B"]
+        assert [sub["attributes"]["thirdeye.subagent.id"] for sub in turn["subagents"]] == [
+            "A",
+            "B",
+        ]
 
     def test_subagent_stop_last_assistant_message_is_the_output(
         self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
@@ -479,6 +482,152 @@ class TestBuildTurnFromLocalStore:
         assert turn["status"] == "interrupted"
         assert turn["llm_calls"] == [{"call_id": "t1:0"}]
         assert turn["attributes"] == {}
+
+    def test_interrupted_turn_without_final_answer_uses_last_assistant_text(
+        self, tmp_path: Path
+    ) -> None:
+        sd = session_dir(tmp_path, "codex", "s1")
+        call = {
+            "call_id": "t1:0",
+            "output_messages": [
+                {
+                    "role": "assistant",
+                    "parts": [
+                        {"type": "text", "content": "checking the logs"},
+                        {"type": "tool_call", "id": "c1", "name": "exec", "arguments": ""},
+                    ],
+                }
+            ],
+        }
+        turn = build_turn(
+            session_dir_=sd,
+            session_id="s1",
+            seq=1,
+            turn=_bare_turn(status="interrupted", assistant_output="", calls=[call]),
+        )
+        assert turn["output_message"] == "checking the logs"
+
+
+class TestTurnUsage:
+    def test_build_turn_totals_its_calls(self, tmp_path: Path) -> None:
+        turn = build_turn(
+            session_dir_=session_dir(tmp_path, "codex", "s1"),
+            session_id="s1",
+            seq=1,
+            turn=_bare_turn(
+                calls=[
+                    {"call_id": "t1:0", "usage": {"input_tokens": 10, "output_tokens": 2}},
+                    {
+                        "call_id": "t1:1",
+                        "usage": {"input_tokens": 30, "reasoning_output_tokens": 4},
+                    },
+                ]
+            ),
+        )
+        assert turn["usage"] == {
+            "input_tokens": 40,
+            "output_tokens": 2,
+            "reasoning_output_tokens": 4,
+        }
+
+
+class TestTurnSpanIds:
+    """Codex turns get deterministic span ids, as Claude's do, so their chat
+    spans can name their turn in `thirdeye.turn.span_id`."""
+
+    def test_top_level_and_subagent_turns_have_derived_span_ids(self, env: Path) -> None:
+        from thirdeye.span_ids import turn_span_id
+
+        store = Store(Config(root=env))
+        start = store.append_event(
+            session_id="s1", platform="codex", cwd="/p", t="subagent_start", data={"agent_id": "a"}
+        )
+        stop = store.append_event(
+            session_id="s1",
+            platform="codex",
+            cwd="/p",
+            t="subagent_message",
+            data={"agent_id": "a"},
+        )
+        turn = build_turn(
+            session_dir_=session_dir(env, "codex", "s1"),
+            session_id="s1",
+            seq=stop + 1,
+            turn=_bare_turn(start_ts="2000-01-01T00:00:00.000Z", end_ts="2100-01-01T00:00:00.000Z"),
+        )
+        assert turn["turn_span_id"] == str(turn_span_id("codex", "s1", "t1"))
+        [subagent] = turn["subagents"]
+        assert subagent["turn_span_id"] == str(turn_span_id("codex", "s1", f"subagent:s1:{start}"))
+
+    def test_interrupted_fallback_turn_has_a_derived_span_id(self, monkeypatch, env: Path):
+        from thirdeye.platforms.codex import hooks_json
+        from thirdeye.span_ids import turn_span_id
+
+        calls: list[Any] = []
+        monkeypatch.setattr("thirdeye.otel_export.export_turn", lambda *a, **k: calls.append(a))
+        _stdin(monkeypatch, {"session_id": "s1", "cwd": "/p", "prompt": "go"})
+        hooks_json.user_prompt_submit()
+        _stdin(monkeypatch, {"session_id": "s1", "cwd": "/p"})
+        hooks_json.session_end()
+
+        [(*_, turn)] = calls
+        assert turn["turn_span_id"] == str(turn_span_id("codex", "s1", turn["turn_id"]))
+
+
+class TestHookFieldsOnSpans:
+    """Codex hook payloads share Claude Code's field names; they reach spans
+    under span vocabulary rather than as raw hook keys."""
+
+    def test_subagent_and_permission_attributes(self, env: Path) -> None:
+        sd = session_dir(env, "codex", "s1")
+        store = Store(Config(root=env))
+        common = {
+            "hook_event_name": "x",
+            "model": "gpt-5",
+            "turn_id": "T1",
+            "permission_mode": "default",
+        }
+        store.append_event(
+            session_id="s1",
+            platform="codex",
+            cwd="/p",
+            t="subagent_start",
+            data={**common, "agent_id": "a1", "agent_type": "worker", "prompt": "go"},
+        )
+        store.append_event(
+            session_id="s1",
+            platform="codex",
+            cwd="/p",
+            t="permission_request",
+            data={**common, "tool_name": "exec_command", "tool_input": {"cmd": "ls"}},
+        )
+        store.append_event(
+            session_id="s1",
+            platform="codex",
+            cwd="/p",
+            t="subagent_message",
+            data={**common, "agent_id": "a1", "stop_hook_active": False, "message": "done"},
+        )
+        turn = build_turn(
+            session_dir_=sd,
+            session_id="s1",
+            seq=4,
+            turn=_bare_turn(start_ts="2000-01-01T00:00:00.000Z", end_ts="2100-01-01T00:00:00.000Z"),
+        )
+        [subagent] = turn["subagents"]
+        assert subagent["attributes"] == {
+            "thirdeye.hook.model": "gpt-5",
+            "thirdeye.permission_mode": "default",
+            "thirdeye.subagent.id": "a1",
+            "thirdeye.subagent.type": "worker",
+        }
+        [request] = turn["permission_requests"]
+        assert request["attributes"] == {
+            "gen_ai.tool.name": "exec_command",
+            "gen_ai.tool.call.arguments": {"cmd": "ls"},
+            "thirdeye.hook.model": "gpt-5",
+            "thirdeye.permission_mode": "default",
+        }
 
 
 # -- notify(): wiring to export_turn -------------------------------------------
@@ -948,6 +1097,63 @@ class TestHooksJsonMarkerWiring:
         hooks_json.session_end()
 
         assert calls == []
+
+    def test_interrupted_turn_export_carries_its_rollout_calls_and_output(
+        self, monkeypatch, env: Path
+    ):
+        """An interrupted Codex turn never reaches ``notify``, so the marker
+        fallback is its only export. When the rollout holds the aborted turn,
+        its model calls, last assistant text and abort time go out with it
+        instead of an empty turn.
+        """
+        from thirdeye.platforms.codex import hooks_json
+
+        calls: list[Any] = []
+        monkeypatch.setattr("thirdeye.otel_export.export_turn", lambda *a, **k: calls.append(a))
+        frames = [
+            ("2026-01-01T00:00:01.000Z", "turn_context", {"turn_id": "T1", "model": "gpt-5"}),
+            (
+                "2026-01-01T00:00:02.000Z",
+                "response_item",
+                {
+                    "type": "message",
+                    "role": "assistant",
+                    "phase": "commentary",
+                    "content": [{"type": "output_text", "text": "checking the logs"}],
+                },
+            ),
+            (
+                "2026-01-01T00:00:03.000Z",
+                "response_item",
+                {"type": "function_call", "name": "exec", "call_id": "c1", "arguments": "{}"},
+            ),
+            (
+                "2026-01-01T00:00:04.000Z",
+                "event_msg",
+                {"type": "turn_aborted", "turn_id": "T1", "reason": "interrupted"},
+            ),
+        ]
+        rollout = env / "codex_sessions" / "rollout-2026-01-01T00-00-00-s1.jsonl"
+        rollout.write_text(
+            "".join(
+                json.dumps({"timestamp": ts, "type": kind, "payload": payload}) + "\n"
+                for ts, kind, payload in frames
+            )
+        )
+        _stdin(monkeypatch, {"session_id": "s1", "cwd": "/p", "prompt": "go", "turn_id": "T1"})
+        hooks_json.user_prompt_submit()
+
+        _stdin(monkeypatch, {"session_id": "s1", "cwd": "/p"})
+        hooks_json.session_end()
+
+        [(_config, _sd, _sid, _platform, _cwd, turn)] = calls
+        assert turn["status"] == "interrupted"
+        assert turn["input_message"] == "go"
+        assert turn["output_message"] == "checking the logs"
+        assert turn["end_ts"] == "2026-01-01T00:00:04.000Z"
+        [llm_call] = turn["llm_calls"]
+        assert [tool["name"] for tool in llm_call["tool_calls"]] == ["exec"]
+        assert "usage" not in turn  # the rollout recorded no token_count
 
 
 class TestMidTurnHooksReapAbandonedMarker:

@@ -36,6 +36,9 @@ class ToolCallSpanDict(TypedDict):
     # exporter turns into the span's ERROR status. Adapters decide what
     # counts as a failure; the exporter never inspects tool results.
     error: NotRequired[str]
+    # Calls this one made while it ran, such as the commands and MCP calls
+    # inside a Codex code-mode script. Exported as tool spans beneath it.
+    children: NotRequired[list[ToolCallSpanDict]]
 
 
 class LlmCallSpanDict(TypedDict):
@@ -234,7 +237,45 @@ class TurnSpanDict(TypedDict):
     attributes: dict[str, Any]
     # Optional: Cursor interactions exported as spans.
     interactions: NotRequired[list[InteractionSpanDict]]
+    # Optional: token totals for every model call the turn itself made,
+    # including calls exported live before it ended (which `llm_calls` then
+    # omits) and excluding its subagents, which carry their own. Producers
+    # leave it absent when they can't see the whole turn.
+    usage: NotRequired[UsageDict]
     # Optional local accounting that may be exported on the owning chat span
     # (AccountingCallSpanDict.call_id set) or an explicit user-turn/agent
     # accounting span (call_id null), never both.
     accounting_calls: NotRequired[list[AccountingCallSpanDict]]
+
+
+def last_assistant_text(llm_calls: list[LlmCallSpanDict]) -> str:
+    """The last non-empty assistant text part across ``llm_calls``, or ``""``.
+
+    A turn's output when the harness supplies none: a subagent whose stop
+    event omits its final message, or an interrupted turn, whose last words
+    are whatever it said before it stopped.
+    """
+    for call in reversed(llm_calls):
+        for message in reversed(call.get("output_messages") or []):
+            for part in reversed(message.get("parts", [])):
+                if part.get("type") == "text" and part.get("content"):
+                    return str(part["content"])
+    return ""
+
+
+def total_usage(llm_calls: list[LlmCallSpanDict]) -> UsageDict:
+    """Sum each reported usage field across ``llm_calls``, one entry per call id.
+
+    A Claude message whose frames straddle a user frame parses as two groups
+    sharing one call id, each repeating the message's usage, so only the last
+    group for an id is counted. Fields no call reported stay absent.
+    """
+    by_call: dict[str, UsageDict] = {}
+    for call in llm_calls:
+        by_call[str(call.get("call_id"))] = call.get("usage") or {}
+    totals: dict[str, int] = {}
+    for usage in by_call.values():
+        for key, value in usage.items():
+            if isinstance(value, int) and not isinstance(value, bool):
+                totals[key] = totals.get(key, 0) + value
+    return totals  # type: ignore[return-value]
