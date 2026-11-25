@@ -85,7 +85,7 @@ from thirdeye.span_ids import (
     tool_span_id,
     trace_id_for_session,
 )
-from thirdeye.tracing.model import TurnSpanDict
+from thirdeye.tracing.model import ToolCallSpanDict, TurnSpanDict
 from thirdeye.usage.errlog import log_capture_error
 
 # Cache across calls *within one process*. Each hook invocation is its own
@@ -1622,6 +1622,55 @@ def _export_spans_batch(
         raise RuntimeError("span batch was not flushed")
 
 
+def _export_tool_span(
+    tracer: Any,
+    parent_ctx: Any,
+    tool_call: ToolCallSpanDict,
+    *,
+    turn: TurnSpanDict,
+    session_id: str,
+    platform: str,
+    cwd: str,
+) -> None:
+    """Export one tool call under ``parent_ctx``, then the calls it made
+    (its ``children``) under it in turn."""
+    from opentelemetry.trace import SpanKind
+
+    tool_span = _start_span_with_id(
+        tracer,
+        f"tool: {tool_call['name']}",
+        tool_span_id(platform, session_id, tool_call["tool_call_id"]),
+        parent_ctx=parent_ctx,
+        kind=SpanKind.INTERNAL,
+        start_time=_ts_to_ns(tool_call["start_ts"]),
+        attributes=_tool_attributes(
+            tool_call["attributes"],
+            session_id=session_id,
+            platform=platform,
+            cwd=cwd,
+            turn_id=turn["turn_id"],
+            turn_span_id=turn.get("turn_span_id"),
+            tool_name=tool_call["name"],
+            tool_call_id=tool_call["tool_call_id"],
+        ),
+    )
+    _end_span(tool_span, _ts_to_ns(tool_call["end_ts"]), tool_call.get("error"))
+    children = tool_call.get("children") or []
+    if children:
+        tool_ctx = tool_span.get_span_context()
+        child_parent_ctx = _parent_context(tool_ctx.trace_id, tool_ctx.span_id)
+        for child in children:
+            _export_tool_span(
+                tracer,
+                child_parent_ctx,
+                child,
+                turn=turn,
+                session_id=session_id,
+                platform=platform,
+                cwd=cwd,
+            )
+
+
 def _export_turn_subtree(
     tracer: Any,
     parent_ctx: Any,
@@ -1639,7 +1688,6 @@ def _export_turn_subtree(
     so it is exported by recursing into this same function rather than any
     dedicated subagent-handling logic.
     """
-    from opentelemetry.trace import SpanKind
 
     turn_attrs: dict[str, Any] = {
         # The model is applied here and nowhere else: this is the one span the
@@ -1766,25 +1814,15 @@ def _export_turn_subtree(
         call_parent_ctx = _parent_context(call_ctx.trace_id, call_ctx.span_id)
 
         for tool_call in llm_call["tool_calls"]:
-            tool_span = _start_span_with_id(
+            _export_tool_span(
                 tracer,
-                f"tool: {tool_call['name']}",
-                tool_span_id(platform, session_id, tool_call["tool_call_id"]),
-                parent_ctx=call_parent_ctx,
-                kind=SpanKind.INTERNAL,
-                start_time=_ts_to_ns(tool_call["start_ts"]),
-                attributes=_tool_attributes(
-                    tool_call["attributes"],
-                    session_id=session_id,
-                    platform=platform,
-                    cwd=cwd,
-                    turn_id=turn["turn_id"],
-                    turn_span_id=turn.get("turn_span_id"),
-                    tool_name=tool_call["name"],
-                    tool_call_id=tool_call["tool_call_id"],
-                ),
+                call_parent_ctx,
+                tool_call,
+                turn=turn,
+                session_id=session_id,
+                platform=platform,
+                cwd=cwd,
             )
-            _end_span(tool_span, _ts_to_ns(tool_call["end_ts"]), tool_call.get("error"))
 
     known_call_ids = {str(call["call_id"]) for call in turn["llm_calls"]}
     for accounting in turn.get("accounting_calls") or []:
@@ -1810,25 +1848,15 @@ def _export_turn_subtree(
         orphan_parent_ctx = _parent_context(
             turn_ctx.trace_id, int(chat_span_id(platform, session_id, parent_call_id))
         )
-        orphan_span = _start_span_with_id(
+        _export_tool_span(
             tracer,
-            f"tool: {tool_call['name']}",
-            tool_span_id(platform, session_id, tool_call["tool_call_id"]),
-            parent_ctx=orphan_parent_ctx,
-            kind=SpanKind.INTERNAL,
-            start_time=_ts_to_ns(tool_call["start_ts"]),
-            attributes=_tool_attributes(
-                tool_call["attributes"],
-                session_id=session_id,
-                platform=platform,
-                cwd=cwd,
-                turn_id=turn["turn_id"],
-                turn_span_id=turn.get("turn_span_id"),
-                tool_name=tool_call["name"],
-                tool_call_id=tool_call["tool_call_id"],
-            ),
+            orphan_parent_ctx,
+            tool_call,
+            turn=turn,
+            session_id=session_id,
+            platform=platform,
+            cwd=cwd,
         )
-        _end_span(orphan_span, _ts_to_ns(tool_call["end_ts"]), tool_call.get("error"))
 
     for permission_request in turn["permission_requests"]:
         pr_ts = _ts_to_ns(permission_request["ts"])
