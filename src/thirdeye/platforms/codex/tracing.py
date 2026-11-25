@@ -21,8 +21,17 @@ from typing import Any
 
 from thirdeye.platforms.codex.rollout import iter_frames, resolve_rollout
 from thirdeye.platforms.codex.turn import extract_turn_codex
+from thirdeye.platforms.hook_fields import hook_span_attributes
 from thirdeye.reader import SessionReader
-from thirdeye.tracing.model import PermissionRequestSpanDict, TurnSpanDict, last_assistant_text
+from thirdeye.span_ids import turn_span_id
+from thirdeye.tracing.model import (
+    PermissionRequestSpanDict,
+    TurnSpanDict,
+    last_assistant_text,
+    total_usage,
+)
+
+_PLATFORM = "codex"
 
 
 def _parse_ts(ts: str) -> datetime:
@@ -70,7 +79,7 @@ def _permission_requests_in_range(
             {
                 "ts": ts,
                 "tool_name": str(data.get("tool_name") or ""),
-                "attributes": {k: v for k, v in data.items() if k != "tool_name"},
+                "attributes": hook_span_attributes(data),
             }
         )
     return out
@@ -86,13 +95,17 @@ def _subagent_turn(session_id: str, start: dict[str, Any], stop: dict[str, Any])
         or stop_data.get("last_assistant_message")
         or ""
     )
-    attributes = {
-        k: v
-        for k, v in {**start_data, **stop_data}.items()
-        if k not in {"prompt", "description", "message", "output", "last_assistant_message"}
-    }
+    attributes = hook_span_attributes(
+        {
+            k: v
+            for k, v in {**start_data, **stop_data}.items()
+            if k not in {"prompt", "description", "message", "output", "last_assistant_message"}
+        }
+    )
+    turn_id = f"subagent:{session_id}:{start.get('seq')}"
     result: TurnSpanDict = {
-        "turn_id": f"subagent:{session_id}:{start.get('seq')}",
+        "turn_id": turn_id,
+        "turn_span_id": str(turn_span_id(_PLATFORM, session_id, turn_id)),
         "start_ts": str(start.get("ts") or ""),
         "end_ts": str(stop.get("ts") or ""),
         "input_message": str(input_message),
@@ -144,6 +157,9 @@ def _backfill_subagent(turn: TurnSpanDict, child_id: str | None) -> None:
         turn["input_message"] = turn["input_message"] or children[0]["user_prompt"]
         turn["output_message"] = turn["output_message"] or children[-1]["assistant_output"]
         turn["llm_calls"] = [call for child in children for call in child["calls"]]
+        usage = total_usage(turn["llm_calls"])
+        if usage:
+            turn["usage"] = usage
         turn["status"] = children[-1]["status"]
     except (OSError, ValueError):
         return
@@ -217,8 +233,11 @@ def build_turn(
     start_ts = turn["start_ts"]
     end_ts = turn["end_ts"]
     seq_lo = _turn_seq_lower_bound(session_dir_, seq)
-    return {
+    built: TurnSpanDict = {
         "turn_id": turn["turn_id"],
+        # Keyed by Codex's own turn id, so every export of one turn derives
+        # the same span and its chat spans can name it.
+        "turn_span_id": str(turn_span_id(_PLATFORM, session_id, turn["turn_id"])),
         "start_ts": start_ts,
         "end_ts": end_ts,
         "input_message": turn["user_prompt"],
@@ -233,3 +252,7 @@ def build_turn(
         "subagents": _subagents_in_range(session_dir_, session_id, seq_lo, seq, start_ts, end_ts),
         "attributes": {},
     }
+    usage = total_usage(turn["calls"])
+    if usage:
+        built["usage"] = usage
+    return built
